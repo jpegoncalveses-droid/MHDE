@@ -98,3 +98,11 @@ def test_base_adapter_skips_fetch_on_access_failure(tmp_path):
     results = adapter.run([{"ticker": "AAPL"}])
     assert results[0].access_result == "auth_fail"
     assert results[0].access_error == "bad key"
+
+
+def test_scores_rejects_out_of_range():
+    import pytest
+    with pytest.raises(ValueError, match="outside the 1-5 range"):
+        Scores(0, 3, 3, 3, 3, 3, 3)
+    with pytest.raises(ValueError, match="outside the 1-5 range"):
+        Scores(3, 3, 3, 3, 3, 3, 6)

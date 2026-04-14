@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any, ClassVar, Optional
 
@@ -17,6 +17,16 @@ class Scores:
     parsing_ease: int     # 1-5: ease of parsing (5=clean JSON)
     cost_efficiency: int  # 1-5: cost relative to value
     strategic_value: int  # 1-5: importance to MHDE
+
+    def __post_init__(self):
+        for name, val in (
+            ("access", self.access), ("completeness", self.completeness),
+            ("freshness", self.freshness), ("reliability", self.reliability),
+            ("parsing_ease", self.parsing_ease), ("cost_efficiency", self.cost_efficiency),
+            ("strategic_value", self.strategic_value),
+        ):
+            if not 1 <= val <= 5:
+                raise ValueError(f"Scores.{name}={val} is outside the 1-5 range")
 
     def total(self) -> int:
         return (self.access + self.completeness + self.freshness +
@@ -109,15 +119,18 @@ class BaseAdapter(ABC):
         for use_case in self.use_cases:
             self.logger.info("Running %s / %s", self.source_name, use_case)
             data = None
+            sample_path = None
             if access_result == "ok":
                 try:
                     data = self.fetch_sample_data(tickers, use_case)
                     if data is not None:
-                        self._save_sample(data, use_case)
+                        sample_path = self._save_sample(data, use_case)
                 except Exception as exc:
                     self.logger.error("%s/%s fetch error: %s", self.source_name, use_case, exc)
             result = self.summarize_result(data, use_case, access_result)
             result.access_error = access_error
+            if sample_path is not None:
+                result.raw_sample_path = str(sample_path)
             results.append(result)
             self.logger.info("%s/%s -> %s", self.source_name, use_case, result.final_status)
         return results
