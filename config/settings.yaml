@@ -1,0 +1,35 @@
+logging:
+  level: INFO
+  format: "%(asctime)s %(name)-30s %(levelname)-8s %(message)s"
+
+http:
+  timeout: 30
+  retries: 2
+  retry_delay: 1.0
+
+outputs:
+  dir: outputs
+  samples_dir: samples
+
+sec_edgar:
+  base_url: https://data.sec.gov
+  user_agent: "MHDE-Validation contact@example.com"
+  rate_limit_delay: 0.12
+
+polygon:
+  base_url: https://api.polygon.io
+  # key from env: POLYGON_API_KEY
+  rate_limit_delay: 0.5
+
+alpha_vantage:
+  base_url: https://www.alphavantage.co
+  # key from env: ALPHA_VANTAGE_API_KEY
+  rate_limit_delay: 12.0   # free tier: 5 calls/min
+
+company_ir:
+  request_delay: 1.5
+  request_timeout: 20
+
+nasdaq_earnings:
+  base_url: https://api.nasdaq.com
+  rate_limit_delay: 1.0

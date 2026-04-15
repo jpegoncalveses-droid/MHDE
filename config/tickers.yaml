@@ -1,0 +1,56 @@
+basket:
+  - ticker: AAPL
+    name: Apple Inc
+    cik: "0000320193"
+    ir_press_url: https://investor.apple.com/press-releases/default.aspx
+    ir_events_url: https://investor.apple.com/events/default.aspx
+    type: stock
+
+  - ticker: NVDA
+    name: NVIDIA Corporation
+    cik: "0001045810"
+    ir_press_url: https://nvidianews.nvidia.com/releases
+    ir_events_url: https://investor.nvidia.com/events-presentations/events/default.aspx
+    type: stock
+
+  - ticker: TSLA
+    name: Tesla Inc
+    cik: "0001318605"
+    ir_press_url: https://ir.tesla.com/press-releases
+    ir_events_url: https://ir.tesla.com/events
+    type: stock
+
+  - ticker: JPM
+    name: JPMorgan Chase
+    cik: "0000019617"
+    ir_press_url: https://www.jpmorganchase.com/ir/news/press-releases
+    ir_events_url: https://www.jpmorganchase.com/ir/events
+    type: stock
+
+  - ticker: UBER
+    name: Uber Technologies
+    cik: "0001543151"
+    ir_press_url: https://investor.uber.com/news-events/news/press-releases/default.aspx
+    ir_events_url: https://investor.uber.com/news-events/events/default.aspx
+    type: stock
+
+  - ticker: RKLB
+    name: Rocket Lab USA
+    cik: "0001819994"
+    ir_press_url: https://www.rocketlabusa.com/investors/press-releases/
+    ir_events_url: https://www.rocketlabusa.com/investors/events-presentations/
+    type: stock
+
+  - ticker: IWM
+    name: iShares Russell 2000 ETF
+    cik: null
+    ir_press_url: null
+    ir_events_url: null
+    type: etf
+
+  - ticker: XLE
+    name: SPDR Energy Select Sector ETF
+    cik: null
+    ir_press_url: null
+    ir_events_url: null
+    type: etf
