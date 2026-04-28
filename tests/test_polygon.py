@@ -1,3 +1,4 @@
+import re
 import pytest
 import responses as rsps_lib
 from adapters.polygon import PolygonAdapter
@@ -47,10 +48,10 @@ def test_test_access_auth_fail(minimal_settings, sample_tickers):
 
 @rsps_lib.activate
 def test_fetch_historical_returns_dict(minimal_settings, sample_tickers):
-    for ticker in ["AAPL", "NVDA", "IWM"]:
+    for ticker in ["AAPL", "NVDA"]:
         rsps_lib.add(rsps_lib.GET,
-                     f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/2020-01-01/2026-04-15",
-                     json={**AGGS_RESPONSE, "ticker": ticker}, status=200, match_querystring=False)
+                     re.compile(rf"https://api\.polygon\.io/v2/aggs/ticker/{ticker}/range/1/day/"),
+                     json={**AGGS_RESPONSE, "ticker": ticker}, status=200)
     adapter = PolygonAdapter(settings=minimal_settings, tickers_config=sample_tickers)
     data = adapter.fetch_sample_data(sample_tickers[:2], "historical_prices")
     assert "AAPL" in data

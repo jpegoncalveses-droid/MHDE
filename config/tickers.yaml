@@ -2,43 +2,43 @@ basket:
   - ticker: AAPL
     name: Apple Inc
     cik: "0000320193"
-    ir_press_url: https://investor.apple.com/press-releases/default.aspx
-    ir_events_url: https://investor.apple.com/events/default.aspx
+    ir_press_url: https://www.apple.com/newsroom/     # investor.apple.com/press-releases 404/403
+    ir_events_url: null                               # investor.apple.com/events 403
     type: stock
 
   - ticker: NVDA
     name: NVIDIA Corporation
     cik: "0001045810"
-    ir_press_url: https://nvidianews.nvidia.com/releases
-    ir_events_url: https://investor.nvidia.com/events-presentations/events/default.aspx
+    ir_press_url: https://nvidianews.nvidia.com/news  # /releases 404
+    ir_events_url: null                               # investor.nvidia.com/events 403
     type: stock
 
   - ticker: TSLA
     name: Tesla Inc
     cik: "0001318605"
-    ir_press_url: https://ir.tesla.com/press-releases
-    ir_events_url: https://ir.tesla.com/events
+    ir_press_url: null                                # ir.tesla.com 403
+    ir_events_url: null                               # ir.tesla.com 403
     type: stock
 
   - ticker: JPM
     name: JPMorgan Chase
     cik: "0000019617"
-    ir_press_url: https://www.jpmorganchase.com/ir/news/press-releases
+    ir_press_url: https://www.jpmorganchase.com/newsroom/press-releases
     ir_events_url: https://www.jpmorganchase.com/ir/events
     type: stock
 
   - ticker: UBER
     name: Uber Technologies
     cik: "0001543151"
-    ir_press_url: https://investor.uber.com/news-events/news/press-releases/default.aspx
-    ir_events_url: https://investor.uber.com/news-events/events/default.aspx
+    ir_press_url: null                                # investor.uber.com 403
+    ir_events_url: null                               # investor.uber.com 403
     type: stock
 
   - ticker: RKLB
     name: Rocket Lab USA
     cik: "0001819994"
-    ir_press_url: https://www.rocketlabusa.com/investors/press-releases/
-    ir_events_url: https://www.rocketlabusa.com/investors/events-presentations/
+    ir_press_url: https://investors.rocketlabcorp.com/news  # rocketlabusa.com redirects, old path 404
+    ir_events_url: null                                     # events paths all 404
     type: stock
 
   - ticker: IWM
