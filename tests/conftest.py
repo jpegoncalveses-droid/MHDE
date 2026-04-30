@@ -13,6 +13,7 @@ def minimal_settings(tmp_path):
         "company_ir": {"request_delay": 0, "request_timeout": 5},
         "nasdaq_earnings": {"base_url": "https://api.nasdaq.com", "rate_limit_delay": 0},
         "fred": {"base_url": "https://api.stlouisfed.org/fred", "api_key": "fake_key", "rate_limit_delay": 0},
+        "finra": {"base_url": "https://cdn.finra.org/equity/otcmarket/biweekly", "rate_limit_delay": 0},
     }
 
 

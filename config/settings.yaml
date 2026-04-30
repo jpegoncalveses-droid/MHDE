@@ -38,3 +38,7 @@ fred:
   base_url: https://api.stlouisfed.org/fred
   # key from env: FRED_API_KEY
   rate_limit_delay: 0.5
+
+finra:
+  base_url: https://cdn.finra.org/equity/otcmarket/biweekly
+  rate_limit_delay: 1.0
