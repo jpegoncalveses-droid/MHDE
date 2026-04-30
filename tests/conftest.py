@@ -12,6 +12,7 @@ def minimal_settings(tmp_path):
         "alpha_vantage": {"base_url": "https://www.alphavantage.co", "api_key": "fake_key", "rate_limit_delay": 0},
         "company_ir": {"request_delay": 0, "request_timeout": 5},
         "nasdaq_earnings": {"base_url": "https://api.nasdaq.com", "rate_limit_delay": 0},
+        "fred": {"base_url": "https://api.stlouisfed.org/fred", "api_key": "fake_key", "rate_limit_delay": 0},
     }
 
 

@@ -27,6 +27,7 @@ class ValidationRunner:
         from adapters.alpha_vantage import AlphaVantageAdapter
         from adapters.company_ir import CompanyIRAdapter
         from adapters.nasdaq_earnings import NasdaqEarningsAdapter
+        from adapters.fred import FREDAdapter
 
         return [
             SECEdgarAdapter(settings=self.settings, tickers_config=self.tickers),
@@ -34,6 +35,7 @@ class ValidationRunner:
             AlphaVantageAdapter(settings=self.settings, tickers_config=self.tickers),
             CompanyIRAdapter(settings=self.settings, tickers_config=self.tickers),
             NasdaqEarningsAdapter(settings=self.settings, tickers_config=self.tickers),
+            FREDAdapter(settings=self.settings, tickers_config=self.tickers),
         ]
 
     def run(self) -> list[ValidationResult]:

@@ -33,3 +33,8 @@ company_ir:
 nasdaq_earnings:
   base_url: https://api.nasdaq.com
   rate_limit_delay: 1.0
+
+fred:
+  base_url: https://api.stlouisfed.org/fred
+  # key from env: FRED_API_KEY
+  rate_limit_delay: 0.5

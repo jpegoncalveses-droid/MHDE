@@ -15,6 +15,7 @@ _DEFAULT_TICKERS = Path(__file__).parent.parent / "config" / "tickers.yaml"
 _ENV_KEY_MAP = {
     "POLYGON_API_KEY": ("polygon", "api_key"),
     "ALPHA_VANTAGE_API_KEY": ("alpha_vantage", "api_key"),
+    "FRED_API_KEY": ("fred", "api_key"),
 }
 
 
