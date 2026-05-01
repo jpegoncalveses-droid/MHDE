@@ -1,0 +1,17 @@
+max_symbols: 500
+min_price: 2.0
+exclude_etfs: true
+exclude_funds: true
+exclude_adrs: false
+exchanges:
+  - NYSE
+  - NASDAQ
+  - AMEX
+
+fallback_tickers:
+  - AAPL
+  - NVDA
+  - TSLA
+  - JPM
+  - UBER
+  - RKLB

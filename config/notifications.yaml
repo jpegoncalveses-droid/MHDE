@@ -1,0 +1,9 @@
+telegram:
+  enabled: false
+  alert_tiers:
+    - A
+  dedup_days: 14
+
+email:
+  enabled: false
+  dedup_days: 1

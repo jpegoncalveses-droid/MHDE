@@ -1,0 +1,25 @@
+[Unit]
+Description=MHDE Streamlit Dashboard
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/mhde
+EnvironmentFile=/opt/mhde/deploy/dashboard/.env
+ExecStart=/opt/mhde/.venv/bin/streamlit run dashboard/app.py \
+    --server.address=127.0.0.1 \
+    --server.port=8501 \
+    --server.headless=true
+Restart=always
+RestartSec=5
+User=mhde
+Group=mhde
+
+[Install]
+WantedBy=multi-user.target
+
+# ── Customize before deploying ─────────────────────────────────────────────────
+# Replace /opt/mhde with your actual project path.
+# Replace .venv/bin/streamlit with the path to your virtualenv's streamlit.
+# Create the mhde user: sudo useradd -r -s /bin/false mhde
+# Then: sudo chown -R mhde:mhde /opt/mhde

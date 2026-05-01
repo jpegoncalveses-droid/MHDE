@@ -1,0 +1,16 @@
+enabled: true
+default_provider: mock
+max_candidates: 10
+
+openai:
+  model: gpt-4.1-mini
+  max_tokens: 1000
+
+nvidia:
+  model: meta/llama-3.1-70b-instruct
+  base_url: https://integrate.api.nvidia.com/v1
+  max_tokens: 1000
+
+mock:
+  enabled: true
+  note: Returns deterministic placeholder output. Safe for all environments.

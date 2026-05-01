@@ -1,0 +1,4 @@
+enabled: true
+auto_create_for_tier_a: false
+default_position_size: 1.0
+review_days: 30

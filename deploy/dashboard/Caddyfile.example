@@ -1,0 +1,12 @@
+your-subdomain.duckdns.org {
+    reverse_proxy 127.0.0.1:8501
+}
+
+# ── Usage ──────────────────────────────────────────────────────────────────────
+# 1. Replace your-subdomain.duckdns.org with your actual DuckDNS domain.
+# 2. Install Caddy: https://caddyserver.com/docs/install
+# 3. Place this file at /etc/caddy/Caddyfile (or include it).
+# 4. sudo systemctl reload caddy
+#
+# Caddy handles HTTPS automatically via Let's Encrypt.
+# No certificate management required.

@@ -1,0 +1,28 @@
+sources:
+  sec_edgar:
+    status: active
+    description: SEC EDGAR filings and XBRL fundamentals (free, no auth)
+  polygon:
+    status: active
+    description: Daily OHLCV prices (free tier, requires POLYGON_API_KEY)
+  fred:
+    status: active
+    description: Macro series and release calendar (free, requires FRED_API_KEY)
+  finra:
+    status: active
+    description: Short interest bi-weekly data (free, no auth)
+  cftc:
+    status: active
+    description: Commitments of Traders positioning (free, no auth)
+  events:
+    status: experimental
+    description: Earnings calendar and press releases (unofficial endpoints, brittle)
+  fda:
+    status: stub
+    description: FDA advisory calendar (not yet implemented)
+  stocktwits:
+    status: stub
+    description: Retail sentiment and message volume (not yet implemented)
+  gdelt:
+    status: stub
+    description: Global news and event data (not yet implemented)
