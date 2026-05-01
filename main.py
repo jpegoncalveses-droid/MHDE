@@ -257,21 +257,36 @@ def xgboost_smoke():
 def health():
     """Run health checks and show system status."""
     import uuid
-    from health.checks import run_all_checks
+    from health.checks import run_all_checks, overall_status
 
     cfg, conn = _engine_setup()
     run_id = uuid.uuid4().hex[:16]
     try:
         results = run_all_checks(conn, run_id, cfg)
-        click.echo(f"\n{'Check':<35} {'Status':<8} {'Severity':<10} Message")
-        click.echo("-" * 80)
+        click.echo(f"\n{'Check':<38} {'Status':<22} {'Sev':<8} Message")
+        click.echo("-" * 100)
         for r in results:
             click.echo(
-                f"{r['check_name']:<35} {r['status']:<8} {r.get('severity', ''):<10} {r.get('message', '')}"
+                f"{r['check_name']:<38} {r['status']:<22} {r.get('severity', ''):<8} {r.get('message', '')}"
             )
-        failed = [r for r in results if r["status"] == "fail"]
+
+        passed = [r for r in results if r["status"] == "pass"]
         warned = [r for r in results if r["status"] == "warn"]
-        click.echo(f"\n{len(results)} checks: {len(failed)} failed, {len(warned)} warnings.")
+        failed = [r for r in results if r["status"] == "fail"]
+        skipped = [r for r in results if r["status"] == "skip"]
+        status = overall_status(results)
+
+        click.echo(f"\n{'='*100}")
+        click.echo(
+            f"Overall: {status}  "
+            f"({len(passed)} pass, {len(warned)} warn, {len(failed)} fail, {len(skipped)} skip)"
+        )
+        if status == "FAIL":
+            click.echo("ACTION REQUIRED: fix failing checks before running the pipeline.")
+        elif status == "PASS_WITH_WARNINGS":
+            click.echo("System is operational. Warnings indicate immature or unconfigured components.")
+        else:
+            click.echo("All checks passed.")
     finally:
         conn.close()
 

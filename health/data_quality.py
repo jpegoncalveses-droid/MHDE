@@ -11,8 +11,8 @@ logger = logging.getLogger("mhde.health")
 def check_universe_size(conn: duckdb.DuckDBPyConnection) -> dict:
     count = conn.execute("SELECT COUNT(*) FROM companies WHERE is_active = true").fetchone()[0]
     if count == 0:
-        return {"check_name": "universe_size", "status": "fail", "severity": "high",
-                "message": "No companies in universe. Run 'ingest all'."}
+        return {"check_name": "universe_size", "status": "warn", "severity": "medium",
+                "message": "No companies in universe. Run daily-radar to populate."}
     if count < 10:
         return {"check_name": "universe_size", "status": "warn", "severity": "medium",
                 "message": f"{count} companies (very small universe — expected 100+)"}

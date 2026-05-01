@@ -303,6 +303,53 @@ CREATE TABLE IF NOT EXISTS alerts (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS pipeline_runs (
+    pipeline_run_id VARCHAR PRIMARY KEY,
+    run_id VARCHAR NOT NULL,
+    run_date DATE NOT NULL,
+    pipeline_type VARCHAR DEFAULT 'daily_radar',
+    universe_size INTEGER DEFAULT 0,
+    sources_succeeded INTEGER DEFAULT 0,
+    sources_failed INTEGER DEFAULT 0,
+    sources_skipped INTEGER DEFAULT 0,
+    candidates_scored INTEGER DEFAULT 0,
+    tier_a INTEGER DEFAULT 0,
+    tier_b INTEGER DEFAULT 0,
+    tier_c INTEGER DEFAULT 0,
+    rejected INTEGER DEFAULT 0,
+    hypotheses_created INTEGER DEFAULT 0,
+    alerts_sent INTEGER DEFAULT 0,
+    llm_provider VARCHAR DEFAULT 'mock',
+    report_path VARCHAR,
+    warnings_json VARCHAR,
+    status VARCHAR DEFAULT 'complete',
+    started_at TIMESTAMP,
+    finished_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS review_notes (
+    note_id VARCHAR PRIMARY KEY,
+    ticker VARCHAR NOT NULL,
+    run_id VARCHAR,
+    hypothesis_id VARCHAR,
+    note_type VARCHAR DEFAULT 'general',
+    body VARCHAR NOT NULL,
+    author VARCHAR,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS dashboard_actions (
+    action_id VARCHAR PRIMARY KEY,
+    action_type VARCHAR NOT NULL,
+    target_table VARCHAR,
+    target_id VARCHAR,
+    payload_json VARCHAR,
+    performed_by VARCHAR,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS candidate_reviews (
     review_id VARCHAR PRIMARY KEY,
     candidate_id VARCHAR,

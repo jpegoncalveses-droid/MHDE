@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 
 import duckdb
 
@@ -175,8 +176,33 @@ def run(cfg: dict, conn: duckdb.DuckDBPyConnection) -> RunSummary:
     except Exception as exc:
         logger.error("Health check failed: %s", exc)
 
+    _record_pipeline_run(conn, summary)
     _print_summary(summary)
     return summary
+
+
+def _record_pipeline_run(conn: duckdb.DuckDBPyConnection, s: RunSummary) -> None:
+    try:
+        conn.execute(
+            """
+            INSERT INTO pipeline_runs (
+                pipeline_run_id, run_id, run_date, pipeline_type,
+                universe_size, sources_succeeded, sources_failed, sources_skipped,
+                candidates_scored, tier_a, tier_b, tier_c, rejected,
+                alerts_sent, llm_provider, report_path,
+                warnings_json, status, finished_at
+            ) VALUES (?, ?, ?, 'daily_radar', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'complete', ?)
+            """,
+            [
+                uuid.uuid4().hex[:16], s.run_id, s.run_date,
+                s.universe_size, s.sources_succeeded, s.sources_failed, s.sources_skipped,
+                s.candidates_scored, s.tier_a, s.tier_b, s.tier_c, s.rejected,
+                s.alerts_sent, s.llm_provider, s.report_path,
+                json.dumps(s.warnings), datetime.utcnow(),
+            ],
+        )
+    except Exception as exc:
+        logger.warning("Could not record pipeline run: %s", exc)
 
 
 def _get_latest_price(conn: duckdb.DuckDBPyConnection, ticker: str) -> float | None:

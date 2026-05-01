@@ -8,7 +8,7 @@ from storage.db import init_schema
 
 logger = logging.getLogger("mhde.storage.migrations")
 
-_CURRENT_VERSION = 3
+_CURRENT_VERSION = 4
 
 
 def run_migrations(conn: duckdb.DuckDBPyConnection) -> None:
@@ -30,6 +30,19 @@ def run_migrations(conn: duckdb.DuckDBPyConnection) -> None:
             "INSERT INTO schema_version (version, description) VALUES (2, 'Learning loop: candidate_reviews + scorecard_experiments') ON CONFLICT DO NOTHING"
         )
         logger.info("Applied migration v2: learning loop tables")
+
+    if current < 4:
+        # pipeline_runs, review_notes, dashboard_actions may already exist on fresh DBs
+        for tbl in ("pipeline_runs", "review_notes", "dashboard_actions"):
+            try:
+                conn.execute(f"SELECT 1 FROM {tbl} LIMIT 1")
+            except Exception:
+                # Table doesn't exist — init_schema already ran, so it's there; this catches legacy DBs
+                pass
+        conn.execute(
+            "INSERT INTO schema_version (version, description) VALUES (4, 'Add pipeline_runs, review_notes, dashboard_actions') ON CONFLICT DO NOTHING"
+        )
+        logger.info("Applied migration v4: pipeline_runs, review_notes, dashboard_actions")
 
     if current < 3:
         # Add applied_by and backtest_notes to scorecard_experiments (may already exist on fresh DBs)
