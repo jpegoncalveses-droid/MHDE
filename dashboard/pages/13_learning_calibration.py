@@ -34,6 +34,26 @@ st.caption(
 
 db_path = os.environ.get("MHDE_DB_PATH", "data/mhde.duckdb")
 
+# ── Review packet links ───────────────────────────────────────────────────────
+import glob as _glob
+_packets = sorted(_glob.glob("outputs/review_packet_*.md"), reverse=True)
+if _packets:
+    latest_md = _packets[0]
+    latest_json = latest_md.replace(".md", ".json")
+    st.subheader("Review Packets")
+    st.info(
+        f"Latest review packet: `{latest_md}`  \n"
+        f"JSON (for import): `{latest_json}`  \n\n"
+        f"Generate a new packet: `python main.py review packet`  \n"
+        f"Import completed reviews: `python main.py review import {latest_json}`"
+    )
+    with open(latest_md, encoding="utf-8") as _f:
+        _content = _f.read()
+    with st.expander("View latest review packet", expanded=False):
+        st.markdown(_content)
+else:
+    st.info("No review packets found. Generate one with: `python main.py review packet`")
+
 try:
     conn_ro = duckdb.connect(db_path, read_only=True)
 except Exception as e:

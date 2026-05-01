@@ -310,6 +310,61 @@ def learn_summarize(output):
         conn.close()
 
 
+@cli.group()
+def review():
+    """Candidate review commands: build review packets, import completed reviews."""
+
+
+@review.command("packet")
+@click.option("--run-id", default=None, help="Run ID to build packet from (default: latest).")
+@click.option("--output", default="outputs", help="Output directory.")
+def review_packet(run_id, output):
+    """Generate a structured review packet for candidate quality assessment."""
+    from review.packet_builder import build_packet, write_packet
+
+    cfg, conn = _engine_setup()
+    try:
+        packet = build_packet(conn, run_id=run_id)
+        md_path, json_path = write_packet(packet, output_dir=output)
+        click.echo(f"\nReview packet generated")
+        click.echo(f"  Run ID:     {packet.run_id}")
+        click.echo(f"  Run date:   {packet.run_date}")
+        click.echo(f"  Markdown:   {md_path}")
+        click.echo(f"  JSON:       {json_path}")
+        m = packet.meta
+        click.echo(f"\nCandidates included:")
+        click.echo(f"  Top 10:                 {len(packet.sections.get('top_10', []))}")
+        click.echo(f"  Near-B:                 {len(packet.sections.get('near_b', []))}")
+        click.echo(f"  High catalyst:          {len(packet.sections.get('high_catalyst', []))}")
+        click.echo(f"  Cheap+quality no cat:   {len(packet.sections.get('cheap_quality_no_catalyst', []))}")
+        click.echo(f"  Rejected worth inspect: {len(packet.sections.get('rejected_worth_inspecting', []))}")
+        if packet.warnings:
+            click.echo("\nWarnings:")
+            for w in packet.warnings:
+                click.echo(f"  - {w}")
+    finally:
+        conn.close()
+
+
+@review.command("import")
+@click.argument("packet_path")
+def review_import(packet_path):
+    """Import completed review fields from a review packet JSON into candidate_reviews."""
+    from review.importer import import_packet
+
+    cfg, conn = _engine_setup()
+    try:
+        result = import_packet(conn, packet_path)
+        click.echo(f"\nReview import complete")
+        click.echo(f"  Run ID:           {result['run_id']}")
+        click.echo(f"  Imported:         {result['imported']}")
+        click.echo(f"  Skipped (pending):{result['skipped_pending']}")
+        click.echo(f"  Skipped (dup):    {result['skipped_duplicate']}")
+        click.echo(f"  Failed:           {result['failed']}")
+    finally:
+        conn.close()
+
+
 @cli.group(invoke_without_command=True)
 @click.pass_context
 def dashboard(ctx):
