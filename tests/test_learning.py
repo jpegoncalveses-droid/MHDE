@@ -420,7 +420,16 @@ def test_dashboard_get_scorecard_experiments(conn):
 
 # ── CLI command ───────────────────────────────────────────────────────────────
 
-def test_cli_learn_summarize(tmp_path):
+def test_cli_learn_summarize(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "test_cli.duckdb")
+    monkeypatch.setenv("MHDE_DB_PATH", db_path)
+    # Pre-init the schema so the CLI doesn't fail on missing tables
+    import duckdb as _ddb
+    from storage.db import init_schema as _init
+    _conn = _ddb.connect(db_path)
+    _init(_conn)
+    _conn.close()
+
     from click.testing import CliRunner
     from main import cli
     runner = CliRunner()
