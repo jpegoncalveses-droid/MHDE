@@ -339,11 +339,13 @@ CREATE TABLE IF NOT EXISTS scorecard_experiments (
     affected_components_json VARCHAR,
     expected_effect VARCHAR,
     backtest_result_json VARCHAR,
+    backtest_notes VARCHAR,
     status VARCHAR DEFAULT 'proposed' CHECK (status IN (
         'proposed', 'tested', 'approved', 'rejected', 'applied', 'archived'
     )),
     review_notes VARCHAR,
     approved_by VARCHAR,
+    applied_by VARCHAR,
     applied_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP

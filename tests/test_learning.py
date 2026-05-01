@@ -8,7 +8,10 @@ import duckdb
 from storage.db import init_schema
 from learning.error_taxonomy import FALSE_POSITIVE_REASONS, REVIEW_STATUSES, EXPERIMENT_STATUSES
 from learning.feedback import submit_review, get_reviews
-from learning.experiments import propose_experiment, get_experiments, approve_experiment, reject_experiment
+from learning.experiments import (
+    propose_experiment, mark_tested, approve_experiment,
+    apply_experiment, reject_experiment, archive_experiment, get_experiments,
+)
 from learning.calibration import (
     outcome_by_tier,
     outcome_by_score_bucket,
@@ -220,10 +223,10 @@ def test_experiments_not_auto_applied(conn):
     exps = get_experiments(conn)
     for e in exps:
         assert e["status"] != "applied", "Experiments must not be auto-applied"
-        assert e["applied_at"] is None, "applied_at must be NULL until human approves"
+        assert e["applied_at"] is None, "applied_at must be NULL until human applies"
 
 
-def test_experiment_approve_requires_explicit_call(conn):
+def test_approve_does_not_set_applied_at(conn):
     eid = propose_experiment(
         conn,
         hypothesis="Tighten A-tier threshold",
@@ -231,14 +234,115 @@ def test_experiment_approve_requires_explicit_call(conn):
         affected_components=["scoring/tiers.py"],
         expected_effect="Fewer A-tier candidates",
     )
-    # Verify not applied yet
-    exps = get_experiments(conn)
-    assert exps[0]["status"] == "proposed"
-    # Human approves
     approve_experiment(conn, eid, approved_by="jp@example.com", review_notes="Looks good")
     exps = get_experiments(conn)
     assert exps[0]["status"] == "approved"
     assert exps[0]["approved_by"] == "jp@example.com"
+    assert exps[0]["applied_at"] is None, "approve_experiment must not set applied_at"
+    assert exps[0]["applied_by"] is None, "approve_experiment must not set applied_by"
+
+
+def test_apply_experiment_sets_applied_at(conn, tmp_path, monkeypatch):
+    import learning.experiments as exp_mod
+    monkeypatch.setattr(exp_mod, "_DECISION_LOG", tmp_path / "decision_log.md")
+
+    eid = propose_experiment(
+        conn,
+        hypothesis="Raise risk penalty weight",
+        proposed_change={"risk_weight": 0.30},
+        affected_components=["scoring/scorecard.py"],
+        expected_effect="Fewer high-risk false positives",
+    )
+    approve_experiment(conn, eid, approved_by="jp@example.com")
+    apply_experiment(conn, eid, applied_by="jp@example.com", notes="Reviewed and confirmed")
+
+    exps = get_experiments(conn)
+    e = exps[0]
+    assert e["status"] == "applied"
+    assert e["applied_at"] is not None
+    assert e["applied_by"] == "jp@example.com"
+
+
+def test_apply_experiment_requires_approved_status(conn):
+    eid = propose_experiment(
+        conn,
+        hypothesis="Unapproved change",
+        proposed_change={"x": 1},
+        affected_components=[],
+        expected_effect="N/A",
+    )
+    with pytest.raises(ValueError, match="must be 'approved'"):
+        apply_experiment(conn, eid, applied_by="jp@example.com")
+
+
+def test_apply_experiment_fails_if_only_proposed(conn, tmp_path, monkeypatch):
+    import learning.experiments as exp_mod
+    monkeypatch.setattr(exp_mod, "_DECISION_LOG", tmp_path / "decision_log.md")
+
+    eid = propose_experiment(
+        conn,
+        hypothesis="Directly apply without approval",
+        proposed_change={},
+        affected_components=[],
+        expected_effect="Should fail",
+    )
+    # Must not be appliable when status is 'proposed'
+    with pytest.raises(ValueError):
+        apply_experiment(conn, eid, applied_by="jp@example.com")
+
+
+def test_apply_experiment_writes_decision_log(conn, tmp_path, monkeypatch):
+    import learning.experiments as exp_mod
+    log_path = tmp_path / "decision_log.md"
+    monkeypatch.setattr(exp_mod, "_DECISION_LOG", log_path)
+
+    eid = propose_experiment(
+        conn,
+        hypothesis="Add peer context requirement",
+        proposed_change={"add_feature_group": "peer_context"},
+        affected_components=["features/"],
+        expected_effect="Richer context",
+    )
+    approve_experiment(conn, eid, approved_by="jp@example.com")
+    apply_experiment(conn, eid, applied_by="jp@example.com", notes="Verified in staging")
+
+    assert log_path.exists()
+    content = log_path.read_text()
+    assert "peer_context" in content
+    assert "jp@example.com" in content
+    assert "applied" in content.lower()
+
+
+def test_approve_does_not_mutate_scoring_config(conn):
+    eid = propose_experiment(
+        conn,
+        hypothesis="Change weights",
+        proposed_change={"cheap_weight": 0.40},
+        affected_components=["scoring/scorecard.py"],
+        expected_effect="Higher weight on valuation",
+    )
+    approve_experiment(conn, eid, approved_by="jp@example.com")
+    # Scoring config file must not have been touched
+    from pathlib import Path
+    cfg_path = Path("config/scoring.yaml")
+    if cfg_path.exists():
+        content = cfg_path.read_text()
+        # The proposed change value should NOT have been written to the config
+        assert "0.40" not in content or "cheap_weight" not in content
+
+
+def test_experiment_mark_tested_step(conn):
+    eid = propose_experiment(
+        conn,
+        hypothesis="Hypothesis to test",
+        proposed_change={"x": 1},
+        affected_components=[],
+        expected_effect="TBD",
+    )
+    mark_tested(conn, eid, backtest_result={"hit_rate": 0.6}, backtest_notes="Smoke backtest only")
+    exps = get_experiments(conn)
+    assert exps[0]["status"] == "tested"
+    assert exps[0]["backtest_notes"] == "Smoke backtest only"
 
 
 def test_experiment_reject(conn):
@@ -252,6 +356,19 @@ def test_experiment_reject(conn):
     reject_experiment(conn, eid, review_notes="Not justified")
     exps = get_experiments(conn)
     assert exps[0]["status"] == "rejected"
+
+
+def test_experiment_archive(conn):
+    eid = propose_experiment(
+        conn,
+        hypothesis="Old idea",
+        proposed_change={},
+        affected_components=[],
+        expected_effect="N/A",
+    )
+    archive_experiment(conn, eid, review_notes="No longer relevant")
+    exps = get_experiments(conn)
+    assert exps[0]["status"] == "archived"
 
 
 # ── Insights ──────────────────────────────────────────────────────────────────
