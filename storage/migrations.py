@@ -8,7 +8,7 @@ from storage.db import init_schema
 
 logger = logging.getLogger("mhde.storage.migrations")
 
-_CURRENT_VERSION = 1
+_CURRENT_VERSION = 2
 
 
 def run_migrations(conn: duckdb.DuckDBPyConnection) -> None:
@@ -24,3 +24,9 @@ def run_migrations(conn: duckdb.DuckDBPyConnection) -> None:
             "INSERT INTO schema_version (version, description) VALUES (1, 'Initial schema') ON CONFLICT DO NOTHING"
         )
         logger.info("Applied migration v1: initial schema")
+
+    if current < 2:
+        conn.execute(
+            "INSERT INTO schema_version (version, description) VALUES (2, 'Learning loop: candidate_reviews + scorecard_experiments') ON CONFLICT DO NOTHING"
+        )
+        logger.info("Applied migration v2: learning loop tables")

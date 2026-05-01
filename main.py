@@ -276,6 +276,25 @@ def health():
         conn.close()
 
 
+@cli.group()
+def learn():
+    """Learning loop commands: calibration, insights, experiments."""
+
+
+@learn.command("summarize")
+@click.option("--output", default="outputs", help="Output directory or file path.")
+def learn_summarize(output):
+    """Generate a learning calibration report from outcome and review data."""
+    from learning.summarize import write_learning_report
+
+    cfg, conn = _engine_setup()
+    try:
+        path = write_learning_report(conn, output)
+        click.echo(f"Learning report written: {path}")
+    finally:
+        conn.close()
+
+
 @cli.group(invoke_without_command=True)
 @click.pass_context
 def dashboard(ctx):

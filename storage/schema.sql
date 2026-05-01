@@ -303,6 +303,52 @@ CREATE TABLE IF NOT EXISTS alerts (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS candidate_reviews (
+    review_id VARCHAR PRIMARY KEY,
+    candidate_id VARCHAR,
+    run_id VARCHAR NOT NULL,
+    ticker VARCHAR NOT NULL,
+    review_status VARCHAR DEFAULT 'pending' CHECK (review_status IN (
+        'pending', 'useful', 'weak', 'false_positive',
+        'needs_more_evidence', 'invalid_due_to_data_issue', 'archived'
+    )),
+    usefulness_score INTEGER CHECK (usefulness_score BETWEEN 1 AND 5),
+    thesis_quality_score INTEGER CHECK (thesis_quality_score BETWEEN 1 AND 5),
+    evidence_quality_score INTEGER CHECK (evidence_quality_score BETWEEN 1 AND 5),
+    false_positive_reason VARCHAR CHECK (false_positive_reason IN (
+        'bad_data', 'stale_data', 'cheap_for_good_reason', 'weak_catalyst',
+        'poor_quality_business', 'macro_headwind', 'llm_overstated_case',
+        'missing_peer_context', 'temporary_noise', 'not_actionable',
+        'overfit_score', 'insufficient_liquidity', 'missing_risk_factor',
+        'source_failure', 'other'
+    )),
+    missed_risk VARCHAR,
+    missing_evidence VARCHAR,
+    review_notes VARCHAR,
+    reviewed_by VARCHAR,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (run_id, ticker)
+);
+
+CREATE TABLE IF NOT EXISTS scorecard_experiments (
+    experiment_id VARCHAR PRIMARY KEY,
+    based_on_run_ids VARCHAR,
+    hypothesis VARCHAR NOT NULL,
+    proposed_change_json VARCHAR,
+    affected_components_json VARCHAR,
+    expected_effect VARCHAR,
+    backtest_result_json VARCHAR,
+    status VARCHAR DEFAULT 'proposed' CHECK (status IN (
+        'proposed', 'tested', 'approved', 'rejected', 'applied', 'archived'
+    )),
+    review_notes VARCHAR,
+    approved_by VARCHAR,
+    applied_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS health_checks (
     id VARCHAR PRIMARY KEY,
     run_id VARCHAR,

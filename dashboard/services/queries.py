@@ -347,3 +347,45 @@ def get_hypotheses(conn: duckdb.DuckDBPyConnection, limit: int = 200) -> list[di
         "thesis", "why_now", "confidence", "status", "review_status", "created_at",
     ]
     return [dict(zip(cols, r)) for r in rows]
+
+
+def get_candidate_reviews(conn: duckdb.DuckDBPyConnection, limit: int = 200) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT review_id, candidate_id, run_id, ticker, review_status,
+               usefulness_score, thesis_quality_score, evidence_quality_score,
+               false_positive_reason, missed_risk, missing_evidence,
+               review_notes, reviewed_by, created_at, updated_at
+        FROM candidate_reviews
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        [limit],
+    ).fetchall()
+    cols = [
+        "review_id", "candidate_id", "run_id", "ticker", "review_status",
+        "usefulness_score", "thesis_quality_score", "evidence_quality_score",
+        "false_positive_reason", "missed_risk", "missing_evidence",
+        "review_notes", "reviewed_by", "created_at", "updated_at",
+    ]
+    return [dict(zip(cols, r)) for r in rows]
+
+
+def get_scorecard_experiments(conn: duckdb.DuckDBPyConnection, limit: int = 50) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT experiment_id, based_on_run_ids, hypothesis, proposed_change_json,
+               affected_components_json, expected_effect, status,
+               review_notes, approved_by, applied_at, created_at
+        FROM scorecard_experiments
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        [limit],
+    ).fetchall()
+    cols = [
+        "experiment_id", "based_on_run_ids", "hypothesis", "proposed_change_json",
+        "affected_components_json", "expected_effect", "status",
+        "review_notes", "approved_by", "applied_at", "created_at",
+    ]
+    return [dict(zip(cols, r)) for r in rows]
