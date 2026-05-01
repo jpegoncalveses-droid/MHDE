@@ -14,6 +14,12 @@ def minimal_settings(tmp_path):
         "nasdaq_earnings": {"base_url": "https://api.nasdaq.com", "rate_limit_delay": 0},
         "fred": {"base_url": "https://api.stlouisfed.org/fred", "api_key": "fake_key", "rate_limit_delay": 0},
         "finra": {"base_url": "https://cdn.finra.org/equity/otcmarket/biweekly", "rate_limit_delay": 0},
+        "cftc": {
+            "tff_url": "https://publicreporting.cftc.gov/resource/gpe5-46if.json",
+            "disag_url": "https://publicreporting.cftc.gov/resource/kh3c-gbw2.json",
+            "rate_limit_delay": 0,
+            "history_weeks": 4,
+        },
     }
 
 

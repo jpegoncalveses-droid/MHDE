@@ -42,3 +42,9 @@ fred:
 finra:
   base_url: https://cdn.finra.org/equity/otcmarket/biweekly
   rate_limit_delay: 1.0
+
+cftc:
+  tff_url: https://publicreporting.cftc.gov/resource/gpe5-46if.json
+  disag_url: https://publicreporting.cftc.gov/resource/kh3c-gbw2.json
+  rate_limit_delay: 0.5
+  history_weeks: 4

@@ -29,6 +29,7 @@ class ValidationRunner:
         from adapters.nasdaq_earnings import NasdaqEarningsAdapter
         from adapters.fred import FREDAdapter
         from adapters.finra import FINRAAdapter
+        from adapters.cftc import CFTCAdapter
 
         return [
             SECEdgarAdapter(settings=self.settings, tickers_config=self.tickers),
@@ -38,6 +39,7 @@ class ValidationRunner:
             NasdaqEarningsAdapter(settings=self.settings, tickers_config=self.tickers),
             FREDAdapter(settings=self.settings, tickers_config=self.tickers),
             FINRAAdapter(settings=self.settings, tickers_config=self.tickers),
+            CFTCAdapter(settings=self.settings, tickers_config=self.tickers),
         ]
 
     def run(self) -> list[ValidationResult]:
