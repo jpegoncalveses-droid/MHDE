@@ -20,6 +20,7 @@ from health.operational import (
     check_email_configured,
     check_finra_data,
     check_llm_provider,
+    check_score_distribution_quality,
     check_stub_sources,
     check_telegram_configured,
     check_universe_vs_config,
@@ -124,6 +125,7 @@ def run_all_checks(
     results.append(check_feature_coverage(conn))
     results.append(check_score_distribution(conn))
     results.append(check_a_tier_candidates(conn))
+    results.extend(check_score_distribution_quality(conn))
     results.append(check_finra_data(conn))
 
     # Source status

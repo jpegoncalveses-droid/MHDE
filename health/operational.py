@@ -124,3 +124,86 @@ def check_a_tier_candidates(conn: duckdb.DuckDBPyConnection) -> dict:
                            "or data is immature (expected on first runs)."}
     return {"check_name": "a_tier_candidates", "status": "pass", "severity": "low",
             "message": f"{count} A-tier candidate(s) in latest run"}
+
+
+def check_score_distribution_quality(conn: duckdb.DuckDBPyConnection) -> list[dict]:
+    """Warn when the score distribution shows signs of fake precision (clustering, low coverage)."""
+    results = []
+
+    run_id_row = conn.execute(
+        "SELECT run_id FROM scores GROUP BY run_id ORDER BY MAX(created_at) DESC LIMIT 1"
+    ).fetchone()
+    if not run_id_row:
+        return []
+    run_id = run_id_row[0]
+
+    total_row = conn.execute("SELECT COUNT(*) FROM scores WHERE run_id=?", [run_id]).fetchone()
+    total = total_row[0] if total_row else 0
+    if total == 0:
+        return []
+
+    # Low confidence rate
+    low_conf_row = conn.execute(
+        "SELECT COUNT(*) FROM scores WHERE run_id=? AND confidence IN ('low', 'none')", [run_id]
+    ).fetchone()
+    low_conf = low_conf_row[0] if low_conf_row else 0
+    if low_conf / total > 0.50:
+        results.append({
+            "check_name": "score_low_confidence_rate",
+            "status": "warn",
+            "severity": "medium",
+            "message": (
+                f"{low_conf}/{total} ({low_conf/total:.0%}) candidates have low/no confidence. "
+                "Missing price, momentum, or sentiment data. Scores are partial estimates."
+            ),
+        })
+
+    # Missing valuation
+    null_cheap_row = conn.execute(
+        "SELECT COUNT(*) FROM scores WHERE run_id=? AND cheap_score IS NULL", [run_id]
+    ).fetchone()
+    null_cheap = null_cheap_row[0] if null_cheap_row else 0
+    if null_cheap / total > 0.50:
+        results.append({
+            "check_name": "score_missing_valuation",
+            "status": "warn",
+            "severity": "medium",
+            "message": (
+                f"{null_cheap}/{total} ({null_cheap/total:.0%}) candidates have no valuation score. "
+                "Polygon price data may be missing."
+            ),
+        })
+
+    # Missing momentum
+    null_mom_row = conn.execute(
+        "SELECT COUNT(*) FROM scores WHERE run_id=? AND momentum_score IS NULL", [run_id]
+    ).fetchone()
+    null_mom = null_mom_row[0] if null_mom_row else 0
+    if null_mom / total > 0.50:
+        results.append({
+            "check_name": "score_missing_momentum",
+            "status": "warn",
+            "severity": "low",
+            "message": (
+                f"{null_mom}/{total} ({null_mom/total:.0%}) candidates have no momentum score. "
+                "Insufficient price history (need 20+ days)."
+            ),
+        })
+
+    # Incomplete tier prevalence
+    incomplete_row = conn.execute(
+        "SELECT COUNT(*) FROM scores WHERE run_id=? AND tier='Incomplete'", [run_id]
+    ).fetchone()
+    n_incomplete = incomplete_row[0] if incomplete_row else 0
+    if n_incomplete / total > 0.30:
+        results.append({
+            "check_name": "score_incomplete_rate",
+            "status": "warn",
+            "severity": "medium",
+            "message": (
+                f"{n_incomplete}/{total} ({n_incomplete/total:.0%}) candidates are Incomplete "
+                "(insufficient data to rank). Ingest more data sources for reliable scoring."
+            ),
+        })
+
+    return results

@@ -36,10 +36,15 @@ def generate_hypotheses(
         thesis = build_thesis_text({**scores, "ticker": ticker}, company_name)
         why_now = build_why_now(scores)
 
-        cheap_ev = [f"Valuation score: {scores.get('cheap_score', 0):.0f}/100"]
-        quality_ev = [f"Quality score: {scores.get('quality_score', 0):.0f}/100"]
-        catalyst_ev = [f"Catalyst score: {scores.get('catalyst_score', 0):.0f}/100"]
-        risks = [f"Risk penalty: {scores.get('risk_penalty', 0):.0f}/100"]
+        cheap = scores.get("cheap_score")
+        quality = scores.get("quality_score")
+        catalyst_val = scores.get("catalyst_score")
+        risk_val = scores.get("risk_penalty", 0)
+
+        cheap_ev = [f"Valuation score: {cheap:.0f}/100"] if cheap is not None else ["Valuation data unavailable"]
+        quality_ev = [f"Quality score: {quality:.0f}/100"] if quality is not None else ["Quality data unavailable"]
+        catalyst_ev = [f"Catalyst score: {catalyst_val:.0f}/100"] if catalyst_val is not None else ["Catalyst data unavailable"]
+        risks = [f"Risk penalty: {risk_val:.0f}/100"]
         missing = json.loads(scores.get("missing_data_json") or "[]") if isinstance(
             scores.get("missing_data_json"), str
         ) else []

@@ -21,15 +21,7 @@ _DEFAULT_WEIGHTS = {
     "risk_penalty": 0.20,
 }
 
-# Maps feature_group → score_dimension
-_GROUP_MAP = {
-    "valuation": "cheap",
-    "quality": "quality",
-    "catalyst": "catalyst",
-    "momentum": "momentum",
-    "sentiment": "sentiment",
-    "risk": "risk",
-}
+_POSITIVE_COMPONENTS = ("cheap", "quality", "catalyst", "momentum", "sentiment")
 
 
 def _avg_scores(conn: duckdb.DuckDBPyConnection, run_id: str, ticker: str, group: str) -> float | None:
@@ -44,6 +36,25 @@ def _avg_scores(conn: duckdb.DuckDBPyConnection, run_id: str, ticker: str, group
     if not rows:
         return None
     return sum(r[0] for r in rows) / len(rows)
+
+
+def _compute_coverage(component_scores: dict[str, float | None], weights: dict) -> float:
+    """Fraction of positive-weight component mass that is observed (non-null)."""
+    total_positive = sum(weights.get(k, 0.0) for k in _POSITIVE_COMPONENTS)
+    if total_positive == 0:
+        return 0.0
+    observed = sum(weights.get(k, 0.0) for k, v in component_scores.items() if v is not None)
+    return observed / total_positive
+
+
+def _confidence_label(coverage: float) -> str:
+    if coverage >= 0.80:
+        return "high"
+    if coverage >= 0.50:
+        return "medium"
+    if coverage > 0:
+        return "low"
+    return "none"
 
 
 def compute_scores(
@@ -64,47 +75,50 @@ def compute_scores(
         sentiment = _avg_scores(conn, run_id, ticker, "sentiment")
         risk_raw = _avg_scores(conn, run_id, ticker, "risk")
 
-        missing = []
-        if cheap is None:
-            missing.append("valuation")
-        if quality is None:
-            missing.append("quality")
-        if catalyst is None:
-            missing.append("catalyst")
+        component_scores = {
+            "cheap": cheap,
+            "quality": quality,
+            "catalyst": catalyst,
+            "momentum": momentum,
+            "sentiment": sentiment,
+        }
 
-        # Use 50 as neutral default for missing non-risk scores
-        cheap_s = cheap if cheap is not None else 50.0
-        quality_s = quality if quality is not None else 50.0
-        catalyst_s = catalyst if catalyst is not None else 0.0
-        momentum_s = momentum if momentum is not None else 50.0
-        sentiment_s = sentiment if sentiment is not None else 50.0
+        # Unknown is not neutral. Only sum observed components.
+        # Missing components contribute 0 to the positive sum (they are simply absent).
+        # Risk is the one component that defaults when absent (it is a penalty, not a signal).
+        total = 0.0
+        for key, score in component_scores.items():
+            if score is not None:
+                total += weights.get(key, 0.0) * score
+
         risk_s = risk_raw if risk_raw is not None else 50.0
-
-        w = weights
-        total = (
-            w.get("cheap", 0.30) * cheap_s
-            + w.get("quality", 0.25) * quality_s
-            + w.get("catalyst", 0.25) * catalyst_s
-            + w.get("momentum", 0.10) * momentum_s
-            + w.get("sentiment", 0.10) * sentiment_s
-            - w.get("risk_penalty", 0.20) * risk_s
-        )
+        total -= weights.get("risk_penalty", 0.20) * risk_s
         total = max(0.0, min(100.0, total))
 
-        insufficient = len(missing) >= 2
-        tier = assign_tier(total, catalyst_s, risk_s, missing_fields=insufficient)
+        # Coverage = fraction of positive-weight components with real data
+        coverage = _compute_coverage(component_scores, weights)
+        confidence = _confidence_label(coverage)
+
+        missing = [k for k, v in component_scores.items() if v is None]
+        tier = assign_tier(total, catalyst, risk_s, coverage=coverage)
 
         score_data = {
-            "cheap_score": cheap_s,
-            "quality_score": quality_s,
-            "catalyst_score": catalyst_s,
-            "momentum_score": momentum_s,
-            "sentiment_score": sentiment_s,
+            "cheap_score": cheap,
+            "quality_score": quality,
+            "catalyst_score": catalyst,
+            "momentum_score": momentum,
+            "sentiment_score": sentiment,
             "risk_penalty": risk_s,
             "total_score": total,
+            "coverage": coverage,
         }
-        why_ranked = generate_why_ranked(score_data) if tier != "Reject" else ""
-        why_rejected = generate_why_rejected(score_data, missing) if tier == "Reject" else ""
+
+        if tier not in ("Reject", "Incomplete"):
+            why_ranked = generate_why_ranked(score_data)
+            why_rejected = ""
+        else:
+            why_ranked = ""
+            why_rejected = generate_why_rejected(score_data, missing, tier=tier)
 
         try:
             conn.execute(
@@ -119,15 +133,15 @@ def compute_scores(
                 ON CONFLICT (run_id, ticker) DO UPDATE SET
                     total_score = excluded.total_score,
                     tier = excluded.tier,
+                    confidence = excluded.confidence,
                     why_ranked = excluded.why_ranked,
                     why_rejected = excluded.why_rejected
                 """,
                 [
                     uuid.uuid4().hex[:16], run_id, ticker, as_of,
-                    cheap_s, quality_s, catalyst_s,
-                    momentum_s, sentiment_s, risk_s,
-                    total, tier,
-                    "low" if missing else "medium",
+                    cheap, quality, catalyst,
+                    momentum, sentiment, risk_s,
+                    total, tier, confidence,
                     why_ranked, why_rejected,
                     json.dumps(missing) if missing else None,
                     datetime.utcnow(),

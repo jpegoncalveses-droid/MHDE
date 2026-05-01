@@ -220,6 +220,69 @@ def _data_quality_warnings(conn: duckdb.DuckDBPyConnection, run_id: str) -> list
     return warnings
 
 
+def _deduplicate_sections(sections: dict[str, list[dict]]) -> None:
+    """Remove tickers that already appear in an earlier section. Modifies in-place."""
+    seen: set[str] = set()
+    order = ["top_10", "near_b", "high_catalyst", "cheap_quality_no_catalyst", "rejected_worth_inspecting"]
+    for key in order:
+        if key not in sections:
+            continue
+        deduped = []
+        for c in sections[key]:
+            t = c.get("ticker")
+            if t and t not in seen:
+                seen.add(t)
+                deduped.append(c)
+        sections[key] = deduped
+
+
+def _scoring_diagnostics(conn: duckdb.DuckDBPyConnection, run_id: str) -> dict:
+    total_row = conn.execute("SELECT COUNT(*) FROM scores WHERE run_id=?", [run_id]).fetchone()
+    total = total_row[0] if total_row else 0
+    if total == 0:
+        return {"total": 0}
+
+    def _count(where: str) -> int:
+        r = conn.execute(f"SELECT COUNT(*) FROM scores WHERE run_id=? AND {where}", [run_id]).fetchone()
+        return r[0] if r else 0
+
+    null_cheap = _count("cheap_score IS NULL")
+    null_quality = _count("quality_score IS NULL")
+    null_catalyst = _count("catalyst_score IS NULL")
+    null_momentum = _count("momentum_score IS NULL")
+    null_sentiment = _count("sentiment_score IS NULL")
+    low_conf = _count("confidence IN ('low', 'none')")
+    incomplete = _count("tier='Incomplete'")
+    n_reject = _count("tier='Reject'")
+    n_c = _count("tier='C'")
+    n_b = _count("tier='B'")
+    n_a = _count("tier='A'")
+
+    score_rows = conn.execute(
+        "SELECT ROUND(total_score, 0) AS s, COUNT(*) FROM scores WHERE run_id=? GROUP BY s ORDER BY s", [run_id]
+    ).fetchall()
+    score_dist = {str(int(r[0])): r[1] for r in score_rows if r[0] is not None}
+
+    return {
+        "total_scored": total,
+        "tier_a": n_a,
+        "tier_b": n_b,
+        "tier_c": n_c,
+        "tier_incomplete": incomplete,
+        "tier_reject": n_reject,
+        "low_confidence_count": low_conf,
+        "low_confidence_pct": round(low_conf / total * 100, 1),
+        "null_rates": {
+            "cheap": round(null_cheap / total * 100, 1),
+            "quality": round(null_quality / total * 100, 1),
+            "catalyst": round(null_catalyst / total * 100, 1),
+            "momentum": round(null_momentum / total * 100, 1),
+            "sentiment": round(null_sentiment / total * 100, 1),
+        },
+        "score_distribution": score_dist,
+    }
+
+
 def build_packet(conn: duckdb.DuckDBPyConnection, run_id: str | None = None) -> ReviewPacket:
     if run_id is None:
         run_id = _get_latest_run_id(conn)
@@ -241,7 +304,7 @@ def build_packet(conn: duckdb.DuckDBPyConnection, run_id: str | None = None) -> 
     meta["score_min"] = float(row[1]) if row and row[1] is not None else None
     meta["score_max"] = float(row[2]) if row and row[2] is not None else None
 
-    for tier in ("A", "B", "C", "Reject"):
+    for tier in ("A", "B", "C", "Incomplete", "Reject"):
         r = conn.execute("SELECT COUNT(*) FROM scores WHERE run_id=? AND tier=?", [run_id, tier]).fetchone()
         meta[f"tier_{tier.lower()}"] = r[0] if r else 0
 
@@ -267,7 +330,11 @@ def build_packet(conn: duckdb.DuckDBPyConnection, run_id: str | None = None) -> 
     if rejected_fallback:
         warnings.append(f"No rejected candidates with strong component scores. Showing top-{_REJECTED_FALLBACK} rejected by total_score.")
 
+    # Deduplicate tickers across sections — each ticker appears only once, in its first section
+    _deduplicate_sections(sections)
+
     meta["data_quality_warnings"] = _data_quality_warnings(conn, run_id)
+    meta["scoring_diagnostics"] = _scoring_diagnostics(conn, run_id)
 
     return ReviewPacket(
         run_id=run_id,
@@ -337,10 +404,11 @@ def _render_markdown(packet: ReviewPacket) -> str:
         "",
         f"| Tier | Count |",
         f"|------|-------|",
-        f"| A    | {m.get('tier_a', 0)} |",
-        f"| B    | {m.get('tier_b', 0)} |",
-        f"| C    | {m.get('tier_c', 0)} |",
-        f"| Reject | {m.get('tier_reject', 0)} |",
+        f"| A          | {m.get('tier_a', 0)} |",
+        f"| B          | {m.get('tier_b', 0)} |",
+        f"| C          | {m.get('tier_c', 0)} |",
+        f"| Incomplete | {m.get('tier_incomplete', 0)} |",
+        f"| Reject     | {m.get('tier_reject', 0)} |",
         "",
     ]
 
@@ -356,6 +424,41 @@ def _render_markdown(packet: ReviewPacket) -> str:
         for w in dqw:
             lines.append(f"- {w}")
         lines.append("")
+
+    diag = m.get("scoring_diagnostics", {})
+    if diag:
+        nr = diag.get("null_rates", {})
+        lines += [
+            "## Scoring Diagnostics",
+            "",
+            f"| Metric | Value |",
+            f"|--------|-------|",
+            f"| Total scored | {diag.get('total_scored', '?')} |",
+            f"| A-tier | {diag.get('tier_a', 0)} |",
+            f"| B-tier | {diag.get('tier_b', 0)} |",
+            f"| C-tier | {diag.get('tier_c', 0)} |",
+            f"| Incomplete | {diag.get('tier_incomplete', 0)} |",
+            f"| Reject | {diag.get('tier_reject', 0)} |",
+            f"| Low/no confidence | {diag.get('low_confidence_count', 0)} ({diag.get('low_confidence_pct', 0):.1f}%) |",
+            "",
+            "**Component null rates (% of scored tickers with no data):**",
+            "",
+            f"| Component | Null rate |",
+            f"|-----------|-----------|",
+            f"| Valuation (cheap) | {nr.get('cheap', '?')}% |",
+            f"| Quality | {nr.get('quality', '?')}% |",
+            f"| Catalyst | {nr.get('catalyst', '?')}% |",
+            f"| Momentum | {nr.get('momentum', '?')}% |",
+            f"| Sentiment | {nr.get('sentiment', '?')}% |",
+            "",
+        ]
+        dist = diag.get("score_distribution", {})
+        if dist:
+            lines += ["**Score distribution (total_score buckets):**", ""]
+            for score_val, cnt in sorted(dist.items(), key=lambda x: int(x[0])):
+                bar = "█" * min(cnt, 40)
+                lines.append(f"  {score_val:>3}: {bar} ({cnt})")
+            lines.append("")
 
     lines += [
         "---",

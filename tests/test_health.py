@@ -16,6 +16,7 @@ from health.operational import (
     check_finra_data,
     check_universe_vs_config,
     check_a_tier_candidates,
+    check_score_distribution_quality,
 )
 
 
