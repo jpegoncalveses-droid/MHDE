@@ -1,5 +1,18 @@
 # MHDE Known Limitations — v1
 
+## What MHDE Is and Is Not
+
+MHDE is a **current-evidence hypothesis discovery engine**. It surfaces companies showing
+observable signals worth investigating today. It is not:
+
+- A historical pattern-matching engine (it does not back-fit to past price movements)
+- A trading system (it does not execute, simulate, or recommend positions)
+- A research guarantee (candidates are research leads, not buy/sell recommendations)
+
+Historical outcomes (`candidate_outcomes`) are used to evaluate whether the current-evidence
+logic is useful. They are not used as model inputs, and past performance does not guarantee
+future results.
+
 ## Universe Selection
 
 - Universe is name-filtered only. Excludes ETFs, funds, trusts, and non-equity names by keyword.

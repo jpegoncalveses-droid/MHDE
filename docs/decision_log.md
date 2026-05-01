@@ -24,6 +24,22 @@ XGBoost smoke, governance, pipelines, and Streamlit dashboard.
 
 - Dashboard authentication is enabled by default for VPS deployment.
 
+## 2026-05-01 — Predictive philosophy clarified
+
+**Decision:** MHDE is a current-evidence hypothesis discovery engine, not a historical
+pattern-matching engine.
+
+**Rationale:** MHDE must be predictive, but prediction is grounded in observable signals
+as of today — filings, fundamentals, prices, short interest, events. It does not back-fit
+scoring rules to historical price returns. Historical outcomes (candidate_outcomes) are used
+to evaluate whether the current-evidence logic produces useful hypotheses, not to derive the
+logic itself.
+
+**Impact:** Updated `docs/learning_loop.md`, `docs/scorecard_v1.md`, `docs/model_governance.md`,
+and `docs/known_limitations.md` to state this explicitly. Governance now requires that any
+model trained on historical returns must be validated for current-evidence generalization before
+influencing production outputs.
+
 ## 2026-05-01 — Learning loop added
 
 Added the MHDE learning loop: candidate review table, scorecard experiment table, structured

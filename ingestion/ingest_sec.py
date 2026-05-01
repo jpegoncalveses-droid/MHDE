@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 import requests
 
@@ -14,6 +14,34 @@ logger = logging.getLogger("mhde.ingestion.sec_edgar")
 _BASE = "https://data.sec.gov"
 _USER_AGENT = "MHDE-Engine contact@example.com"
 _RATE_DELAY = 0.12
+
+# Only the concepts MHDE scoring actually uses.
+# Fetching all ~1300 us-gaap concepts per company makes 500-company ingestion
+# take 2+ hours and stores millions of unused rows.
+_WANTED_CONCEPTS = frozenset([
+    "Revenues",
+    "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "SalesRevenueNet",
+    "NetIncomeLoss",
+    "NetIncomeLossAvailableToCommonStockholdersBasic",
+    "CommonStockSharesOutstanding",
+    "CommonStockSharesIssued",
+    "EarningsPerShareBasic",
+    "EarningsPerShareDiluted",
+    "AssetsCurrent",
+    "LiabilitiesCurrent",
+    "StockholdersEquity",
+    "CashAndCashEquivalentsAtCarryingValue",
+    "LongTermDebt",
+    "OperatingIncomeLoss",
+    "GrossProfit",
+    "ResearchAndDevelopmentExpense",
+    "CapitalExpenditureDiscontinuedOperations",
+    "PaymentsToAcquirePropertyPlantAndEquipment",
+])
+
+# Skip fundamentals re-fetch for companies ingested within this window
+_FUNDAMENTALS_FRESHNESS_DAYS = 7
 
 
 class SECIngestor(BaseIngestor):
@@ -42,9 +70,22 @@ class SECIngestor(BaseIngestor):
             return row[0].lstrip("0") or None
         return None
 
+    def _fundamentals_are_fresh(self, conn, ticker: str) -> bool:
+        cutoff = date.today() - timedelta(days=_FUNDAMENTALS_FRESHNESS_DAYS)
+        row = conn.execute(
+            "SELECT MAX(created_at) FROM fundamentals_raw WHERE ticker = ?", [ticker]
+        ).fetchone()
+        if not row or not row[0]:
+            return False
+        last = row[0]
+        if hasattr(last, "date"):
+            last = last.date()
+        return last >= cutoff
+
     def ingest(self, conn, run_id, tickers):
         started = datetime.utcnow()
         attempted = inserted = failed = 0
+        skipped_fresh = 0
 
         for ticker in tickers:
             cik = self._get_cik(conn, ticker)
@@ -53,7 +94,7 @@ class SECIngestor(BaseIngestor):
 
             cik_padded = cik.zfill(10)
 
-            # Fetch recent filings
+            # Fetch recent filings (always — we want fresh filing dates)
             data = self._get(f"{_BASE}/submissions/CIK{cik_padded}.json")
             if data:
                 recent = data.get("filings", {}).get("recent", {})
@@ -84,11 +125,18 @@ class SECIngestor(BaseIngestor):
                     except Exception:
                         failed += 1
 
-            # Fetch XBRL facts (fundamentals)
+            # Fetch XBRL fundamentals — skip if fresh data already exists
+            if self._fundamentals_are_fresh(conn, ticker):
+                skipped_fresh += 1
+                continue
+
             facts = self._get(f"{_BASE}/api/xbrl/companyfacts/CIK{cik_padded}.json")
             if facts:
                 us_gaap = facts.get("facts", {}).get("us-gaap", {})
                 for concept, concept_data in us_gaap.items():
+                    # Only ingest concepts MHDE actually uses
+                    if concept not in _WANTED_CONCEPTS:
+                        continue
                     units = concept_data.get("units", {})
                     for unit_type, entries in units.items():
                         for entry in entries[-4:]:  # keep last 4 periods
@@ -115,6 +163,10 @@ class SECIngestor(BaseIngestor):
                                 inserted += 1
                             except Exception:
                                 failed += 1
+
+        if skipped_fresh:
+            logger.info("SEC: skipped %d tickers with fresh fundamentals (<%dd old)",
+                        skipped_fresh, _FUNDAMENTALS_FRESHNESS_DAYS)
 
         self.log_run(conn, run_id, "filings+fundamentals", "ok",
                      attempted, inserted, failed, started_at=started)

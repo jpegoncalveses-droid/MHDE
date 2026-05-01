@@ -1,5 +1,18 @@
 # MHDE Learning Loop
 
+## What MHDE Is
+
+**MHDE is a current-evidence hypothesis discovery engine, not a historical pattern-matching engine.**
+
+MHDE reads available data today — filings, fundamentals, prices, macro context, short interest,
+events — and asks: "given what is observable right now, does this company show signs worth
+investigating?" It does not back-fit rules to historical price patterns. It does not claim that
+patterns from the past guarantee future returns.
+
+Historical outcomes (candidate_outcomes) and human reviews (candidate_reviews) are used to
+evaluate whether the current-evidence logic is useful — not to produce forecasts, and not to
+guarantee future performance.
+
 ## Principle
 
 MHDE learns whether it is surfacing **useful market hypotheses**, not merely whether a ticker

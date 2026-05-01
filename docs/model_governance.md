@@ -1,5 +1,20 @@
 # MHDE Model Governance
 
+## Predictive Philosophy
+
+**MHDE is a current-evidence hypothesis discovery engine, not a historical pattern-matching engine.**
+
+Predictions are based on observable signals as of today. MHDE does not fit rules to past price
+returns and project them forward. Historical outcomes (forward returns, drawdowns) are used to
+evaluate whether the current-evidence logic is producing useful hypotheses — they are feedback
+on logic quality, not the basis of the logic itself.
+
+Any model (including XGBoost) that is trained on historical forward returns is subject to the
+following governance constraints before it may influence production outputs. Using past returns
+as a training target does not mean the engine is pattern-matching — but it does require
+validation that the model has learned generalizable current-evidence signals, not price
+artifacts.
+
 ## XGBoost Ranker — Quarantine Policy
 
 The XGBoost model (`models/xgboost_ranker.py`) is experimental. It is subject to the following

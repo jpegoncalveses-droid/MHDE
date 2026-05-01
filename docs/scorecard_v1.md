@@ -1,5 +1,16 @@
 # MHDE Scorecard v1
 
+## Design Philosophy
+
+**MHDE is a current-evidence engine.** Every component in the scorecard is grounded in
+observable data as of today: current valuation signals, most recent fundamentals, recent filings,
+current prices, current short interest. The scorecard does not use historical return patterns
+as inputs. It does not back-fit weights to past price movements.
+
+The weights in v1 are heuristic starting points, not statistically derived. They will be
+revised through the experiment/approval process once sufficient review and outcome data
+has accumulated.
+
 ## Formula
 
 ```

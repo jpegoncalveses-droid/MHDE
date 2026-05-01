@@ -197,7 +197,7 @@ def _record_pipeline_run(conn: duckdb.DuckDBPyConnection, s: RunSummary) -> None
                 uuid.uuid4().hex[:16], s.run_id, s.run_date,
                 s.universe_size, s.sources_succeeded, s.sources_failed, s.sources_skipped,
                 s.candidates_scored, s.tier_a, s.tier_b, s.tier_c, s.rejected,
-                s.alerts_sent, s.llm_provider, s.report_path,
+                s.alerts_sent, s.llm_provider, str(s.report_path) if s.report_path else None,
                 json.dumps(s.warnings), datetime.utcnow(),
             ],
         )
