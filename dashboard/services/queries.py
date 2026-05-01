@@ -335,7 +335,7 @@ def get_hypotheses(conn: duckdb.DuckDBPyConnection, limit: int = 200) -> list[di
     rows = conn.execute(
         """
         SELECT hypothesis_id, ticker, company_name, tier, total_score, thesis,
-               why_now, confidence, status, review_status, created_at
+               why_now, NULL::DOUBLE AS confidence, status, review_status, created_at
         FROM hypotheses
         ORDER BY created_at DESC, total_score DESC
         LIMIT ?

@@ -38,10 +38,12 @@ def run_all(
     cfg: dict,
     target: str = "all",
     dry_run: bool = False,
+    run_id: str | None = None,
 ) -> dict:
     """Run all active ingestors. Returns summary of results."""
     sources_cfg = cfg.get("sources", {}).get("sources", {})
-    run_id = uuid.uuid4().hex[:16]
+    if not run_id:
+        run_id = uuid.uuid4().hex[:16]
 
     # Build/refresh universe first
     logger.info("Building universe (run_id=%s)...", run_id)

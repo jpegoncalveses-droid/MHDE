@@ -13,9 +13,14 @@ def write_weekly_review(
     conn: duckdb.DuckDBPyConnection,
     output_path: str | Path,
 ) -> Path:
-    path = Path(output_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
     today = date.today()
+    output_dir = Path(output_path)
+    if output_dir.suffix == "":
+        output_dir.mkdir(parents=True, exist_ok=True)
+        path = output_dir / f"weekly_review_{today.isoformat()}.md"
+    else:
+        path = output_dir
+        path.parent.mkdir(parents=True, exist_ok=True)
     week_ago = today - timedelta(days=7)
 
     # Score distribution over past week

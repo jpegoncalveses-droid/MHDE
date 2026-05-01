@@ -62,18 +62,10 @@ def run(cfg: dict, conn: duckdb.DuckDBPyConnection) -> RunSummary:
     # Step 2: Ingest data
     try:
         from ingestion.orchestrator import run_all
-        run_all(conn, cfg, target="all", dry_run=False)
-        source_rows = conn.execute(
-            """
-            SELECT status, COUNT(*) FROM source_runs
-            WHERE run_id = ? GROUP BY status
-            """,
-            [run_id],
-        ).fetchall()
-        status_counts = dict(source_rows)
-        summary.sources_succeeded = status_counts.get("ok", 0)
-        summary.sources_failed = status_counts.get("error", 0)
-        summary.sources_skipped = status_counts.get("stub", 0) + status_counts.get("skipped", 0)
+        ingest_result = run_all(conn, cfg, target="all", dry_run=False, run_id=run_id)
+        summary.sources_succeeded = ingest_result.get("sources_succeeded", 0)
+        summary.sources_failed = ingest_result.get("sources_failed", 0)
+        summary.sources_skipped = ingest_result.get("sources_skipped", 0)
     except Exception as exc:
         logger.error("Ingestion failed: %s", exc)
         summary.warnings.append(f"Ingestion error: {exc}")
@@ -164,7 +156,11 @@ def run(cfg: dict, conn: duckdb.DuckDBPyConnection) -> RunSummary:
     try:
         from reports.markdown_report import write_daily_report
         from reports.json_report import write_json_report
-        report_path = write_daily_report(run_id, conn, "outputs")
+        report_path = write_daily_report(run_id, conn, "outputs", run_summary={
+            "universe_size": summary.universe_size,
+            "sources_succeeded": summary.sources_succeeded,
+            "alerts_sent": summary.alerts_sent,
+        })
         write_json_report(run_id, conn, "outputs")
         summary.report_path = report_path
     except Exception as exc:

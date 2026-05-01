@@ -23,9 +23,14 @@ def write_daily_report(
     output_path: str | Path,
     run_summary: dict | None = None,
 ) -> Path:
-    path = Path(output_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
     today = date.today().isoformat()
+    output_dir = Path(output_path)
+    if output_dir.suffix == "":
+        output_dir.mkdir(parents=True, exist_ok=True)
+        path = output_dir / f"daily_radar_{today}.md"
+    else:
+        path = output_dir
+        path.parent.mkdir(parents=True, exist_ok=True)
     run_summary = run_summary or {}
 
     # Fetch data
