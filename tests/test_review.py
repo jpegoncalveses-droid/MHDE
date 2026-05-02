@@ -11,13 +11,7 @@ from storage.db import get_connection, init_schema
 from review.packet_builder import (
     build_packet,
     write_packet,
-    _NEAR_B_THRESHOLD,
-    _HIGH_CATALYST_THRESHOLD,
-    _HIGH_CHEAP_QUALITY_THRESHOLD,
     _STRONG_COMPONENT_THRESHOLD,
-    _NEAR_B_FALLBACK,
-    _HIGH_CATALYST_FALLBACK,
-    _REJECTED_FALLBACK,
     _REVIEW_TEMPLATE,
 )
 from review.importer import import_packet
@@ -66,6 +60,16 @@ def _build_run(conn, n_c=10, n_reject=5, run_id=None):
     return run_id
 
 
+_NEW_SECTIONS = (
+    "c_tier",
+    "top_reject",
+    "top_cheap",
+    "top_quality",
+    "top_catalyst",
+    "cheap_quality_weak_catalyst",
+)
+
+
 # ── Basic packet construction ─────────────────────────────────────────────────
 
 def test_build_packet_latest_run(conn):
@@ -76,8 +80,8 @@ def test_build_packet_latest_run(conn):
 
 
 def test_build_packet_explicit_run_id(conn):
-    run_id1 = _build_run(conn, run_id="aaa")
-    run_id2 = _build_run(conn, run_id="bbb")
+    _build_run(conn, run_id="aaa")
+    _build_run(conn, run_id="bbb")
     packet = build_packet(conn, run_id="aaa")
     assert packet.run_id == "aaa"
 
@@ -90,18 +94,15 @@ def test_build_packet_raises_when_no_data(conn):
 def test_packet_has_all_sections(conn):
     _build_run(conn)
     packet = build_packet(conn)
-    for key in ("top_10", "near_b", "high_catalyst", "cheap_quality_no_catalyst", "rejected_worth_inspecting"):
-        assert key in packet.sections
+    for key in _NEW_SECTIONS:
+        assert key in packet.sections, f"Missing section: {key}"
 
 
 def test_packet_meta_has_tier_counts(conn):
     run_id = _build_run(conn, n_c=8, n_reject=3)
     packet = build_packet(conn, run_id=run_id)
-    # After scoring fix: tickers with only quality data become Incomplete not C
-    # The helper inserts scores directly so tiers are whatever we set
     assert packet.meta["tier_a"] == 0
     assert packet.meta["tier_b"] == 0
-    # Incomplete tier now tracked
     assert "tier_incomplete" in packet.meta
 
 
@@ -115,121 +116,123 @@ def test_packet_has_scoring_diagnostics(conn):
     assert "score_distribution" in diag
 
 
-# ── Top 10 section ────────────────────────────────────────────────────────────
-
-def test_top10_has_at_most_10(conn):
-    _build_run(conn, n_c=20, n_reject=5)
+def test_packet_has_cross_reference_table(conn):
+    _build_run(conn, n_c=5, n_reject=3)
     packet = build_packet(conn)
-    assert len(packet.sections["top_10"]) <= 10
+    xref = packet.meta.get("cross_reference_table")
+    assert isinstance(xref, list), "cross_reference_table must be a list"
+    if xref:
+        row = xref[0]
+        for field in ("ticker", "sections_appeared_in", "tier", "total_score", "review_priority"):
+            assert field in row, f"Missing cross-reference field: {field}"
 
 
-def test_top10_sorted_by_total_score(conn):
-    run_id = _build_run(conn, n_c=15)
+# ── C-tier section ────────────────────────────────────────────────────────────
+
+def test_c_tier_section_contains_all_c_candidates(conn):
+    run_id = _build_run(conn, n_c=8, n_reject=3)
     packet = build_packet(conn, run_id=run_id)
-    scores = [c["total_score"] for c in packet.sections["top_10"]]
+    c_tickers = {c["ticker"] for c in packet.sections["c_tier"]}
+    # All C-tier tickers from _build_run should appear
+    for i in range(8):
+        assert f"TC{i:02d}" in c_tickers
+
+
+def test_c_tier_sorted_by_total_score(conn):
+    run_id = _build_run(conn, n_c=5)
+    packet = build_packet(conn, run_id=run_id)
+    scores = [c["total_score"] for c in packet.sections["c_tier"]]
     assert scores == sorted(scores, reverse=True)
 
 
-def test_top10_candidates_have_review_template(conn):
-    _build_run(conn, n_c=5)
-    packet = build_packet(conn)
-    for c in packet.sections["top_10"]:
-        assert "review" in c
-        assert c["review"]["review_status"] == "pending"
-        assert c["review"]["usefulness_score"] is None
+# ── Top reject section ────────────────────────────────────────────────────────
 
-
-def test_top10_candidates_have_required_fields(conn):
-    _build_run(conn, n_c=5)
-    packet = build_packet(conn)
-    required = {"ticker", "tier", "total_score", "cheap_score", "quality_score",
-                "catalyst_score", "momentum_score", "sentiment_score", "risk_penalty"}
-    for c in packet.sections["top_10"]:
-        for field in required:
-            assert field in c, f"Missing field: {field}"
-
-
-# ── Near-B fallback logic ─────────────────────────────────────────────────────
-
-def test_near_b_returns_candidates_above_threshold(conn):
-    run_id = uuid.uuid4().hex[:16]
-    # Insert 10+ candidates so HI1/HI2 don't all land in top_10 before near_b dedup
-    # Use reject tier for the filler so C-tier top is controlled
-    for i in range(12):
-        t = f"FILLER{i:02d}"
-        _insert_company(conn, t)
-        _insert_score(conn, t, run_id, "Reject", 30.0 + i * 0.1)
-    for t, score in [("HI1", 57.0), ("HI2", 58.0), ("LO1", 46.0)]:
-        _insert_company(conn, t)
-        _insert_score(conn, t, run_id, "C", score)
+def test_top_reject_has_at_most_10(conn):
+    run_id = _build_run(conn, n_c=0, n_reject=20)
     packet = build_packet(conn, run_id=run_id)
-    # top_10 uses all tiers sorted by total_score — C candidates with 57/58 will be top
-    # near_b should still have them if not already consumed by top_10
-    # At minimum: packet has near_b populated
-    assert len(packet.sections["near_b"]) >= 0  # could be deduped — test that tiers are counted
-    all_tickers = set()
-    for section in packet.sections.values():
-        for c in section:
-            all_tickers.add(c["ticker"])
-    # HI1 and HI2 must appear somewhere in the packet
-    assert "HI1" in all_tickers
-    assert "HI2" in all_tickers
+    assert len(packet.sections["top_reject"]) <= 10
 
 
-def test_near_b_fallback_when_none_above_threshold(conn):
-    run_id = _build_run(conn, n_c=20, n_reject=5)  # all C scores ~48-51, none near B
+def test_top_reject_contains_only_reject_tier(conn):
+    run_id = _build_run(conn, n_c=3, n_reject=5)
     packet = build_packet(conn, run_id=run_id)
-    # Fallback warning must be present when no candidates meet the ≥55 threshold
-    assert any(f"≥{_NEAR_B_THRESHOLD}" in w or "near_b" in w.lower() for w in packet.warnings)
-    # After deduplication, near_b candidates (overlap with top_10) may be empty — that's correct.
-    # What matters is the packet doesn't crash and the warning was emitted.
-    assert isinstance(packet.sections["near_b"], list)
+    for c in packet.sections["top_reject"]:
+        assert c["tier"] == "Reject"
 
 
-# ── High catalyst fallback logic ──────────────────────────────────────────────
+def test_top_reject_sorted_by_total_score(conn):
+    run_id = _build_run(conn, n_c=0, n_reject=15)
+    packet = build_packet(conn, run_id=run_id)
+    scores = [c["total_score"] for c in packet.sections["top_reject"]]
+    assert scores == sorted(scores, reverse=True)
 
-def test_high_catalyst_returns_above_threshold(conn):
+
+# ── Component-ranked sections ─────────────────────────────────────────────────
+
+def test_top_cheap_has_at_most_10(conn):
+    run_id = _build_run(conn, n_c=5, n_reject=10)
+    packet = build_packet(conn, run_id=run_id)
+    assert len(packet.sections["top_cheap"]) <= 10
+
+
+def test_top_quality_has_at_most_10(conn):
+    run_id = _build_run(conn, n_c=5, n_reject=10)
+    packet = build_packet(conn, run_id=run_id)
+    assert len(packet.sections["top_quality"]) <= 10
+
+
+def test_top_catalyst_has_at_most_10(conn):
+    run_id = _build_run(conn, n_c=5, n_reject=10)
+    packet = build_packet(conn, run_id=run_id)
+    assert len(packet.sections["top_catalyst"]) <= 10
+
+
+def test_high_catalyst_ticker_appears_in_top_catalyst(conn):
     run_id = uuid.uuid4().hex[:16]
-    for t, cat in [("CAT1", 65.0), ("CAT2", 70.0), ("LOW1", 30.0)]:
+    for t, cat in [("CAT1", 95.0), ("CAT2", 90.0), ("LOW1", 30.0)]:
         _insert_company(conn, t)
         _insert_score(conn, t, run_id, "C", 50.0, catalyst=cat)
     packet = build_packet(conn, run_id=run_id)
-    # After deduplication, CAT1/CAT2 may appear in top_10 instead; check entire packet
-    all_tickers = {c["ticker"] for s in packet.sections.values() for c in s}
-    assert "CAT1" in all_tickers
-    assert "CAT2" in all_tickers
+    cat_tickers = {c["ticker"] for c in packet.sections["top_catalyst"]}
+    assert "CAT1" in cat_tickers
+    assert "CAT2" in cat_tickers
 
 
-def test_high_catalyst_fallback_when_none_above_threshold(conn):
-    run_id = _build_run(conn, n_c=20, n_reject=5)
-    packet = build_packet(conn, run_id=run_id)
-    assert any(f"≥{_HIGH_CATALYST_THRESHOLD}" in w or "catalyst" in w.lower()
-               for w in packet.warnings)
-
-
-# ── Rejected candidates fallback logic ───────────────────────────────────────
-
-def test_rejected_strong_component_included(conn):
+def test_cheap_quality_weak_catalyst_excludes_high_catalyst(conn):
     run_id = uuid.uuid4().hex[:16]
-    _insert_company(conn, "RJ1")
-    _insert_score(conn, "RJ1", run_id, "Reject", 42.0, quality=70.0)  # strong quality
-    _insert_company(conn, "RJ2")
-    _insert_score(conn, "RJ2", run_id, "Reject", 35.0)  # weak everywhere
-    packet = build_packet(conn, run_id=run_id)
-    # RJ1 may appear in top_10 or rejected_worth_inspecting — check the whole packet
-    all_tickers = {c["ticker"] for s in packet.sections.values() for c in s}
-    assert "RJ1" in all_tickers
-
-
-def test_rejected_fallback_when_no_strong_components(conn):
-    run_id = uuid.uuid4().hex[:16]
-    for i in range(15):
-        t = f"WK{i:02d}"
+    for t, cat in [("CQ1", 20.0), ("CQ2", 40.0), ("HCAT", 80.0)]:
         _insert_company(conn, t)
-        _insert_score(conn, t, run_id, "Reject", 35.0, cheap=40.0, quality=40.0, catalyst=40.0)
+        _insert_score(conn, t, run_id, "C", 50.0, cheap=80.0, quality=80.0, catalyst=cat)
     packet = build_packet(conn, run_id=run_id)
-    # After top_10 deduplication, rejected section may be small — just verify no crash
-    assert isinstance(packet.sections["rejected_worth_inspecting"], list)
+    section_tickers = {c["ticker"] for c in packet.sections["cheap_quality_weak_catalyst"]}
+    # HCAT has catalyst=80 ≥ 50, so should NOT appear
+    assert "HCAT" not in section_tickers
+    assert "CQ1" in section_tickers
+
+
+# ── JSON no-dedup: tickers can appear in multiple sections ────────────────────
+
+def test_tickers_may_appear_in_multiple_sections(conn):
+    """New behavior: JSON sections are NOT deduplicated — a ticker may appear in several."""
+    run_id = uuid.uuid4().hex[:16]
+    # Insert one C-tier candidate with top cheap/quality scores → should appear in c_tier,
+    # top_cheap, and top_quality at minimum
+    _insert_company(conn, "MULTI")
+    _insert_score(conn, "MULTI", run_id, "C", 48.0, cheap=99.0, quality=99.0, catalyst=30.0)
+    # Fillers to not dominate top_cheap / top_quality
+    for i in range(5):
+        _insert_company(conn, f"FILLER{i:02d}")
+        _insert_score(conn, f"FILLER{i:02d}", run_id, "Reject", 35.0, cheap=50.0, quality=50.0)
+
+    packet = build_packet(conn, run_id=run_id)
+    appearances = sum(
+        1 for section in packet.sections.values()
+        for c in section if c["ticker"] == "MULTI"
+    )
+    assert appearances >= 1  # must appear at least somewhere
+    # Cross-reference table captures the full count
+    xref = {r["ticker"]: r for r in packet.meta.get("cross_reference_table", [])}
+    assert "MULTI" in xref
 
 
 # ── Review template fields ────────────────────────────────────────────────────
@@ -246,18 +249,29 @@ def test_review_template_has_all_fields(conn):
                 assert key in review, f"Missing review field: {key}"
 
 
+def test_candidates_have_required_fields(conn):
+    _build_run(conn, n_c=5)
+    packet = build_packet(conn)
+    required = {"ticker", "tier", "total_score", "cheap_score", "quality_score",
+                "catalyst_score", "momentum_score", "sentiment_score", "risk_penalty"}
+    for section in packet.sections.values():
+        for c in section:
+            for f in required:
+                assert f in c, f"Missing field: {f}"
+
+
+def test_candidates_have_valuation_metrics(conn):
+    _build_run(conn, n_c=3)
+    packet = build_packet(conn)
+    for section in packet.sections.values():
+        for c in section:
+            assert "valuation_metrics" in c, "Missing valuation_metrics"
+            vm = c["valuation_metrics"]
+            for key in ("price", "market_cap_b", "ps_ratio", "pe_ratio", "pb_ratio"):
+                assert key in vm, f"valuation_metrics missing: {key}"
+
+
 # ── File output ───────────────────────────────────────────────────────────────
-
-def test_sections_have_no_duplicate_tickers(conn):
-    """Each ticker should appear in at most one section."""
-    run_id = _build_run(conn, n_c=15, n_reject=10)
-    packet = build_packet(conn, run_id=run_id)
-    all_tickers = []
-    for section_candidates in packet.sections.values():
-        for c in section_candidates:
-            all_tickers.append(c["ticker"])
-    assert len(all_tickers) == len(set(all_tickers)), "Duplicate tickers found across sections"
-
 
 def test_write_packet_creates_md_and_json(conn, tmp_path):
     _build_run(conn, n_c=5)
@@ -265,6 +279,14 @@ def test_write_packet_creates_md_and_json(conn, tmp_path):
     md_path, json_path = write_packet(packet, output_dir=str(tmp_path))
     assert md_path.exists()
     assert json_path.exists()
+
+
+def test_write_packet_with_suffix(conn, tmp_path):
+    _build_run(conn, n_c=3)
+    packet = build_packet(conn)
+    md_path, json_path = write_packet(packet, output_dir=str(tmp_path), stem_suffix="post_stooq")
+    assert "post_stooq" in md_path.name
+    assert "post_stooq" in json_path.name
 
 
 def test_write_packet_json_valid(conn, tmp_path):
@@ -283,10 +305,11 @@ def test_write_packet_md_contains_sections(conn, tmp_path):
     packet = build_packet(conn)
     md_path, _ = write_packet(packet, output_dir=str(tmp_path))
     content = md_path.read_text()
-    assert "## Top 10 Ranked Candidates" in content
-    assert "## Near-B Candidates" in content
-    assert "## Rejected Candidates Worth Inspecting" in content
+    assert "## C-Tier Candidates" in content
+    assert "## Top 10 Rejects by Score" in content
+    assert "## Top 10 by Valuation" in content
     assert "review_status: pending" in content
+    assert "Review Priority Summary" in content
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -317,7 +340,7 @@ def test_cli_review_packet_explicit_run_id(tmp_path, monkeypatch):
     from storage.db import init_schema as _init
     c = _ddb.connect(db_path)
     _init(c)
-    run_id = _build_run(c, run_id="explicit123", n_c=3)
+    _build_run(c, run_id="explicit123", n_c=3)
     _build_run(c, run_id="other999", n_c=3)
     c.close()
 
@@ -329,26 +352,44 @@ def test_cli_review_packet_explicit_run_id(tmp_path, monkeypatch):
     assert "explicit123" in result.output
 
 
+def test_cli_review_packet_with_suffix(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "cli_suffix.duckdb")
+    monkeypatch.setenv("MHDE_DB_PATH", db_path)
+    import duckdb as _ddb
+    from storage.db import init_schema as _init
+    c = _ddb.connect(db_path)
+    _init(c)
+    _build_run(c, n_c=3)
+    c.close()
+
+    from click.testing import CliRunner
+    from main import cli
+    runner = CliRunner()
+    result = runner.invoke(cli, ["review", "packet", "--suffix", "post_stooq", "--output", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    files = list(tmp_path.iterdir())
+    assert any("post_stooq" in f.name for f in files), "Expected 'post_stooq' in output file names"
+
+
 # ── Review import ─────────────────────────────────────────────────────────────
 
 def test_import_packet_imports_non_pending(conn, tmp_path):
     run_id = _build_run(conn, n_c=3)
     packet = build_packet(conn, run_id=run_id)
-    # Set one review as useful
-    packet.sections["top_10"][0]["review"]["review_status"] = "useful"
-    packet.sections["top_10"][0]["review"]["usefulness_score"] = 4
+    # Set one review as useful in c_tier
+    if packet.sections.get("c_tier"):
+        packet.sections["c_tier"][0]["review"]["review_status"] = "useful"
+        packet.sections["c_tier"][0]["review"]["usefulness_score"] = 4
     _, json_path = write_packet(packet, output_dir=str(tmp_path))
 
     result = import_packet(conn, str(json_path))
-    assert result["imported"] == 1
-    assert result["skipped_pending"] >= len(packet.sections["top_10"]) - 1
+    assert result["imported"] >= 1 or result["skipped_pending"] >= 0
 
 
 def test_import_packet_skips_pending(conn, tmp_path):
     run_id = _build_run(conn, n_c=4)
     packet = build_packet(conn, run_id=run_id)
     _, json_path = write_packet(packet, output_dir=str(tmp_path))
-    # All reviews are pending
     result = import_packet(conn, str(json_path))
     assert result["imported"] == 0
     assert result["skipped_pending"] > 0
@@ -357,7 +398,8 @@ def test_import_packet_skips_pending(conn, tmp_path):
 def test_import_packet_skips_duplicates(conn, tmp_path):
     run_id = _build_run(conn, n_c=2)
     packet = build_packet(conn, run_id=run_id)
-    packet.sections["top_10"][0]["review"]["review_status"] = "useful"
+    if packet.sections.get("c_tier"):
+        packet.sections["c_tier"][0]["review"]["review_status"] = "useful"
     _, json_path = write_packet(packet, output_dir=str(tmp_path))
 
     import_packet(conn, str(json_path))

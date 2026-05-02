@@ -106,10 +106,21 @@ def run():
 
 
 @run.command("daily-radar")
-def daily_radar():
+@click.option("--max-symbols", default=None, type=int,
+              help="Cap universe to N symbols for dev/test runs.")
+@click.option("--skip-sec-fundamentals", is_flag=True,
+              help="Skip XBRL fundamentals fetch (use cached data).")
+@click.option("--incremental", is_flag=True, default=True,
+              help="Skip sources with fresh data (default: on).")
+def daily_radar(max_symbols, skip_sec_fundamentals, incremental):
     """Run the full daily opportunity discovery pipeline."""
     from pipelines.daily_radar import run as pipeline_run
     cfg, conn = _engine_setup()
+    if max_symbols is not None:
+        cfg.setdefault("universe", {})["max_symbols"] = max_symbols
+    if skip_sec_fundamentals:
+        cfg.setdefault("ingestion", {})["skip_sec_fundamentals"] = True
+    cfg.setdefault("ingestion", {})["incremental"] = incremental
     try:
         pipeline_run(cfg, conn)
     finally:
@@ -318,26 +329,33 @@ def review():
 @review.command("packet")
 @click.option("--run-id", default=None, help="Run ID to build packet from (default: latest).")
 @click.option("--output", default="outputs", help="Output directory.")
-def review_packet(run_id, output):
+@click.option("--suffix", default="", help="Optional suffix for output filename (e.g. 'post_stooq').")
+def review_packet(run_id, output, suffix):
     """Generate a structured review packet for candidate quality assessment."""
     from review.packet_builder import build_packet, write_packet
 
     cfg, conn = _engine_setup()
     try:
         packet = build_packet(conn, run_id=run_id)
-        md_path, json_path = write_packet(packet, output_dir=output)
+        md_path, json_path = write_packet(packet, output_dir=output, stem_suffix=suffix)
         click.echo(f"\nReview packet generated")
         click.echo(f"  Run ID:     {packet.run_id}")
         click.echo(f"  Run date:   {packet.run_date}")
         click.echo(f"  Markdown:   {md_path}")
         click.echo(f"  JSON:       {json_path}")
-        m = packet.meta
-        click.echo(f"\nCandidates included:")
-        click.echo(f"  Top 10:                 {len(packet.sections.get('top_10', []))}")
-        click.echo(f"  Near-B:                 {len(packet.sections.get('near_b', []))}")
-        click.echo(f"  High catalyst:          {len(packet.sections.get('high_catalyst', []))}")
-        click.echo(f"  Cheap+quality no cat:   {len(packet.sections.get('cheap_quality_no_catalyst', []))}")
-        click.echo(f"  Rejected worth inspect: {len(packet.sections.get('rejected_worth_inspecting', []))}")
+
+        xref = packet.meta.get("cross_reference_table", [])
+        high = [r for r in xref if r["review_priority"] == "high"]
+        med  = [r for r in xref if r["review_priority"] == "medium"]
+        c_tickers = [c["ticker"] for c in packet.sections.get("c_tier", [])]
+
+        click.echo(f"\nSection counts:")
+        for key, candidates in packet.sections.items():
+            click.echo(f"  {key:<35} {len(candidates)}")
+        click.echo(f"\nReview priority: high={len(high)}, medium={len(med)}, low={len(xref)-len(high)-len(med)}")
+        if c_tickers:
+            click.echo(f"C-tier: {', '.join(c_tickers)}")
+
         if packet.warnings:
             click.echo("\nWarnings:")
             for w in packet.warnings:
@@ -363,6 +381,514 @@ def review_import(packet_path):
         click.echo(f"  Failed:           {result['failed']}")
     finally:
         conn.close()
+
+
+@cli.group()
+def missed():
+    """Missed-opportunity detection, investigation, and reporting."""
+
+
+@missed.command("detect")
+@click.option("--lookback-days", default=90, type=int,
+              help="Days of price history to scan (default: 90).")
+@click.option("--persist", is_flag=True, default=True,
+              help="Write detected events to DB (default: on).")
+def missed_detect(lookback_days, persist):
+    """Scan prices_daily for significant price moves and detect missed opportunities."""
+    from missed.detector import detect_missed_opportunities, persist_events, cluster_events
+
+    cfg, conn = _engine_setup()
+    try:
+        events = detect_missed_opportunities(conn, lookback_days=lookback_days)
+        clustered = cluster_events(events)
+        unique_tickers = len({e["ticker"] for e in clustered})
+        click.echo(
+            f"Detected {len(events)} raw events → {len(clustered)} clustered "
+            f"({unique_tickers} unique tickers)."
+        )
+        if persist and clustered:
+            n = persist_events(conn, clustered)
+            click.echo(f"Persisted {n} events to missed_opportunity_events.")
+        for e in clustered[:10]:
+            click.echo(
+                f"  {e['ticker']}: {e['event_type']} +{e['return_value']:.1f}% "
+                f"on {e['event_date']} (tier_before={e.get('tier_before_event') or 'N/A'})"
+            )
+    finally:
+        conn.close()
+
+
+@missed.command("investigate")
+def missed_investigate():
+    """Investigate all pending missed-opportunity events and assign root causes."""
+    from missed.investigator import investigate_all_pending
+
+    cfg, conn = _engine_setup()
+    try:
+        n = investigate_all_pending(conn)
+        click.echo(f"Investigated {n} missed-opportunity events.")
+    finally:
+        conn.close()
+
+
+@missed.command("report")
+@click.option("--output", default="outputs", help="Output directory.")
+def missed_report(output):
+    """Generate markdown + JSON missed-opportunity report."""
+    from missed.report import generate_report
+
+    cfg, conn = _engine_setup()
+    try:
+        md_path, json_path = generate_report(conn, output_dir=output)
+        click.echo(f"Missed opportunities report written:")
+        click.echo(f"  Markdown: {md_path}")
+        click.echo(f"  JSON:     {json_path}")
+    finally:
+        conn.close()
+
+
+@missed.command("run")
+@click.option("--lookback-days", default=90, type=int,
+              help="Days of price history to scan.")
+@click.option("--output", default="outputs", help="Output directory.")
+def missed_run(lookback_days, output):
+    """Run full missed-opportunity pipeline: detect → investigate → report."""
+    from missed.detector import detect_missed_opportunities, persist_events
+    from missed.investigator import investigate_all_pending
+    from missed.attribution import propose_experiments_from_misses
+    from missed.report import generate_report
+
+    from missed.detector import cluster_events
+
+    cfg, conn = _engine_setup()
+    try:
+        events = detect_missed_opportunities(conn, lookback_days=lookback_days)
+        clustered = cluster_events(events)
+        unique_tickers = len({e["ticker"] for e in clustered})
+        click.echo(
+            f"Detected {len(events)} raw events → {len(clustered)} clustered "
+            f"({unique_tickers} unique tickers)."
+        )
+        persist_events(conn, clustered)
+
+        n_investigated = investigate_all_pending(conn)
+        click.echo(f"Investigated {n_investigated} events.")
+
+        proposals = propose_experiments_from_misses(conn)
+        if proposals:
+            click.echo(f"Proposed {len(proposals)} experiments from attribution.")
+
+        md_path, json_path = generate_report(conn, output_dir=output)
+        click.echo(f"Report: {md_path}")
+    finally:
+        conn.close()
+
+
+@missed.command("pilot")
+@click.option("--n", default=100, type=int, show_default=True,
+              help="Number of events to sample.")
+@click.option("--output-dir", default="data/processed", show_default=True,
+              help="Directory for pilot artifacts.")
+@click.option("--mock/--no-mock", default=True, show_default=True,
+              help="Use mock classifier (default). --no-mock requires OPENAI_API_KEY.")
+@click.option("--provider", default="openai", show_default=True,
+              help="LLM provider to use when --no-mock is set.")
+@click.option("--model", default="gpt-4o-mini", show_default=True,
+              help="Model name for the real provider.")
+@click.option("--cache-path", default="data/processed/catalyst_llm_cache.jsonl",
+              show_default=True, help="Path to JSONL cache file.")
+@click.option("--refresh-cache", is_flag=True, default=False,
+              help="Re-classify all events, ignoring the existing cache.")
+@click.option("--report", is_flag=True, default=False,
+              help="Generate markdown + CSV review report after classification.")
+@click.option("--rpm-limit", default=None, type=int,
+              help="Max requests/minute for real provider. Default: 3 for OpenAI.")
+@click.option("--include-non-text-forms", is_flag=True, default=False,
+              help="Include Form 4, 144, SC 13G etc. in filing context (diagnostic mode).")
+@click.option("--allow-empty-source-run", is_flag=True, default=False,
+              help="Continue even if no events have resolvable source text.")
+@click.option("--report-only", is_flag=True, default=False,
+              help="Skip sampling/LLM; re-validate and regenerate report from existing enriched JSONL.")
+@click.option("--input-enriched", default=None, type=str,
+              help="Path to existing enriched JSONL (required with --report-only).")
+@click.option("--input-sample", default=None, type=str,
+              help="Path to existing sample JSONL (used with --report-only for event metadata).")
+@click.option("--target", default="standard",
+              type=click.Choice(["standard", "near-threshold"]), show_default=True,
+              help="Sampling mode: 'near-threshold' selects Reject tickers with score 40–44.9.")
+def missed_pilot(n, output_dir, mock, provider, model, cache_path, refresh_cache,
+                 report, rpm_limit, include_non_text_forms, allow_empty_source_run,
+                 report_only, input_enriched, input_sample, target):
+    """LLM catalyst enrichment pilot — samples text-evidence events, classifies, writes JSONL."""
+    import json
+    import os
+    from missed.catalyst_sampler import sample_pilot_events
+    from missed.catalyst_classifier import classify_events, revalidate_enrichments
+    from missed.catalyst_providers import CatalystProviderError, preflight_check
+    from missed.catalyst_schema import CatalystEnrichment, validate_enrichment
+    from missed.catalyst_source_resolver import (
+        compute_source_coverage, enrich_events_with_source,
+    )
+
+    # ── --report-only: re-validate existing enriched JSONL, regenerate report ──
+    if report_only:
+        if not input_enriched:
+            click.echo("Error: --report-only requires --input-enriched <path>", err=True)
+            sys.exit(1)
+        if not os.path.exists(input_enriched):
+            click.echo(f"Error: enriched file not found: {input_enriched}", err=True)
+            sys.exit(1)
+
+        with open(input_enriched) as f:
+            raw_enrichments = [json.loads(line) for line in f if line.strip()]
+
+        revalidated = revalidate_enrichments(raw_enrichments)
+        click.echo(f"Revalidated {len(revalidated)} enriched records from {input_enriched}")
+        score_affecting = sum(1 for r in revalidated if r.get("should_affect_score"))
+        weak = sum(1 for r in revalidated if r.get("validation_status") == "weak_evidence")
+        neutral = sum(1 for r in revalidated if r.get("validation_status") == "neutral_sentiment")
+        click.echo(f"  final_should_affect_score=True : {score_affecting}")
+        click.echo(f"  weak_evidence (overridden)     : {weak}")
+        if neutral:
+            click.echo(f"  neutral_sentiment (overridden) : {neutral}")
+
+        # Load sample for report metadata (optional)
+        sample_for_report: list[dict] = []
+        sample_src = input_sample or os.path.join(
+            os.path.dirname(input_enriched), "catalyst_llm_pilot_sample.jsonl"
+        )
+        if os.path.exists(sample_src):
+            with open(sample_src) as f:
+                sample_for_report = [json.loads(line) for line in f if line.strip()]
+        else:
+            sample_for_report = [{"event_id": r["event_id"]} for r in revalidated]
+
+        # Convert dicts → CatalystEnrichment for report
+        enriched_objs = []
+        for r in revalidated:
+            try:
+                enriched_objs.append(CatalystEnrichment(**{
+                    k: v for k, v in r.items() if k != "_cache_key"
+                }))
+            except Exception:
+                pass  # skip malformed records
+
+        os.makedirs(output_dir, exist_ok=True)
+        from missed.catalyst_report import generate_pilot_report
+        inferred_mode = "near-threshold" if "near_threshold" in (input_enriched or "") else target
+        md_path, csv_path = generate_pilot_report(
+            sample_for_report, enriched_objs, output_dir, target_mode=inferred_mode,
+        )
+        click.echo(f"\nReport: {md_path}")
+        click.echo(f"Review: {csv_path}")
+        return
+
+    cfg, conn = _engine_setup()
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Preflight for real provider: fail before touching data or the cache.
+        if not mock:
+            api_key = (
+                os.environ.get("OPENAI_API_KEY")
+                or (cfg or {}).get("llm", {}).get("openai_api_key", "")
+            )
+            try:
+                preflight_check(api_key)
+            except CatalystProviderError as e:
+                click.echo(f"Error: {e}", err=True)
+                sys.exit(1)
+
+        # Default to 3 RPM for OpenAI if caller did not specify.
+        effective_rpm = rpm_limit
+        if not mock and provider == "openai" and rpm_limit is None:
+            effective_rpm = 3
+
+        if target == "near-threshold":
+            from missed.catalyst_sampler import sample_near_threshold_events
+            click.echo(
+                f"\nNear-threshold pilot mode: selecting Reject tickers with score 40.0–44.9"
+            )
+            sample = sample_near_threshold_events(
+                conn, n=n, include_non_text_forms=include_non_text_forms
+            )
+            if not sample:
+                click.echo(
+                    "No near-threshold candidates found. "
+                    "Run 'missed run' first, or check that scores exist for your universe."
+                )
+                return
+            click.echo(
+                f"Near-threshold candidates: {len(sample)} events "
+                f"(score range: "
+                f"{min(e['current_score'] for e in sample):.1f}–"
+                f"{max(e['current_score'] for e in sample):.1f})"
+            )
+        else:
+            sample = sample_pilot_events(conn, n=n, include_non_text_forms=include_non_text_forms)
+            if not sample:
+                click.echo("No text-evidence events found. Run 'missed run' first.")
+                return
+
+        # Resolve source text for each event before writing sample or calling LLM.
+        sample = enrich_events_with_source(sample)
+
+        # ── Preflight source coverage report ──────────────────────────────────
+        cov = compute_source_coverage(sample)
+        click.echo(f"\nSource coverage preflight ({cov['sampled_count']} events sampled):")
+        click.echo(f"  Resolvable (≥{200} chars)  : {cov['resolvable_source_count']}")
+        click.echo(f"  Non-text filings          : {cov['skipped_non_text_form_count']}")
+        click.echo(f"  Missing CIK               : {cov['missing_cik_count']}")
+        click.echo(f"  Missing accession number  : {cov['missing_accession_count']}")
+        click.echo(f"  Missing primary doc       : {cov['missing_primary_doc_count']}")
+        click.echo(f"  PDF (not supported)       : {cov['pdf_not_supported_count']}")
+        click.echo(f"  Fetch errors              : {cov['fetch_error_count']}")
+
+        if cov["resolvable_source_count"] == 0:
+            if not allow_empty_source_run:
+                click.echo(
+                    "\nError: 0 events have resolvable source text. "
+                    "LLM calls would produce only hallucinated evidence.\n"
+                    "Check sampler diagnostics above. "
+                    "Use --allow-empty-source-run to proceed anyway (diagnostic only).",
+                    err=True,
+                )
+                sys.exit(1)
+            click.echo(
+                "\nWarning: 0 resolvable sources. Proceeding due to --allow-empty-source-run.",
+                err=True,
+            )
+
+        # File prefix differs per target mode to avoid clobbering standard pilot artifacts
+        file_prefix = "catalyst_near_threshold" if target == "near-threshold" else "catalyst_llm_pilot"
+
+        sample_path = os.path.join(output_dir, f"{file_prefix}_sample.jsonl")
+        with open(sample_path, "w") as f:
+            for record in sample:
+                row = {k: (v.isoformat() if hasattr(v, "isoformat") else v)
+                       for k, v in record.items()}
+                f.write(json.dumps(row) + "\n")
+        click.echo(f"Sample: {len(sample)} events → {sample_path}")
+
+        try:
+            enriched = classify_events(
+                sample, use_mock=mock, provider_name=provider, model=model,
+                cache_path=cache_path, refresh_cache=refresh_cache, cfg=cfg,
+                rpm_limit=effective_rpm,
+            )
+        except CatalystProviderError as e:
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(1)
+
+        invalid = 0
+        errors_count = 0
+        enriched_path = os.path.join(output_dir, f"{file_prefix}_enriched.jsonl")
+        with open(enriched_path, "w") as f:
+            for ce in enriched:
+                d = ce.to_dict()
+                is_valid, errs = validate_enrichment(d)
+                if not is_valid:
+                    invalid += 1
+                if "[ERROR]" in ce.reasoning_short:
+                    errors_count += 1
+                f.write(ce.to_jsonl_line() + "\n")
+
+        provider_label = "mock" if mock else f"{provider}/{model}"
+        click.echo(f"Enriched: {len(enriched)} events [{provider_label}] → {enriched_path}")
+        if invalid:
+            click.echo(f"  Warning: {invalid} records failed schema validation")
+        if errors_count:
+            click.echo(f"  Classification errors: {errors_count} (see [ERROR] in reasoning_short)")
+
+        catalyst_counts: dict[str, int] = {}
+        score_affecting = 0
+        for ce in enriched:
+            catalyst_counts[ce.catalyst_type] = catalyst_counts.get(ce.catalyst_type, 0) + 1
+            if ce.should_affect_score:
+                score_affecting += 1
+
+        click.echo(f"\nCatalyst breakdown ({provider_label}):")
+        for ctype, count in sorted(catalyst_counts.items(), key=lambda x: -x[1]):
+            click.echo(f"  {ctype:<25} {count}")
+        click.echo(f"\nshould_affect_score=True (final actionable): {score_affecting}/{len(enriched)}")
+        click.echo("\nNote: scores table is unchanged. This is a read-only pilot.")
+
+        # ── Near-threshold shadow scoring projection ───────────────────────────
+        if target == "near-threshold":
+            from missed.catalyst_shadow_scorer import compute_shadow_scores
+            scores_for_shadow = [
+                {
+                    "run_id": e.get("current_run_id", ""),
+                    "ticker": e["ticker"],
+                    "total_score": float(e.get("current_score") or 0.0),
+                    "catalyst_score": float(e.get("current_catalyst_score") or 30.0),
+                    "risk_penalty": float(e.get("current_risk_penalty") or 20.0),
+                    "tier": e.get("current_tier", "Reject"),
+                }
+                for e in sample if e.get("current_score") is not None
+            ]
+            enrichment_dicts = [ce.to_dict() for ce in enriched]
+            shadow_rows = compute_shadow_scores(enrichment_dicts, scores_for_shadow)
+            crossings = [r for r in shadow_rows if r.get("tier_move")]
+            adj_count = sum(1 for r in shadow_rows if r["llm_adjustment"] != 0.0)
+            click.echo(f"\nShadow scoring projection (near-threshold):")
+            click.echo(f"  Tickers with LLM adjustment   : {adj_count}")
+            click.echo(f"  Potential tier crossings       : {len(crossings)}")
+            for r in crossings:
+                click.echo(
+                    f"    {r['ticker']}: {r['tier_move']}"
+                    f" (score {r['original_total']:.1f} → {r['shadow_total']:.1f})"
+                )
+            if not crossings:
+                click.echo("    (none — no actionable catalysts crossed the C-tier threshold)")
+
+        if report:
+            from missed.catalyst_report import generate_pilot_report
+            md_path, csv_path = generate_pilot_report(
+                sample, enriched, output_dir,
+                target_mode=target,
+            )
+            click.echo(f"\nReport: {md_path}")
+            click.echo(f"Review: {csv_path}")
+    finally:
+        conn.close()
+
+
+@missed.command("shadow")
+@click.option("--input-enriched", default="data/processed/catalyst_llm_pilot_enriched.jsonl",
+              show_default=True, help="Path to enriched JSONL.")
+@click.option("--output-dir", default="data/processed", show_default=True,
+              help="Directory for shadow score artifacts.")
+def missed_shadow(input_enriched, output_dir):
+    """Shadow scoring experiment: measure LLM catalyst impact without touching production scores."""
+    import json
+    import os
+    from missed.catalyst_classifier import revalidate_enrichments
+    from missed.catalyst_shadow_scorer import compute_shadow_scores, generate_shadow_report
+
+    if not os.path.exists(input_enriched):
+        click.echo(f"Error: enriched file not found: {input_enriched}", err=True)
+        sys.exit(1)
+
+    with open(input_enriched) as f:
+        raw = [json.loads(line) for line in f if line.strip()]
+    enrichments = revalidate_enrichments(raw)
+    click.echo(f"Loaded {len(enrichments)} enriched records (revalidated)")
+
+    cfg, conn = _engine_setup()
+    try:
+        cur = conn.execute(
+            "SELECT run_id, ticker, total_score, catalyst_score, risk_penalty, tier, confidence"
+            " FROM scores"
+            " ORDER BY run_id DESC, total_score DESC"
+        )
+        cols = [d[0] for d in cur.description]
+        scores = [dict(zip(cols, row)) for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+    click.echo(f"Loaded {len(scores)} score rows from DB")
+    if not scores:
+        click.echo("Warning: no scores in DB — run 'main.py run daily-radar' first.", err=True)
+
+    rows = compute_shadow_scores(enrichments, scores)
+    actionable = sum(1 for r in rows if r["llm_adjustment"] != 0.0)
+    crossings = sum(1 for r in rows if r["shadow_tier"] != r["original_tier"])
+    click.echo(f"Shadow rows: {len(rows)} | with adjustment: {actionable} | tier crossings: {crossings}")
+
+    md_path, csv_path = generate_shadow_report(rows, output_dir)
+    click.echo(f"\nReport: {md_path}")
+    click.echo(f"Rows:   {csv_path}")
+
+
+@missed.command("daily-catalyst-queue")
+@click.option("--n", default=50, show_default=True, help="Max near-threshold events to sample.")
+@click.option("--score-min", default=40.0, show_default=True, help="Lower bound of near-threshold score range.")
+@click.option("--score-max", default=44.9, show_default=True, help="Upper bound of near-threshold score range.")
+@click.option("--max-events-per-ticker", default=1, show_default=True,
+              help="Max events to keep per ticker (1 = one unique ticker per slot).")
+@click.option("--mock/--no-mock", default=True, show_default=True,
+              help="Use mock provider (no API calls). Pass --no-mock to use real LLM.")
+@click.option("--provider", default="nvidia", show_default=True,
+              help="LLM provider (nvidia or openai). Only used with --no-mock.")
+@click.option("--model", default="meta/llama-3.3-70b-instruct", show_default=True,
+              help="Model name. Only used with --no-mock.")
+@click.option("--output-dir", default="data/processed", show_default=True,
+              help="Directory for queue artifacts.")
+@click.option("--cache-path", default=None, help="Path to JSONL cache file (avoids re-classifying).")
+@click.option("--refresh-cache", is_flag=True, default=False, help="Ignore existing cache entries.")
+@click.option("--rpm-limit", default=None, type=int, help="Max requests/min for real provider.")
+def missed_daily_catalyst_queue(n, score_min, score_max, max_events_per_ticker, mock, provider, model,
+                                output_dir, cache_path, refresh_cache, rpm_limit):
+    """Build the daily shadow catalyst review queue for near-threshold Reject tickers.
+
+    Samples tickers with score in [score_min, score_max] and tier=Reject, resolves
+    SEC source text, classifies with LLM, revalidates sufficiency/sentiment rules,
+    and projects shadow score changes.  No production scores are written.
+
+    Artifacts written to output_dir:
+      daily_catalyst_queue.md
+      daily_catalyst_queue.csv
+      daily_catalyst_queue_enriched.jsonl
+    """
+    import os
+    from missed.catalyst_queue import build_daily_queue, generate_queue_report
+
+    cfg, conn = _engine_setup()
+    provider_label = "mock" if mock else provider
+    try:
+        click.echo(
+            f"Building daily catalyst queue: n={n}, score {score_min:.1f}–{score_max:.1f}"
+            f", provider={provider_label}"
+        )
+        entries, revalidated, metadata = build_daily_queue(
+            conn,
+            n=n,
+            score_min=score_min,
+            score_max=score_max,
+            max_events_per_ticker=max_events_per_ticker,
+            use_mock=mock,
+            provider_name=provider,
+            model=model,
+            cache_path=cache_path,
+            refresh_cache=refresh_cache,
+            cfg=cfg,
+            rpm_limit=rpm_limit,
+        )
+    finally:
+        conn.close()
+
+    if not entries:
+        click.echo("No near-threshold tickers found — nothing to queue.")
+        return
+
+    metadata["score_min"] = score_min
+    metadata["score_max"] = score_max
+    metadata["provider"] = provider_label
+
+    promoted = [e for e in entries if e["final_should_affect_score"]]
+    crossings = [e for e in promoted if e.get("tier_move") and "→C" in e["tier_move"]]
+    click.echo(f"Sampled: {metadata.get('sampled', 0)} events")
+    click.echo(f"Source available: {metadata.get('source_available', 0)}/{metadata.get('sampled', 0)}")
+    click.echo(f"Valid + actionable: {len(promoted)}")
+    click.echo(f"Reject→C crossings: {len(crossings)}")
+
+    for r in crossings:
+        click.echo(
+            f"  {r['ticker']:6}: {r['original_tier']}→{r['shadow_tier']}"
+            f" ({r['original_score']:.1f} → {r['shadow_score']:.1f}, {r['llm_adjustment']:+.1f})"
+        )
+    if not crossings:
+        click.echo("  (none in this run)")
+
+    os.makedirs(output_dir, exist_ok=True)
+    md_path, csv_path, jsonl_path = generate_queue_report(
+        entries, revalidated, output_dir, run_metadata=metadata
+    )
+    click.echo(f"\nReport : {md_path}")
+    click.echo(f"CSV    : {csv_path}")
+    click.echo(f"JSONL  : {jsonl_path}")
+    click.echo("\nNote: scores table is unchanged. This is a shadow-only analysis.")
 
 
 @cli.group(invoke_without_command=True)

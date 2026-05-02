@@ -26,8 +26,8 @@ def test_tier_b():
 
 
 def test_tier_b_requires_coverage():
-    # Below B coverage threshold
-    assert assign_tier(65, 40, 30, coverage=0.50) == "Incomplete"
+    # Only 1 observed component → Incomplete, even with a high score
+    assert assign_tier(65, 40, 30, observed_count=1) == "Incomplete"
 
 
 def test_tier_c():
@@ -43,12 +43,13 @@ def test_reject_high_risk():
 
 
 def test_incomplete_when_low_coverage():
-    # coverage < _COVERAGE_THRESHOLD → Incomplete regardless of score
-    assert assign_tier(70, 60, 30, coverage=_COVERAGE_THRESHOLD - 0.01) == "Incomplete"
+    # 1 observed component → Incomplete regardless of score
+    assert assign_tier(70, 60, 30, observed_count=1) == "Incomplete"
 
 
 def test_incomplete_no_data():
-    assert assign_tier(0, 0, 50, coverage=0.0) == "Incomplete"
+    # 0 observed components → Incomplete
+    assert assign_tier(0, 0, 50, observed_count=0) == "Incomplete"
 
 
 def test_high_risk_always_rejects():
@@ -99,14 +100,12 @@ def test_compute_scores_with_full_features(conn):
 
 
 def test_compute_scores_missing_data_gives_incomplete(conn):
-    """A ticker with only quality data and no price/momentum/sentiment → Incomplete."""
+    """A ticker with only 1 observed component → Incomplete (< 2 required)."""
     from datetime import date
     conn.execute("INSERT INTO companies (ticker, company_name) VALUES ('QUAL', 'Quality Corp')")
-    # Only quality + catalyst + risk — no valuation, no momentum, no sentiment
+    # Only quality + risk — 1 positive component observed (quality only)
     for group, name, value, score in [
         ("quality", "net_income_positive", 1000000.0, 80.0),
-        ("quality", "revenue_growth_yoy", 15.0, 75.0),
-        ("catalyst", "catalyst_score", 1.0, 20.0),
         ("risk", "risk_penalty", 25.0, 25.0),
     ]:
         conn.execute(
@@ -116,13 +115,36 @@ def test_compute_scores_missing_data_gives_incomplete(conn):
             [f"{group}_{name}", date.today(), group, name, value, score],
         )
     compute_scores(conn, "run002", ["QUAL"], {})
-    row = conn.execute("SELECT tier, cheap_score, momentum_score, sentiment_score FROM scores WHERE run_id='run002' AND ticker='QUAL'").fetchone()
+    row = conn.execute("SELECT tier, cheap_score, catalyst_score, momentum_score, sentiment_score FROM scores WHERE run_id='run002' AND ticker='QUAL'").fetchone()
     assert row is not None
     assert row[0] == "Incomplete"
     # Component scores stay null when no data — no neutral defaults
     assert row[1] is None, "cheap_score should be null, not 50"
-    assert row[2] is None, "momentum_score should be null, not 50"
-    assert row[3] is None, "sentiment_score should be null, not 50"
+    assert row[2] is None, "catalyst_score should be null, not 50"
+    assert row[3] is None, "momentum_score should be null, not 50"
+    assert row[4] is None, "sentiment_score should be null, not 50"
+
+
+def test_two_components_not_incomplete(conn):
+    """A ticker with quality + catalyst (2 components) → NOT Incomplete, gets real tier."""
+    from datetime import date
+    conn.execute("INSERT INTO companies (ticker, company_name) VALUES ('TWO', 'Two Corp')")
+    for group, name, value, score in [
+        ("quality", "net_income_positive", 1000000.0, 80.0),
+        ("quality", "revenue_growth_yoy", 15.0, 75.0),
+        ("catalyst", "catalyst_score", 1.0, 20.0),
+        ("risk", "risk_penalty", 25.0, 25.0),
+    ]:
+        conn.execute(
+            """INSERT INTO features (id, run_id, ticker, as_of_date, feature_group, feature_name,
+                feature_value, feature_score)
+               VALUES (?, 'run009', 'TWO', ?, ?, ?, ?, ?)""",
+            [f"{group}_{name}", date.today(), group, name, value, score],
+        )
+    compute_scores(conn, "run009", ["TWO"], {})
+    row = conn.execute("SELECT tier FROM scores WHERE run_id='run009' AND ticker='TWO'").fetchone()
+    assert row is not None
+    assert row[0] != "Incomplete", "quality+catalyst (2 components) should not be Incomplete"
 
 
 def test_missing_components_not_defaulted_to_50(conn):
