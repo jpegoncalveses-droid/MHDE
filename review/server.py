@@ -278,6 +278,24 @@ details summary{cursor:pointer;color:#555;}
 .doc-content pre code{background:none;padding:0;font-size:inherit;}
 .doc-content .tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:8px 0;}
 .doc-content ul,.doc-content ol{padding-left:1.4em;}
+.pred-card{border-left:4px solid #bbb;background:#fff;border-radius:4px;padding:12px 14px;margin:10px 0;box-shadow:0 1px 3px rgba(0,0,0,.07);}
+.pred-card-review{border-color:#43a047;}.pred-card-watch{border-color:#fb8c00;}
+.pred-card-investigate{border-color:#1565c0;}.pred-card-ignore{border-color:#9e9e9e;}
+.pred-header{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px;margin-bottom:6px;}
+.pred-ticker{font-size:1.15rem;font-weight:700;}
+.pred-score{font-weight:600;color:#1565c0;}
+.pred-action{padding:2px 8px;border-radius:3px;font-size:.73rem;font-weight:700;}
+.pred-action-review{background:#e8f5e9;color:#2e7d32;}.pred-action-watch{background:#fff3e0;color:#e65100;}
+.pred-action-investigate{background:#e3f2fd;color:#0d47a1;}.pred-action-ignore{background:#f5f5f5;color:#757575;}
+.pred-dir-bullish{color:#2e7d32;font-weight:600;}.pred-dir-bearish{color:#c62828;font-weight:600;}.pred-dir-neutral{color:#757575;}
+.pred-timeframe{font-size:.78rem;color:#888;}
+.pred-summary{font-size:.9rem;font-weight:500;margin:4px 0 8px;}
+.pred-meta{display:flex;flex-wrap:wrap;gap:14px;margin:6px 0;}
+.pred-col .pred-label{display:block;font-size:.68rem;color:#999;text-transform:uppercase;letter-spacing:.04em;}
+.pred-col .pred-val{font-size:.83rem;font-weight:500;}
+.pred-reason{font-size:.83rem;padding:5px 8px;background:#f9f9f9;border-radius:3px;margin:6px 0;}
+.pred-checks{margin:4px 0 4px 16px;font-size:.82rem;padding:0;}
+.pred-risk{font-size:.8rem;color:#666;margin-top:4px;}
 """
 
 _BASE_TMPL = """<!DOCTYPE html>
@@ -526,6 +544,119 @@ def _doc_download(key: str) -> "Response | tuple[str, int]":
     )
 
 
+# ── Prediction cards ──────────────────────────────────────────────────────────
+
+_ACTION_LABEL = {
+    "accept": ("Review", "review"),
+    "watch": ("Watch", "watch"),
+    "investigate": ("Investigate", "investigate"),
+    "reject": ("Ignore", "ignore"),
+}
+
+_DIR_ARROW = {"bullish": "↑", "bearish": "↓", "neutral": "→", "mixed": "↔"}
+
+
+def _not_yet_reason(e: dict) -> str:
+    parts: list[str] = []
+    pir = (e.get("priced_in_risk") or "").lower()
+    if pir in ("high", "medium"):
+        parts.append(f"priced-in risk is {pir}")
+    try:
+        d = int(float(e.get("days_since_event") or 0))
+        if d > 14:
+            parts.append(f"event is {d}d old")
+    except (ValueError, TypeError):
+        pass
+    impact = (e.get("impact_estimate") or "").lower()
+    if impact == "low":
+        parts.append("low estimated impact")
+    return "; ".join(parts) if parts else "—"
+
+
+def _prediction_card(e: dict, review_form_html: str) -> str:
+    ticker = _esc(e.get("ticker", ""))
+    scaled = e.get("scaled_shadow_score") or e.get("shadow_score") or ""
+    try:
+        scaled_fmt = f"{float(scaled):.1f}"
+    except (ValueError, TypeError):
+        scaled_fmt = _esc(str(scaled))
+
+    guidance = (e.get("action_guidance") or "").lower()
+    label, css_key = _ACTION_LABEL.get(guidance, ("Review", "review"))
+
+    direction = (e.get("expected_direction") or "").lower()
+    arrow = _DIR_ARROW.get(direction, "")
+    dir_class = f"pred-dir-{direction}" if direction in _DIR_ARROW else "pred-dir-neutral"
+    dir_html = f'<span class="{dir_class}">{arrow} {_esc(direction.capitalize())}</span>' if direction else ""
+
+    timeframe = _esc(e.get("expected_timeframe") or "")
+    summary = _esc(e.get("expected_move_summary") or "")
+    why_move = _esc(e.get("action_reason") or "")
+    not_yet = _esc(_not_yet_reason(e))
+    catalyst = _esc(e.get("catalyst_type") or "")
+    materiality = _esc(e.get("materiality") or "")
+    conf = e.get("confidence") or ""
+    try:
+        conf_fmt = f"{float(conf):.0%}"
+    except (ValueError, TypeError):
+        conf_fmt = _esc(str(conf))
+    days = _esc(str(e.get("days_since_event") or ""))
+
+    raw_checks = e.get("key_checks") or ""
+    check_items = [c.strip() for c in raw_checks.split(";") if c.strip()]
+    checks_html = "".join(f"<li>{_esc(c)}</li>" for c in check_items)
+
+    url = e.get("constructed_url") or ""
+    sec_link = f'<a href="{_esc(url)}" target="_blank">[SEC filing]</a>' if url else ""
+
+    return (
+        f'<div class="pred-card pred-card-{css_key}">'
+        f'<div class="pred-header">'
+        f'<span class="pred-ticker">{ticker}</span>'
+        f'<span class="pred-score">{scaled_fmt}</span>'
+        f'<span class="pred-action pred-action-{css_key}">{_esc(label)}</span>'
+        f'{dir_html}'
+        f'<span class="pred-timeframe">{timeframe}</span>'
+        f'</div>'
+        f'<div class="pred-summary">{summary}</div>'
+        f'<div class="pred-meta">'
+        f'<div class="pred-col"><span class="pred-label">Catalyst</span><span class="pred-val">{catalyst}</span></div>'
+        f'<div class="pred-col"><span class="pred-label">Materiality</span><span class="pred-val">{materiality}</span></div>'
+        f'<div class="pred-col"><span class="pred-label">Confidence</span><span class="pred-val">{conf_fmt}</span></div>'
+        f'<div class="pred-col"><span class="pred-label">Days since event</span><span class="pred-val">{days}</span></div>'
+        f'</div>'
+        f'<div class="pred-reason"><strong>Why it may move:</strong> {why_move}</div>'
+        f'<div class="pred-reason"><strong>Reason to wait:</strong> {not_yet}</div>'
+        f'<details><summary style="cursor:pointer;font-size:.82rem;color:#555">Key checks &amp; review form</summary>'
+        f'<ul class="pred-checks">{checks_html}</ul>'
+        f'<div class="pred-risk">Priced-in risk: <strong>{_esc(e.get("priced_in_risk") or "—")}</strong>'
+        f' &nbsp;·&nbsp; Impact: <strong>{_esc(e.get("impact_estimate") or "—")}</strong></div>'
+        f'{sec_link}'
+        f'<div style="margin-top:8px">{review_form_html}</div>'
+        f'</details>'
+        f'</div>'
+    )
+
+
+def _prediction_cards_section(
+    entries: list[dict],
+    review_cell_fn: "callable",
+) -> str:
+    promoted = [e for e in entries if _is_promoted(e)]
+    if not promoted:
+        return ""
+    cards = "".join(
+        _prediction_card(e, review_cell_fn(e["ticker"]))
+        for e in promoted
+    )
+    return (
+        '<h2>Prediction Cards</h2>'
+        '<p class="muted">Shadow-only — forward-looking signals from the catalyst queue. '
+        'Not investment advice. Production scoring is unchanged.</p>'
+        + cards
+    )
+
+
 # ── Route handlers ────────────────────────────────────────────────────────────
 
 def _homepage(history_root: str, output_dir: str) -> str:
@@ -764,9 +895,13 @@ def _run_detail(history_root: str, date_str: str) -> tuple[str, int]:
         ]
     )
 
+    cards_html = _prediction_cards_section(entries, _review_cell)
+
     body = f"""
 <h2>Run: {_esc(date_str)}</h2>
 <table>{meta_rows}</table>
+
+{cards_html}
 
 <h2>Reject→C Crossings</h2>
 <table>

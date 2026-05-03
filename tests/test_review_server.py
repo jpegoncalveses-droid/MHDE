@@ -28,6 +28,10 @@ def _write_day(history_root: str, date: str, metadata: dict, csv_rows: list[dict
         "catalyst_type", "materiality", "sentiment", "confidence",
         "validation_status", "quote_validation_pass", "final_should_affect_score",
         "evidence_quote",
+        "expected_direction", "expected_move_summary", "expected_timeframe",
+        "action_guidance", "action_reason", "key_checks",
+        "priced_in_risk", "days_since_event", "impact_estimate",
+        "scaled_shadow_score", "constructed_url",
     ]
     with open(csv_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
@@ -1088,3 +1092,178 @@ def test_docs_nav_links_in_ops(tmp_path):
     with app.test_client() as c:
         r = c.get("/ops")
     assert b'/docs' in r.data
+
+
+# ── Prediction cards ──────────────────────────────────────────────────────────
+
+_PRED_ROW = {
+    "ticker": "TPRD",
+    "original_score": "44.0",
+    "llm_adjustment": "5.0",
+    "shadow_score": "49.0",
+    "original_tier": "Reject",
+    "shadow_tier": "C",
+    "tier_move": "Reject→C",
+    "catalyst_type": "earnings",
+    "materiality": "high",
+    "sentiment": "bullish",
+    "confidence": "0.85",
+    "validation_status": "valid",
+    "quote_validation_pass": "True",
+    "final_should_affect_score": "True",
+    "evidence_quote": "EPS beat by 15%",
+    "expected_direction": "bullish",
+    "expected_move_summary": "Strong beat likely drives upward revision",
+    "expected_timeframe": "1-5 days post-announcement",
+    "action_guidance": "accept",
+    "action_reason": "Earnings surprise with bullish guidance revision",
+    "key_checks": "guidance revision; analyst estimates; peer reaction",
+    "priced_in_risk": "medium",
+    "days_since_event": "3",
+    "impact_estimate": "high",
+    "scaled_shadow_score": "46.5",
+    "constructed_url": "https://sec.gov/fake",
+}
+
+_PRED_WATCH_ROW = {**_PRED_ROW, "ticker": "TWCH", "action_guidance": "watch",
+                   "tier_move": "", "shadow_tier": "C", "original_tier": "C"}
+_PRED_IGNORE_ROW = {**_PRED_ROW, "ticker": "TIGN", "action_guidance": "reject",
+                    "final_should_affect_score": "False"}
+
+
+def test_prediction_cards_appear_on_candidates(tmp_path):
+    _write_day(str(tmp_path / "history"), "2026-05-01", _BASE_META, [_PRED_ROW])
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/candidates")
+    assert r.status_code == 200
+    html = r.data.decode()
+    assert "Prediction Cards" in html
+    assert "TPRD" in html
+
+
+def test_prediction_card_shows_direction(tmp_path):
+    _write_day(str(tmp_path / "history"), "2026-05-01", _BASE_META, [_PRED_ROW])
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/candidates")
+    html = r.data.decode()
+    assert "Bullish" in html or "bullish" in html
+    assert "↑" in html
+
+
+def test_prediction_card_shows_timeframe(tmp_path):
+    _write_day(str(tmp_path / "history"), "2026-05-01", _BASE_META, [_PRED_ROW])
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/candidates")
+    html = r.data.decode()
+    assert "1-5 days post-announcement" in html
+
+
+def test_prediction_card_shows_summary(tmp_path):
+    _write_day(str(tmp_path / "history"), "2026-05-01", _BASE_META, [_PRED_ROW])
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/candidates")
+    html = r.data.decode()
+    assert "Strong beat likely drives upward revision" in html
+
+
+def test_prediction_card_action_label_review(tmp_path):
+    _write_day(str(tmp_path / "history"), "2026-05-01", _BASE_META, [_PRED_ROW])
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/candidates")
+    html = r.data.decode()
+    assert "Review" in html
+
+
+def test_prediction_card_action_label_watch(tmp_path):
+    _write_day(str(tmp_path / "history"), "2026-05-01", _BASE_META, [_PRED_WATCH_ROW])
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/candidates")
+    html = r.data.decode()
+    assert "Watch" in html
+
+
+def test_prediction_card_shows_key_checks(tmp_path):
+    _write_day(str(tmp_path / "history"), "2026-05-01", _BASE_META, [_PRED_ROW])
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/candidates")
+    html = r.data.decode()
+    assert "guidance revision" in html
+    assert "analyst estimates" in html
+
+
+def test_prediction_card_shows_why_it_may_move(tmp_path):
+    _write_day(str(tmp_path / "history"), "2026-05-01", _BASE_META, [_PRED_ROW])
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/candidates")
+    html = r.data.decode()
+    assert "Earnings surprise with bullish guidance revision" in html
+
+
+def test_prediction_card_shows_reason_to_wait(tmp_path):
+    _write_day(str(tmp_path / "history"), "2026-05-01", _BASE_META, [_PRED_ROW])
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/candidates")
+    html = r.data.decode()
+    assert "Reason to wait" in html or "priced-in" in html.lower()
+
+
+def test_prediction_card_shows_scaled_score(tmp_path):
+    _write_day(str(tmp_path / "history"), "2026-05-01", _BASE_META, [_PRED_ROW])
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/candidates")
+    html = r.data.decode()
+    assert "46.5" in html
+
+
+def test_prediction_card_includes_review_form(tmp_path):
+    _write_day(str(tmp_path / "history"), "2026-05-01", _BASE_META, [_PRED_ROW])
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/candidates")
+    html = r.data.decode()
+    assert 'name="analyst_decision"' in html
+
+
+def test_prediction_card_not_investment_advice(tmp_path):
+    _write_day(str(tmp_path / "history"), "2026-05-01", _BASE_META, [_PRED_ROW])
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/candidates")
+    html = r.data.decode().lower()
+    assert "not investment advice" in html or "shadow-only" in html
+
+
+def test_rejected_entry_not_in_prediction_cards(tmp_path):
+    _write_day(str(tmp_path / "history"), "2026-05-01", _BASE_META, [_PRED_IGNORE_ROW])
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/candidates")
+    html = r.data.decode()
+    # TIGN has final_should_affect_score=False, so no prediction card
+    assert "TIGN" not in html or "Prediction Cards" not in html or html.count("TIGN") <= 1
+
+
+def test_not_yet_reason_helper():
+    from review.server import _not_yet_reason
+    e = {"priced_in_risk": "high", "days_since_event": "45", "impact_estimate": "low"}
+    r = _not_yet_reason(e)
+    assert "priced-in" in r
+    assert "45d" in r
+    assert "low" in r
+
+
+def test_not_yet_reason_no_concerns():
+    from review.server import _not_yet_reason
+    e = {"priced_in_risk": "low", "days_since_event": "2", "impact_estimate": "high"}
+    r = _not_yet_reason(e)
+    assert r == "—"
