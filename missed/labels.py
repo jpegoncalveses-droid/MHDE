@@ -66,7 +66,10 @@ NUMERIC_ROOT_CAUSES: set[str] = {
 }
 
 EVENT_TYPES: list[str] = [
+    "gain_1d_5pct",
+    "gain_3d_8pct",
     "gain_5d_10pct",
+    "gain_10d_12pct",
     "gain_20d_20pct",
     "gain_60d_30pct",
     "52wk_high_breakout",
@@ -74,7 +77,10 @@ EVENT_TYPES: list[str] = [
 ]
 
 # Thresholds for detection
+GAIN_1D_THRESHOLD = 0.05
+GAIN_3D_THRESHOLD = 0.08
 GAIN_5D_THRESHOLD = 0.10
+GAIN_10D_THRESHOLD = 0.12
 GAIN_20D_THRESHOLD = 0.20
 GAIN_60D_THRESHOLD = 0.30
 

@@ -231,3 +231,16 @@ def test_event_has_required_fields(conn):
                 "had_catalyst_evidence", "tier_before_event"}
     missing = required - set(event.keys())
     assert not missing, f"Event missing fields: {missing}"
+
+
+def test_new_detection_labels_present():
+    """New threshold constants and event types are present in labels module."""
+    from missed.labels import (
+        GAIN_1D_THRESHOLD, GAIN_3D_THRESHOLD, GAIN_10D_THRESHOLD, EVENT_TYPES
+    )
+    assert GAIN_1D_THRESHOLD == pytest.approx(0.05)
+    assert GAIN_3D_THRESHOLD == pytest.approx(0.08)
+    assert GAIN_10D_THRESHOLD == pytest.approx(0.12)
+    assert "gain_1d_5pct" in EVENT_TYPES
+    assert "gain_3d_8pct" in EVENT_TYPES
+    assert "gain_10d_12pct" in EVENT_TYPES
