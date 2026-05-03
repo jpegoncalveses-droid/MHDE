@@ -408,6 +408,31 @@ def data_enrich_ticker_details(db_path, delay):
     click.echo(f"Ticker details enrichment: {result}")
 
 
+@data.command("incomplete-diagnostics")
+@click.option("--db-path", default="data/mhde.duckdb", show_default=True)
+@click.option("--output", default="data/processed/incomplete_score_diagnostics.csv",
+              show_default=True, help="CSV output path.")
+def data_incomplete_diagnostics(db_path, output):
+    """Report why tickers are scored Incomplete in the latest run."""
+    import collections
+    import duckdb
+    from scoring.incomplete_diagnostics import diagnose_incomplete, write_diagnostics_csv
+
+    conn = duckdb.connect(db_path, read_only=True)
+    try:
+        diagnostics = diagnose_incomplete(conn)
+    finally:
+        conn.close()
+
+    write_diagnostics_csv(diagnostics, output)
+    counts = collections.Counter(d.reason for d in diagnostics)
+    click.echo(f"Incomplete tickers: {len(diagnostics)}")
+    for reason, count in counts.most_common():
+        click.echo(f"  {reason}: {count}")
+    if diagnostics:
+        click.echo(f"Written to {output}")
+
+
 @cli.group()
 def review():
     """Candidate review commands: build review packets, import completed reviews."""
