@@ -1378,6 +1378,98 @@ def _candidates_page(history_root: str) -> tuple[str, int]:
     return html, code
 
 
+_WINDOW_PRIORITY = {1: 0, 3: 1, 5: 2, 10: 3, 20: 4, 60: 5, 252: 6}
+
+_CLF_PRIORITY = {
+    "true_miss": 0, "scored_missed": 1, "near_threshold": 2, "unscored_mover": 3,
+}
+
+_CLF_BADGE = {
+    "true_miss": "badge-reject",
+    "scored_missed": "badge-watch",
+    "near_threshold": "badge-accept",
+    "unscored_mover": "",
+}
+
+
+def _best_event_key(r: dict) -> tuple:
+    tier_pri = 0 if r.get("universe_tier") == "primary" else 1
+    try:
+        date_neg = -int((r.get("event_date") or "").replace("-", "") or 0)
+    except ValueError:
+        date_neg = 0
+    try:
+        w = int(r.get("window_days") or 999)
+    except (ValueError, TypeError):
+        w = 999
+    window_pri = _WINDOW_PRIORITY.get(w, 99)
+    neg_ret = -abs(_safe_float(r.get("return_value")))
+    return (tier_pri, date_neg, window_pri, neg_ret)
+
+
+def _build_ticker_summary(rows: list[dict]) -> list[dict]:
+    """Collapse all events to one row per ticker using priority rules."""
+    by_ticker: dict[str, list[dict]] = {}
+    for r in rows:
+        t = r.get("ticker", "")
+        by_ticker.setdefault(t, []).append(r)
+
+    summaries = []
+    for ticker, events in by_ticker.items():
+        best = min(events, key=_best_event_key)
+        try:
+            best_w = int(best.get("window_days") or 0)
+        except (ValueError, TypeError):
+            best_w = 0
+        max_ret = max(abs(_safe_float(e.get("return_value"))) for e in events)
+        latest_date = max(e.get("event_date", "") for e in events)
+        clfs = [e.get("classification", "") for e in events]
+        best_clf = min(clfs, key=lambda c: _CLF_PRIORITY.get(c, 99))
+        hints = [e.get("root_cause_hint", "") for e in events if e.get("root_cause_hint")]
+        hint = hints[0] if hints else ""
+        summaries.append({
+            "ticker": ticker,
+            "latest_date": latest_date,
+            "best_window": best_w,
+            "best_return": _safe_float(best.get("return_value")),
+            "max_abs_return": max_ret,
+            "classification": best_clf,
+            "root_cause_hint": hint,
+            "n_events": len(events),
+            "universe_tier": best.get("universe_tier", ""),
+        })
+
+    summaries.sort(key=lambda s: (
+        _CLF_PRIORITY.get(s["classification"], 99),
+        -s["max_abs_return"],
+    ))
+    return summaries
+
+
+def _summary_table(rows: list[dict], max_rows: int = 50) -> str:
+    if not rows:
+        return "<p class='muted'>None.</p>"
+    th = (
+        "<tr><th>Ticker</th><th>Latest date</th><th>Best window</th>"
+        "<th>Max return</th><th>Classification</th>"
+        "<th>Root cause</th><th>Events</th></tr>"
+    )
+    trs = "".join(
+        f'<tr>'
+        f'<td><a href="/ticker/{_esc(s["ticker"])}">{_esc(s["ticker"])}</a></td>'
+        f'<td>{_esc(s["latest_date"])}</td>'
+        f'<td>{s["best_window"]}d</td>'
+        f'<td><strong>{s["max_abs_return"]:.1f}%</strong></td>'
+        f'<td><span class="badge {_esc(_CLF_BADGE.get(s["classification"], ""))}">'
+        f'{_esc(s["classification"])}</span></td>'
+        f'<td class="muted">{_esc(s["root_cause_hint"])}</td>'
+        f'<td class="muted">{s["n_events"]}</td>'
+        f'</tr>'
+        for s in rows[:max_rows]
+    )
+    return f'<div style="overflow-x:auto"><table>{th}{trs}</table></div>'
+
+
 def _moves_page(output_dir: str) -> str:
     import csv as _csv
     from pathlib import Path
@@ -1394,7 +1486,7 @@ def _moves_page(output_dir: str) -> str:
     pva_path = Path(output_dir) / "prediction_vs_actual_rows.csv"
     if not pva_path.exists():
         body = (
-            '<h2>Moves</h2>'
+            '<h2>Moves — Actual Movers</h2>'
             '<p class="muted">prediction_vs_actual_rows.csv not found.</p>'
             '<p class="muted">Run: <code>python main.py missed prediction-vs-actual</code></p>'
             + nav
@@ -1402,39 +1494,77 @@ def _moves_page(output_dir: str) -> str:
         return _render("Moves — MHDE", body)
 
     with open(pva_path, newline="") as f:
-        rows = list(_csv.DictReader(f))
+        all_rows = list(_csv.DictReader(f))
 
+    summaries = _build_ticker_summary(all_rows)
+    n_tickers = len(summaries)
+    n_events = len(all_rows)
+
+    # Named sections
+    spikes_1d = [s for s in summaries if s["best_window"] == 1]
+    accumulations = [s for s in summaries if s["best_window"] in (3, 5)]
+    trends = [s for s in summaries if s["best_window"] in (10, 20, 60, 252)]
+    repeated = [s for s in summaries if s["n_events"] >= 4]
+
+    def _section(title: str, rows: list[dict], desc: str = "") -> str:
+        if not rows:
+            return (
+                f'<h3>{title}</h3>'
+                f'<p class="muted">None in this period.</p>'
+            )
+        return (
+            f'<h3>{title} <span class="muted">({len(rows)})</span></h3>'
+            + (f'<p class="muted">{desc}</p>' if desc else "")
+            + _summary_table(rows, max_rows=25)
+        )
+
+    # Raw events grouped by window (collapsible)
     by_window: dict[str, list[dict]] = {}
-    for r in rows:
-        w = r.get("window_days", "unknown")
+    for r in all_rows:
+        w = r.get("window_days", "?")
         by_window.setdefault(w, []).append(r)
 
-    sections = []
-    for window in sorted(by_window.keys(), key=lambda x: (int(x) if x.isdigit() else 9999)):
-        group = sorted(
-            by_window[window],
-            key=lambda r: _safe_float(r.get("return_value")),
-            reverse=True,
-        )[:20]
-        tr_html = "".join(
-            f"<tr>"
-            f"<td>{_esc(r.get('ticker', ''))}</td>"
-            f"<td>{_esc(r.get('event_date', ''))}</td>"
-            f"<td>{_esc(r.get('return_value', ''))}</td>"
-            f"<td>{_esc(r.get('classification', ''))}</td>"
-            f"</tr>"
+    raw_sections = []
+    for window in sorted(by_window.keys(), key=lambda x: (int(x) if str(x).isdigit() else 9999)):
+        group = sorted(by_window[window], key=lambda r: -_safe_float(r.get("return_value")))[:20]
+        trs = "".join(
+            f'<tr>'
+            f'<td><a href="/ticker/{_esc(r.get("ticker",""))}">{_esc(r.get("ticker",""))}</a></td>'
+            f'<td>{_esc(r.get("event_date",""))}</td>'
+            f'<td>{_safe_float(r.get("return_value")):.1f}%</td>'
+            f'<td>{_esc(r.get("classification",""))}</td>'
+            f'<td class="muted">{_esc(r.get("universe_tier",""))}</td>'
+            f'</tr>'
             for r in group
         )
-        sections.append(
-            f'<h2>Window: {_esc(window)} days</h2>'
-            f'<table>'
-            f'<tr><th>Ticker</th><th>Date</th><th>Return</th><th>Classification</th></tr>'
-            f'{tr_html}'
-            f'</table>'
+        raw_sections.append(
+            f'<h4>{window}-day window (top 20 of {len(by_window[window])})</h4>'
+            f'<div style="overflow-x:auto"><table>'
+            f'<tr><th>Ticker</th><th>Date</th><th>Return</th><th>Class.</th><th>Tier</th></tr>'
+            f'{trs}</table></div>'
         )
 
-    body = '<h2>Moves — Prediction vs Actual</h2>' + "".join(sections) + nav
-    return _render("Moves — MHDE", body)
+    raw_block = (
+        '<details style="margin-top:20px">'
+        f'<summary style="cursor:pointer;font-size:.9rem;color:#555">'
+        f'Raw rolling-window events ({n_events} rows across {len(by_window)} windows)</summary>'
+        + "".join(raw_sections)
+        + "</details>"
+    )
+
+    body = (
+        '<h2>Moves — Actual Movers</h2>'
+        '<p class="muted">Detected price moves with prediction status. '
+        f'{n_tickers} unique tickers, {n_events} raw events.</p>'
+        + _section("New 1d Spikes", spikes_1d, "Single-day moves ≥ threshold.")
+        + _section("Active Accumulations", accumulations, "3d or 5d moves — short-term build-up.")
+        + _section("Longer Trend Moves", trends, "10d/20d/60d moves — sustained trend or drift.")
+        + _section("Repeated Movers", repeated,
+                   "Tickers with 4+ events across multiple windows — persistent signal.")
+        + raw_block
+        + nav
+    )
+    return _render("Moves — Actual Movers", body)
 
 
 def _ops_page(history_root: str, output_dir: str) -> str:

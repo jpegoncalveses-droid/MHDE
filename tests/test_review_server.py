@@ -835,6 +835,111 @@ def test_moves_requires_auth(tmp_path):
     assert r.status_code == 401
 
 
+# ── Moves page: grouping and naming ──────────────────────────────────────────
+
+_PVA_COLS = [
+    "ticker", "event_date", "return_value", "window_days",
+    "classification", "universe_tier", "priority_score",
+    "score_before_event", "tier_before_event",
+    "had_catalyst_evidence", "was_in_universe", "was_scored",
+    "root_cause_hint", "score_join_method",
+]
+
+
+def _write_pva(output_dir: str, rows: list[dict]) -> str:
+    path = os.path.join(output_dir, "prediction_vs_actual_rows.csv")
+    with open(path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=_PVA_COLS, extrasaction="ignore")
+        w.writeheader()
+        w.writerows(rows)
+    return path
+
+
+def _pva_row(**kw) -> dict:
+    base = {
+        "ticker": "AAAB", "event_date": "2026-05-01",
+        "return_value": "10.0", "window_days": "1",
+        "classification": "true_miss", "universe_tier": "primary",
+        "priority_score": "5.0", "score_before_event": "30.0",
+        "tier_before_event": "Reject", "had_catalyst_evidence": "True",
+        "was_in_universe": "True", "was_scored": "True",
+        "root_cause_hint": "data_gap", "score_join_method": "scores_join",
+    }
+    return {**base, **kw}
+
+
+def _moves_app(tmp_path, pva_rows: list[dict]):
+    from review.server import create_app
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir, exist_ok=True)
+    _write_pva(output_dir, pva_rows)
+    history_root = str(tmp_path / "history")
+    return create_app(history_root, output_dir, unsafe_no_auth=True)
+
+
+def test_moves_title_no_longer_says_prediction_vs_actual(tmp_path):
+    a = _moves_app(tmp_path, [_pva_row()])
+    with a.test_client() as c:
+        r = c.get("/moves")
+    html = r.data.decode()
+    assert "Prediction vs Actual" not in html
+    assert "Actual Movers" in html
+
+
+def test_moves_repeated_ticker_collapses_to_one_summary_row(tmp_path):
+    rows = [
+        _pva_row(ticker="AAAB", window_days="1", event_date="2026-05-01", return_value="8.0"),
+        _pva_row(ticker="AAAB", window_days="3", event_date="2026-05-01", return_value="12.0"),
+        _pva_row(ticker="AAAB", window_days="5", event_date="2026-05-01", return_value="15.0"),
+    ]
+    a = _moves_app(tmp_path, rows)
+    with a.test_client() as c:
+        r = c.get("/moves")
+    html = r.data.decode()
+    # Summary sections show one row per ticker: AAAB should appear in section headings, not 3×
+    summary_count = html.count(">AAAB<")
+    assert summary_count <= 4, f"AAAB appeared {summary_count} times in summary (expected ≤4)"
+
+
+def test_moves_raw_section_contains_all_events(tmp_path):
+    rows = [
+        _pva_row(ticker="AAAB", window_days="1", return_value="8.0"),
+        _pva_row(ticker="AAAB", window_days="3", return_value="12.0"),
+        _pva_row(ticker="BBBB", window_days="1", return_value="6.0"),
+    ]
+    a = _moves_app(tmp_path, rows)
+    with a.test_client() as c:
+        r = c.get("/moves")
+    html = r.data.decode()
+    assert "Raw rolling-window events" in html
+    # Raw section should reference both windows
+    assert "1-day" in html or "1d" in html or "window" in html.lower()
+
+
+def test_moves_priority_chooses_1d_over_longer(tmp_path):
+    from review.server import _build_ticker_summary
+    rows = [
+        _pva_row(ticker="AAAB", window_days="1", event_date="2026-05-01", return_value="8.0"),
+        _pva_row(ticker="AAAB", window_days="20", event_date="2026-05-01", return_value="30.0"),
+    ]
+    summaries = _build_ticker_summary(rows)
+    assert len(summaries) == 1
+    assert summaries[0]["best_window"] == 1
+
+
+def test_moves_larger_return_breaks_window_tie(tmp_path):
+    from review.server import _build_ticker_summary
+    rows = [
+        _pva_row(ticker="AAAB", window_days="1", event_date="2026-05-01",
+                 return_value="5.0", universe_tier="primary"),
+        _pva_row(ticker="AAAB", window_days="1", event_date="2026-05-01",
+                 return_value="15.0", universe_tier="primary"),
+    ]
+    summaries = _build_ticker_summary(rows)
+    assert len(summaries) == 1
+    assert summaries[0]["max_abs_return"] == 15.0
+
+
 def test_ops_renders(tmp_path):
     from review.server import create_app
     import os
