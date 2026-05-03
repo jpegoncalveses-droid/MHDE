@@ -574,6 +574,76 @@ def missed_prediction_vs_actual(output_dir, lookback_days):
         conn.close()
 
 
+@missed.command("enrich-root-causes")
+@click.option(
+    "--input", "input_csv",
+    default="data/processed/prediction_vs_actual_rows.csv",
+    show_default=True,
+    help="Path to prediction-vs-actual CSV (output of 'missed prediction-vs-actual').",
+)
+@click.option(
+    "--output-dir", default="data/processed", show_default=True,
+    help="Directory for enriched CSV and markdown report.",
+)
+def missed_enrich_root_causes(input_csv, output_dir):
+    """Deterministic root-cause enrichment for prediction-vs-actual rows.
+
+    Reads the prediction CSV, joins DB tables (scores components, fundamentals,
+    events, companies), assigns 11 structured root-cause labels, and writes
+    two artifacts: an enriched CSV and a markdown summary report.
+    No LLM, no new data sources, no production scores changed.
+    """
+    import csv as csv_mod
+    from pathlib import Path
+    from datetime import date
+    from missed.root_cause_enrichment import enrich_rows, generate_enrichment_report
+
+    input_path = Path(input_csv)
+    if not input_path.exists():
+        raise click.ClickException(
+            f"Input CSV not found: {input_csv}\n"
+            "Run 'missed prediction-vs-actual' first to generate it."
+        )
+
+    with open(input_path, newline="") as f:
+        reader = csv_mod.DictReader(f)
+        raw_rows = list(reader)
+
+    # Coerce types that were serialised as strings in the CSV
+    for r in raw_rows:
+        for numeric_field in ("return_value", "score_before_event", "priority_score"):
+            val = r.get(numeric_field)
+            if val not in (None, "", "None"):
+                try:
+                    r[numeric_field] = float(val)
+                except ValueError:
+                    r[numeric_field] = None
+            else:
+                r[numeric_field] = None
+        for bool_field in ("was_in_universe", "was_scored", "had_catalyst_evidence"):
+            r[bool_field] = r.get(bool_field, "").lower() in ("true", "1", "yes")
+        event_date_str = r.get("event_date")
+        if event_date_str not in (None, "", "None"):
+            r["event_date"] = date.fromisoformat(event_date_str)
+        win = r.get("window_days")
+        if win not in (None, "", "None"):
+            try:
+                r["window_days"] = int(win)
+            except ValueError:
+                r["window_days"] = None
+
+    cfg, conn = _engine_setup()
+    try:
+        enriched = enrich_rows(raw_rows, conn)
+        csv_path, md_path = generate_enrichment_report(enriched, output_dir=output_dir)
+        click.echo("Root-cause enrichment report written:")
+        click.echo(f"  Enriched CSV: {csv_path}")
+        click.echo(f"  Markdown:     {md_path}")
+        click.echo(f"  Rows enriched: {len(enriched)}")
+    finally:
+        conn.close()
+
+
 @missed.command("pilot")
 @click.option("--n", default=100, type=int, show_default=True,
               help="Number of events to sample.")
