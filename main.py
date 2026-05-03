@@ -336,7 +336,7 @@ def data():
 def data_inventory(docs_out, csv_out, base_dir):
     """Generate a complete data inventory: DB tables + flat files.
 
-    Writes docs/data_inventory.md and data/processed/data_inventory_summary.csv.
+    Output paths are controlled by --docs-out and --csv-out.
     """
     from storage.inventory import build_inventory, write_markdown, write_csv
 
