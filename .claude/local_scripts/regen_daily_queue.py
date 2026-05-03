@@ -109,13 +109,26 @@ metadata = {
     "provider": "openai (cached)",
 }
 
+HISTORY_ROOT = "data/processed/catalyst_queue_history"
+
 print(f"Queue entries: {len(queue_entries)}")
 print(f"Promoted: {len(promoted)}, Crossings: {len(crossings)}, Weak/Rejected: {len(weak_rejected)}")
 
 md_path, csv_path, jsonl_path = generate_queue_report(
-    queue_entries, revalidated, OUTPUT_DIR, run_metadata=metadata
+    queue_entries, revalidated, OUTPUT_DIR,
+    run_metadata=metadata,
+    history_root=HISTORY_ROOT,
 )
 print(f"\nReport:  {md_path}")
 print(f"CSV:     {csv_path}")
 print(f"JSONL:   {jsonl_path}")
+
+# Generate and print history summary
+from missed.catalyst_history import generate_history_summary
+summary = generate_history_summary(HISTORY_ROOT)
+summary_path = os.path.join(HISTORY_ROOT, "history_summary.md")
+with open(summary_path, "w") as f:
+    f.write(summary)
+print(f"Summary: {summary_path}")
+
 conn.close()
