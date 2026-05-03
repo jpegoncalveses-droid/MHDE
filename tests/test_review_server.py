@@ -928,3 +928,163 @@ def test_today_shows_warning_when_pva_missing(tmp_path):
     assert r.status_code == 200
     html = r.data.decode()
     assert "warn" in html.lower() or "missing" in html.lower() or "prediction" in html.lower()
+
+
+# ── Docs viewer ───────────────────────────────────────────────────────────────
+
+def _auth_app(tmp_path):
+    from review.server import create_app
+    import os
+    hr = str(tmp_path / "history")
+    od = str(tmp_path / "output")
+    os.makedirs(od, exist_ok=True)
+    return create_app(hr, od, unsafe_no_auth=False)
+
+
+def test_docs_index_requires_auth(tmp_path):
+    a = _auth_app(tmp_path)
+    with a.test_client() as c:
+        r = c.get("/docs")
+    assert r.status_code == 401
+
+
+def test_docs_index_renders(tmp_path):
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/docs")
+    assert r.status_code == 200
+    html = r.data.decode()
+    assert "Operating Manual" in html
+    assert "Architecture" in html
+    assert "Data Sources" in html
+    assert "Scoring Governance" in html
+    assert "Completion Status" in html
+
+
+def test_doc_operating_manual_returns_200(tmp_path):
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/docs/operating-manual")
+    assert r.status_code == 200
+    assert b"MHDE" in r.data or b"Operating" in r.data
+
+
+def test_doc_architecture_returns_200(tmp_path):
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/docs/architecture")
+    assert r.status_code == 200
+
+
+def test_doc_data_sources_returns_200(tmp_path):
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/docs/data-sources")
+    assert r.status_code == 200
+
+
+def test_doc_scoring_governance_returns_200(tmp_path):
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/docs/scoring-governance")
+    assert r.status_code == 200
+
+
+def test_doc_completion_status_returns_200(tmp_path):
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/docs/completion-status")
+    assert r.status_code == 200
+
+
+def test_doc_unknown_returns_404(tmp_path):
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/docs/this-doc-does-not-exist")
+    assert r.status_code == 404
+
+
+def test_doc_path_traversal_returns_404(tmp_path):
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/docs/%2e%2e%2fetc%2fpasswd")
+    assert r.status_code == 404
+
+
+def test_doc_download_returns_text(tmp_path):
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/docs/download/operating-manual")
+    assert r.status_code == 200
+    ct = r.headers.get("Content-Type", "")
+    assert "text/plain" in ct or "text" in ct
+    assert b"#" in r.data or len(r.data) > 100
+
+
+def test_doc_download_unknown_returns_404(tmp_path):
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/docs/download/no-such-key")
+    assert r.status_code == 404
+
+
+def test_doc_download_requires_auth(tmp_path):
+    a = _auth_app(tmp_path)
+    with a.test_client() as c:
+        r = c.get("/docs/download/operating-manual")
+    assert r.status_code == 401
+
+
+def test_doc_no_secrets_displayed(tmp_path):
+    # Docs legitimately mention env var names, but must never render actual credential values.
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/docs/operating-manual")
+    html = r.data.decode()
+    for key in ("POLYGON_API_KEY", "OPENAI_API_KEY", "ALPHA_VANTAGE_API_KEY", "REVIEW_UI_PASSWORD"):
+        val = os.environ.get(key, "")
+        if val and len(val) > 8:
+            assert val not in html, f"Credential value for {key} should not appear in page"
+
+
+def test_render_markdown_headings():
+    from review.server import _render_markdown
+    out = _render_markdown("# Hello\n## World")
+    assert "<h1>" in out and "Hello" in out
+    assert "<h2>" in out and "World" in out
+
+
+def test_render_markdown_code_block():
+    from review.server import _render_markdown
+    out = _render_markdown("```python\nprint('hi')\n```")
+    assert "<pre>" in out
+    assert "print" in out
+
+
+def test_render_markdown_table():
+    from review.server import _render_markdown
+    out = _render_markdown("| A | B |\n|---|---|\n| x | y |")
+    assert "<table>" in out
+    assert "<th>" in out
+    assert "<td>" in out
+
+
+def test_render_markdown_no_xss():
+    from review.server import _render_markdown
+    out = _render_markdown("<script>alert(1)</script>")
+    assert "<script>" not in out
+
+
+def test_docs_nav_links_in_today(tmp_path):
+    _write_day(str(tmp_path / "history"), "2026-01-01", _BASE_META, [_CROSSING_ROW])
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/today")
+    assert b'/docs' in r.data
+
+
+def test_docs_nav_links_in_ops(tmp_path):
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/ops")
+    assert b'/docs' in r.data

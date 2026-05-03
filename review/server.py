@@ -271,6 +271,13 @@ details summary{cursor:pointer;color:#555;}
 .stat-label{display:block;font-size:0.75rem;color:#666;margin-bottom:4px}
 .stat-val{font-size:1.4rem;font-weight:700;color:#1565c0}
 .warn-box{background:#fff3e0;border-left:4px solid #ff9800;padding:10px 14px;margin:10px 0}
+.doc-content{line-height:1.75;font-size:.95rem;}
+.doc-content h1,.doc-content h2,.doc-content h3,.doc-content h4{margin-top:1.4em;}
+.doc-content pre{background:#f5f5f5;border-radius:4px;padding:10px 14px;overflow-x:auto;font-size:.78rem;white-space:pre-wrap;word-break:break-word;}
+.doc-content code{background:#f0f0f0;padding:1px 4px;border-radius:3px;font-size:.85em;}
+.doc-content pre code{background:none;padding:0;font-size:inherit;}
+.doc-content .tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:8px 0;}
+.doc-content ul,.doc-content ol{padding-left:1.4em;}
 """
 
 _BASE_TMPL = """<!DOCTYPE html>
@@ -318,6 +325,205 @@ def _safe_float(v, default: float = 0.0) -> float:
         return float(v or 0)
     except (ValueError, TypeError):
         return default
+
+
+# ── Docs viewer ───────────────────────────────────────────────────────────────
+
+_DOCS_ROOT = os.path.normpath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "docs")
+)
+
+_DOCS_REGISTRY: dict[str, tuple[str, str]] = {
+    "operating-manual": ("Operating Manual", "mhde_operating_manual.md"),
+    "architecture": ("Architecture", "mhde_architecture.md"),
+    "data-sources": ("Data Sources", "mhde_data_sources.md"),
+    "scoring-governance": ("Scoring Governance", "mhde_scoring_governance.md"),
+    "completion-status": ("Completion Status", "mhde_full_completion_status.md"),
+}
+
+
+def _doc_path(key: str) -> "str | None":
+    entry = _DOCS_REGISTRY.get(key)
+    if not entry:
+        return None
+    _, filename = entry
+    path = os.path.normpath(os.path.join(_DOCS_ROOT, filename))
+    if not path.startswith(_DOCS_ROOT + os.sep):
+        return None
+    return path
+
+
+def _inline_md(text: str) -> str:
+    import re as _re
+    text = _esc(text)
+    text = _re.sub(r'\*\*\*(.*?)\*\*\*', r'<strong><em>\1</em></strong>', text)
+    text = _re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', text)
+    text = _re.sub(r'(?<!\*)\*(?!\*)(.*?)(?<!\*)\*(?!\*)', r'<em>\1</em>', text)
+    text = _re.sub(r'`([^`]+)`', r'<code>\1</code>', text)
+    text = _re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', text)
+    return text
+
+
+def _render_markdown(text: str) -> str:
+    import re as _re
+    lines = text.split("\n")
+    out: list[str] = []
+    in_code = False
+    in_table = False
+    in_ul = False
+    in_ol = False
+
+    def flush_list() -> None:
+        nonlocal in_ul, in_ol
+        if in_ul:
+            out.append("</ul>")
+            in_ul = False
+        if in_ol:
+            out.append("</ol>")
+            in_ol = False
+
+    def flush_table() -> None:
+        nonlocal in_table
+        if in_table:
+            out.append("</tbody></table></div>")
+            in_table = False
+
+    for line in lines:
+        if line.strip().startswith("```"):
+            if in_code:
+                out.append("</code></pre>")
+                in_code = False
+            else:
+                flush_list()
+                flush_table()
+                lang = _esc(line.strip()[3:].strip())
+                cls = f' class="language-{lang}"' if lang else ""
+                out.append(f"<pre><code{cls}>")
+                in_code = True
+            continue
+
+        if in_code:
+            out.append(_esc(line))
+            continue
+
+        if line.strip().startswith("|") and line.strip().endswith("|"):
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            if all(_re.match(r"^:?-+:?$", c) for c in cells if c.strip()):
+                continue
+            if not in_table:
+                flush_list()
+                out.append('<div class="tbl-wrap"><table>')
+                out.append(
+                    "<thead><tr>"
+                    + "".join(f"<th>{_inline_md(c)}</th>" for c in cells)
+                    + "</tr></thead><tbody>"
+                )
+                in_table = True
+            else:
+                out.append(
+                    "<tr>"
+                    + "".join(f"<td>{_inline_md(c)}</td>" for c in cells)
+                    + "</tr>"
+                )
+            continue
+        flush_table()
+
+        m = _re.match(r"^(#{1,6})\s+(.*)", line)
+        if m:
+            flush_list()
+            lvl = len(m.group(1))
+            out.append(f"<h{lvl}>{_inline_md(m.group(2))}</h{lvl}>")
+            continue
+
+        m = _re.match(r"^[-*]\s+(.*)", line)
+        if m:
+            if not in_ul:
+                flush_list()
+                out.append("<ul>")
+                in_ul = True
+            out.append(f"<li>{_inline_md(m.group(1))}</li>")
+            continue
+
+        m = _re.match(r"^\d+\.\s+(.*)", line)
+        if m:
+            if not in_ol:
+                flush_list()
+                out.append("<ol>")
+                in_ol = True
+            out.append(f"<li>{_inline_md(m.group(1))}</li>")
+            continue
+
+        if not line.strip():
+            flush_list()
+            out.append("")
+            continue
+
+        if _re.match(r"^---+\s*$", line) or _re.match(r"^===+\s*$", line):
+            flush_list()
+            out.append("<hr>")
+            continue
+
+        flush_list()
+        out.append(f"<p>{_inline_md(line)}</p>")
+
+    if in_code:
+        out.append("</code></pre>")
+    flush_list()
+    flush_table()
+    return "\n".join(out)
+
+
+def _docs_index_page() -> str:
+    items: list[str] = []
+    for key, (title, _) in _DOCS_REGISTRY.items():
+        path = _doc_path(key)
+        if path and os.path.exists(path):
+            items.append(
+                f'<li><a href="/docs/{_esc(key)}">{_esc(title)}</a>'
+                f' <a class="muted" href="/docs/download/{_esc(key)}">[raw]</a></li>'
+            )
+        else:
+            items.append(f'<li><span class="muted">{_esc(title)} — not found</span></li>')
+    nav = '<p><a href="/">&#8592; Home</a></p>'
+    body = "<h2>Documentation</h2><ul>" + "".join(items) + "</ul>" + nav
+    return _render("Docs — MHDE", body)
+
+
+def _doc_page(key: str) -> "tuple[str, int]":
+    path = _doc_path(key)
+    if not path:
+        return _render("Not Found — MHDE", "<p>Unknown document.</p>"), 404
+    if not os.path.exists(path):
+        return _render("Not Found — MHDE", "<p>Document file not found on disk.</p>"), 404
+    title, _ = _DOCS_REGISTRY[key]
+    try:
+        with open(path, encoding="utf-8") as fh:
+            md_text = fh.read()
+    except Exception as exc:
+        return _render("Error — MHDE", f"<p>Could not read file: {_esc(str(exc))}</p>"), 500
+    nav = (
+        f'<p><a href="/docs">&#8592; Docs</a>'
+        f' &nbsp;|&nbsp; <a href="/docs/download/{_esc(key)}">Download raw</a></p>'
+    )
+    body = f'<h2>{_esc(title)}</h2>{nav}<div class="doc-content">{_render_markdown(md_text)}</div>'
+    return _render(f"{_esc(title)} — MHDE", body), 200
+
+
+def _doc_download(key: str) -> "Response | tuple[str, int]":
+    path = _doc_path(key)
+    if not path or not os.path.exists(path):
+        return "Not found", 404
+    _, filename = _DOCS_REGISTRY[key]
+    try:
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+    except Exception:
+        return "Error reading file", 500
+    return Response(
+        content,
+        mimetype="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # ── Route handlers ────────────────────────────────────────────────────────────
@@ -379,6 +585,7 @@ def _homepage(history_root: str, output_dir: str) -> str:
         '<a href="/moves">Moves</a> &nbsp;|&nbsp; '
         '<a href="/learning">Learning</a> &nbsp;|&nbsp; '
         '<a href="/ops">Ops</a> &nbsp;|&nbsp; '
+        '<a href="/docs">Docs</a> &nbsp;|&nbsp; '
         '<a href="/runs">All runs</a>'
         '</nav>'
     )
@@ -653,6 +860,7 @@ def _today_page(history_root: str, output_dir: str) -> str:
         '<a href="/learning">Learning</a> &nbsp;|&nbsp; '
         '<a href="/moves">Moves</a> &nbsp;|&nbsp; '
         '<a href="/ops">Ops</a> &nbsp;|&nbsp; '
+        '<a href="/docs">Docs</a> &nbsp;|&nbsp; '
         '<a href="/">Home</a></p>'
     )
 
@@ -769,6 +977,7 @@ def _moves_page(output_dir: str) -> str:
         '<a href="/candidates">Candidates</a> &nbsp;|&nbsp; '
         '<a href="/learning">Learning</a> &nbsp;|&nbsp; '
         '<a href="/ops">Ops</a> &nbsp;|&nbsp; '
+        '<a href="/docs">Docs</a> &nbsp;|&nbsp; '
         '<a href="/">Home</a></p>'
     )
 
@@ -827,6 +1036,7 @@ def _ops_page(history_root: str, output_dir: str) -> str:
         '<a href="/candidates">Candidates</a> &nbsp;|&nbsp; '
         '<a href="/learning">Learning</a> &nbsp;|&nbsp; '
         '<a href="/moves">Moves</a> &nbsp;|&nbsp; '
+        '<a href="/docs">Docs</a> &nbsp;|&nbsp; '
         '<a href="/">Home</a></p>'
     )
 
@@ -1050,6 +1260,22 @@ def create_app(
     @_require_auth
     def ops():
         return _ops_page(history_root, output_dir)
+
+    @app.route("/docs")
+    @_require_auth
+    def docs_index():
+        return _docs_index_page()
+
+    @app.route("/docs/<doc_key>")
+    @_require_auth
+    def doc_view(doc_key: str):
+        html, code = _doc_page(doc_key)
+        return html, code
+
+    @app.route("/docs/download/<doc_key>")
+    @_require_auth
+    def doc_download(doc_key: str):
+        return _doc_download(doc_key)
 
     return app
 
