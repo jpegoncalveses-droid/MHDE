@@ -15,7 +15,7 @@ import logging
 import os
 import re
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import duckdb
 
@@ -72,6 +72,7 @@ def _display_catalyst_type(entry: dict) -> str:
     return cat
 _QUEUE_CSV = "daily_catalyst_queue.csv"
 _QUEUE_JSONL = "daily_catalyst_queue_enriched.jsonl"
+_QUEUE_HTML = "daily_catalyst_queue.html"
 
 _CSV_COLS = [
     "ticker", "event_date", "filing_form_type", "constructed_url",
@@ -80,7 +81,115 @@ _CSV_COLS = [
     "catalyst_type", "materiality", "sentiment", "confidence",
     "validation_status", "quote_validation_pass", "final_should_affect_score",
     "evidence_quote",
+    # interpretation layer (deterministic, no LLM)
+    "expected_direction", "expected_move_summary", "expected_timeframe",
+    "action_guidance", "action_reason", "key_checks", "priced_in_risk",
+    # score decomposition (read-only from scores table)
+    "cheap_score", "quality_score", "catalyst_score",
+    "momentum_score", "sentiment_score", "risk_penalty_score",
+    "major_positives", "major_negatives",
+    # scaled shadow adjustment (deterministic v0)
+    "days_since_event", "deal_spread_pct",
+    "static_adjustment", "scaled_adjustment",
+    "evidence_confidence", "impact_estimate",
+    "adjustment_reason", "risk_adjustment",
+    "time_decay_applied", "scaled_shadow_score",
 ]
+
+
+def _enrich_with_interpretation(queue_entries: list[dict]) -> None:
+    """Add deterministic interpretation fields to each entry in-place."""
+    from missed.catalyst_interpretation import interpret_catalyst
+    for entry in queue_entries:
+        entry.update(interpret_catalyst(entry))
+
+
+_COMPONENT_KEYS = ("cheap_score", "quality_score", "catalyst_score",
+                   "momentum_score", "sentiment_score", "risk_penalty")
+_COMPONENT_WEIGHTS = {
+    "cheap_score": 0.30, "quality_score": 0.25, "catalyst_score": 0.25,
+    "momentum_score": 0.10, "sentiment_score": 0.10,
+}
+_POSITIVE_THRESHOLD = 65.0
+_NEGATIVE_THRESHOLD = 35.0
+
+
+def _enrich_queue_with_score_components(
+    conn,
+    queue_entries: list[dict],
+) -> None:
+    """Add component score fields and major_positives/negatives to each entry in-place.
+
+    Reads from the scores table (read-only). Never modifies production scores.
+    """
+    if not queue_entries:
+        return
+
+    tickers = list({e["ticker"] for e in queue_entries if e.get("ticker")})
+    if not tickers:
+        return
+
+    try:
+        placeholders = ", ".join("?" * len(tickers))
+        rows = conn.execute(
+            f"""
+            SELECT ticker, cheap_score, quality_score, catalyst_score,
+                   momentum_score, sentiment_score, risk_penalty
+            FROM scores
+            WHERE ticker IN ({placeholders})
+            """,
+            tickers,
+        ).fetchall()
+    except Exception:
+        return
+
+    by_ticker: dict[str, dict] = {}
+    cols = ("ticker", "cheap_score", "quality_score", "catalyst_score",
+            "momentum_score", "sentiment_score", "risk_penalty")
+    for row in rows:
+        d = dict(zip(cols, row))
+        by_ticker[d["ticker"]] = d
+
+    for entry in queue_entries:
+        t = entry.get("ticker", "")
+        comp = by_ticker.get(t)
+        if not comp:
+            continue
+
+        entry["cheap_score"] = comp.get("cheap_score")
+        entry["quality_score"] = comp.get("quality_score")
+        entry["catalyst_score"] = comp.get("catalyst_score")
+        entry["momentum_score"] = comp.get("momentum_score")
+        entry["sentiment_score"] = comp.get("sentiment_score")
+        entry["risk_penalty_score"] = comp.get("risk_penalty")
+
+        positives = []
+        negatives = []
+        for key in ("cheap_score", "quality_score", "catalyst_score",
+                    "momentum_score", "sentiment_score"):
+            v = comp.get(key)
+            if v is None:
+                continue
+            label = key.replace("_score", "")
+            if v >= _POSITIVE_THRESHOLD:
+                positives.append(label)
+            elif v <= _NEGATIVE_THRESHOLD:
+                negatives.append(label)
+
+        risk = comp.get("risk_penalty")
+        if risk is not None and risk >= 40:
+            negatives.append("risk")
+
+        entry["major_positives"] = "; ".join(positives)
+        entry["major_negatives"] = "; ".join(negatives)
+
+
+def _enrich_with_scaled_adjustment(queue_entries: list[dict]) -> None:
+    """Add scaled shadow adjustment fields to each entry in-place (shadow-only)."""
+    from missed.catalyst_adjustment import compute_scaled_catalyst_adjustment
+    for entry in queue_entries:
+        adj = compute_scaled_catalyst_adjustment(entry)
+        entry.update(adj)
 
 
 def build_daily_queue(
@@ -176,9 +285,24 @@ def build_daily_queue(
         orig_tier = shadow.get("original_tier") or sample_meta.get("current_tier", "")
         shadow_tier = shadow.get("shadow_tier", orig_tier)
 
+        # Compute days since event for time-decay model
+        event_date_raw = r.get("event_date", "")
+        try:
+            if isinstance(event_date_raw, str) and event_date_raw:
+                ed = date.fromisoformat(event_date_raw[:10])
+            elif hasattr(event_date_raw, "date"):
+                ed = event_date_raw.date()
+            elif hasattr(event_date_raw, "year"):
+                ed = event_date_raw
+            else:
+                ed = None
+            days_since = (date.today() - ed).days if ed else 0
+        except (ValueError, TypeError):
+            days_since = 0
+
         entry = {
             "ticker": ticker,
-            "event_date": r.get("event_date", ""),
+            "event_date": event_date_raw,
             "filing_form_type": sample_meta.get("filing_form_type"),
             "constructed_url": sample_meta.get("constructed_url"),
             "catalyst_type": r.get("catalyst_type", ""),
@@ -195,6 +319,8 @@ def build_daily_queue(
             "shadow_score": shadow_score,
             "shadow_tier": shadow_tier,
             "tier_move": shadow.get("tier_move", ""),
+            "days_since_event": days_since,
+            "deal_spread_pct": r.get("deal_spread_pct"),
         }
         queue_entries.append(entry)
 
@@ -204,6 +330,9 @@ def build_daily_queue(
         return (-has_crossing, -e["shadow_score"])
 
     queue_entries.sort(key=_sort_key)
+    _enrich_with_interpretation(queue_entries)
+    _enrich_queue_with_score_components(conn, queue_entries)
+    _enrich_with_scaled_adjustment(queue_entries)
 
     n_promoted = sum(1 for e in queue_entries if e["final_should_affect_score"])
     n_crossings = sum(1 for e in queue_entries if e.get("tier_move") and "→C" in e["tier_move"])
@@ -244,8 +373,14 @@ def generate_queue_report(
     output_dir: str,
     *,
     run_metadata: dict | None = None,
+    history_root: str | None = None,
+    html_path: str | None = None,
 ) -> tuple[str, str, str]:
-    """Write md + csv + enriched.jsonl artifacts. Returns (md_path, csv_path, jsonl_path)."""
+    """Write md + csv + enriched.jsonl artifacts. Returns (md_path, csv_path, jsonl_path).
+
+    If history_root is given, archives artifacts to history_root/YYYY-MM-DD/.
+    If html_path is given, it is included in the archive.
+    """
     os.makedirs(output_dir, exist_ok=True)
     meta = run_metadata or {}
     now = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -309,6 +444,18 @@ def generate_queue_report(
                 f" | {e['llm_adjustment']:+.1f} | {_display_catalyst_type(e)}"
                 f" | {e['confidence']:.2f} | {quote} |"
             )
+            direction = e.get("expected_direction", "")
+            guidance = e.get("action_guidance", "")
+            timeframe = e.get("expected_timeframe", "")
+            key_checks = e.get("key_checks", "")
+            if direction or guidance:
+                lines += [
+                    "",
+                    f"  > **Action guidance:** {guidance} &nbsp;|&nbsp;"
+                    f" **Direction:** {direction} &nbsp;|&nbsp;"
+                    f" **Timeframe:** {timeframe}",
+                    f"  > **Key checks:** {key_checks}" if key_checks else "",
+                ]
         lines.append("")
 
     if valid_no_cross:
@@ -408,4 +555,204 @@ def generate_queue_report(
         for r in revalidated:
             f.write(json.dumps(r) + "\n")
 
+    # ── History archive ───────────────────────────────────────────────────────
+    if history_root:
+        from missed.catalyst_history import archive_run
+        run_time_str = meta.get("run_time", "")
+        run_date = run_time_str[:10] if run_time_str else datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+        archive_run(history_root, run_date, md_path, csv_path, jsonl_path, meta, html_path=html_path)
+
     return md_path, csv_path, jsonl_path
+
+
+# ── HTML report artifact ──────────────────────────────────────────────────────
+
+def generate_html_report(
+    queue_entries: list[dict],
+    revalidated: list[dict],
+    output_dir: str,
+    *,
+    run_metadata: dict | None = None,
+) -> str:
+    """Write daily_catalyst_queue.html. Returns the file path."""
+    os.makedirs(output_dir, exist_ok=True)
+    meta = run_metadata or {}
+    now_str = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    run_time = meta.get("run_time", now_str)
+    if isinstance(run_time, str) and "T" in run_time:
+        run_time = run_time[:16].replace("T", " ") + " UTC"
+
+    promoted = [e for e in queue_entries if e.get("final_should_affect_score")]
+    crossings = [e for e in promoted if e.get("tier_move") and "→C" in str(e["tier_move"])]
+    valid_no_cross = [e for e in promoted if not e.get("tier_move")]
+    bearish = [e for e in queue_entries
+               if not e.get("final_should_affect_score") and e.get("sentiment") == "bearish"
+               and (e.get("llm_adjustment") or 0) < 0]
+    weak = [e for e in queue_entries
+            if e.get("validation_status") in ("weak_evidence", "invalid_quote", "neutral_sentiment")]
+
+    source_avail = _source_available_str(meta, revalidated)
+
+    def _esc(s: str) -> str:
+        return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    def _link(e: dict) -> str:
+        url = e.get("constructed_url") or ""
+        t = _esc(e.get("ticker", ""))
+        return f'<a href="{_esc(url)}">{t}</a>' if url else t
+
+    def _interpretation_block(e: dict) -> str:
+        direction = _esc(e.get("expected_direction", ""))
+        guidance = _esc(e.get("action_guidance", ""))
+        timeframe = _esc(e.get("expected_timeframe", ""))
+        move = _esc(e.get("expected_move_summary", ""))
+        checks = _esc(e.get("key_checks", ""))
+        priced = _esc(e.get("priced_in_risk", ""))
+        if not (direction or guidance):
+            return ""
+        return (
+            f'<div class="interp">'
+            f'<span class="interp-item"><strong>Action:</strong> {guidance}</span> '
+            f'<span class="interp-item"><strong>Direction:</strong> {direction}</span> '
+            f'<span class="interp-item"><strong>Timeframe:</strong> {timeframe}</span> '
+            f'<span class="interp-item"><strong>Priced-in risk:</strong> {priced}</span>'
+            f'<br><span class="interp-note">{move}</span>'
+            + (f'<br><strong>Key checks:</strong> {checks}' if checks else "")
+            + f'</div>'
+        )
+
+    def _adj_cell(e: dict) -> str:
+        """Show both static LLM adj and scaled adj side-by-side."""
+        llm = e.get("llm_adjustment", 0.0) or 0.0
+        scaled = e.get("scaled_adjustment")
+        if scaled is not None:
+            return f'{llm:+.1f} / <em>{scaled:+.2f}s</em>'
+        return f'{llm:+.1f}'
+
+    def _crossing_row(e: dict) -> str:
+        quote = _esc(_safe_cell(e.get("evidence_quote", ""), max_len=250))
+        url = e.get("constructed_url") or ""
+        sec = f' <a href="{_esc(url)}">[SEC]</a>' if url else ""
+        interp = _interpretation_block(e)
+        scaled_score = e.get("scaled_shadow_score")
+        shadow_cell = (
+            f'<strong>{e.get("shadow_score", 0):.1f}</strong>'
+            + (f'<br><small style="color:#388e3c">{scaled_score:.1f}s</small>'
+               if scaled_score is not None else "")
+        )
+        return (
+            f'<tr class="crossing">'
+            f'<td>{_link(e)}</td>'
+            f'<td>{e.get("original_score", 0):.1f}</td>'
+            f'<td>{shadow_cell}</td>'
+            f'<td>{_adj_cell(e)}</td>'
+            f'<td>{_esc(_display_catalyst_type(e))}</td>'
+            f'<td>{e.get("confidence", 0):.2f}</td>'
+            f'<td class="quote">{quote}{sec}'
+            + (f'<br>{interp}' if interp else "")
+            + f'</td>'
+            f'</tr>'
+        )
+
+    def _valid_row(e: dict) -> str:
+        return (
+            f'<tr>'
+            f'<td>{_link(e)}</td>'
+            f'<td>{e.get("original_score", 0):.1f}</td>'
+            f'<td>{e.get("shadow_score", 0):.1f}</td>'
+            f'<td>{_adj_cell(e)}</td>'
+            f'<td>{_esc(e.get("original_tier", ""))}</td>'
+            f'<td>{_esc(e.get("shadow_tier", ""))}</td>'
+            f'<td>{_esc(_display_catalyst_type(e))}</td>'
+            f'</tr>'
+        )
+
+    def _bearish_row(e: dict) -> str:
+        return (
+            f'<tr class="bearish">'
+            f'<td>{_link(e)}</td>'
+            f'<td>{e.get("original_score", 0):.1f}</td>'
+            f'<td>{e.get("shadow_score", 0):.1f}</td>'
+            f'<td>{_adj_cell(e)}</td>'
+            f'<td>{_esc(_display_catalyst_type(e))}</td>'
+            f'</tr>'
+        )
+
+    crossing_rows = "\n".join(_crossing_row(e) for e in crossings)
+    valid_rows = "\n".join(_valid_row(e) for e in valid_no_cross)
+    bearish_rows = "\n".join(_bearish_row(e) for e in bearish)
+    weak_rows_html = "\n".join(
+        f'<tr><td>{_esc(e.get("ticker",""))}</td>'
+        f'<td>{_esc(e.get("catalyst_type",""))}</td>'
+        f'<td>{_esc(e.get("validation_status",""))}</td></tr>'
+        for e in weak
+    )
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MHDE Catalyst Queue — {_esc(run_time)}</title>
+<style>
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:720px;margin:0 auto;padding:16px;color:#222;}}
+h1{{font-size:1.4rem;margin-bottom:4px;}}
+h2{{font-size:1.1rem;margin-top:24px;border-bottom:1px solid #ddd;padding-bottom:4px;}}
+.disclaimer{{background:#fff3e0;border-left:4px solid #ff9800;padding:8px 12px;margin:12px 0;font-size:.9rem;}}
+table{{border-collapse:collapse;width:100%;font-size:.88rem;margin:8px 0;}}
+th,td{{padding:6px 8px;text-align:left;border-bottom:1px solid #eee;}}
+th{{background:#f5f5f5;font-weight:600;}}
+tr.crossing{{background:#e8f5e9;}}
+tr.bearish{{background:#fce4ec;}}
+.quote{{max-width:280px;word-break:break-word;}}
+details summary{{cursor:pointer;color:#555;}}
+a{{color:#1565c0;}}
+.interp{{margin-top:6px;padding:6px 8px;background:rgba(255,255,255,.6);border-left:3px solid #1565c0;font-size:.82rem;}}
+.interp-item{{margin-right:12px;display:inline-block;}}
+.interp-note{{color:#555;font-style:italic;}}
+</style>
+</head>
+<body>
+<h1>MHDE Catalyst Queue</h1>
+<div class="disclaimer">&#9888; <strong>Shadow-only</strong> — production scores were not changed.</div>
+<p style="color:#666;font-size:.85rem;">Generated: {_esc(run_time)}</p>
+
+<h2>Summary</h2>
+<table>
+<tr><th>Metric</th><th>Count</th></tr>
+<tr><td>Sampled near-threshold events</td><td>{meta.get('sampled', len(queue_entries))}</td></tr>
+<tr><td>Source text available (≥200 chars)</td><td>{_esc(source_avail)}</td></tr>
+<tr><td>LLM classified</td><td>{meta.get('classified', len(queue_entries))}</td></tr>
+<tr><td>Valid + actionable (promoted)</td><td>{len(promoted)}</td></tr>
+<tr><td>Reject→C tier crossings</td><td>{len(crossings)}</td></tr>
+<tr><td>Bearish downgrades</td><td>{len(bearish)}</td></tr>
+<tr><td>Weak / rejected evidence</td><td>{len(weak)}</td></tr>
+</table>
+
+<h2>Reject→C Tier Crossings</h2>
+{"<table><tr><th>Ticker</th><th>Orig</th><th>Shadow</th><th>Adj (llm/s)</th><th>Catalyst</th><th>Conf</th><th>Evidence</th></tr>" + crossing_rows + "</table>" if crossings else "<p><em>None in this run.</em></p>"}
+
+<h2>Valid but No Tier Change</h2>
+{"<table><tr><th>Ticker</th><th>Orig</th><th>Shadow</th><th>Adj (llm/s)</th><th>Orig Tier</th><th>Shadow Tier</th><th>Catalyst</th></tr>" + valid_rows + "</table>" if valid_no_cross else "<p><em>None.</em></p>"}
+
+<h2>Bearish Downgrades</h2>
+{"<table><tr><th>Ticker</th><th>Orig</th><th>Shadow</th><th>Adj (llm/s)</th><th>Catalyst</th></tr>" + bearish_rows + "</table>" if bearish else "<p><em>None in this run.</em></p>"}
+
+<h2>Weak / Rejected Evidence</h2>
+<details><summary>{len(weak)} entries — click to expand</summary>
+{"<table><tr><th>Ticker</th><th>Catalyst Type</th><th>Status</th></tr>" + weak_rows_html + "</table>" if weak else "<p><em>None.</em></p>"}
+</details>
+
+<h2>Run Metadata</h2>
+<table>
+<tr><td>Score range</td><td>{meta.get('score_min', 40.0):.1f}–{meta.get('score_max', 44.9):.1f}</td></tr>
+<tr><td>Provider</td><td>{_esc(str(meta.get('provider', '—')))}</td></tr>
+<tr><td>Run time</td><td>{_esc(run_time)}</td></tr>
+</table>
+</body>
+</html>"""
+
+    html_path = os.path.join(output_dir, _QUEUE_HTML)
+    with open(html_path, "w") as f:
+        f.write(html)
+    return html_path
