@@ -24,5 +24,5 @@ sources:
     status: stub
     description: Retail sentiment and message volume (not yet implemented)
   gdelt:
-    status: stub
-    description: Global news and event data (not yet implemented)
+    status: experimental
+    description: Global news and event data via GDELT 2.0 free API

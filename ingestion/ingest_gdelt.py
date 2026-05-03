@@ -96,15 +96,38 @@ def fetch_gdelt_articles(
 # ---------------------------------------------------------------------------
 # Orchestrator-compatible class (used by ingestion.orchestrator)
 # ---------------------------------------------------------------------------
-from ingestion.base_ingestor import StubIngestor  # noqa: E402
+from ingestion.base_ingestor import BaseIngestor  # noqa: E402
 
 
-class GDELTIngestor(StubIngestor):
-    """GDELT ingestor — exposes fetch_gdelt_articles via the BaseIngestor interface."""
+class GDELTIngestor(BaseIngestor):
+    """Experimental GDELT news ingestor. Error-isolated -- never raises."""
 
     source_name = "gdelt"
+    source_status = "experimental"
 
-    def ingest(self, conn, run_id, tickers):
-        self.logger.info("gdelt: class-based ingest delegates to fetch_gdelt_articles")
-        self.log_run(conn, run_id, "news", "stub", 0, 0, 0)
-        return {"source": self.source_name, "status": "stub", "records": 0}
+    def __init__(self, cfg: dict | None = None):
+        self.cfg = cfg or {}
+        self.logger = logging.getLogger(f"mhde.ingestion.{self.source_name}")
+
+    def ingest(self, conn=None, run_id=None, tickers=None, *, query="", start_date="", end_date="", **kwargs) -> dict:
+        """Ingest GDELT news.
+
+        Supports two calling conventions:
+        - Orchestrator: ingest(conn, run_id, tickers)  — uses tickers[0] as query if no query given
+        - Direct/test:  ingest(query=..., start_date=..., end_date=...)
+        """
+        if not query and tickers:
+            query = " OR ".join(tickers[:5])
+        try:
+            articles = fetch_gdelt_articles(
+                query=query, start_date=start_date, end_date=end_date
+            )
+            n = len(articles)
+            if conn is not None and run_id is not None:
+                self.log_run(conn, run_id, "news", "experimental", n, n, 0)
+            return {"source": self.source_name, "status": "experimental_ok", "records": n}
+        except Exception as exc:
+            logger.warning("gdelt_ingestor: %s -- %s", query, exc)
+            if conn is not None and run_id is not None:
+                self.log_run(conn, run_id, "news", "experimental_error", 0, 0, 0, str(exc))
+            return {"source": self.source_name, "status": "experimental_error", "records": 0, "error": str(exc)}
