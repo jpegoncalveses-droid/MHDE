@@ -206,4 +206,44 @@ def check_score_distribution_quality(conn: duckdb.DuckDBPyConnection) -> list[di
             ),
         })
 
+    # Valuation input coverage breakdown
+    tickers = [r[0] for r in conn.execute(
+        "SELECT DISTINCT ticker FROM scores WHERE run_id=? AND tier != 'Incomplete'", [run_id]
+    ).fetchall()]
+    if tickers:
+        ph = ",".join(["?"] * len(tickers))
+        n_t = len(tickers)
+        with_price = conn.execute(
+            f"SELECT COUNT(DISTINCT ticker) FROM prices_daily WHERE ticker IN ({ph})", tickers
+        ).fetchone()[0]
+        with_rev = conn.execute(
+            f"SELECT COUNT(DISTINCT ticker) FROM fundamentals_raw WHERE ticker IN ({ph})"
+            " AND concept IN ('us-gaap/Revenues','us-gaap/RevenueFromContractWithCustomerExcludingAssessedTax','us-gaap/SalesRevenueNet')",
+            tickers,
+        ).fetchone()[0]
+        with_eps = conn.execute(
+            f"SELECT COUNT(DISTINCT ticker) FROM fundamentals_raw WHERE ticker IN ({ph})"
+            " AND concept IN ('us-gaap/EarningsPerShareDiluted','us-gaap/EarningsPerShareBasic')",
+            tickers,
+        ).fetchone()[0]
+        ps_count = conn.execute(
+            "SELECT COUNT(DISTINCT ticker) FROM features WHERE run_id=? AND feature_name='ps_proxy' AND feature_score IS NOT NULL",
+            [run_id],
+        ).fetchone()[0]
+        pe_count = conn.execute(
+            "SELECT COUNT(DISTINCT ticker) FROM features WHERE run_id=? AND feature_name='pe_ratio' AND feature_score IS NOT NULL",
+            [run_id],
+        ).fetchone()[0]
+        results.append({
+            "check_name": "valuation_input_coverage",
+            "status": "pass" if with_price > 0 else "warn",
+            "severity": "low",
+            "message": (
+                f"Valuation inputs ({n_t} scored tickers): "
+                f"price={with_price}, revenue={with_rev}, EPS={with_eps} | "
+                f"P/S computed={ps_count}, P/E computed={pe_count}. "
+                + ("Price data limited — Polygon free tier or API key missing." if with_price < n_t // 2 else "")
+            ),
+        })
+
     return results

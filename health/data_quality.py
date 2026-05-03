@@ -26,13 +26,18 @@ def check_price_data(conn: duckdb.DuckDBPyConnection) -> dict:
         latest, tickers = row if row else (None, 0)
         if not latest or tickers == 0:
             return {"check_name": "price_data", "status": "warn", "severity": "medium",
-                    "message": "No price data. Run 'ingest all' with POLYGON_API_KEY."}
+                    "message": "No price data. Run 'ingest all' (Stooq fallback requires no API key)."}
         lag = (date.today() - latest).days
+        # Break down by source
+        source_rows = conn.execute(
+            "SELECT source, COUNT(DISTINCT ticker) FROM prices_daily GROUP BY source ORDER BY source"
+        ).fetchall()
+        source_summary = ", ".join(f"{s or 'unknown'}:{c}" for s, c in source_rows)
         if lag > 5:
             return {"check_name": "price_data", "status": "warn", "severity": "medium",
-                    "message": f"Price data is {lag}d stale (latest: {latest}, {tickers} tickers)"}
+                    "message": f"Price data is {lag}d stale (latest: {latest}, {tickers} tickers) [{source_summary}]"}
         return {"check_name": "price_data", "status": "pass", "severity": "low",
-                "message": f"Price data: {tickers} tickers, latest {latest}"}
+                "message": f"Price data: {tickers} tickers, latest {latest} [{source_summary}]"}
     except Exception as exc:
         return {"check_name": "price_data", "status": "skip", "severity": "low",
                 "message": f"Could not check: {exc}"}

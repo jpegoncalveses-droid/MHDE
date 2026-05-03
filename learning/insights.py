@@ -179,17 +179,26 @@ def _check_stale_data_pattern(conn: duckdb.DuckDBPyConnection, insights: list[di
     ).fetchone()
     if not row or row[0] < 2:
         return
+    # Suppress suggestion if a covering experiment already exists (proposed/rejected/etc.)
+    existing = conn.execute(
+        """
+        SELECT COUNT(*) FROM scorecard_experiments
+        WHERE hypothesis ILIKE '%stale_data%' OR hypothesis ILIKE '%stale data%'
+        """
+    ).fetchone()
+    suggest = None if (existing and existing[0] > 0) else {
+        "hypothesis": "Increase stale_data penalty in risk_score when fundamentals > 90 days old",
+        "proposed_change": {"stale_data_threshold_days": 90, "stale_data_penalty": 15},
+        "affected_components": ["features/risk.py"],
+        "expected_effect": "Higher risk penalty for stale-data candidates, fewer bad_data false positives",
+    }
     insights.append({
         "category": "data_quality",
         "message": f"{row[0]} candidates failed due to bad or stale data. "
-                   "Address source data quality before changing score weights.",
+                   "Address XBRL concept selection, foreign filer currency, and industry-specific "
+                   "financial logic before changing score weights. See experiment history.",
         "severity": "high",
-        "suggested_experiment": {
-            "hypothesis": "Increase stale_data penalty in risk_score when fundamentals > 90 days old",
-            "proposed_change": {"stale_data_threshold_days": 90, "stale_data_penalty": 15},
-            "affected_components": ["features/risk.py"],
-            "expected_effect": "Higher risk penalty for stale-data candidates, fewer bad_data false positives",
-        },
+        "suggested_experiment": suggest,
     })
 
 
