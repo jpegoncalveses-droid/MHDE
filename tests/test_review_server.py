@@ -882,3 +882,51 @@ def test_ops_requires_auth(tmp_path):
     with a.test_client() as c:
         r = c.get("/ops")
     assert r.status_code == 401
+
+
+def test_candidates_requires_auth(tmp_path):
+    from review.server import create_app
+    import os
+    history_root = str(tmp_path / "history")
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir, exist_ok=True)
+    a = create_app(history_root, output_dir, unsafe_no_auth=False)
+    with a.test_client() as c:
+        r = c.get("/candidates")
+    assert r.status_code == 401
+
+
+def test_today_shows_pva_counts(tmp_path):
+    import csv, os
+    from review.server import create_app
+    history_root = str(tmp_path / "history")
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir, exist_ok=True)
+    _write_day(history_root, "2026-01-01", _BASE_META, [_CROSSING_ROW])
+    pva_path = os.path.join(output_dir, "prediction_vs_actual_rows.csv")
+    with open(pva_path, "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=["ticker","event_date","return_value","window_days","classification"])
+        w.writeheader()
+        w.writerow({"ticker":"AAAB","event_date":"2026-01-01","return_value":"0.1","window_days":"5","classification":"true_miss"})
+        w.writerow({"ticker":"AAAC","event_date":"2026-01-01","return_value":"0.05","window_days":"5","classification":"near_threshold"})
+    a = create_app(history_root, output_dir, unsafe_no_auth=True)
+    with a.test_client() as c:
+        r = c.get("/today")
+    assert r.status_code == 200
+    html = r.data.decode()
+    assert "true_miss" in html or "True Miss" in html or "true miss" in html.lower()
+
+
+def test_today_shows_warning_when_pva_missing(tmp_path):
+    import os
+    from review.server import create_app
+    history_root = str(tmp_path / "history")
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir, exist_ok=True)
+    _write_day(history_root, "2026-01-01", _BASE_META, [_CROSSING_ROW])
+    a = create_app(history_root, output_dir, unsafe_no_auth=True)
+    with a.test_client() as c:
+        r = c.get("/today")
+    assert r.status_code == 200
+    html = r.data.decode()
+    assert "warn" in html.lower() or "missing" in html.lower() or "prediction" in html.lower()

@@ -648,10 +648,13 @@ def _today_page(history_root: str, output_dir: str) -> str:
     meta = _read_metadata(history_root, latest)
 
     crossings = sum(1 for r in entries if _is_crossing(r))
-    needs_review = sum(
-        1 for r in entries
-        if not r.get("analyst_decision") or r.get("analyst_decision") == "unknown"
-    )
+    reviews = _read_reviews(history_root, latest)
+    promoted_entries = [r for r in entries if _is_promoted(r)]
+    needs_review = [
+        r for r in promoted_entries
+        if reviews.get(r.get("ticker"), {}).get("analyst_decision", "unknown") in ("", "unknown")
+    ]
+    watch_count = sum(1 for v in reviews.values() if v.get("analyst_decision") == "watch")
 
     pva_path = Path(output_dir) / "prediction_vs_actual_rows.csv"
     pva_counts: dict[str, int] = {}
@@ -679,16 +682,14 @@ def _today_page(history_root: str, output_dir: str) -> str:
         _stat("Latest Run", latest)
         + _stat("Entries", len(entries))
         + _stat("Reject→C", crossings)
-        + _stat("Needs Review", needs_review)
+        + _stat("Needs Review", len(needs_review))
+        + _stat("Watch", watch_count)
         + _stat("True Miss", pva_counts.get("true_miss", "—"))
         + _stat("Near Threshold", pva_counts.get("near_threshold", "—"))
         + _stat("Scored Missed", pva_counts.get("scored_missed", "—"))
     )
 
-    top_rows = [
-        r for r in entries
-        if not r.get("analyst_decision") or r.get("analyst_decision") == "unknown"
-    ][:10]
+    top_rows = needs_review[:10]
 
     review_table = ""
     if top_rows:
