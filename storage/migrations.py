@@ -8,7 +8,7 @@ from storage.db import init_schema
 
 logger = logging.getLogger("mhde.storage.migrations")
 
-_CURRENT_VERSION = 4
+_CURRENT_VERSION = 6
 
 
 def run_migrations(conn: duckdb.DuckDBPyConnection) -> None:
@@ -55,3 +55,36 @@ def run_migrations(conn: duckdb.DuckDBPyConnection) -> None:
             "INSERT INTO schema_version (version, description) VALUES (3, 'Add applied_by + backtest_notes to scorecard_experiments') ON CONFLICT DO NOTHING"
         )
         logger.info("Applied migration v3: scorecard_experiments governance columns")
+
+    if current < 5:
+        existing = {
+            r[0] for r in conn.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'companies'"
+            ).fetchall()
+        }
+        for col, typedef in (
+            ("active_sec_reporter", "BOOLEAN DEFAULT true"),
+            ("last_financial_filing_date", "DATE"),
+            ("has_financial_reporting_forms", "BOOLEAN DEFAULT true"),
+            ("universe_exclusion_reason", "VARCHAR"),
+        ):
+            if col not in existing:
+                conn.execute(f"ALTER TABLE companies ADD COLUMN {col} {typedef}")
+        conn.execute(
+            "INSERT INTO schema_version (version, description) VALUES (5, 'Add universe quality guard columns to companies') ON CONFLICT DO NOTHING"
+        )
+        logger.info("Applied migration v5: universe quality guard columns")
+
+    if current < 6:
+        existing_cols = {
+            r[0] for r in conn.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'candidate_outcomes'"
+            ).fetchall()
+        }
+        for col in ("forward_return_3d", "forward_return_10d"):
+            if col not in existing_cols:
+                conn.execute(f"ALTER TABLE candidate_outcomes ADD COLUMN {col} DOUBLE")
+        conn.execute(
+            "INSERT INTO schema_version (version, description) VALUES (6, 'Add forward_return_3d and forward_return_10d to candidate_outcomes') ON CONFLICT DO NOTHING"
+        )
+        logger.info("Applied migration v6: forward_return_3d/10d on candidate_outcomes")

@@ -49,9 +49,15 @@ def compute_forward_returns(
         return max(p / ref_price - 1.0 for p in window)
 
     result: dict = {}
-    for days, key in [(1, "forward_return_1d"), (5, "forward_return_5d"),
-                      (20, "forward_return_20d"), (60, "forward_return_60d"),
-                      (120, "forward_return_120d")]:
+    for days, key in [
+        (1, "forward_return_1d"),
+        (3, "forward_return_3d"),
+        (5, "forward_return_5d"),
+        (10, "forward_return_10d"),
+        (20, "forward_return_20d"),
+        (60, "forward_return_60d"),
+        (120, "forward_return_120d"),
+    ]:
         v = ret_at(days)
         if v is not None:
             result[key] = v

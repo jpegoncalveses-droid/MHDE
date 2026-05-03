@@ -21,6 +21,10 @@ CREATE TABLE IF NOT EXISTS companies (
     market_cap DOUBLE,
     last_seen_at TIMESTAMP,
     universe_tier VARCHAR DEFAULT 'extended',
+    active_sec_reporter BOOLEAN DEFAULT true,
+    last_financial_filing_date DATE,
+    has_financial_reporting_forms BOOLEAN DEFAULT true,
+    universe_exclusion_reason VARCHAR,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -219,7 +223,9 @@ CREATE TABLE IF NOT EXISTS candidate_outcomes (
     total_score DOUBLE,
     reference_price DOUBLE,
     forward_return_1d DOUBLE,
+    forward_return_3d DOUBLE,
     forward_return_5d DOUBLE,
+    forward_return_10d DOUBLE,
     forward_return_20d DOUBLE,
     forward_return_60d DOUBLE,
     forward_return_120d DOUBLE,
@@ -396,6 +402,71 @@ CREATE TABLE IF NOT EXISTS scorecard_experiments (
     applied_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS missed_opportunity_events (
+    event_id VARCHAR PRIMARY KEY,
+    ticker VARCHAR NOT NULL,
+    event_date DATE NOT NULL,
+    event_type VARCHAR NOT NULL,
+    return_value DOUBLE,
+    window_days INTEGER,
+    reference_price DOUBLE,
+    peak_price DOUBLE,
+    was_in_universe BOOLEAN DEFAULT false,
+    was_scored BOOLEAN DEFAULT false,
+    score_before_event DOUBLE,
+    tier_before_event VARCHAR,
+    was_rejected BOOLEAN DEFAULT false,
+    was_incomplete BOOLEAN DEFAULT false,
+    had_catalyst_evidence BOOLEAN DEFAULT false,
+    investigation_status VARCHAR DEFAULT 'pending',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS missed_opportunity_investigations (
+    investigation_id VARCHAR PRIMARY KEY,
+    event_id VARCHAR NOT NULL,
+    ticker VARCHAR NOT NULL,
+    event_date DATE NOT NULL,
+    root_causes_json VARCHAR,
+    primary_root_cause VARCHAR,
+    text_enrichment_needed BOOLEAN DEFAULT false,
+    text_enrichment_reason VARCHAR,
+    text_evidence_available BOOLEAN,
+    nvidia_enrichment_status VARCHAR DEFAULT 'not_needed',
+    nvidia_summary_id VARCHAR,
+    openai_critique_status VARCHAR DEFAULT 'not_needed',
+    openai_critique_id VARCHAR,
+    summary VARCHAR,
+    experiment_proposed BOOLEAN DEFAULT false,
+    experiment_id VARCHAR,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS missed_opportunity_root_causes (
+    rc_id VARCHAR PRIMARY KEY,
+    investigation_id VARCHAR NOT NULL,
+    ticker VARCHAR NOT NULL,
+    event_date DATE NOT NULL,
+    root_cause VARCHAR NOT NULL,
+    confidence DOUBLE,
+    evidence VARCHAR,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS promotion_gate_results (
+    gate_result_id VARCHAR PRIMARY KEY,
+    experiment_id VARCHAR,
+    model_run_id VARCHAR,
+    gate_name VARCHAR NOT NULL,
+    status VARCHAR NOT NULL,
+    metric_value DOUBLE,
+    threshold DOUBLE,
+    passed BOOLEAN NOT NULL,
+    notes VARCHAR,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS health_checks (

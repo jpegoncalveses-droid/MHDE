@@ -41,7 +41,8 @@ def update_forward_returns(
     returns: dict,
 ) -> None:
     fields = [
-        "forward_return_1d", "forward_return_5d", "forward_return_20d",
+        "forward_return_1d", "forward_return_3d", "forward_return_5d",
+        "forward_return_10d", "forward_return_20d",
         "forward_return_60d", "forward_return_120d",
         "max_drawdown_20d", "max_drawdown_60d",
         "max_runup_20d", "max_runup_60d",
