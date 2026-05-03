@@ -2326,6 +2326,40 @@ def _ops_page(history_root: str, output_dir: str) -> str:
             + ". Set the required environment variables before running the pipeline.</div>"
         )
 
+    # Data coverage section (best-effort — never raises)
+    coverage_html = "<h3>Data Coverage</h3>"
+    _db_candidates = [
+        os.path.join(os.path.dirname(os.path.abspath(output_dir)), "data", "mhde.duckdb"),
+        os.path.join(output_dir, "..", "mhde.duckdb"),
+        "data/mhde.duckdb",
+    ]
+    _db_found = next((p for p in _db_candidates if os.path.exists(p)), None)
+    if _db_found:
+        try:
+            import duckdb as _duckdb
+            from health.data_freshness import compute_freshness, freshness_summary
+            _conn = _duckdb.connect(_db_found, read_only=True)
+            _results = compute_freshness(_conn)
+            _conn.close()
+            _s = freshness_summary(_results)
+            _total = _s["total"] or 1
+            coverage_html += (
+                "<table>"
+                "<tr><th>Metric</th><th>Count</th><th>%</th></tr>"
+                f"<tr><td>Active tickers</td><td>{_s['total']}</td><td>100%</td></tr>"
+                f"<tr><td>Has prices</td><td>{_s['has_prices']}</td><td>{_s['has_prices']/_total*100:.1f}%</td></tr>"
+                f"<tr><td>Has fundamentals</td><td>{_s['has_fundamentals']}</td><td>{_s['has_fundamentals']/_total*100:.1f}%</td></tr>"
+                f"<tr><td>Has market_cap</td><td>{_s['has_market_cap']}</td><td>{_s['has_market_cap']/_total*100:.1f}%</td></tr>"
+                f"<tr><td>Fresh (&le;10d)</td><td>{_s['fresh']}</td><td>{_s['fresh']/_total*100:.1f}%</td></tr>"
+                f"<tr><td>Stale (&gt;10d)</td><td>{_s['stale']}</td><td>{_s['stale']/_total*100:.1f}%</td></tr>"
+                f"<tr><td>Missing prices</td><td>{_s['missing']}</td><td>{_s['missing']/_total*100:.1f}%</td></tr>"
+                "</table>"
+            )
+        except Exception as _exc:
+            coverage_html += f"<p>Coverage unavailable: {_esc(str(_exc))}</p>"
+    else:
+        coverage_html += "<p>No database found. Run: <code>main.py coverage-report</code></p>"
+
     body = (
         '<h2>Ops</h2>'
         f'<p><strong>Latest run:</strong> {_esc(latest_run)}</p>'
@@ -2335,6 +2369,7 @@ def _ops_page(history_root: str, output_dir: str) -> str:
         + "".join(artifact_rows)
         + '</table>'
         + env_warn
+        + coverage_html
         + '<h2>Systemd Timers</h2>'
         + timer_html
         + nav

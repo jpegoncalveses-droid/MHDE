@@ -2126,3 +2126,22 @@ def test_tradability_no_scoring_change(tmp_path):
     # Score should be identical in both renders
     assert "35.00" in html_before
     assert "35.00" in html_after
+
+
+# ── Task 3: /ops coverage section ─────────────────────────────────────────
+
+def test_ops_shows_coverage_section(tmp_path):
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/ops")
+    assert r.status_code == 200
+    html = r.data.decode()
+    assert "coverage" in html.lower() or "fresh" in html.lower() or "prices" in html.lower()
+
+
+def test_ops_coverage_no_db_crash(tmp_path):
+    # /ops must not crash when no DB is present
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/ops")
+    assert r.status_code == 200
