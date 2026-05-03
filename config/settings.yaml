@@ -48,3 +48,14 @@ cftc:
   disag_url: https://publicreporting.cftc.gov/resource/kh3c-gbw2.json
   rate_limit_delay: 0.5
   history_weeks: 4
+
+# Feature flags — all disabled by default.
+# To enable a flag for shadow testing, set its value to true here.
+# WARNING: enabling a flag may cause shadow scores to diverge from production scores.
+# No flag should ever be enabled without a corresponding governance proposal.
+feature_flags:
+  scaled_catalyst_adjustment: false
+  sector_momentum_boost: false
+  earnings_surprise_boost: false
+  news_contract_boost: false
+  risk_haircut: false
