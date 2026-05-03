@@ -39,15 +39,12 @@ def _event(conn, ticker, window_days, return_value=15.0, *,
          tier if was_scored else None],
     )
     if universe_tier and was_in_universe:
-        try:
-            conn.execute(
-                """INSERT INTO companies (ticker, company_name, universe_tier, is_active)
-                   VALUES (?, ?, ?, true)
-                   ON CONFLICT (ticker) DO UPDATE SET universe_tier = excluded.universe_tier""",
-                [ticker, ticker, universe_tier],
-            )
-        except Exception:
-            pass
+        conn.execute(
+            """INSERT INTO companies (ticker, company_name, universe_tier, is_active)
+               VALUES (?, ?, ?, true)
+               ON CONFLICT (ticker) DO UPDATE SET universe_tier = excluded.universe_tier""",
+            [ticker, ticker, universe_tier],
+        )
 
 
 def test_1d_spikes_rank_above_longer_moves(conn):

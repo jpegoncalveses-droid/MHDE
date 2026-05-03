@@ -69,6 +69,7 @@ def classify_row(row: dict) -> str:
 
 
 def _root_cause_hint(classification: str, row: dict) -> str:
+    """Map classification label to a deterministic root cause hint string."""
     if classification == "universe_miss":
         return "universe_gap"
     if classification == "unscored_mover":
