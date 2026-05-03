@@ -50,7 +50,7 @@ Code path on every `pipelines/daily_radar.py` run:
 7. `universe/universe_builder.py:68-74` walks the *filtered SEC list in CIK order*
    and appends each unseen ticker as `universe_tier = "extended"` until
    `max_symbols` (currently 500) is reached.
-8. `universe/universe_builder.py:78-110` upserts all of them into `companies`.
+8. `universe/universe_builder.py:78-112` upserts all of them into `companies`.
 
 `exchange`, `sector`, `industry`, and `market_cap` are never written.
 
@@ -145,6 +145,8 @@ Free tier rate limit: 5 req/sec — ~100s for 500 tickers. Refresh weekly, since
 market_cap and sector change slowly. Polygon adapter scaffolding already exists
 in `adapters/polygon.py`.
 
+**Note:** Polygon free tier requires account registration and an API key (`POLYGON_API_KEY`). This is already wired in `adapters/polygon.py` and `config/sources.yaml` — if the key is set, Option B can reuse it.
+
 This is *not* required for the S&P 500 universe fix and should be a separate
 task. It unblocks sector-relative features and market-cap weighting later.
 
@@ -215,6 +217,7 @@ not change weights, thresholds, or tier assignment logic.
 | Tickers with `.` or `-` (BRK.B, BF.B) currently rejected by `filters.py:53` | When loaded via `fallback_tickers`, the ticker bypasses `filter_non_equities` entirely. They will be inserted but `SECIngestor` may need a CIK from the YAML to fetch filings. Document this as a known follow-up. |
 | `max_symbols=500` truncates fallback list | Bump to 510 in `config/universe.yaml`; make `max_symbols` a soft cap that never drops `primary`-tier rows in a future patch. |
 | Non-S&P 500 tickers continue to be scored alongside | Acceptable; `extended` tier still has signal. A future task can add a `--tier primary` CLI flag if desired. |
+| S&P rebalance removals leave `is_active = true` | `universe_builder.py` upserts `is_active = true` for YAML members but has no step to set `is_active = false` for tickers removed from the YAML. Add a reconciliation step: after upserting, set `is_active = false` for any `universe_tier='primary'` ticker NOT in the current YAML. |
 
 ## What This Does NOT Fix
 
@@ -223,3 +226,4 @@ not change weights, thresholds, or tier assignment logic.
 - Sector-sympathy features, sector rotation, market-cap-weighted aggregates are
   still impossible — they depend on Option B.
 - These are explicitly deferred to a follow-up brief.
+- Deactivation of removed primary-tier tickers — after each YAML update, run a reconciliation query to set `is_active = false` for any `universe_tier='primary'` ticker no longer in the current YAML.
