@@ -247,7 +247,11 @@ def test_write_csv_has_header_and_rows(conn, tmp_path):
 from main import cli
 
 
-def test_data_inventory_cli(tmp_path):
+def test_data_inventory_cli(tmp_path, monkeypatch):
+    import storage.config as _cfg_mod
+    test_db = str(tmp_path / "test.duckdb")
+    monkeypatch.setattr(_cfg_mod, "load_engine_config", lambda: {"db_path": test_db})
+
     runner = CliRunner()
     docs_out = str(tmp_path / "data_inventory.md")
     csv_out = str(tmp_path / "data_inventory_summary.csv")
@@ -261,7 +265,14 @@ def test_data_inventory_cli(tmp_path):
         "--base-dir", base_dir,
     ])
 
-    assert result.exit_code == 0, f"CLI failed: {result.output}\n{result.exception}"
+    import traceback as _tb
+    _exc_tb = (
+        "".join(_tb.format_exception(
+            type(result.exception), result.exception, result.exception.__traceback__
+        ))
+        if result.exception else ""
+    )
+    assert result.exit_code == 0, f"CLI failed:\n{result.output}\n{_exc_tb}"
     assert os.path.exists(docs_out), "Markdown output not created"
     assert os.path.exists(csv_out), "CSV output not created"
 
