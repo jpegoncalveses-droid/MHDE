@@ -372,7 +372,19 @@ def _homepage(history_root: str, output_dir: str) -> str:
         ]
     )
 
+    nav = (
+        '<nav style="margin-bottom:18px">'
+        '<a href="/today"><strong>Today</strong></a> &nbsp;|&nbsp; '
+        '<a href="/candidates">Candidates</a> &nbsp;|&nbsp; '
+        '<a href="/moves">Moves</a> &nbsp;|&nbsp; '
+        '<a href="/learning">Learning</a> &nbsp;|&nbsp; '
+        '<a href="/ops">Ops</a> &nbsp;|&nbsp; '
+        '<a href="/runs">All runs</a>'
+        '</nav>'
+    )
+
     body = f"""
+{nav}
 <h2>Latest Run — {_esc(latest)}</h2>
 <table><tr><th>Field</th><th>Value</th></tr>{rows}</table>
 {review_summary}
@@ -381,6 +393,8 @@ def _homepage(history_root: str, output_dir: str) -> str:
   <a href="/runs">All historical runs</a>
   &nbsp;|&nbsp;
   <a href="/runs/{_esc(latest)}">View this run</a>
+  &nbsp;|&nbsp;
+  <a href="/today">Dashboard</a>
 </p>
 """
     return _render("MHDE Catalyst Review", body)
