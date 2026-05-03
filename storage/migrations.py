@@ -8,7 +8,7 @@ from storage.db import init_schema
 
 logger = logging.getLogger("mhde.storage.migrations")
 
-_CURRENT_VERSION = 6
+_CURRENT_VERSION = 7
 
 
 def run_migrations(conn: duckdb.DuckDBPyConnection) -> None:
@@ -88,3 +88,27 @@ def run_migrations(conn: duckdb.DuckDBPyConnection) -> None:
             "INSERT INTO schema_version (version, description) VALUES (6, 'Add forward_return_3d and forward_return_10d to candidate_outcomes') ON CONFLICT DO NOTHING"
         )
         logger.info("Applied migration v6: forward_return_3d/10d on candidate_outcomes")
+
+    if current < 7:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS earnings_estimates (
+                ticker VARCHAR NOT NULL,
+                fiscal_date DATE NOT NULL,
+                reported_eps DOUBLE,
+                estimated_eps DOUBLE,
+                surprise_eps DOUBLE,
+                surprise_pct DOUBLE,
+                reported_revenue DOUBLE,
+                estimated_revenue DOUBLE,
+                revenue_surprise_pct DOUBLE,
+                guidance_direction VARCHAR,
+                source VARCHAR NOT NULL DEFAULT 'alpha_vantage',
+                ingested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(ticker, fiscal_date, source)
+            )
+        """)
+        conn.execute(
+            "INSERT INTO schema_version (version, description) "
+            "VALUES (7, 'Add earnings_estimates table') ON CONFLICT DO NOTHING"
+        )
+        logger.info("Applied migration v7: earnings_estimates table")
