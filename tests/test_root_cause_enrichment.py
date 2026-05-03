@@ -1,6 +1,7 @@
 """Root-cause enrichment — TDD suite."""
 from __future__ import annotations
 
+import csv
 import uuid
 from datetime import date, timedelta
 
@@ -286,7 +287,7 @@ def test_near_threshold_good_catalyst_yields_near_threshold_scored(conn):
 # ---------------------------------------------------------------------------
 
 def test_generate_enrichment_report_writes_csv_and_md(tmp_path, conn):
-    from missed.root_cause_enrichment import enrich_rows, generate_enrichment_report
+    from missed.root_cause_enrichment import _ENRICHMENT_EXTRA_COLS, enrich_rows, generate_enrichment_report
 
     rows = [_row(classification="universe_miss", was_in_universe=False)]
     enriched = enrich_rows(rows, conn)
@@ -294,6 +295,12 @@ def test_generate_enrichment_report_writes_csv_and_md(tmp_path, conn):
 
     assert csv_path.exists(), "CSV not written"
     assert md_path.exists(), "MD not written"
+
+    with open(csv_path, newline="") as f:
+        reader = csv.DictReader(f)
+        header = reader.fieldnames or []
+    for col in _ENRICHMENT_EXTRA_COLS:
+        assert col in header, f"Missing enrichment column: {col}"
 
 
 # ---------------------------------------------------------------------------
@@ -339,3 +346,43 @@ def test_no_production_score_mutation(conn):
     assert row is not None and row[0] == 55.0, (
         f"Score was mutated: expected 55.0, got {row}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Test 15: low quality score → low_quality_score
+# ---------------------------------------------------------------------------
+
+def test_low_quality_score_yields_low_quality_score(conn):
+    from missed.root_cause_enrichment import enrich_rows
+
+    event_date = date.today() - timedelta(days=5)
+    score_date = (event_date - timedelta(days=1)).isoformat()
+    _insert_score(conn, "TST", score_date, catalyst_score=50.0, quality_score=30.0)
+
+    row = _row(
+        event_date=event_date,
+        classification="true_miss",
+        tier_before_event="Reject",
+        score_before_event=35.0,
+        had_catalyst_evidence=True,
+    )
+    enriched = enrich_rows([row], conn)[0]
+    assert enriched["enriched_root_cause"] == "low_quality_score"
+    assert enriched["root_cause_group"] == "scoring_gap"
+
+
+# ---------------------------------------------------------------------------
+# Test 16: unknown fallback when no score data in DB
+# ---------------------------------------------------------------------------
+
+def test_unknown_fallback_when_no_score_data(conn):
+    from missed.root_cause_enrichment import enrich_rows
+
+    row = _row(
+        classification="true_miss",
+        tier_before_event="Reject",
+        had_catalyst_evidence=True,
+        score_before_event=50.0,
+    )
+    enriched = enrich_rows([row], conn)[0]
+    assert enriched["enriched_root_cause"] == "unknown"
