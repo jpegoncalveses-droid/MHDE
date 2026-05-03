@@ -12,7 +12,10 @@ from datetime import date, timedelta
 import duckdb
 
 from missed.labels import (
+    GAIN_1D_THRESHOLD,
+    GAIN_3D_THRESHOLD,
     GAIN_5D_THRESHOLD,
+    GAIN_10D_THRESHOLD,
     GAIN_20D_THRESHOLD,
     GAIN_60D_THRESHOLD,
 )
@@ -31,7 +34,10 @@ def detect_missed_opportunities(
     cutoff = date.today() - timedelta(days=lookback_days)
     events: list[dict] = []
 
+    _detect_gains(conn, cutoff, 1, GAIN_1D_THRESHOLD, "gain_1d_5pct", events)
+    _detect_gains(conn, cutoff, 3, GAIN_3D_THRESHOLD, "gain_3d_8pct", events)
     _detect_gains(conn, cutoff, 5, GAIN_5D_THRESHOLD, "gain_5d_10pct", events)
+    _detect_gains(conn, cutoff, 10, GAIN_10D_THRESHOLD, "gain_10d_12pct", events)
     _detect_gains(conn, cutoff, 20, GAIN_20D_THRESHOLD, "gain_20d_20pct", events)
     _detect_gains(conn, cutoff, 60, GAIN_60D_THRESHOLD, "gain_60d_30pct", events)
     _detect_52wk_breakouts(conn, cutoff, events)
