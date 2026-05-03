@@ -76,3 +76,19 @@ venv/bin/python main.py missed daily-catalyst-queue \
     2>&1 | tail -20
 ls -la data/processed/daily_catalyst_digest.*
 ```
+
+## Part 6 — Install full daily analysis timer
+
+```bash
+sudo cp /home/jpcg/MHDE/.claude/local_scripts/systemd_deploy/mhde-daily-analysis.service /etc/systemd/system/
+sudo cp /home/jpcg/MHDE/.claude/local_scripts/systemd_deploy/mhde-daily-analysis.timer /etc/systemd/system/
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now mhde-daily-analysis.timer
+
+# Verify timer is scheduled
+systemctl list-timers | grep mhde-daily-analysis
+
+# Dry-run smoke test (skips data ingestion, uses cached results):
+MHDE_DAILY_SKIP_INGESTION=true /home/jpcg/MHDE/.claude/local_scripts/run_mhde_daily_analysis.sh
+```

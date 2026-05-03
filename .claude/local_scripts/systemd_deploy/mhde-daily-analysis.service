@@ -1,0 +1,16 @@
+[Unit]
+Description=MHDE Daily Analysis
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=jpcg
+Group=jpcg
+WorkingDirectory=/home/jpcg/MHDE
+ExecStart=/home/jpcg/MHDE/.claude/local_scripts/run_mhde_daily_analysis.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

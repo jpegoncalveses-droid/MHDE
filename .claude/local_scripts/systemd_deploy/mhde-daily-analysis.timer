@@ -1,0 +1,10 @@
+[Unit]
+Description=MHDE Daily Analysis Timer
+Requires=mhde-daily-analysis.service
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 23:15:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target
