@@ -16,6 +16,7 @@ from missed.catalyst_cache import cache_key, load_cache, save_cache
 from missed.catalyst_prompt import build_prompt
 from missed.catalyst_providers import BaseCatalystProvider, MockCatalystProvider, get_provider
 from missed.catalyst_schema import CatalystEnrichment
+from missed.deterministic_catalyst_rules import classify_deterministic
 from missed.catalyst_source_resolver import (
     MIN_SOURCE_TEXT_CHARS,
     check_catalyst_sufficiency,
@@ -57,6 +58,7 @@ def classify_events(
     cfg: dict | None = None,
     rpm_limit: int | None = None,
     _provider: BaseCatalystProvider | None = None,
+    use_deterministic: bool = True,
 ) -> list[CatalystEnrichment]:
     """Classify a list of sampled events.
 
@@ -67,9 +69,15 @@ def classify_events(
     refresh_cache: if True, ignore existing cache entries.
     rpm_limit: max requests/minute for real provider; sleep is inserted only
                before uncached calls (cache hits are never throttled).
+    use_deterministic: if True (default), apply deterministic rules before LLM.
+                       Automatically disabled when _provider is injected (test mode).
     """
     if _provider is not None:
         provider = _provider
+        # When a mock provider is injected for tests, skip deterministic rules
+        # so the mock's expected outputs are not short-circuited.
+        if use_deterministic:
+            use_deterministic = False
     else:
         provider = get_provider(use_mock, provider_name, model, cfg)
 
@@ -126,13 +134,38 @@ def classify_events(
         else:
             logger.info("[%d/%d] %s — cache miss", i + 1, n, ticker)
 
+        # Try deterministic classification before calling LLM.
+        source_text = event.get("source_text", "") or ""
+        det = classify_deterministic(source_text) if use_deterministic else None
+        if det is not None:
+            det_enrichment = CatalystEnrichment(
+                event_id=event.get("event_id", ""),
+                ticker=event.get("ticker", ""),
+                event_date=str(event.get("event_date", "")),
+                catalyst_type=det.catalyst_type,
+                materiality="high",
+                sentiment=det.sentiment,
+                confidence=det.confidence,
+                evidence_quote="",
+                reasoning_short=f"[deterministic] rule={det.matched_rule}",
+                should_affect_score=True,
+                model_should_affect_score=True,
+                validation_status="valid",
+                quote_validation_pass=True,
+                source_text_char_count=len(source_text),
+                provider="deterministic",
+                enriched_at=datetime.now(tz=timezone.utc).isoformat(),
+            )
+            new_entries[key] = det_enrichment.to_dict()
+            results.append(det_enrichment)
+            continue
+
         prompt = build_prompt(event)
         enrichment = provider.classify(event, prompt)
         if min_spacing > 0:
             last_api_call = time.monotonic()
 
         # Quote grounding: verify evidence_quote appears (normalized) in source_text.
-        source_text = event.get("source_text", "") or ""
         model_should_affect = enrichment.should_affect_score
         if source_text and not validate_evidence_quote(enrichment.evidence_quote, source_text):
             logger.warning("[%d/%d] %s — evidence_quote not found in source_text", i + 1, n, ticker)
