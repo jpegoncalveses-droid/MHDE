@@ -103,3 +103,57 @@ def test_universe_miss_classification(conn):
     found = [r for r in rows if r["ticker"] == "NOTINUNIV"]
     assert found, "NOTINUNIV should appear"
     assert found[0]["classification"] == "universe_miss"
+
+
+def test_report_contains_required_sections(tmp_path, conn):
+    """Markdown report must contain all 7 required section headings."""
+    from missed.prediction_report import generate_prediction_report
+    _event(conn, "AAA", window_days=1)
+    _event(conn, "BBB", window_days=10, universe_tier="primary")
+    md_path, _, _ = generate_prediction_report(conn, output_dir=str(tmp_path))
+    md = Path(md_path).read_text()
+    required = [
+        "# Prediction vs Actual Spike Report",
+        "## Summary",
+        "## 1-Day Spikes",
+        "## 3d / 10d Spikes",
+        "## Longer Windows",
+        "## Out-of-Universe Spikes",
+        "## Near-Threshold Scores",
+        "## No-Score Events",
+    ]
+    for heading in required:
+        assert heading in md, f"Missing section heading: {heading!r}"
+
+
+def test_csv_contains_required_columns(tmp_path, conn):
+    """CSV must contain all required columns."""
+    from missed.prediction_report import generate_prediction_report, _CSV_COLS
+    _event(conn, "CCC", window_days=5)
+    _, csv_path, _ = generate_prediction_report(conn, output_dir=str(tmp_path))
+    with open(csv_path, newline="") as f:
+        reader = csv.DictReader(f)
+        header = reader.fieldnames or []
+    for col in _CSV_COLS:
+        assert col in header, f"Missing CSV column: {col!r}"
+
+
+def test_no_production_score_mutation(tmp_path, conn):
+    """generate_prediction_report must not alter the scores table."""
+    from missed.prediction_report import generate_prediction_report
+    score_id = uuid.uuid4().hex[:16]
+    run_id = uuid.uuid4().hex[:16]
+    conn.execute(
+        """INSERT INTO scores
+           (id, run_id, ticker, as_of_date, total_score, tier)
+           VALUES (?, ?, 'SCORE_TEST', CURRENT_DATE, 55.0, 'C')""",
+        [score_id, run_id],
+    )
+    _event(conn, "SCORE_TEST", window_days=5)
+    generate_prediction_report(conn, output_dir=str(tmp_path))
+    row = conn.execute(
+        "SELECT total_score FROM scores WHERE id = ?", [score_id]
+    ).fetchone()
+    assert row is not None and row[0] == 55.0, (
+        f"Score was mutated: expected 55.0, got {row}"
+    )

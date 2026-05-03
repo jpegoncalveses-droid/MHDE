@@ -552,6 +552,28 @@ def missed_run(lookback_days, output):
         conn.close()
 
 
+@missed.command("prediction-vs-actual")
+@click.option("--output-dir", default="data/processed", show_default=True,
+              help="Directory for output artifacts.")
+@click.option("--lookback-days", default=90, type=int, show_default=True,
+              help="Days of events to include.")
+def missed_prediction_vs_actual(output_dir, lookback_days):
+    """Daily learning report: MHDE predictions vs actual movers."""
+    from missed.prediction_report import generate_prediction_report
+
+    cfg, conn = _engine_setup()
+    try:
+        md_path, csv_path, jsonl_path = generate_prediction_report(
+            conn, output_dir=output_dir, lookback_days=lookback_days
+        )
+        click.echo("Prediction-vs-actual report written:")
+        click.echo(f"  Markdown: {md_path}")
+        click.echo(f"  CSV:      {csv_path}")
+        click.echo(f"  JSONL:    {jsonl_path}")
+    finally:
+        conn.close()
+
+
 @missed.command("pilot")
 @click.option("--n", default=100, type=int, show_default=True,
               help="Number of events to sample.")

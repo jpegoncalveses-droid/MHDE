@@ -114,3 +114,85 @@ def build_rows(
 
     result.sort(key=lambda r: -r["priority_score"])
     return result
+
+
+def _section_lines(title: str, events: list[dict]) -> list[str]:
+    lines = ["---", "", f"## {title}", ""]
+    if events:
+        lines += [
+            "| Ticker | Return | Window | Score | Tier | Universe | Classification | Root Cause |",
+            "|--------|--------|--------|-------|------|----------|----------------|------------|",
+        ]
+        for e in events:
+            score = f"{e['score_before_event']:.1f}" if e.get("score_before_event") is not None else "—"
+            tier = e.get("tier_before_event") or "—"
+            ut = e.get("universe_tier") or "—"
+            lines.append(
+                f"| {e['ticker']} | +{e['return_value']:.1f}% | {e['window_days']}d"
+                f" | {score} | {tier} | {ut} | `{e['classification']}` | {e['root_cause_hint']} |"
+            )
+    else:
+        lines.append("_(no events in this window)_")
+    lines.append("")
+    return lines
+
+
+def generate_prediction_report(
+    conn: duckdb.DuckDBPyConnection,
+    output_dir: str = "data/processed",
+    *,
+    lookback_days: int = 90,
+) -> tuple[Path, Path, Path]:
+    """Generate prediction-vs-actual report artifacts.
+
+    Returns (md_path, csv_path, jsonl_path). Shadow-only — no scores written.
+    """
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    today = date.today().isoformat()
+
+    rows = build_rows(conn, lookback_days=lookback_days)
+    label_counts = Counter(r["classification"] for r in rows)
+
+    lines: list[str] = [
+        "# Prediction vs Actual Spike Report",
+        "",
+        f"Generated: {today} | Lookback: {lookback_days}d | Total events: {len(rows)}",
+        "",
+        "> **Shadow-only: no production scores were changed.**",
+        "",
+        "---",
+        "",
+        "## Summary",
+        "",
+        "| Classification | Count |",
+        "|----------------|-------|",
+    ]
+    for label in ("scored_correct", "scored_missed", "near_threshold",
+                  "true_miss", "unscored_mover", "universe_miss"):
+        lines.append(f"| `{label}` | {label_counts.get(label, 0)} |")
+    lines.append("")
+
+    lines += _section_lines("1-Day Spikes", [r for r in rows if r.get("window_days") == 1])
+    lines += _section_lines("3d / 10d Spikes", [r for r in rows if r.get("window_days") in (3, 10)])
+    lines += _section_lines("Longer Windows (20d / 60d)", [r for r in rows if r.get("window_days") in (20, 60)])
+    lines += _section_lines("Out-of-Universe Spikes", [r for r in rows if r["classification"] == "universe_miss"])
+    lines += _section_lines("Near-Threshold Scores", [r for r in rows if r["classification"] == "near_threshold"])
+    lines += _section_lines("No-Score Events", [r for r in rows if r["classification"] in ("unscored_mover", "true_miss")])
+
+    md_path = out / _REPORT_MD
+    md_path.write_text("\n".join(lines) + "\n")
+
+    csv_path = out / _REPORT_CSV
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=_CSV_COLS, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+
+    jsonl_path = out / _REPORT_JSONL
+    with open(jsonl_path, "w") as f:
+        for r in rows:
+            f.write(json.dumps(r, default=str) + "\n")
+
+    logger.info("Prediction-vs-actual report: %s (%d rows)", md_path, len(rows))
+    return md_path, csv_path, jsonl_path
