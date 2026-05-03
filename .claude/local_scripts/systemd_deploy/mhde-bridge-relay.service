@@ -1,0 +1,18 @@
+[Unit]
+Description=MHDE bridge relay — Unix socket /tmp/mhde-relay/proxy.sock → 127.0.0.1:8765
+After=network.target mhde-review-server.service
+Wants=mhde-review-server.service
+
+[Service]
+Type=simple
+User=jpcg
+Group=jpcg
+ExecStartPre=/bin/mkdir -p /tmp/mhde-relay
+ExecStart=/home/jpcg/MHDE/venv/bin/python /home/jpcg/.claude/local_scripts/mhde_bridge_relay.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,22 @@
+[Unit]
+Description=MHDE Catalyst Review Server (read-only, loopback)
+After=network.target
+
+[Service]
+Type=simple
+User=jpcg
+Group=jpcg
+WorkingDirectory=/home/jpcg/MHDE
+EnvironmentFile=-/home/jpcg/MHDE/.env
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py missed review-server \
+    --host 127.0.0.1 \
+    --port 8765 \
+    --history-root data/processed/catalyst_queue_history \
+    --output-dir data/processed
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

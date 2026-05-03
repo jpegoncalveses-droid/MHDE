@@ -1,0 +1,12 @@
+mhde.duckdns.org {
+    reverse_proxy 127.0.0.1:8765
+}
+
+# Notes:
+# - DuckDNS subdomain mhde.duckdns.org must point to the VPS public IP
+#   (configure in the DuckDNS dashboard: https://www.duckdns.org/)
+# - Caddy handles HTTPS automatically via Let's Encrypt
+# - The review server stays bound to 127.0.0.1:8765 (never exposed directly)
+# - Auth is enforced by REVIEW_UI_USERNAME and REVIEW_UI_PASSWORD env vars
+# - Do NOT disable TLS — public HTTPS is required (Caddy auto-provisions it)
+# - Do NOT include the DuckDNS token in this file

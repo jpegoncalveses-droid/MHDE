@@ -1,0 +1,12 @@
+[Unit]
+Description=MHDE Daily Catalyst Queue Runner
+After=network.target
+
+[Service]
+Type=oneshot
+User=YOUR_USER
+WorkingDirectory=/path/to/MHDE
+EnvironmentFile=-/path/to/MHDE/.env
+ExecStart=/path/to/MHDE/.claude/local_scripts/run_daily_catalyst_queue.sh
+StandardOutput=journal
+StandardError=journal

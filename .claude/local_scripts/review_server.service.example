@@ -1,0 +1,19 @@
+[Unit]
+Description=MHDE Catalyst Review Server
+After=network.target
+
+[Service]
+Type=simple
+User=YOUR_USER
+WorkingDirectory=/path/to/MHDE
+EnvironmentFile=-/path/to/MHDE/.env
+ExecStart=/path/to/MHDE/venv/bin/python main.py missed review-server \
+    --host 127.0.0.1 \
+    --port 8765 \
+    --history-root data/processed/catalyst_queue_history \
+    --output-dir data/processed
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

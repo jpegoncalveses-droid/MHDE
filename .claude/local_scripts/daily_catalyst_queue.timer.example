@@ -1,0 +1,10 @@
+[Unit]
+Description=MHDE Daily Catalyst Queue Timer
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 23:15:00 UTC
+# Note: does not skip US market holidays
+Persistent=true
+
+[Install]
+WantedBy=timers.target
