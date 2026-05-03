@@ -1,0 +1,2518 @@
+last_updated: '2026-05-03'
+source: https://en.wikipedia.org/wiki/List_of_S%26P_500_companies
+tickers:
+- ticker: MMM
+  company_name: 3M
+  sector: Industrials
+  industry: Industrial Conglomerates
+  cik: '0000066740'
+- ticker: AOS
+  company_name: A. O. Smith
+  sector: Industrials
+  industry: Building Products
+  cik: 0000091142
+- ticker: ABT
+  company_name: Abbott Laboratories
+  sector: Health Care
+  industry: Health Care Equipment
+  cik: 0000001800
+- ticker: ABBV
+  company_name: AbbVie
+  sector: Health Care
+  industry: Biotechnology
+  cik: '0001551152'
+- ticker: ACN
+  company_name: Accenture
+  sector: Information Technology
+  industry: IT Consulting &amp; Other Services
+  cik: '0001467373'
+- ticker: ADBE
+  company_name: Adobe Inc.
+  sector: Information Technology
+  industry: Application Software
+  cik: 0000796343
+- ticker: AMD
+  company_name: Advanced Micro Devices
+  sector: Information Technology
+  industry: Semiconductors
+  cik: 0000002488
+- ticker: AES
+  company_name: AES Corporation
+  sector: Utilities
+  industry: Independent Power Producers &amp; Energy Traders
+  cik: 0000874761
+- ticker: AFL
+  company_name: Aflac
+  sector: Financials
+  industry: Life &amp; Health Insurance
+  cik: 0000004977
+- ticker: A
+  company_name: Agilent Technologies
+  sector: Health Care
+  industry: Life Sciences Tools &amp; Services
+  cik: 0001090872
+- ticker: APD
+  company_name: Air Products
+  sector: Materials
+  industry: Industrial Gases
+  cik: 0000002969
+- ticker: ABNB
+  company_name: Airbnb
+  sector: Consumer Discretionary
+  industry: Hotels, Resorts &amp; Cruise Lines
+  cik: 0001559720
+- ticker: AKAM
+  company_name: Akamai Technologies
+  sector: Information Technology
+  industry: Internet Services &amp; Infrastructure
+  cik: 0001086222
+- ticker: ALB
+  company_name: Albemarle Corporation
+  sector: Materials
+  industry: Specialty Chemicals
+  cik: 0000915913
+- ticker: ARE
+  company_name: Alexandria Real Estate Equities
+  sector: Real Estate
+  industry: Office REITs
+  cik: '0001035443'
+- ticker: ALGN
+  company_name: Align Technology
+  sector: Health Care
+  industry: Health Care Supplies
+  cik: 0001097149
+- ticker: ALLE
+  company_name: Allegion
+  sector: Industrials
+  industry: Building Products
+  cik: 0001579241
+- ticker: LNT
+  company_name: Alliant Energy
+  sector: Utilities
+  industry: Electric Utilities
+  cik: '0000352541'
+- ticker: ALL
+  company_name: Allstate
+  sector: Financials
+  industry: Property &amp; Casualty Insurance
+  cik: 0000899051
+- ticker: GOOGL
+  company_name: Alphabet Inc. (Class A)
+  sector: Communication Services
+  industry: Interactive Media &amp; Services
+  cik: '0001652044'
+- ticker: GOOG
+  company_name: Alphabet Inc. (Class C)
+  sector: Communication Services
+  industry: Interactive Media &amp; Services
+  cik: '0001652044'
+- ticker: MO
+  company_name: Altria
+  sector: Consumer Staples
+  industry: Tobacco
+  cik: 0000764180
+- ticker: AMZN
+  company_name: Amazon
+  sector: Consumer Discretionary
+  industry: Broadline Retail
+  cik: 0001018724
+- ticker: AMCR
+  company_name: Amcor
+  sector: Materials
+  industry: Paper &amp; Plastic Packaging Products &amp; Materials
+  cik: 0001748790
+- ticker: AEE
+  company_name: Ameren
+  sector: Utilities
+  industry: Multi-Utilities
+  cik: 0001002910
+- ticker: AEP
+  company_name: American Electric Power
+  sector: Utilities
+  industry: Electric Utilities
+  cik: 0000004904
+- ticker: AXP
+  company_name: American Express
+  sector: Financials
+  industry: Consumer Finance
+  cik: 0000004962
+- ticker: AIG
+  company_name: American International Group
+  sector: Financials
+  industry: Multi-line Insurance
+  cik: '0000005272'
+- ticker: AMT
+  company_name: American Tower
+  sector: Real Estate
+  industry: Telecom Tower REITs
+  cik: '0001053507'
+- ticker: AWK
+  company_name: American Water Works
+  sector: Utilities
+  industry: Water Utilities
+  cik: '0001410636'
+- ticker: AMP
+  company_name: Ameriprise Financial
+  sector: Financials
+  industry: Asset Management &amp; Custody Banks
+  cik: 0000820027
+- ticker: AME
+  company_name: Ametek
+  sector: Industrials
+  industry: Electrical Components &amp; Equipment
+  cik: 0001037868
+- ticker: AMGN
+  company_name: Amgen
+  sector: Health Care
+  industry: Biotechnology
+  cik: 0000318154
+- ticker: APH
+  company_name: Amphenol
+  sector: Information Technology
+  industry: Electronic Components
+  cik: 0000820313
+- ticker: ADI
+  company_name: Analog Devices
+  sector: Information Technology
+  industry: Semiconductors
+  cik: 0000006281
+- ticker: AON
+  company_name: Aon plc
+  sector: Financials
+  industry: Insurance Brokers
+  cik: 0000315293
+- ticker: APA
+  company_name: APA Corporation
+  sector: Energy
+  industry: Oil &amp; Gas Exploration &amp; Production
+  cik: 0001841666
+- ticker: APO
+  company_name: Apollo Global Management
+  sector: Financials
+  industry: Asset Management &amp; Custody Banks
+  cik: 0001858681
+- ticker: AAPL
+  company_name: Apple Inc.
+  sector: Information Technology
+  industry: Technology Hardware, Storage &amp; Peripherals
+  cik: 0000320193
+- ticker: AMAT
+  company_name: Applied Materials
+  sector: Information Technology
+  industry: Semiconductor Materials &amp; Equipment
+  cik: 0000006951
+- ticker: APP
+  company_name: AppLovin
+  sector: Information Technology
+  industry: Application Software
+  cik: 0001751008
+- ticker: APTV
+  company_name: Aptiv
+  sector: Consumer Discretionary
+  industry: Automotive Parts &amp; Equipment
+  cik: '0001521332'
+- ticker: ACGL
+  company_name: Arch Capital Group
+  sector: Financials
+  industry: Property &amp; Casualty Insurance
+  cik: 0000947484
+- ticker: ADM
+  company_name: Archer Daniels Midland
+  sector: Consumer Staples
+  industry: Agricultural Products &amp; Services
+  cik: 0000007084
+- ticker: ARES
+  company_name: Ares Management
+  sector: Financials
+  industry: Asset Management &amp; Custody Banks
+  cik: 0001176948
+- ticker: ANET
+  company_name: Arista Networks
+  sector: Information Technology
+  industry: Communications Equipment
+  cik: 0001596532
+- ticker: AJG
+  company_name: Arthur J. Gallagher &amp; Co.
+  sector: Financials
+  industry: Insurance Brokers
+  cik: 0000354190
+- ticker: AIZ
+  company_name: Assurant
+  sector: Financials
+  industry: Multi-line Insurance
+  cik: 0001267238
+- ticker: T
+  company_name: AT&amp;T
+  sector: Communication Services
+  industry: Integrated Telecommunication Services
+  cik: '0000732717'
+- ticker: ATO
+  company_name: Atmos Energy
+  sector: Utilities
+  industry: Gas Utilities
+  cik: 0000731802
+- ticker: ADSK
+  company_name: Autodesk
+  sector: Information Technology
+  industry: Application Software
+  cik: 0000769397
+- ticker: ADP
+  company_name: Automatic Data Processing
+  sector: Industrials
+  industry: Human Resource &amp; Employment Services
+  cik: 0000008670
+- ticker: AZO
+  company_name: AutoZone
+  sector: Consumer Discretionary
+  industry: Automotive Retail
+  cik: 0000866787
+- ticker: AVB
+  company_name: AvalonBay Communities
+  sector: Real Estate
+  industry: Multi-Family Residential REITs
+  cik: 0000915912
+- ticker: AVY
+  company_name: Avery Dennison
+  sector: Materials
+  industry: Paper &amp; Plastic Packaging Products &amp; Materials
+  cik: 0000008818
+- ticker: AXON
+  company_name: Axon Enterprise
+  sector: Industrials
+  industry: Aerospace &amp; Defense
+  cik: 0001069183
+- ticker: BKR
+  company_name: Baker Hughes
+  sector: Energy
+  industry: Oil &amp; Gas Equipment &amp; Services
+  cik: '0001701605'
+- ticker: BALL
+  company_name: Ball Corporation
+  sector: Materials
+  industry: Metal, Glass &amp; Plastic Containers
+  cik: 0000009389
+- ticker: BAC
+  company_name: Bank of America
+  sector: Financials
+  industry: Diversified Banks
+  cik: 0000070858
+- ticker: BAX
+  company_name: Baxter International
+  sector: Health Care
+  industry: Health Care Equipment
+  cik: '0000010456'
+- ticker: BDX
+  company_name: Becton Dickinson
+  sector: Health Care
+  industry: Health Care Equipment
+  cik: 0000010795
+- ticker: BRK.B
+  company_name: Berkshire Hathaway
+  sector: Financials
+  industry: Multi-Sector Holdings
+  cik: 0001067983
+- ticker: BBY
+  company_name: Best Buy
+  sector: Consumer Discretionary
+  industry: Computer &amp; Electronics Retail
+  cik: 0000764478
+- ticker: TECH
+  company_name: Bio-Techne
+  sector: Health Care
+  industry: Life Sciences Tools &amp; Services
+  cik: 0000842023
+- ticker: BIIB
+  company_name: Biogen
+  sector: Health Care
+  industry: Biotechnology
+  cik: 0000875045
+- ticker: BLK
+  company_name: BlackRock
+  sector: Financials
+  industry: Asset Management &amp; Custody Banks
+  cik: 0002012383
+- ticker: BX
+  company_name: Blackstone Inc.
+  sector: Financials
+  industry: Asset Management &amp; Custody Banks
+  cik: 0001393818
+- ticker: XYZ
+  company_name: Block, Inc.
+  sector: Financials
+  industry: Transaction &amp; Payment Processing Services
+  cik: '0001512673'
+- ticker: BK
+  company_name: BNY Mellon
+  sector: Financials
+  industry: Asset Management &amp; Custody Banks
+  cik: 0001390777
+- ticker: BA
+  company_name: Boeing
+  sector: Industrials
+  industry: Aerospace &amp; Defense
+  cik: 0000012927
+- ticker: BKNG
+  company_name: Booking Holdings
+  sector: Consumer Discretionary
+  industry: Hotels, Resorts &amp; Cruise Lines
+  cik: '0001075531'
+- ticker: BSX
+  company_name: Boston Scientific
+  sector: Health Care
+  industry: Health Care Equipment
+  cik: 0000885725
+- ticker: BMY
+  company_name: Bristol Myers Squibb
+  sector: Health Care
+  industry: Pharmaceuticals
+  cik: '0000014272'
+- ticker: AVGO
+  company_name: Broadcom
+  sector: Information Technology
+  industry: Semiconductors
+  cik: 0001730168
+- ticker: BR
+  company_name: Broadridge Financial Solutions
+  sector: Industrials
+  industry: Data Processing &amp; Outsourced Services
+  cik: 0001383312
+- ticker: BRO
+  company_name: Brown &amp; Brown
+  sector: Financials
+  industry: Insurance Brokers
+  cik: 0000079282
+- ticker: BF.B
+  company_name: Brown–Forman
+  sector: Consumer Staples
+  industry: Distillers &amp; Vintners
+  cik: 0000014693
+- ticker: BLDR
+  company_name: Builders FirstSource
+  sector: Industrials
+  industry: Building Products
+  cik: 0001316835
+- ticker: BG
+  company_name: Bunge Global
+  sector: Consumer Staples
+  industry: Agricultural Products &amp; Services
+  cik: 0001996862
+- ticker: BXP
+  company_name: BXP, Inc.
+  sector: Real Estate
+  industry: Office REITs
+  cik: '0001037540'
+- ticker: CHRW
+  company_name: C.H. Robinson
+  sector: Industrials
+  industry: Air Freight &amp; Logistics
+  cik: '0001043277'
+- ticker: CDNS
+  company_name: Cadence Design Systems
+  sector: Information Technology
+  industry: Application Software
+  cik: 0000813672
+- ticker: CPT
+  company_name: Camden Property Trust
+  sector: Real Estate
+  industry: Multi-Family Residential REITs
+  cik: 0000906345
+- ticker: CPB
+  company_name: Campbell's Company (The)
+  sector: Consumer Staples
+  industry: Packaged Foods &amp; Meats
+  cik: '0000016732'
+- ticker: COF
+  company_name: Capital One
+  sector: Financials
+  industry: Consumer Finance
+  cik: 0000927628
+- ticker: CAH
+  company_name: Cardinal Health
+  sector: Health Care
+  industry: Health Care Distributors
+  cik: '0000721371'
+- ticker: CCL
+  company_name: Carnival
+  sector: Consumer Discretionary
+  industry: Hotels, Resorts &amp; Cruise Lines
+  cik: 0000815097
+- ticker: CARR
+  company_name: Carrier Global
+  sector: Industrials
+  industry: Building Products
+  cik: 0001783180
+- ticker: CVNA
+  company_name: Carvana
+  sector: Consumer Discretionary
+  industry: Automotive Retail
+  cik: 0001690820
+- ticker: CASY
+  company_name: Casey's
+  sector: Consumer Staples
+  industry: Food Retail
+  cik: 0000726958
+- ticker: CAT
+  company_name: Caterpillar Inc.
+  sector: Industrials
+  industry: Construction Machinery &amp; Heavy Transportation Equipment
+  cik: 0000018230
+- ticker: CBOE
+  company_name: Cboe Global Markets
+  sector: Financials
+  industry: Financial Exchanges &amp; Data
+  cik: '0001374310'
+- ticker: CBRE
+  company_name: CBRE Group
+  sector: Real Estate
+  industry: Real Estate Services
+  cik: 0001138118
+- ticker: CDW
+  company_name: CDW Corporation
+  sector: Information Technology
+  industry: Technology Distributors
+  cik: '0001402057'
+- ticker: COR
+  company_name: Cencora
+  sector: Health Care
+  industry: Health Care Distributors
+  cik: 0001140859
+- ticker: CNC
+  company_name: Centene Corporation
+  sector: Health Care
+  industry: Managed Health Care
+  cik: 0001071739
+- ticker: CNP
+  company_name: CenterPoint Energy
+  sector: Utilities
+  industry: Multi-Utilities
+  cik: '0001130310'
+- ticker: CF
+  company_name: CF Industries
+  sector: Materials
+  industry: Fertilizers &amp; Agricultural Chemicals
+  cik: '0001324404'
+- ticker: CRL
+  company_name: Charles River Laboratories
+  sector: Health Care
+  industry: Life Sciences Tools &amp; Services
+  cik: 0001100682
+- ticker: SCHW
+  company_name: Charles Schwab Corporation
+  sector: Financials
+  industry: Investment Banking &amp; Brokerage
+  cik: 0000316709
+- ticker: CHTR
+  company_name: Charter Communications
+  sector: Communication Services
+  industry: Cable &amp; Satellite
+  cik: 0001091667
+- ticker: CVX
+  company_name: Chevron Corporation
+  sector: Energy
+  industry: Integrated Oil &amp; Gas
+  cik: 0000093410
+- ticker: CMG
+  company_name: Chipotle Mexican Grill
+  sector: Consumer Discretionary
+  industry: Restaurants
+  cik: 0001058090
+- ticker: CB
+  company_name: Chubb Limited
+  sector: Financials
+  industry: Property &amp; Casualty Insurance
+  cik: 0000896159
+- ticker: CHD
+  company_name: Church &amp; Dwight
+  sector: Consumer Staples
+  industry: Household Products
+  cik: 0000313927
+- ticker: CIEN
+  company_name: Ciena
+  sector: Information Technology
+  industry: Communications Equipment
+  cik: 0000936395
+- ticker: CI
+  company_name: Cigna
+  sector: Health Care
+  industry: Health Care Services
+  cik: 0001739940
+- ticker: CINF
+  company_name: Cincinnati Financial
+  sector: Financials
+  industry: Property &amp; Casualty Insurance
+  cik: 0000020286
+- ticker: CTAS
+  company_name: Cintas
+  sector: Industrials
+  industry: Diversified Support Services
+  cik: '0000723254'
+- ticker: CSCO
+  company_name: Cisco
+  sector: Information Technology
+  industry: Communications Equipment
+  cik: 0000858877
+- ticker: C
+  company_name: Citigroup
+  sector: Financials
+  industry: Diversified Banks
+  cik: 0000831001
+- ticker: CFG
+  company_name: Citizens Financial Group
+  sector: Financials
+  industry: Regional Banks
+  cik: 0000759944
+- ticker: CLX
+  company_name: Clorox
+  sector: Consumer Staples
+  industry: Household Products
+  cik: '0000021076'
+- ticker: CME
+  company_name: CME Group
+  sector: Financials
+  industry: Financial Exchanges &amp; Data
+  cik: '0001156375'
+- ticker: CMS
+  company_name: CMS Energy
+  sector: Utilities
+  industry: Multi-Utilities
+  cik: 0000811156
+- ticker: KO
+  company_name: Coca-Cola Company (The)
+  sector: Consumer Staples
+  industry: Soft Drinks &amp; Non-alcoholic Beverages
+  cik: '0000021344'
+- ticker: CTSH
+  company_name: Cognizant
+  sector: Information Technology
+  industry: IT Consulting &amp; Other Services
+  cik: 0001058290
+- ticker: COHR
+  company_name: Coherent Corp.
+  sector: Information Technology
+  industry: Electronic Components
+  cik: 0000820318
+- ticker: COIN
+  company_name: Coinbase
+  sector: Financials
+  industry: Financial Exchanges &amp; Data
+  cik: 0001679788
+- ticker: CL
+  company_name: Colgate-Palmolive
+  sector: Consumer Staples
+  industry: Household Products
+  cik: '0000021665'
+- ticker: CMCSA
+  company_name: Comcast
+  sector: Communication Services
+  industry: Cable &amp; Satellite
+  cik: 0001166691
+- ticker: FIX
+  company_name: Comfort Systems USA
+  sector: Industrials
+  industry: Construction &amp; Engineering
+  cik: 0001035983
+- ticker: CAG
+  company_name: Conagra Brands
+  sector: Consumer Staples
+  industry: Packaged Foods &amp; Meats
+  cik: '0000023217'
+- ticker: COP
+  company_name: ConocoPhillips
+  sector: Energy
+  industry: Oil &amp; Gas Exploration &amp; Production
+  cik: '0001163165'
+- ticker: ED
+  company_name: Consolidated Edison
+  sector: Utilities
+  industry: Multi-Utilities
+  cik: 0001047862
+- ticker: STZ
+  company_name: Constellation Brands
+  sector: Consumer Staples
+  industry: Distillers &amp; Vintners
+  cik: 0000016918
+- ticker: CEG
+  company_name: Constellation Energy
+  sector: Utilities
+  industry: Electric Utilities
+  cik: 0001868275
+- ticker: COO
+  company_name: Cooper Companies (The)
+  sector: Health Care
+  industry: Health Care Supplies
+  cik: '0000711404'
+- ticker: CPRT
+  company_name: Copart
+  sector: Industrials
+  industry: Diversified Support Services
+  cik: 0000900075
+- ticker: GLW
+  company_name: Corning Inc.
+  sector: Information Technology
+  industry: Electronic Components
+  cik: '0000024741'
+- ticker: CPAY
+  company_name: Corpay
+  sector: Financials
+  industry: Transaction &amp; Payment Processing Services
+  cik: '0001175454'
+- ticker: CTVA
+  company_name: Corteva
+  sector: Materials
+  industry: Fertilizers &amp; Agricultural Chemicals
+  cik: '0001755672'
+- ticker: CSGP
+  company_name: CoStar Group
+  sector: Real Estate
+  industry: Real Estate Services
+  cik: '0001057352'
+- ticker: COST
+  company_name: Costco
+  sector: Consumer Staples
+  industry: Consumer Staples Merchandise Retail
+  cik: 0000909832
+- ticker: CTRA
+  company_name: Coterra
+  sector: Energy
+  industry: Oil &amp; Gas Exploration &amp; Production
+  cik: 0000858470
+- ticker: CRH
+  company_name: CRH plc
+  sector: Materials
+  industry: Construction Materials
+  cik: 0000849395
+- ticker: CRWD
+  company_name: CrowdStrike
+  sector: Information Technology
+  industry: Systems Software
+  cik: '0001535527'
+- ticker: CCI
+  company_name: Crown Castle
+  sector: Real Estate
+  industry: Telecom Tower REITs
+  cik: '0001051470'
+- ticker: CSX
+  company_name: CSX Corporation
+  sector: Industrials
+  industry: Rail Transportation
+  cik: 0000277948
+- ticker: CMI
+  company_name: Cummins
+  sector: Industrials
+  industry: Construction Machinery &amp; Heavy Transportation Equipment
+  cik: '0000026172'
+- ticker: CVS
+  company_name: CVS Health
+  sector: Health Care
+  industry: Health Care Services
+  cik: 0000064803
+- ticker: DHR
+  company_name: Danaher Corporation
+  sector: Health Care
+  industry: Life Sciences Tools &amp; Services
+  cik: '0000313616'
+- ticker: DRI
+  company_name: Darden Restaurants
+  sector: Consumer Discretionary
+  industry: Restaurants
+  cik: 0000940944
+- ticker: DDOG
+  company_name: Datadog
+  sector: Information Technology
+  industry: Application Software
+  cik: '0001561550'
+- ticker: DVA
+  company_name: DaVita
+  sector: Health Care
+  industry: Health Care Services
+  cik: 0000927066
+- ticker: DECK
+  company_name: Deckers Brands
+  sector: Consumer Discretionary
+  industry: Footwear
+  cik: 0000910521
+- ticker: DE
+  company_name: Deere &amp; Company
+  sector: Industrials
+  industry: Agricultural &amp; Farm Machinery
+  cik: 0000315189
+- ticker: DELL
+  company_name: Dell Technologies
+  sector: Information Technology
+  industry: Technology Hardware, Storage &amp; Peripherals
+  cik: 0001571996
+- ticker: DAL
+  company_name: Delta Air Lines
+  sector: Industrials
+  industry: Passenger Airlines
+  cik: 0000027904
+- ticker: DVN
+  company_name: Devon Energy
+  sector: Energy
+  industry: Oil &amp; Gas Exploration &amp; Production
+  cik: 0001090012
+- ticker: DXCM
+  company_name: Dexcom
+  sector: Health Care
+  industry: Health Care Equipment
+  cik: 0001093557
+- ticker: FANG
+  company_name: Diamondback Energy
+  sector: Energy
+  industry: Oil &amp; Gas Exploration &amp; Production
+  cik: 0001539838
+- ticker: DLR
+  company_name: Digital Realty
+  sector: Real Estate
+  industry: Data Center REITs
+  cik: 0001297996
+- ticker: DG
+  company_name: Dollar General
+  sector: Consumer Staples
+  industry: Consumer Staples Merchandise Retail
+  cik: 0000029534
+- ticker: DLTR
+  company_name: Dollar Tree
+  sector: Consumer Staples
+  industry: Consumer Staples Merchandise Retail
+  cik: 0000935703
+- ticker: D
+  company_name: Dominion Energy
+  sector: Utilities
+  industry: Multi-Utilities
+  cik: 0000715957
+- ticker: DPZ
+  company_name: Domino's
+  sector: Consumer Discretionary
+  industry: Restaurants
+  cik: 0001286681
+- ticker: DASH
+  company_name: DoorDash
+  sector: Consumer Discretionary
+  industry: Specialized Consumer Services
+  cik: 0001792789
+- ticker: DOV
+  company_name: Dover Corporation
+  sector: Industrials
+  industry: Industrial Machinery &amp; Supplies &amp; Components
+  cik: 0000029905
+- ticker: DOW
+  company_name: Dow Inc.
+  sector: Materials
+  industry: Commodity Chemicals
+  cik: 0001751788
+- ticker: DHI
+  company_name: D. R. Horton
+  sector: Consumer Discretionary
+  industry: Homebuilding
+  cik: 0000882184
+- ticker: DTE
+  company_name: DTE Energy
+  sector: Utilities
+  industry: Multi-Utilities
+  cik: 0000936340
+- ticker: DUK
+  company_name: Duke Energy
+  sector: Utilities
+  industry: Electric Utilities
+  cik: '0001326160'
+- ticker: DD
+  company_name: DuPont
+  sector: Materials
+  industry: Specialty Chemicals
+  cik: '0001666700'
+- ticker: ETN
+  company_name: Eaton Corporation
+  sector: Industrials
+  industry: Electrical Components &amp; Equipment
+  cik: 0001551182
+- ticker: EBAY
+  company_name: eBay Inc.
+  sector: Consumer Discretionary
+  industry: Broadline Retail
+  cik: 0001065088
+- ticker: SATS
+  company_name: EchoStar
+  sector: Communication Services
+  industry: Wireless Telecommunication Services
+  cik: '0001415404'
+- ticker: ECL
+  company_name: Ecolab
+  sector: Materials
+  industry: Specialty Chemicals
+  cik: '0000031462'
+- ticker: EIX
+  company_name: Edison International
+  sector: Utilities
+  industry: Electric Utilities
+  cik: 0000827052
+- ticker: EW
+  company_name: Edwards Lifesciences
+  sector: Health Care
+  industry: Health Care Equipment
+  cik: 0001099800
+- ticker: EA
+  company_name: Electronic Arts
+  sector: Communication Services
+  industry: Interactive Home Entertainment
+  cik: '0000712515'
+- ticker: ELV
+  company_name: Elevance Health
+  sector: Health Care
+  industry: Managed Health Care
+  cik: 0001156039
+- ticker: EME
+  company_name: Emcor
+  sector: Industrials
+  industry: Construction &amp; Engineering
+  cik: '0000105634'
+- ticker: EMR
+  company_name: Emerson Electric
+  sector: Industrials
+  industry: Electrical Components &amp; Equipment
+  cik: '0000032604'
+- ticker: ETR
+  company_name: Entergy
+  sector: Utilities
+  industry: Electric Utilities
+  cik: 0000065984
+- ticker: EOG
+  company_name: EOG Resources
+  sector: Energy
+  industry: Oil &amp; Gas Exploration &amp; Production
+  cik: 0000821189
+- ticker: EPAM
+  company_name: EPAM Systems
+  sector: Information Technology
+  industry: IT Consulting &amp; Other Services
+  cik: '0001352010'
+- ticker: EQT
+  company_name: EQT Corporation
+  sector: Energy
+  industry: Oil &amp; Gas Exploration &amp; Production
+  cik: '0000033213'
+- ticker: EFX
+  company_name: Equifax
+  sector: Industrials
+  industry: Research &amp; Consulting Services
+  cik: 0000033185
+- ticker: EQIX
+  company_name: Equinix
+  sector: Real Estate
+  industry: Data Center REITs
+  cik: 0001101239
+- ticker: EQR
+  company_name: Equity Residential
+  sector: Real Estate
+  industry: Multi-Family Residential REITs
+  cik: 0000906107
+- ticker: ERIE
+  company_name: Erie Indemnity
+  sector: Financials
+  industry: Insurance Brokers
+  cik: 0000922621
+- ticker: ESS
+  company_name: Essex Property Trust
+  sector: Real Estate
+  industry: Multi-Family Residential REITs
+  cik: 0000920522
+- ticker: EL
+  company_name: Estée Lauder Companies (The)
+  sector: Consumer Staples
+  industry: Personal Care Products
+  cik: '0001001250'
+- ticker: EG
+  company_name: Everest Group
+  sector: Financials
+  industry: Reinsurance
+  cik: 0001095073
+- ticker: EVRG
+  company_name: Evergy
+  sector: Utilities
+  industry: Electric Utilities
+  cik: 0001711269
+- ticker: ES
+  company_name: Eversource Energy
+  sector: Utilities
+  industry: Electric Utilities
+  cik: '0000072741'
+- ticker: EXC
+  company_name: Exelon
+  sector: Utilities
+  industry: Electric Utilities
+  cik: 0001109357
+- ticker: EXE
+  company_name: Expand Energy
+  sector: Energy
+  industry: Oil &amp; Gas Exploration &amp; Production
+  cik: 0000895126
+- ticker: EXPE
+  company_name: Expedia Group
+  sector: Consumer Discretionary
+  industry: Hotels, Resorts &amp; Cruise Lines
+  cik: '0001324424'
+- ticker: EXPD
+  company_name: Expeditors International
+  sector: Industrials
+  industry: Air Freight &amp; Logistics
+  cik: '0000746515'
+- ticker: EXR
+  company_name: Extra Space Storage
+  sector: Real Estate
+  industry: Self-Storage REITs
+  cik: 0001289490
+- ticker: XOM
+  company_name: ExxonMobil
+  sector: Energy
+  industry: Integrated Oil &amp; Gas
+  cik: 0000034088
+- ticker: FFIV
+  company_name: F5, Inc.
+  sector: Information Technology
+  industry: Communications Equipment
+  cik: 0001048695
+- ticker: FDS
+  company_name: FactSet
+  sector: Financials
+  industry: Financial Exchanges &amp; Data
+  cik: '0001013237'
+- ticker: FICO
+  company_name: Fair Isaac
+  sector: Information Technology
+  industry: Application Software
+  cik: 0000814547
+- ticker: FAST
+  company_name: Fastenal
+  sector: Industrials
+  industry: Trading Companies &amp; Distributors
+  cik: 0000815556
+- ticker: FRT
+  company_name: Federal Realty Investment Trust
+  sector: Real Estate
+  industry: Retail REITs
+  cik: 0000034903
+- ticker: FDX
+  company_name: FedEx
+  sector: Industrials
+  industry: Air Freight &amp; Logistics
+  cik: 0001048911
+- ticker: FIS
+  company_name: Fidelity National Information Services
+  sector: Financials
+  industry: Transaction &amp; Payment Processing Services
+  cik: 0001136893
+- ticker: FITB
+  company_name: Fifth Third Bancorp
+  sector: Financials
+  industry: Regional Banks
+  cik: '0000035527'
+- ticker: FSLR
+  company_name: First Solar
+  sector: Information Technology
+  industry: Semiconductors
+  cik: 0001274494
+- ticker: FE
+  company_name: FirstEnergy
+  sector: Utilities
+  industry: Electric Utilities
+  cik: 0001031296
+- ticker: FISV
+  company_name: Fiserv
+  sector: Financials
+  industry: Transaction &amp; Payment Processing Services
+  cik: 0000798354
+- ticker: F
+  company_name: Ford Motor Company
+  sector: Consumer Discretionary
+  industry: Automobile Manufacturers
+  cik: 0000037996
+- ticker: FTNT
+  company_name: Fortinet
+  sector: Information Technology
+  industry: Systems Software
+  cik: 0001262039
+- ticker: FTV
+  company_name: Fortive
+  sector: Industrials
+  industry: Industrial Machinery &amp; Supplies &amp; Components
+  cik: 0001659166
+- ticker: FOXA
+  company_name: Fox Corporation (Class A)
+  sector: Communication Services
+  industry: Broadcasting
+  cik: '0001754301'
+- ticker: FOX
+  company_name: Fox Corporation (Class B)
+  sector: Communication Services
+  industry: Broadcasting
+  cik: '0001754301'
+- ticker: BEN
+  company_name: Franklin Resources
+  sector: Financials
+  industry: Asset Management &amp; Custody Banks
+  cik: 0000038777
+- ticker: FCX
+  company_name: Freeport-McMoRan
+  sector: Materials
+  industry: Copper
+  cik: 0000831259
+- ticker: GRMN
+  company_name: Garmin
+  sector: Consumer Discretionary
+  industry: Consumer Electronics
+  cik: 0001121788
+- ticker: IT
+  company_name: Gartner
+  sector: Information Technology
+  industry: IT Consulting &amp; Other Services
+  cik: 0000749251
+- ticker: GE
+  company_name: GE Aerospace
+  sector: Industrials
+  industry: Aerospace &amp; Defense
+  cik: '0000040545'
+- ticker: GEHC
+  company_name: GE HealthCare
+  sector: Health Care
+  industry: Health Care Equipment
+  cik: 0001932393
+- ticker: GEV
+  company_name: GE Vernova
+  sector: Industrials
+  industry: Heavy Electrical Equipment
+  cik: 0001996810
+- ticker: GEN
+  company_name: Gen Digital
+  sector: Information Technology
+  industry: Systems Software
+  cik: 0000849399
+- ticker: GNRC
+  company_name: Generac
+  sector: Industrials
+  industry: Electrical Components &amp; Equipment
+  cik: '0001474735'
+- ticker: GD
+  company_name: General Dynamics
+  sector: Industrials
+  industry: Aerospace &amp; Defense
+  cik: '0000040533'
+- ticker: GIS
+  company_name: General Mills
+  sector: Consumer Staples
+  industry: Packaged Foods &amp; Meats
+  cik: '0000040704'
+- ticker: GM
+  company_name: General Motors
+  sector: Consumer Discretionary
+  industry: Automobile Manufacturers
+  cik: 0001467858
+- ticker: GPC
+  company_name: Genuine Parts Company
+  sector: Consumer Discretionary
+  industry: Distributors
+  cik: 0000040987
+- ticker: GILD
+  company_name: Gilead Sciences
+  sector: Health Care
+  industry: Biotechnology
+  cik: 0000882095
+- ticker: GPN
+  company_name: Global Payments
+  sector: Financials
+  industry: Transaction &amp; Payment Processing Services
+  cik: '0001123360'
+- ticker: GL
+  company_name: Globe Life
+  sector: Financials
+  industry: Life &amp; Health Insurance
+  cik: '0000320335'
+- ticker: GDDY
+  company_name: GoDaddy
+  sector: Information Technology
+  industry: Internet Services &amp; Infrastructure
+  cik: 0001609711
+- ticker: GS
+  company_name: Goldman Sachs
+  sector: Financials
+  industry: Investment Banking &amp; Brokerage
+  cik: 0000886982
+- ticker: HAL
+  company_name: Halliburton
+  sector: Energy
+  industry: Oil &amp; Gas Equipment &amp; Services
+  cik: '0000045012'
+- ticker: HIG
+  company_name: Hartford (The)
+  sector: Financials
+  industry: Property &amp; Casualty Insurance
+  cik: 0000874766
+- ticker: HAS
+  company_name: Hasbro
+  sector: Consumer Discretionary
+  industry: Leisure Products
+  cik: 0000046080
+- ticker: HCA
+  company_name: HCA Healthcare
+  sector: Health Care
+  industry: Health Care Facilities
+  cik: 0000860730
+- ticker: DOC
+  company_name: Healthpeak Properties
+  sector: Real Estate
+  industry: Health Care REITs
+  cik: 0000765880
+- ticker: HSIC
+  company_name: Henry Schein
+  sector: Health Care
+  industry: Health Care Distributors
+  cik: 0001000228
+- ticker: HSY
+  company_name: Hershey Company (The)
+  sector: Consumer Staples
+  industry: Packaged Foods &amp; Meats
+  cik: '0000047111'
+- ticker: HPE
+  company_name: Hewlett Packard Enterprise
+  sector: Information Technology
+  industry: Technology Hardware, Storage &amp; Peripherals
+  cik: 0001645590
+- ticker: HLT
+  company_name: Hilton Worldwide
+  sector: Consumer Discretionary
+  industry: Hotels, Resorts &amp; Cruise Lines
+  cik: 0001585689
+- ticker: HD
+  company_name: Home Depot (The)
+  sector: Consumer Discretionary
+  industry: Home Improvement Retail
+  cik: 0000354950
+- ticker: HON
+  company_name: Honeywell
+  sector: Industrials
+  industry: Industrial Conglomerates
+  cik: 0000773840
+- ticker: HRL
+  company_name: Hormel Foods
+  sector: Consumer Staples
+  industry: Packaged Foods &amp; Meats
+  cik: 0000048465
+- ticker: HST
+  company_name: Host Hotels &amp; Resorts
+  sector: Real Estate
+  industry: Hotel &amp; Resort REITs
+  cik: '0001070750'
+- ticker: HWM
+  company_name: Howmet Aerospace
+  sector: Industrials
+  industry: Aerospace &amp; Defense
+  cik: 0000004281
+- ticker: HPQ
+  company_name: HP Inc.
+  sector: Information Technology
+  industry: Technology Hardware, Storage &amp; Peripherals
+  cik: '0000047217'
+- ticker: HUBB
+  company_name: Hubbell Incorporated
+  sector: Industrials
+  industry: Industrial Machinery &amp; Supplies &amp; Components
+  cik: 0000048898
+- ticker: HUM
+  company_name: Humana
+  sector: Health Care
+  industry: Managed Health Care
+  cik: 0000049071
+- ticker: HBAN
+  company_name: Huntington Bancshares
+  sector: Financials
+  industry: Regional Banks
+  cik: 0000049196
+- ticker: HII
+  company_name: Huntington Ingalls Industries
+  sector: Industrials
+  industry: Aerospace &amp; Defense
+  cik: 0001501585
+- ticker: IBM
+  company_name: IBM
+  sector: Information Technology
+  industry: IT Consulting &amp; Other Services
+  cik: '0000051143'
+- ticker: IEX
+  company_name: IDEX Corporation
+  sector: Industrials
+  industry: Industrial Machinery &amp; Supplies &amp; Components
+  cik: 0000832101
+- ticker: IDXX
+  company_name: Idexx Laboratories
+  sector: Health Care
+  industry: Health Care Equipment
+  cik: 0000874716
+- ticker: ITW
+  company_name: Illinois Tool Works
+  sector: Industrials
+  industry: Industrial Machinery &amp; Supplies &amp; Components
+  cik: 0000049826
+- ticker: INCY
+  company_name: Incyte
+  sector: Health Care
+  industry: Biotechnology
+  cik: 0000879169
+- ticker: IR
+  company_name: Ingersoll Rand
+  sector: Industrials
+  industry: Industrial Machinery &amp; Supplies &amp; Components
+  cik: 0001699150
+- ticker: PODD
+  company_name: Insulet Corporation
+  sector: Health Care
+  industry: Health Care Equipment
+  cik: 0001145197
+- ticker: INTC
+  company_name: Intel
+  sector: Information Technology
+  industry: Semiconductors
+  cik: 0000050863
+- ticker: IBKR
+  company_name: Interactive Brokers
+  sector: Financials
+  industry: Investment Banking &amp; Brokerage
+  cik: 0001381197
+- ticker: ICE
+  company_name: Intercontinental Exchange
+  sector: Financials
+  industry: Financial Exchanges &amp; Data
+  cik: 0001571949
+- ticker: IFF
+  company_name: International Flavors &amp; Fragrances
+  sector: Materials
+  industry: Specialty Chemicals
+  cik: '0000051253'
+- ticker: IP
+  company_name: International Paper
+  sector: Materials
+  industry: Paper &amp; Plastic Packaging Products &amp; Materials
+  cik: '0000051434'
+- ticker: INTU
+  company_name: Intuit
+  sector: Information Technology
+  industry: Application Software
+  cik: 0000896878
+- ticker: ISRG
+  company_name: Intuitive Surgical
+  sector: Health Care
+  industry: Health Care Equipment
+  cik: '0001035267'
+- ticker: IVZ
+  company_name: Invesco
+  sector: Financials
+  industry: Asset Management &amp; Custody Banks
+  cik: 0000914208
+- ticker: INVH
+  company_name: Invitation Homes
+  sector: Real Estate
+  industry: Single-Family Residential REITs
+  cik: 0001687229
+- ticker: IQV
+  company_name: IQVIA
+  sector: Health Care
+  industry: Life Sciences Tools &amp; Services
+  cik: 0001478242
+- ticker: IRM
+  company_name: Iron Mountain
+  sector: Real Estate
+  industry: Other Specialized REITs
+  cik: 0001020569
+- ticker: JBHT
+  company_name: J.B. Hunt
+  sector: Industrials
+  industry: Cargo Ground Transportation
+  cik: 0000728535
+- ticker: JBL
+  company_name: Jabil
+  sector: Information Technology
+  industry: Electronic Manufacturing Services
+  cik: 0000898293
+- ticker: JKHY
+  company_name: Jack Henry &amp; Associates
+  sector: Financials
+  industry: Transaction &amp; Payment Processing Services
+  cik: 0000779152
+- ticker: J
+  company_name: Jacobs Solutions
+  sector: Industrials
+  industry: Construction &amp; Engineering
+  cik: 0000052988
+- ticker: JNJ
+  company_name: Johnson &amp; Johnson
+  sector: Health Care
+  industry: Pharmaceuticals
+  cik: '0000200406'
+- ticker: JCI
+  company_name: Johnson Controls
+  sector: Industrials
+  industry: Building Products
+  cik: 0000833444
+- ticker: JPM
+  company_name: JPMorgan Chase
+  sector: Financials
+  industry: Diversified Banks
+  cik: 0000019617
+- ticker: KVUE
+  company_name: Kenvue
+  sector: Consumer Staples
+  industry: Personal Care Products
+  cik: 0001944048
+- ticker: KDP
+  company_name: Keurig Dr Pepper
+  sector: Consumer Staples
+  industry: Soft Drinks &amp; Non-alcoholic Beverages
+  cik: 0001418135
+- ticker: KEY
+  company_name: KeyCorp
+  sector: Financials
+  industry: Regional Banks
+  cik: 0000091576
+- ticker: KEYS
+  company_name: Keysight Technologies
+  sector: Information Technology
+  industry: Electronic Equipment &amp; Instruments
+  cik: '0001601046'
+- ticker: KMB
+  company_name: Kimberly-Clark
+  sector: Consumer Staples
+  industry: Household Products
+  cik: 0000055785
+- ticker: KIM
+  company_name: Kimco Realty
+  sector: Real Estate
+  industry: Retail REITs
+  cik: 0000879101
+- ticker: KMI
+  company_name: Kinder Morgan
+  sector: Energy
+  industry: Oil &amp; Gas Storage &amp; Transportation
+  cik: '0001506307'
+- ticker: KKR
+  company_name: KKR &amp; Co.
+  sector: Financials
+  industry: Asset Management &amp; Custody Banks
+  cik: 0001404912
+- ticker: KLAC
+  company_name: KLA Corporation
+  sector: Information Technology
+  industry: Semiconductor Materials &amp; Equipment
+  cik: 0000319201
+- ticker: KHC
+  company_name: Kraft Heinz
+  sector: Consumer Staples
+  industry: Packaged Foods &amp; Meats
+  cik: 0001637459
+- ticker: KR
+  company_name: Kroger
+  sector: Consumer Staples
+  industry: Food Retail
+  cik: 0000056873
+- ticker: LHX
+  company_name: L3Harris
+  sector: Industrials
+  industry: Aerospace &amp; Defense
+  cik: 0000202058
+- ticker: LH
+  company_name: Labcorp
+  sector: Health Care
+  industry: Health Care Services
+  cik: 0000920148
+- ticker: LRCX
+  company_name: Lam Research
+  sector: Information Technology
+  industry: Semiconductor Materials &amp; Equipment
+  cik: 0000707549
+- ticker: LVS
+  company_name: Las Vegas Sands
+  sector: Consumer Discretionary
+  industry: Casinos &amp; Gaming
+  cik: '0001300514'
+- ticker: LDOS
+  company_name: Leidos
+  sector: Industrials
+  industry: Diversified Support Services
+  cik: 0001336920
+- ticker: LEN
+  company_name: Lennar
+  sector: Consumer Discretionary
+  industry: Homebuilding
+  cik: 0000920760
+- ticker: LII
+  company_name: Lennox International
+  sector: Industrials
+  industry: Building Products
+  cik: 0001069202
+- ticker: LLY
+  company_name: Lilly (Eli)
+  sector: Health Care
+  industry: Pharmaceuticals
+  cik: 0000059478
+- ticker: LIN
+  company_name: Linde plc
+  sector: Materials
+  industry: Industrial Gases
+  cik: 0001707925
+- ticker: LYV
+  company_name: Live Nation Entertainment
+  sector: Communication Services
+  industry: Movies &amp; Entertainment
+  cik: 0001335258
+- ticker: LMT
+  company_name: Lockheed Martin
+  sector: Industrials
+  industry: Aerospace &amp; Defense
+  cik: 0000936468
+- ticker: L
+  company_name: Loews Corporation
+  sector: Financials
+  industry: Multi-line Insurance
+  cik: 0000060086
+- ticker: LOW
+  company_name: Lowe's
+  sector: Consumer Discretionary
+  industry: Home Improvement Retail
+  cik: '0000060667'
+- ticker: LULU
+  company_name: Lululemon Athletica
+  sector: Consumer Discretionary
+  industry: Apparel, Accessories &amp; Luxury Goods
+  cik: 0001397187
+- ticker: LITE
+  company_name: Lumentum
+  sector: Information Technology
+  industry: Communications Equipment
+  cik: 0001633978
+- ticker: LYB
+  company_name: LyondellBasell
+  sector: Materials
+  industry: Specialty Chemicals
+  cik: 0001489393
+- ticker: MTB
+  company_name: M&amp;T Bank
+  sector: Financials
+  industry: Regional Banks
+  cik: '0000036270'
+- ticker: MPC
+  company_name: Marathon Petroleum
+  sector: Energy
+  industry: Oil &amp; Gas Refining &amp; Marketing
+  cik: 0001510295
+- ticker: MAR
+  company_name: Marriott International
+  sector: Consumer Discretionary
+  industry: Hotels, Resorts &amp; Cruise Lines
+  cik: 0001048286
+- ticker: MRSH
+  company_name: Marsh McLennan
+  sector: Financials
+  industry: Insurance Brokers
+  cik: 0000062709
+- ticker: MLM
+  company_name: Martin Marietta Materials
+  sector: Materials
+  industry: Construction Materials
+  cik: 0000916076
+- ticker: MAS
+  company_name: Masco
+  sector: Industrials
+  industry: Building Products
+  cik: 0000062996
+- ticker: MA
+  company_name: Mastercard
+  sector: Financials
+  industry: Transaction &amp; Payment Processing Services
+  cik: 0001141391
+- ticker: MKC
+  company_name: McCormick &amp; Company
+  sector: Consumer Staples
+  industry: Packaged Foods &amp; Meats
+  cik: '0000063754'
+- ticker: MCD
+  company_name: McDonald's
+  sector: Consumer Discretionary
+  industry: Restaurants
+  cik: 0000063908
+- ticker: MCK
+  company_name: McKesson Corporation
+  sector: Health Care
+  industry: Health Care Distributors
+  cik: 0000927653
+- ticker: MDT
+  company_name: Medtronic
+  sector: Health Care
+  industry: Health Care Equipment
+  cik: '0001613103'
+- ticker: MRK
+  company_name: Merck &amp; Co.
+  sector: Health Care
+  industry: Pharmaceuticals
+  cik: 0000310158
+- ticker: META
+  company_name: Meta Platforms
+  sector: Communication Services
+  industry: Interactive Media &amp; Services
+  cik: 0001326801
+- ticker: MET
+  company_name: MetLife
+  sector: Financials
+  industry: Life &amp; Health Insurance
+  cik: 0001099219
+- ticker: MTD
+  company_name: Mettler Toledo
+  sector: Health Care
+  industry: Life Sciences Tools &amp; Services
+  cik: '0001037646'
+- ticker: MGM
+  company_name: MGM Resorts
+  sector: Consumer Discretionary
+  industry: Casinos &amp; Gaming
+  cik: 0000789570
+- ticker: MCHP
+  company_name: Microchip Technology
+  sector: Information Technology
+  industry: Semiconductors
+  cik: 0000827054
+- ticker: MU
+  company_name: Micron Technology
+  sector: Information Technology
+  industry: Semiconductors
+  cik: '0000723125'
+- ticker: MSFT
+  company_name: Microsoft
+  sector: Information Technology
+  industry: Systems Software
+  cik: 0000789019
+- ticker: MAA
+  company_name: Mid-America Apartment Communities
+  sector: Real Estate
+  industry: Multi-Family Residential REITs
+  cik: 0000912595
+- ticker: MRNA
+  company_name: Moderna
+  sector: Health Care
+  industry: Biotechnology
+  cik: 0001682852
+- ticker: TAP
+  company_name: Molson Coors Beverage Company
+  sector: Consumer Staples
+  industry: Brewers
+  cik: '0000024545'
+- ticker: MDLZ
+  company_name: Mondelez International
+  sector: Consumer Staples
+  industry: Packaged Foods &amp; Meats
+  cik: 0001103982
+- ticker: MPWR
+  company_name: Monolithic Power Systems
+  sector: Information Technology
+  industry: Semiconductors
+  cik: 0001280452
+- ticker: MNST
+  company_name: Monster Beverage
+  sector: Consumer Staples
+  industry: Soft Drinks &amp; Non-alcoholic Beverages
+  cik: 0000865752
+- ticker: MCO
+  company_name: Moody's Corporation
+  sector: Financials
+  industry: Financial Exchanges &amp; Data
+  cik: 0001059556
+- ticker: MS
+  company_name: Morgan Stanley
+  sector: Financials
+  industry: Investment Banking &amp; Brokerage
+  cik: 0000895421
+- ticker: MOS
+  company_name: Mosaic Company (The)
+  sector: Materials
+  industry: Fertilizers &amp; Agricultural Chemicals
+  cik: 0001285785
+- ticker: MSI
+  company_name: Motorola Solutions
+  sector: Information Technology
+  industry: Communications Equipment
+  cik: 0000068505
+- ticker: MSCI
+  company_name: MSCI Inc.
+  sector: Financials
+  industry: Financial Exchanges &amp; Data
+  cik: 0001408198
+- ticker: NDAQ
+  company_name: Nasdaq, Inc.
+  sector: Financials
+  industry: Financial Exchanges &amp; Data
+  cik: 0001120193
+- ticker: NTAP
+  company_name: NetApp
+  sector: Information Technology
+  industry: Technology Hardware, Storage &amp; Peripherals
+  cik: '0001002047'
+- ticker: NFLX
+  company_name: Netflix
+  sector: Communication Services
+  industry: Movies &amp; Entertainment
+  cik: 0001065280
+- ticker: NEM
+  company_name: Newmont
+  sector: Materials
+  industry: Gold
+  cik: '0001164727'
+- ticker: NWSA
+  company_name: News Corp (Class A)
+  sector: Communication Services
+  industry: Publishing
+  cik: 0001564708
+- ticker: NWS
+  company_name: News Corp (Class B)
+  sector: Communication Services
+  industry: Publishing
+  cik: 0001564708
+- ticker: NEE
+  company_name: NextEra Energy
+  sector: Utilities
+  industry: Multi-Utilities
+  cik: 0000753308
+- ticker: NKE
+  company_name: Nike, Inc.
+  sector: Consumer Discretionary
+  industry: Apparel, Accessories &amp; Luxury Goods
+  cik: 0000320187
+- ticker: NI
+  company_name: NiSource
+  sector: Utilities
+  industry: Multi-Utilities
+  cik: '0001111711'
+- ticker: NDSN
+  company_name: Nordson Corporation
+  sector: Industrials
+  industry: Industrial Machinery &amp; Supplies &amp; Components
+  cik: '0000072331'
+- ticker: NSC
+  company_name: Norfolk Southern
+  sector: Industrials
+  industry: Rail Transportation
+  cik: '0000702165'
+- ticker: NTRS
+  company_name: Northern Trust
+  sector: Financials
+  industry: Asset Management &amp; Custody Banks
+  cik: '0000073124'
+- ticker: NOC
+  company_name: Northrop Grumman
+  sector: Industrials
+  industry: Aerospace &amp; Defense
+  cik: '0001133421'
+- ticker: NCLH
+  company_name: Norwegian Cruise Line Holdings
+  sector: Consumer Discretionary
+  industry: Hotels, Resorts &amp; Cruise Lines
+  cik: '0001513761'
+- ticker: NRG
+  company_name: NRG Energy
+  sector: Utilities
+  industry: Independent Power Producers &amp; Energy Traders
+  cik: 0001013871
+- ticker: NUE
+  company_name: Nucor
+  sector: Materials
+  industry: Steel
+  cik: 0000073309
+- ticker: NVDA
+  company_name: Nvidia
+  sector: Information Technology
+  industry: Semiconductors
+  cik: 0001045810
+- ticker: NVR
+  company_name: NVR, Inc.
+  sector: Consumer Discretionary
+  industry: Homebuilding
+  cik: 0000906163
+- ticker: NXPI
+  company_name: NXP Semiconductors
+  sector: Information Technology
+  industry: Semiconductors
+  cik: '0001413447'
+- ticker: ORLY
+  company_name: O’Reilly Automotive
+  sector: Consumer Discretionary
+  industry: Automotive Retail
+  cik: 0000898173
+- ticker: OXY
+  company_name: Occidental Petroleum
+  sector: Energy
+  industry: Oil &amp; Gas Exploration &amp; Production
+  cik: 0000797468
+- ticker: ODFL
+  company_name: Old Dominion
+  sector: Industrials
+  industry: Cargo Ground Transportation
+  cik: 0000878927
+- ticker: OMC
+  company_name: Omnicom Group
+  sector: Communication Services
+  industry: Advertising
+  cik: 0000029989
+- ticker: 'ON'
+  company_name: ON Semiconductor
+  sector: Information Technology
+  industry: Semiconductors
+  cik: 0001097864
+- ticker: OKE
+  company_name: Oneok
+  sector: Energy
+  industry: Oil &amp; Gas Storage &amp; Transportation
+  cik: 0001039684
+- ticker: ORCL
+  company_name: Oracle Corporation
+  sector: Information Technology
+  industry: Application Software
+  cik: 0001341439
+- ticker: OTIS
+  company_name: Otis Worldwide
+  sector: Industrials
+  industry: Industrial Machinery &amp; Supplies &amp; Components
+  cik: 0001781335
+- ticker: PCAR
+  company_name: Paccar
+  sector: Industrials
+  industry: Construction Machinery &amp; Heavy Transportation Equipment
+  cik: '0000075362'
+- ticker: PKG
+  company_name: Packaging Corporation of America
+  sector: Materials
+  industry: Paper &amp; Plastic Packaging Products &amp; Materials
+  cik: '0000075677'
+- ticker: PLTR
+  company_name: Palantir Technologies
+  sector: Information Technology
+  industry: Application Software
+  cik: '0001321655'
+- ticker: PANW
+  company_name: Palo Alto Networks
+  sector: Information Technology
+  industry: Systems Software
+  cik: '0001327567'
+- ticker: PSKY
+  company_name: Paramount Skydance Corporation
+  sector: Communication Services
+  industry: Movies &amp; Entertainment
+  cik: '0002041610'
+- ticker: PH
+  company_name: Parker Hannifin
+  sector: Industrials
+  industry: Industrial Machinery &amp; Supplies &amp; Components
+  cik: '0000076334'
+- ticker: PAYX
+  company_name: Paychex
+  sector: Industrials
+  industry: Human Resource &amp; Employment Services
+  cik: '0000723531'
+- ticker: PYPL
+  company_name: PayPal
+  sector: Financials
+  industry: Transaction &amp; Payment Processing Services
+  cik: 0001633917
+- ticker: PNR
+  company_name: Pentair
+  sector: Industrials
+  industry: Industrial Machinery &amp; Supplies &amp; Components
+  cik: '0000077360'
+- ticker: PEP
+  company_name: PepsiCo
+  sector: Consumer Staples
+  industry: Soft Drinks &amp; Non-alcoholic Beverages
+  cik: '0000077476'
+- ticker: PFE
+  company_name: Pfizer
+  sector: Health Care
+  industry: Pharmaceuticals
+  cik: 0000078003
+- ticker: PCG
+  company_name: PG&amp;E Corporation
+  sector: Utilities
+  industry: Multi-Utilities
+  cik: 0001004980
+- ticker: PM
+  company_name: Philip Morris International
+  sector: Consumer Staples
+  industry: Tobacco
+  cik: 0001413329
+- ticker: PSX
+  company_name: Phillips 66
+  sector: Energy
+  industry: Oil &amp; Gas Refining &amp; Marketing
+  cik: '0001534701'
+- ticker: PNW
+  company_name: Pinnacle West Capital
+  sector: Utilities
+  industry: Multi-Utilities
+  cik: '0000764622'
+- ticker: PNC
+  company_name: PNC Financial Services
+  sector: Financials
+  industry: Diversified Banks
+  cik: '0000713676'
+- ticker: POOL
+  company_name: Pool Corporation
+  sector: Consumer Discretionary
+  industry: Distributors
+  cik: 0000945841
+- ticker: PPG
+  company_name: PPG Industries
+  sector: Materials
+  industry: Specialty Chemicals
+  cik: 0000079879
+- ticker: PPL
+  company_name: PPL Corporation
+  sector: Utilities
+  industry: Electric Utilities
+  cik: 0000922224
+- ticker: PFG
+  company_name: Principal Financial Group
+  sector: Financials
+  industry: Life &amp; Health Insurance
+  cik: 0001126328
+- ticker: PG
+  company_name: Procter &amp; Gamble
+  sector: Consumer Staples
+  industry: Personal Care Products
+  cik: 0000080424
+- ticker: PGR
+  company_name: Progressive Corporation
+  sector: Financials
+  industry: Property &amp; Casualty Insurance
+  cik: 0000080661
+- ticker: PLD
+  company_name: Prologis
+  sector: Real Estate
+  industry: Industrial REITs
+  cik: 0001045609
+- ticker: PRU
+  company_name: Prudential Financial
+  sector: Financials
+  industry: Life &amp; Health Insurance
+  cik: '0001137774'
+- ticker: PEG
+  company_name: Public Service Enterprise Group
+  sector: Utilities
+  industry: Electric Utilities
+  cik: 0000788784
+- ticker: PTC
+  company_name: PTC Inc.
+  sector: Information Technology
+  industry: Application Software
+  cik: 0000857005
+- ticker: PSA
+  company_name: Public Storage
+  sector: Real Estate
+  industry: Self-Storage REITs
+  cik: 0001393311
+- ticker: PHM
+  company_name: PulteGroup
+  sector: Consumer Discretionary
+  industry: Homebuilding
+  cik: 0000822416
+- ticker: PWR
+  company_name: Quanta Services
+  sector: Industrials
+  industry: Construction &amp; Engineering
+  cik: 0001050915
+- ticker: QCOM
+  company_name: Qualcomm
+  sector: Information Technology
+  industry: Semiconductors
+  cik: 0000804328
+- ticker: DGX
+  company_name: Quest Diagnostics
+  sector: Health Care
+  industry: Health Care Services
+  cik: 0001022079
+- ticker: Q
+  company_name: Qnity Electronics
+  sector: Information Technology
+  industry: Semiconductor Materials &amp; Equipment
+  cik: 0002058873
+- ticker: RL
+  company_name: Ralph Lauren Corporation
+  sector: Consumer Discretionary
+  industry: Apparel, Accessories &amp; Luxury Goods
+  cik: 0001037038
+- ticker: RJF
+  company_name: Raymond James Financial
+  sector: Financials
+  industry: Investment Banking &amp; Brokerage
+  cik: '0000720005'
+- ticker: RTX
+  company_name: RTX Corporation
+  sector: Industrials
+  industry: Aerospace &amp; Defense
+  cik: 0000101829
+- ticker: O
+  company_name: Realty Income
+  sector: Real Estate
+  industry: Retail REITs
+  cik: 0000726728
+- ticker: REG
+  company_name: Regency Centers
+  sector: Real Estate
+  industry: Retail REITs
+  cik: 0000910606
+- ticker: REGN
+  company_name: Regeneron Pharmaceuticals
+  sector: Health Care
+  industry: Biotechnology
+  cik: 0000872589
+- ticker: RF
+  company_name: Regions Financial Corporation
+  sector: Financials
+  industry: Regional Banks
+  cik: 0001281761
+- ticker: RSG
+  company_name: Republic Services
+  sector: Industrials
+  industry: Environmental &amp; Facilities Services
+  cik: 0001060391
+- ticker: RMD
+  company_name: ResMed
+  sector: Health Care
+  industry: Health Care Equipment
+  cik: 0000943819
+- ticker: RVTY
+  company_name: Revvity
+  sector: Health Care
+  industry: Health Care Equipment
+  cik: 0000031791
+- ticker: HOOD
+  company_name: Robinhood Markets
+  sector: Financials
+  industry: Investment Banking &amp; Brokerage
+  cik: 0001783879
+- ticker: ROK
+  company_name: Rockwell Automation
+  sector: Industrials
+  industry: Electrical Components &amp; Equipment
+  cik: 0001024478
+- ticker: ROL
+  company_name: Rollins, Inc.
+  sector: Industrials
+  industry: Environmental &amp; Facilities Services
+  cik: 0000084839
+- ticker: ROP
+  company_name: Roper Technologies
+  sector: Information Technology
+  industry: Electronic Equipment &amp; Instruments
+  cik: 0000882835
+- ticker: ROST
+  company_name: Ross Stores
+  sector: Consumer Discretionary
+  industry: Apparel Retail
+  cik: '0000745732'
+- ticker: RCL
+  company_name: Royal Caribbean Group
+  sector: Consumer Discretionary
+  industry: Hotels, Resorts &amp; Cruise Lines
+  cik: 0000884887
+- ticker: SPGI
+  company_name: S&amp;P Global
+  sector: Financials
+  industry: Financial Exchanges &amp; Data
+  cik: '0000064040'
+- ticker: CRM
+  company_name: Salesforce
+  sector: Information Technology
+  industry: Application Software
+  cik: 0001108524
+- ticker: SNDK
+  company_name: Sandisk
+  sector: Information Technology
+  industry: Technology Hardware, Storage &amp; Peripherals
+  cik: '0002023554'
+- ticker: SBAC
+  company_name: SBA Communications
+  sector: Real Estate
+  industry: Telecom Tower REITs
+  cik: '0001034054'
+- ticker: SLB
+  company_name: Schlumberger
+  sector: Energy
+  industry: Oil &amp; Gas Equipment &amp; Services
+  cik: 0000087347
+- ticker: STX
+  company_name: Seagate Technology
+  sector: Information Technology
+  industry: Technology Hardware, Storage &amp; Peripherals
+  cik: 0001137789
+- ticker: SRE
+  company_name: Sempra
+  sector: Utilities
+  industry: Multi-Utilities
+  cik: 0001032208
+- ticker: NOW
+  company_name: ServiceNow
+  sector: Information Technology
+  industry: Systems Software
+  cik: '0001373715'
+- ticker: SHW
+  company_name: Sherwin-Williams
+  sector: Materials
+  industry: Specialty Chemicals
+  cik: 0000089800
+- ticker: SPG
+  company_name: Simon Property Group
+  sector: Real Estate
+  industry: Retail REITs
+  cik: '0001063761'
+- ticker: SWKS
+  company_name: Skyworks Solutions
+  sector: Information Technology
+  industry: Semiconductors
+  cik: '0000004127'
+- ticker: SJM
+  company_name: J.M. Smucker Company (The)
+  sector: Consumer Staples
+  industry: Packaged Foods &amp; Meats
+  cik: 0000091419
+- ticker: SW
+  company_name: Smurfit Westrock
+  sector: Materials
+  industry: Paper &amp; Plastic Packaging Products &amp; Materials
+  cik: 0002005951
+- ticker: SNA
+  company_name: Snap-on
+  sector: Industrials
+  industry: Industrial Machinery &amp; Supplies &amp; Components
+  cik: 0000091440
+- ticker: SOLV
+  company_name: Solventum
+  sector: Health Care
+  industry: Health Care Technology
+  cik: 0001964738
+- ticker: SO
+  company_name: Southern Company
+  sector: Utilities
+  industry: Electric Utilities
+  cik: 0000092122
+- ticker: LUV
+  company_name: Southwest Airlines
+  sector: Industrials
+  industry: Passenger Airlines
+  cik: 0000092380
+- ticker: SWK
+  company_name: Stanley Black &amp; Decker
+  sector: Industrials
+  industry: Industrial Machinery &amp; Supplies &amp; Components
+  cik: 0000093556
+- ticker: SBUX
+  company_name: Starbucks
+  sector: Consumer Discretionary
+  industry: Restaurants
+  cik: 0000829224
+- ticker: STT
+  company_name: State Street Corporation
+  sector: Financials
+  industry: Asset Management &amp; Custody Banks
+  cik: 0000093751
+- ticker: STLD
+  company_name: Steel Dynamics
+  sector: Materials
+  industry: Steel
+  cik: '0001022671'
+- ticker: STE
+  company_name: Steris
+  sector: Health Care
+  industry: Health Care Equipment
+  cik: 0001757898
+- ticker: SYK
+  company_name: Stryker Corporation
+  sector: Health Care
+  industry: Health Care Equipment
+  cik: '0000310764'
+- ticker: SMCI
+  company_name: Supermicro
+  sector: Information Technology
+  industry: Technology Hardware, Storage &amp; Peripherals
+  cik: '0001375365'
+- ticker: SYF
+  company_name: Synchrony Financial
+  sector: Financials
+  industry: Consumer Finance
+  cik: '0001601712'
+- ticker: SNPS
+  company_name: Synopsys
+  sector: Information Technology
+  industry: Application Software
+  cik: 0000883241
+- ticker: SYY
+  company_name: Sysco
+  sector: Consumer Staples
+  industry: Food Distributors
+  cik: 0000096021
+- ticker: TMUS
+  company_name: T-Mobile US
+  sector: Communication Services
+  industry: Wireless Telecommunication Services
+  cik: 0001283699
+- ticker: TROW
+  company_name: T. Rowe Price
+  sector: Financials
+  industry: Asset Management &amp; Custody Banks
+  cik: 0001113169
+- ticker: TTWO
+  company_name: Take-Two Interactive
+  sector: Communication Services
+  industry: Interactive Home Entertainment
+  cik: 0000946581
+- ticker: TPR
+  company_name: Tapestry, Inc.
+  sector: Consumer Discretionary
+  industry: Apparel, Accessories &amp; Luxury Goods
+  cik: '0001116132'
+- ticker: TRGP
+  company_name: Targa Resources
+  sector: Energy
+  industry: Oil &amp; Gas Storage &amp; Transportation
+  cik: 0001389170
+- ticker: TGT
+  company_name: Target Corporation
+  sector: Consumer Staples
+  industry: Consumer Staples Merchandise Retail
+  cik: 0000027419
+- ticker: TEL
+  company_name: TE Connectivity
+  sector: Information Technology
+  industry: Electronic Manufacturing Services
+  cik: 0001385157
+- ticker: TDY
+  company_name: Teledyne Technologies
+  sector: Information Technology
+  industry: Electronic Equipment &amp; Instruments
+  cik: 0001094285
+- ticker: TER
+  company_name: Teradyne
+  sector: Information Technology
+  industry: Semiconductor Materials &amp; Equipment
+  cik: 0000097210
+- ticker: TSLA
+  company_name: Tesla, Inc.
+  sector: Consumer Discretionary
+  industry: Automobile Manufacturers
+  cik: 0001318605
+- ticker: TXN
+  company_name: Texas Instruments
+  sector: Information Technology
+  industry: Semiconductors
+  cik: 0000097476
+- ticker: TPL
+  company_name: Texas Pacific Land Corporation
+  sector: Energy
+  industry: Oil &amp; Gas Exploration &amp; Production
+  cik: 0001811074
+- ticker: TXT
+  company_name: Textron
+  sector: Industrials
+  industry: Aerospace &amp; Defense
+  cik: '0000217346'
+- ticker: TMO
+  company_name: Thermo Fisher Scientific
+  sector: Health Care
+  industry: Life Sciences Tools &amp; Services
+  cik: 0000097745
+- ticker: TJX
+  company_name: TJX Companies
+  sector: Consumer Discretionary
+  industry: Apparel Retail
+  cik: 0000109198
+- ticker: TKO
+  company_name: TKO Group Holdings
+  sector: Communication Services
+  industry: Movies &amp; Entertainment
+  cik: 0001973266
+- ticker: TTD
+  company_name: Trade Desk (The)
+  sector: Communication Services
+  industry: Advertising
+  cik: 0001671933
+- ticker: TSCO
+  company_name: Tractor Supply
+  sector: Consumer Discretionary
+  industry: Other Specialty Retail
+  cik: 0000916365
+- ticker: TT
+  company_name: Trane Technologies
+  sector: Industrials
+  industry: Building Products
+  cik: 0001466258
+- ticker: TDG
+  company_name: TransDigm Group
+  sector: Industrials
+  industry: Aerospace &amp; Defense
+  cik: '0001260221'
+- ticker: TRV
+  company_name: Travelers Companies (The)
+  sector: Financials
+  industry: Property &amp; Casualty Insurance
+  cik: 0000086312
+- ticker: TRMB
+  company_name: Trimble Inc.
+  sector: Information Technology
+  industry: Application Software
+  cik: 0000864749
+- ticker: TFC
+  company_name: Truist Financial
+  sector: Financials
+  industry: Diversified Banks
+  cik: 0000092230
+- ticker: TYL
+  company_name: Tyler Technologies
+  sector: Information Technology
+  industry: Application Software
+  cik: 0000860731
+- ticker: TSN
+  company_name: Tyson Foods
+  sector: Consumer Staples
+  industry: Packaged Foods &amp; Meats
+  cik: 0000100493
+- ticker: USB
+  company_name: U.S. Bancorp
+  sector: Financials
+  industry: Diversified Banks
+  cik: '0000036104'
+- ticker: UBER
+  company_name: Uber
+  sector: Industrials
+  industry: Passenger Ground Transportation
+  cik: '0001543151'
+- ticker: UDR
+  company_name: UDR, Inc.
+  sector: Real Estate
+  industry: Multi-Family Residential REITs
+  cik: 0000074208
+- ticker: ULTA
+  company_name: Ulta Beauty
+  sector: Consumer Discretionary
+  industry: Other Specialty Retail
+  cik: 0001403568
+- ticker: UNP
+  company_name: Union Pacific Corporation
+  sector: Industrials
+  industry: Rail Transportation
+  cik: 0000100885
+- ticker: UAL
+  company_name: United Airlines Holdings
+  sector: Industrials
+  industry: Passenger Airlines
+  cik: '0000100517'
+- ticker: UPS
+  company_name: United Parcel Service
+  sector: Industrials
+  industry: Air Freight &amp; Logistics
+  cik: 0001090727
+- ticker: URI
+  company_name: United Rentals
+  sector: Industrials
+  industry: Trading Companies &amp; Distributors
+  cik: '0001067701'
+- ticker: UNH
+  company_name: UnitedHealth Group
+  sector: Health Care
+  industry: Managed Health Care
+  cik: '0000731766'
+- ticker: UHS
+  company_name: Universal Health Services
+  sector: Health Care
+  industry: Health Care Facilities
+  cik: 0000352915
+- ticker: VLO
+  company_name: Valero Energy
+  sector: Energy
+  industry: Oil &amp; Gas Refining &amp; Marketing
+  cik: '0001035002'
+- ticker: VTR
+  company_name: Ventas
+  sector: Real Estate
+  industry: Health Care REITs
+  cik: '0000740260'
+- ticker: VLTO
+  company_name: Veralto
+  sector: Industrials
+  industry: Environmental &amp; Facilities Services
+  cik: 0001967680
+- ticker: VRSN
+  company_name: Verisign
+  sector: Information Technology
+  industry: Internet Services &amp; Infrastructure
+  cik: '0001014473'
+- ticker: VRSK
+  company_name: Verisk Analytics
+  sector: Industrials
+  industry: Research &amp; Consulting Services
+  cik: '0001442145'
+- ticker: VZ
+  company_name: Verizon
+  sector: Communication Services
+  industry: Integrated Telecommunication Services
+  cik: '0000732712'
+- ticker: VRTX
+  company_name: Vertex Pharmaceuticals
+  sector: Health Care
+  industry: Biotechnology
+  cik: 0000875320
+- ticker: VRT
+  company_name: Vertiv
+  sector: Industrials
+  industry: Electrical Components &amp; Equipment
+  cik: '0001674101'
+- ticker: VTRS
+  company_name: Viatris
+  sector: Health Care
+  industry: Pharmaceuticals
+  cik: 0001792044
+- ticker: VICI
+  company_name: Vici Properties
+  sector: Real Estate
+  industry: Hotel &amp; Resort REITs
+  cik: 0001705696
+- ticker: V
+  company_name: Visa Inc.
+  sector: Financials
+  industry: Transaction &amp; Payment Processing Services
+  cik: '0001403161'
+- ticker: VST
+  company_name: Vistra Corp.
+  sector: Utilities
+  industry: Electric Utilities
+  cik: 0001692819
+- ticker: VMC
+  company_name: Vulcan Materials Company
+  sector: Materials
+  industry: Construction Materials
+  cik: 0001396009
+- ticker: WRB
+  company_name: W. R. Berkley Corporation
+  sector: Financials
+  industry: Property &amp; Casualty Insurance
+  cik: '0000011544'
+- ticker: GWW
+  company_name: W. W. Grainger
+  sector: Industrials
+  industry: Industrial Machinery &amp; Supplies &amp; Components
+  cik: '0000277135'
+- ticker: WAB
+  company_name: Wabtec
+  sector: Industrials
+  industry: Construction Machinery &amp; Heavy Transportation Equipment
+  cik: 0000943452
+- ticker: WMT
+  company_name: Walmart
+  sector: Consumer Staples
+  industry: Consumer Staples Merchandise Retail
+  cik: 0000104169
+- ticker: DIS
+  company_name: Walt Disney Company (The)
+  sector: Communication Services
+  industry: Movies &amp; Entertainment
+  cik: 0001744489
+- ticker: WBD
+  company_name: Warner Bros. Discovery
+  sector: Communication Services
+  industry: Broadcasting
+  cik: '0001437107'
+- ticker: WM
+  company_name: Waste Management
+  sector: Industrials
+  industry: Environmental &amp; Facilities Services
+  cik: 0000823768
+- ticker: WAT
+  company_name: Waters Corporation
+  sector: Health Care
+  industry: Life Sciences Tools &amp; Services
+  cik: 0001000697
+- ticker: WEC
+  company_name: WEC Energy Group
+  sector: Utilities
+  industry: Electric Utilities
+  cik: 0000783325
+- ticker: WFC
+  company_name: Wells Fargo
+  sector: Financials
+  industry: Diversified Banks
+  cik: 0000072971
+- ticker: WELL
+  company_name: Welltower
+  sector: Real Estate
+  industry: Health Care REITs
+  cik: '0000766704'
+- ticker: WST
+  company_name: West Pharmaceutical Services
+  sector: Health Care
+  industry: Health Care Supplies
+  cik: '0000105770'
+- ticker: WDC
+  company_name: Western Digital
+  sector: Information Technology
+  industry: Technology Hardware, Storage &amp; Peripherals
+  cik: '0000106040'
+- ticker: WY
+  company_name: Weyerhaeuser
+  sector: Real Estate
+  industry: Timber REITs
+  cik: '0000106535'
+- ticker: WSM
+  company_name: Williams-Sonoma, Inc.
+  sector: Consumer Discretionary
+  industry: Homefurnishing Retail
+  cik: 0000719955
+- ticker: WMB
+  company_name: Williams Companies
+  sector: Energy
+  industry: Oil &amp; Gas Storage &amp; Transportation
+  cik: '0000107263'
+- ticker: WTW
+  company_name: Willis Towers Watson
+  sector: Financials
+  industry: Insurance Brokers
+  cik: '0001140536'
+- ticker: WDAY
+  company_name: Workday, Inc.
+  sector: Information Technology
+  industry: Application Software
+  cik: 0001327811
+- ticker: WYNN
+  company_name: Wynn Resorts
+  sector: Consumer Discretionary
+  industry: Casinos &amp; Gaming
+  cik: 0001174922
+- ticker: XEL
+  company_name: Xcel Energy
+  sector: Utilities
+  industry: Multi-Utilities
+  cik: 0000072903
+- ticker: XYL
+  company_name: Xylem Inc.
+  sector: Industrials
+  industry: Industrial Machinery &amp; Supplies &amp; Components
+  cik: '0001524472'
+- ticker: YUM
+  company_name: Yum! Brands
+  sector: Consumer Discretionary
+  industry: Restaurants
+  cik: '0001041061'
+- ticker: ZBRA
+  company_name: Zebra Technologies
+  sector: Information Technology
+  industry: Electronic Equipment &amp; Instruments
+  cik: 0000877212
+- ticker: ZBH
+  company_name: Zimmer Biomet
+  sector: Health Care
+  industry: Health Care Equipment
+  cik: 0001136869
+- ticker: ZTS
+  company_name: Zoetis
+  sector: Health Care
+  industry: Pharmaceuticals
+  cik: 0001555280
