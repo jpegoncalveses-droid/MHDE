@@ -319,6 +319,27 @@ def coverage_report_cmd(db_path, output_dir):
     click.echo(f"Written: {result['md']}  {result['csv']}")
 
 
+@cli.command("priority-refresh-queue")
+@click.option("--db-path", default="data/mhde.duckdb", show_default=True)
+@click.option("--output", default="data/processed/priority_refresh_queue.csv", show_default=True)
+@click.option("--max-tickers", default=100, type=int, show_default=True)
+def priority_refresh_queue_cmd(db_path, output, max_tickers):
+    """Build priority refresh queue -- tickers ordered by data staleness."""
+    import duckdb as _duckdb
+    from ingestion.priority_refresh import build_priority_queue, save_priority_queue
+    conn = _duckdb.connect(db_path, read_only=True)
+    queue = build_priority_queue(conn, max_tickers=max_tickers)
+    conn.close()
+    save_priority_queue(queue, output)
+    by_priority: dict[int, int] = {}
+    for item in queue:
+        by_priority.setdefault(item["priority"], 0)
+        by_priority[item["priority"]] += 1
+    click.echo(f"Priority queue: {len(queue)} tickers -> {output}")
+    for p in sorted(by_priority):
+        click.echo(f"  Priority {p}: {by_priority[p]} tickers")
+
+
 @cli.group()
 def learn():
     """Learning loop commands: calibration, insights, experiments."""
