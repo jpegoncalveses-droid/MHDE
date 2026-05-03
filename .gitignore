@@ -6,3 +6,39 @@ samples/
 *.egg-info/
 .pytest_cache/
 venv/
+
+# Additional venvs
+.venv/
+
+# Stray pip error files
+=*
+
+# Databases — never track
+data/*.duckdb
+data/*.db
+
+# Generated pipeline artifacts in data/processed/
+data/processed/catalyst_*.jsonl
+data/processed/catalyst_*.md
+data/processed/catalyst_*.csv
+data/processed/daily_catalyst_queue*.jsonl
+data/processed/daily_catalyst_queue*.html
+data/processed/daily_catalyst_queue*.csv
+data/processed/daily_catalyst_queue*.md
+data/processed/sp500_cik_validation_report.csv
+data/processed/catalyst_queue_history/
+data/processed/data_inventory_summary.csv
+data/processed/mhde_gap_analysis.csv
+
+# Local diagnostic / probe / verification scripts (session artifacts)
+.claude/local_scripts/check_*.py
+.claude/local_scripts/probe_*.py
+.claude/local_scripts/verify_*.py
+.claude/local_scripts/diagnose_*.py
+.claude/local_scripts/inspect_*.py
+.claude/local_scripts/features_*.py
+.claude/local_scripts/momentum_coverage_check.py
+.claude/local_scripts/post_fix_validation.py
+.claude/local_scripts/root_cause_breakdown.py
+.claude/local_scripts/scores_momentum_check.py
+.claude/local_scripts/validation_report.py
