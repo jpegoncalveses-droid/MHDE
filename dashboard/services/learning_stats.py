@@ -14,6 +14,18 @@ _CLASSIFICATIONS = [
 ]
 _RC_GROUPS = ["data_gap", "scoring_gap", "feature_gap", "near_miss", "universe_gap", "unknown"]
 
+_INCOMPLETE_SUBCAUSES = [
+    "missing_cik",
+    "missing_sec_companyfacts",
+    "foreign_filer_or_adr",
+    "stale_fundamentals",
+    "recent_ipo_or_short_history",
+    "sector_specific_model_gap",
+    "polygon_fundamentals_missing",
+    "ifrs_mapping_gap",
+    "price_only_scored",
+]
+
 
 def get_learning_stats(output_dir: str = "data/processed") -> dict:
     base = Path(output_dir)
@@ -34,6 +46,8 @@ def get_learning_stats(output_dir: str = "data/processed") -> dict:
         if rows:
             report_date = rows[0].get("event_date", "")
 
+    incomplete_subcause_counts: dict[str, int] = {k: 0 for k in _INCOMPLETE_SUBCAUSES}
+
     enriched_path = base / _ENRICHED_CSV
     if enriched_path.exists():
         with open(enriched_path, newline="") as f:
@@ -41,6 +55,13 @@ def get_learning_stats(output_dir: str = "data/processed") -> dict:
         c = Counter(r.get("root_cause_group", "unknown") for r in enriched)
         for k in _RC_GROUPS:
             rc_counts[k] = c.get(k, 0)
+        sc = Counter(
+            r.get("enriched_root_cause", "")
+            for r in enriched
+            if r.get("enriched_root_cause", "") in _INCOMPLETE_SUBCAUSES
+        )
+        for k in _INCOMPLETE_SUBCAUSES:
+            incomplete_subcause_counts[k] = sc.get(k, 0)
 
     top_rc = max(rc_counts, key=rc_counts.get) if any(rc_counts.values()) else ""
 
@@ -50,4 +71,5 @@ def get_learning_stats(output_dir: str = "data/processed") -> dict:
         **clf_counts,
         "rc_groups": rc_counts,
         "top_rc_group": top_rc,
+        "incomplete_subcauses": incomplete_subcause_counts,
     }

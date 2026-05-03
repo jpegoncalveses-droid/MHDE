@@ -62,6 +62,23 @@ if rc_rows:
 else:
     st.info("No enriched root-cause data. Run `python main.py missed enrich-root-causes`.")
 
+# ── Incomplete fundamentals subcause breakdown ────────────────────────────────
+
+subcauses = lstats.get("incomplete_subcauses", {})
+if any(subcauses.values()):
+    with st.expander("Incomplete Fundamentals — Subcause Detail", expanded=False):
+        st.caption(
+            "Each 'data_gap' row where tier=Incomplete is now split into a specific subcause. "
+            "Use these counts to prioritize data engineering fixes."
+        )
+        sc_display = [
+            {"Subcause": k, "Count": v}
+            for k, v in sorted(subcauses.items(), key=lambda x: -x[1])
+            if v > 0
+        ]
+        if sc_display:
+            st.dataframe(sc_display, use_container_width=True, hide_index=True)
+
 # ── Top missed rows ───────────────────────────────────────────────────────────
 
 enriched_path = Path(output_dir) / "prediction_vs_actual_enriched_rows.csv"

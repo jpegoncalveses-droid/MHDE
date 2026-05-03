@@ -77,6 +77,34 @@ def _insert_company(conn, ticker, sector):
     )
 
 
+def _insert_company_full(
+    conn,
+    ticker,
+    *,
+    cik=None,
+    is_adr=False,
+    active_sec_reporter=True,
+    last_financial_filing_date=None,
+    sector=None,
+    market_cap=None,
+):
+    conn.execute(
+        """INSERT INTO companies (
+               ticker, company_name, cik, is_adr, active_sec_reporter,
+               last_financial_filing_date, sector, market_cap, universe_tier
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'extended')
+           ON CONFLICT (ticker) DO UPDATE SET
+               cik = excluded.cik,
+               is_adr = excluded.is_adr,
+               active_sec_reporter = excluded.active_sec_reporter,
+               last_financial_filing_date = excluded.last_financial_filing_date,
+               sector = excluded.sector,
+               market_cap = excluded.market_cap""",
+        [ticker, ticker, cik, is_adr, active_sec_reporter,
+         last_financial_filing_date, sector, market_cap],
+    )
+
+
 # ---------------------------------------------------------------------------
 # Test 1: enrich_rows attaches all six fields
 # ---------------------------------------------------------------------------
@@ -134,10 +162,10 @@ def test_unscored_mover_yields_pre_score_history(conn):
 
 
 # ---------------------------------------------------------------------------
-# Test 5: tier_before_event=Incomplete → incomplete_fundamentals
+# Test 5: tier_before_event=Incomplete with no companies entry → missing_cik
 # ---------------------------------------------------------------------------
 
-def test_incomplete_tier_yields_incomplete_fundamentals(conn):
+def test_incomplete_tier_no_companies_entry_yields_missing_cik(conn):
     from missed.root_cause_enrichment import enrich_rows
 
     row = _row(
@@ -145,9 +173,10 @@ def test_incomplete_tier_yields_incomplete_fundamentals(conn):
         tier_before_event="Incomplete",
     )
     enriched = enrich_rows([row], conn)[0]
-    assert enriched["enriched_root_cause"] == "incomplete_fundamentals"
+    assert enriched["enriched_root_cause"] == "missing_cik"
     assert enriched["root_cause_group"] == "data_gap"
     assert enriched["confidence"] == "high"
+    assert enriched["incomplete_diag_ticker_in_companies"] == "no"
 
 
 # ---------------------------------------------------------------------------
@@ -386,3 +415,92 @@ def test_unknown_fallback_when_no_score_data(conn):
     )
     enriched = enrich_rows([row], conn)[0]
     assert enriched["enriched_root_cause"] == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# Tests 17–21: incomplete_fundamentals subcauses
+# ---------------------------------------------------------------------------
+
+def test_incomplete_stale_fundamentals_subcause(conn):
+    from missed.root_cause_enrichment import enrich_rows
+
+    stale_date = (date.today() - timedelta(days=200)).isoformat()
+    _insert_company_full(
+        conn, "TST",
+        cik="0001234567",
+        is_adr=False,
+        active_sec_reporter=True,
+        last_financial_filing_date=stale_date,
+        sector="Technology",
+        market_cap=50_000_000_000.0,
+    )
+    row = _row(classification="true_miss", tier_before_event="Incomplete")
+    enriched = enrich_rows([row], conn)[0]
+    assert enriched["enriched_root_cause"] == "stale_fundamentals"
+    assert enriched["root_cause_group"] == "data_gap"
+    assert enriched["incomplete_diag_ticker_in_companies"] == "yes"
+    assert enriched["incomplete_diag_filing_age_days"] != ""
+
+
+def test_incomplete_adr_subcause(conn):
+    from missed.root_cause_enrichment import enrich_rows
+
+    _insert_company_full(
+        conn, "TST",
+        cik="0001234567",
+        is_adr=True,
+        active_sec_reporter=True,
+        sector="Technology",
+        market_cap=100_000_000_000.0,
+    )
+    row = _row(classification="true_miss", tier_before_event="Incomplete")
+    enriched = enrich_rows([row], conn)[0]
+    assert enriched["enriched_root_cause"] == "foreign_filer_or_adr"
+    assert enriched["incomplete_diag_is_adr"] == "true"
+
+
+def test_incomplete_missing_sec_companyfacts_subcause(conn):
+    from missed.root_cause_enrichment import enrich_rows
+
+    _insert_company_full(
+        conn, "TST",
+        cik="0001234567",
+        is_adr=False,
+        active_sec_reporter=False,
+        sector="Technology",
+        market_cap=50_000_000_000.0,
+    )
+    row = _row(classification="true_miss", tier_before_event="Incomplete")
+    enriched = enrich_rows([row], conn)[0]
+    assert enriched["enriched_root_cause"] == "missing_sec_companyfacts"
+    assert enriched["incomplete_diag_active_sec_reporter"] == "false"
+
+
+def test_incomplete_sector_model_gap_subcause(conn):
+    from missed.root_cause_enrichment import enrich_rows
+
+    recent_date = (date.today() - timedelta(days=30)).isoformat()
+    _insert_company_full(
+        conn, "TST",
+        cik="0001234567",
+        is_adr=False,
+        active_sec_reporter=True,
+        last_financial_filing_date=recent_date,
+        sector="Financials",
+        market_cap=80_000_000_000.0,
+    )
+    row = _row(classification="true_miss", tier_before_event="Incomplete")
+    enriched = enrich_rows([row], conn)[0]
+    assert enriched["enriched_root_cause"] == "sector_specific_model_gap"
+    assert enriched["incomplete_diag_sector"] == "Financials"
+
+
+def test_incomplete_diag_fields_all_present(conn):
+    from missed.root_cause_enrichment import enrich_rows, _ENRICHMENT_EXTRA_COLS
+
+    row = _row(classification="true_miss", tier_before_event="Incomplete")
+    enriched = enrich_rows([row], conn)[0]
+    diag_cols = [c for c in _ENRICHMENT_EXTRA_COLS if c.startswith("incomplete_diag_")]
+    assert len(diag_cols) == 9, f"Expected 9 diagnostic cols, got {len(diag_cols)}"
+    for col in diag_cols:
+        assert col in enriched, f"Diagnostic field missing from enriched row: {col}"

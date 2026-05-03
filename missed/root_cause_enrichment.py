@@ -25,6 +25,17 @@ _ROOT_CAUSE_GROUPS: dict[str, str] = {
     "universe_not_seeded":        "universe_gap",
     "pre_score_history":          "data_gap",
     "incomplete_fundamentals":    "data_gap",
+    # incomplete_fundamentals subcauses
+    "missing_cik":                "data_gap",
+    "missing_sec_companyfacts":   "data_gap",
+    "foreign_filer_or_adr":       "data_gap",
+    "stale_fundamentals":         "data_gap",
+    "recent_ipo_or_short_history": "data_gap",
+    "sector_specific_model_gap":  "scoring_gap",
+    "polygon_fundamentals_missing": "data_gap",
+    "ifrs_mapping_gap":           "data_gap",
+    "price_only_scored":          "data_gap",
+    # end subcauses
     "no_evidence_no_filing":      "data_gap",
     "missing_earnings_context":   "feature_gap",
     "sector_cluster_move":        "feature_gap",
@@ -41,7 +52,25 @@ _EXPLANATIONS: dict[str, str] = {
     "pre_score_history":
         "Event predates score history; no prior score to join.",
     "incomplete_fundamentals":
-        "Tier=Incomplete: fewer than 2 fundamental components available.",
+        "Tier=Incomplete: fewer than 2 fundamental components available (legacy label).",
+    "missing_cik":
+        "Tier=Incomplete: no CIK mapped — cannot link to SEC EDGAR company facts.",
+    "missing_sec_companyfacts":
+        "Tier=Incomplete: CIK present but active_sec_reporter=False — SEC data not downloaded.",
+    "foreign_filer_or_adr":
+        "Tier=Incomplete: ADR or foreign registrant — SEC filings use non-US GAAP forms.",
+    "stale_fundamentals":
+        "Tier=Incomplete: last SEC filing > 180 days old — fundamental data is stale.",
+    "recent_ipo_or_short_history":
+        "Tier=Incomplete: no filing date on record — likely recent IPO or new universe addition.",
+    "sector_specific_model_gap":
+        "Tier=Incomplete: Financials/Real Estate/Utilities sector — standard ratios don't apply.",
+    "polygon_fundamentals_missing":
+        "Tier=Incomplete: market_cap not populated — Polygon enrichment hasn't run for this ticker.",
+    "ifrs_mapping_gap":
+        "Tier=Incomplete: active domestic reporter with filing history — likely IFRS or non-standard reporting format.",
+    "price_only_scored":
+        "Tier=Incomplete: companies data present but no specific gap identified — price-only scoring fallback.",
     "no_evidence_no_filing":
         "No catalyst text found; had_catalyst_evidence=False.",
     "missing_earnings_context":
@@ -67,6 +96,24 @@ _SUGGESTED_FIXES: dict[str, str] = {
         "Accumulate score history — no code change needed.",
     "incomplete_fundamentals":
         "Add fundamentals data source (Alpha Vantage or Polygon) for this ticker.",
+    "missing_cik":
+        "Run CIK validator: python main.py data validate-ciks. Map missing CIKs in universe YAML.",
+    "missing_sec_companyfacts":
+        "Run SEC company facts ingest for this ticker: python main.py data ingest-sec-facts --ticker <TICKER>.",
+    "foreign_filer_or_adr":
+        "Mark is_adr=true in universe YAML; use Polygon fundamentals instead of SEC for this ticker.",
+    "stale_fundamentals":
+        "Re-run SEC company facts ingest; check if company is still actively reporting to SEC.",
+    "recent_ipo_or_short_history":
+        "No action needed — scoring history will accumulate. Verify ticker is in universe YAML.",
+    "sector_specific_model_gap":
+        "Implement sector-adjusted scoring model for Financials/RE/Utilities (book value, FFO, rate sensitivity).",
+    "polygon_fundamentals_missing":
+        "Run Polygon ticker details enrichment: python main.py data enrich-ticker-details.",
+    "ifrs_mapping_gap":
+        "Add IFRS-to-US-GAAP field mapping in features/valuation.py for non-standard metric names.",
+    "price_only_scored":
+        "Investigate why company is Incomplete despite having companies DB entry; check SEC ingest logs.",
     "no_evidence_no_filing":
         "Add EFTS fallback or press-release scraper to increase filing coverage.",
     "missing_earnings_context":
@@ -86,31 +133,49 @@ _SUGGESTED_FIXES: dict[str, str] = {
 }
 
 _CONFIDENCE: dict[str, str] = {
-    "universe_not_seeded":        "high",
-    "pre_score_history":          "high",
-    "incomplete_fundamentals":    "high",
-    "no_evidence_no_filing":      "medium",
-    "missing_earnings_context":   "medium",
-    "sector_cluster_move":        "medium",
-    "low_catalyst_score":         "medium",
-    "low_quality_score":          "low",
-    "near_threshold_no_catalyst": "medium",
-    "near_threshold_scored":      "medium",
-    "unknown":                    "low",
+    "universe_not_seeded":          "high",
+    "pre_score_history":            "high",
+    "incomplete_fundamentals":      "high",
+    "missing_cik":                  "high",
+    "missing_sec_companyfacts":     "high",
+    "foreign_filer_or_adr":         "high",
+    "stale_fundamentals":           "high",
+    "recent_ipo_or_short_history":  "medium",
+    "sector_specific_model_gap":    "medium",
+    "polygon_fundamentals_missing": "medium",
+    "ifrs_mapping_gap":             "medium",
+    "price_only_scored":            "low",
+    "no_evidence_no_filing":        "medium",
+    "missing_earnings_context":     "medium",
+    "sector_cluster_move":          "medium",
+    "low_catalyst_score":           "medium",
+    "low_quality_score":            "low",
+    "near_threshold_no_catalyst":   "medium",
+    "near_threshold_scored":        "medium",
+    "unknown":                      "low",
 }
 
 _EVIDENCE_FIELDS: dict[str, str] = {
-    "universe_not_seeded":        "was_in_universe,classification",
-    "pre_score_history":          "classification,score_join_method",
-    "incomplete_fundamentals":    "tier_before_event",
-    "no_evidence_no_filing":      "had_catalyst_evidence",
-    "missing_earnings_context":   "event_date,events.event_date,events.event_type",
-    "sector_cluster_move":        "companies.sector,window_days,event_date",
-    "low_catalyst_score":         "scores.catalyst_score",
-    "low_quality_score":          "scores.quality_score",
-    "near_threshold_no_catalyst": "score_before_event,scores.catalyst_score",
-    "near_threshold_scored":      "score_before_event,scores.catalyst_score",
-    "unknown":                    "",
+    "universe_not_seeded":          "was_in_universe,classification",
+    "pre_score_history":            "classification,score_join_method",
+    "incomplete_fundamentals":      "tier_before_event",
+    "missing_cik":                  "tier_before_event,companies.cik",
+    "missing_sec_companyfacts":     "tier_before_event,companies.cik,companies.active_sec_reporter",
+    "foreign_filer_or_adr":         "tier_before_event,companies.is_adr",
+    "stale_fundamentals":           "tier_before_event,companies.last_financial_filing_date",
+    "recent_ipo_or_short_history":  "tier_before_event,companies.last_financial_filing_date",
+    "sector_specific_model_gap":    "tier_before_event,companies.sector",
+    "polygon_fundamentals_missing": "tier_before_event,companies.market_cap",
+    "ifrs_mapping_gap":             "tier_before_event,companies.cik,companies.active_sec_reporter",
+    "price_only_scored":            "tier_before_event",
+    "no_evidence_no_filing":        "had_catalyst_evidence",
+    "missing_earnings_context":     "event_date,events.event_date,events.event_type",
+    "sector_cluster_move":          "companies.sector,window_days,event_date",
+    "low_catalyst_score":           "scores.catalyst_score",
+    "low_quality_score":            "scores.quality_score",
+    "near_threshold_no_catalyst":   "score_before_event,scores.catalyst_score",
+    "near_threshold_scored":        "score_before_event,scores.catalyst_score",
+    "unknown":                      "",
 }
 
 _REPORT_ENRICHED_CSV = "prediction_vs_actual_enriched_rows.csv"
@@ -123,11 +188,35 @@ _ENRICHMENT_EXTRA_COLS = [
     "evidence_fields_used",
     "suggested_fix",
     "confidence",
+    # incomplete_fundamentals diagnostic fields (empty string for non-Incomplete rows)
+    "incomplete_diag_ticker_in_companies",
+    "incomplete_diag_cik",
+    "incomplete_diag_active_sec_reporter",
+    "incomplete_diag_is_adr",
+    "incomplete_diag_last_filing_date",
+    "incomplete_diag_filing_age_days",
+    "incomplete_diag_sector",
+    "incomplete_diag_market_cap_known",
+    "incomplete_diag_subcause",
 ]
+
+_INCOMPLETE_DIAG_EMPTY: dict[str, str] = {
+    "incomplete_diag_ticker_in_companies": "",
+    "incomplete_diag_cik": "",
+    "incomplete_diag_active_sec_reporter": "",
+    "incomplete_diag_is_adr": "",
+    "incomplete_diag_last_filing_date": "",
+    "incomplete_diag_filing_age_days": "",
+    "incomplete_diag_sector": "",
+    "incomplete_diag_market_cap_known": "",
+    "incomplete_diag_subcause": "",
+}
 
 # Threshold boundaries (must match prediction_report.py)
 _NEAR_THRESHOLD_MIN = 40.0
 _NEAR_THRESHOLD_MAX = 45.0
+
+_SECTOR_MODEL_GAPS: frozenset[str] = frozenset({"Financials", "Real Estate", "Utilities"})
 
 # ---------------------------------------------------------------------------
 # DB lookup helpers
@@ -176,6 +265,110 @@ def _fetch_sector_map(conn: duckdb.DuckDBPyConnection) -> dict[str, str]:
         "SELECT ticker, sector FROM companies WHERE sector IS NOT NULL"
     ).fetchall()
     return {str(ticker): str(sector) for ticker, sector in rows}
+
+
+def _fetch_companies_data(conn: duckdb.DuckDBPyConnection) -> dict[str, dict[str, Any]]:
+    """Return {ticker: {cik, is_adr, active_sec_reporter, last_financial_filing_date, sector, market_cap}}."""
+    rows = conn.execute("""
+        SELECT ticker, cik, is_adr, active_sec_reporter,
+               last_financial_filing_date, sector, market_cap
+        FROM companies
+    """).fetchall()
+    result: dict[str, dict[str, Any]] = {}
+    for ticker, cik, is_adr, active_sec, last_filing, sector, market_cap in rows:
+        result[str(ticker)] = {
+            "cik": cik,
+            "is_adr": is_adr,
+            "active_sec_reporter": active_sec,
+            "last_financial_filing_date": last_filing,
+            "sector": sector,
+            "market_cap": market_cap,
+        }
+    return result
+
+
+def _classify_incomplete_subcause(
+    ticker: str,
+    co: dict[str, Any] | None,
+    today: date,
+) -> tuple[str, dict[str, str]]:
+    """Return (subcause_label, diag_fields) for an Incomplete-tier row.
+
+    Evaluates companies table fields in priority order; first match wins.
+    """
+    diag: dict[str, str] = {
+        "incomplete_diag_ticker_in_companies": "no" if co is None else "yes",
+        "incomplete_diag_cik": "",
+        "incomplete_diag_active_sec_reporter": "",
+        "incomplete_diag_is_adr": "",
+        "incomplete_diag_last_filing_date": "",
+        "incomplete_diag_filing_age_days": "",
+        "incomplete_diag_sector": "",
+        "incomplete_diag_market_cap_known": "",
+        "incomplete_diag_subcause": "",
+    }
+
+    if co is None:
+        diag["incomplete_diag_subcause"] = "missing_cik"
+        return "missing_cik", diag
+
+    cik = co.get("cik")
+    is_adr = bool(co.get("is_adr")) if co.get("is_adr") is not None else False
+    active_sec = co.get("active_sec_reporter")
+    last_filing = _coerce_date(co.get("last_financial_filing_date"))
+    sector = co.get("sector") or ""
+    market_cap = co.get("market_cap")
+
+    diag["incomplete_diag_cik"] = str(cik) if cik else "null"
+    diag["incomplete_diag_active_sec_reporter"] = (
+        str(active_sec).lower() if active_sec is not None else "null"
+    )
+    diag["incomplete_diag_is_adr"] = "true" if is_adr else "false"
+    diag["incomplete_diag_sector"] = sector
+    diag["incomplete_diag_market_cap_known"] = "yes" if market_cap is not None else "no"
+
+    if last_filing is not None:
+        diag["incomplete_diag_last_filing_date"] = str(last_filing)
+        diag["incomplete_diag_filing_age_days"] = str((today - last_filing).days)
+
+    # Rule 1: No CIK — cannot link to SEC at all
+    if not cik:
+        subcause = "missing_cik"
+
+    # Rule 2: Has CIK but SEC reporting explicitly disabled
+    elif active_sec is False:
+        subcause = "missing_sec_companyfacts"
+
+    # Rule 3: ADR or foreign registrant
+    elif is_adr:
+        subcause = "foreign_filer_or_adr"
+
+    # Rule 4: Last filing is stale (> 180 days)
+    elif last_filing is not None and (today - last_filing).days > 180:
+        subcause = "stale_fundamentals"
+
+    # Rule 5: Sector with non-standard ratios (Financials, Real Estate, Utilities)
+    elif sector in _SECTOR_MODEL_GAPS:
+        subcause = "sector_specific_model_gap"
+
+    # Rule 6: No market_cap from Polygon
+    elif market_cap is None:
+        subcause = "polygon_fundamentals_missing"
+
+    # Rule 7: No filing date on record (new addition to universe, no SEC history)
+    elif last_filing is None:
+        subcause = "recent_ipo_or_short_history"
+
+    # Rule 8: Has CIK, active reporter, domestic, has filing — likely IFRS format
+    elif active_sec is True and not is_adr and last_filing is not None:
+        subcause = "ifrs_mapping_gap"
+
+    # Rule 9: Everything else (companies entry exists but no clear gap identified)
+    else:
+        subcause = "price_only_scored"
+
+    diag["incomplete_diag_subcause"] = subcause
+    return subcause, diag
 
 
 def _detect_sector_clusters(
@@ -264,8 +457,10 @@ def _assign_root_cause(
     score_components: dict[tuple[str, str], dict[str, Any]],
     earnings_dates: dict[str, list[date]],
     sector_clusters: set[tuple[str, str, Any]],
-) -> str:
-    """First-match root-cause assignment; returns a label string."""
+    companies_data: dict[str, dict[str, Any]],
+    today: date,
+) -> tuple[str, dict[str, str]]:
+    """First-match root-cause assignment; returns (label, diag_fields)."""
     classification = row.get("classification", "")
     ticker = str(row["ticker"])
     event_date_raw = row["event_date"]
@@ -275,29 +470,31 @@ def _assign_root_cause(
 
     # Priority 1
     if classification == "universe_miss":
-        return "universe_not_seeded"
+        return "universe_not_seeded", dict(_INCOMPLETE_DIAG_EMPTY)
 
     # Priority 2
     if classification == "unscored_mover":
-        return "pre_score_history"
+        return "pre_score_history", dict(_INCOMPLETE_DIAG_EMPTY)
 
-    # Priority 3
+    # Priority 3 — Incomplete tier: classify into specific subcause
     if tier == "Incomplete":
-        return "incomplete_fundamentals"
+        co = companies_data.get(ticker)
+        subcause, diag = _classify_incomplete_subcause(ticker, co, today)
+        return subcause, diag
 
     # Priority 4 — earnings within ±7 days
     if event_date is not None:
         for e_date in earnings_dates.get(ticker, []):
             if abs((e_date - event_date).days) <= 7:
-                return "missing_earnings_context"
+                return "missing_earnings_context", dict(_INCOMPLETE_DIAG_EMPTY)
 
     # Priority 5 — sector cluster
     if event_date is not None and (ticker, str(event_date), window) in sector_clusters:
-        return "sector_cluster_move"
+        return "sector_cluster_move", dict(_INCOMPLETE_DIAG_EMPTY)
 
     # Priority 6
     if not row.get("had_catalyst_evidence"):
-        return "no_evidence_no_filing"
+        return "no_evidence_no_filing", dict(_INCOMPLETE_DIAG_EMPTY)
 
     # Look up score components for priorities 7–10
     comps = _best_score_key(ticker, event_date_raw, score_components)
@@ -314,22 +511,22 @@ def _assign_root_cause(
     if is_near_threshold:
         # Priority 9 / 10
         if catalyst_score is not None and catalyst_score < 30:
-            return "near_threshold_no_catalyst"
-        return "near_threshold_scored"
+            return "near_threshold_no_catalyst", dict(_INCOMPLETE_DIAG_EMPTY)
+        return "near_threshold_scored", dict(_INCOMPLETE_DIAG_EMPTY)
 
     # Priority 7
     if catalyst_score is not None and catalyst_score < 30:
-        return "low_catalyst_score"
+        return "low_catalyst_score", dict(_INCOMPLETE_DIAG_EMPTY)
 
     # Priority 8
     if quality_score is not None and quality_score < 40:
-        return "low_quality_score"
+        return "low_quality_score", dict(_INCOMPLETE_DIAG_EMPTY)
 
-    return "unknown"
+    return "unknown", dict(_INCOMPLETE_DIAG_EMPTY)
 
 
-def _build_enrichment(label: str) -> dict[str, str]:
-    """Build the 6 enrichment fields from a root-cause label."""
+def _build_enrichment(label: str, diag_fields: dict[str, str]) -> dict[str, str]:
+    """Build enrichment fields from a root-cause label and diagnostic dict."""
     return {
         "enriched_root_cause":  label,
         "root_cause_group":     _ROOT_CAUSE_GROUPS.get(label, "unknown"),
@@ -337,6 +534,7 @@ def _build_enrichment(label: str) -> dict[str, str]:
         "evidence_fields_used": _EVIDENCE_FIELDS.get(label, ""),
         "suggested_fix":        _SUGGESTED_FIXES.get(label, ""),
         "confidence":           _CONFIDENCE.get(label, "low"),
+        **diag_fields,
     }
 
 
@@ -346,7 +544,7 @@ def _build_enrichment(label: str) -> dict[str, str]:
 
 
 def enrich_rows(rows: list[dict], conn: duckdb.DuckDBPyConnection) -> list[dict]:
-    """Add 6 enrichment fields to every row.
+    """Add enrichment fields (6 base + 9 diagnostic) to every row.
 
     Returns a new list; input rows are NOT mutated.
     Shadow-only — no scores are written to the database.
@@ -354,17 +552,21 @@ def enrich_rows(rows: list[dict], conn: duckdb.DuckDBPyConnection) -> list[dict]
     score_components = _fetch_score_components(conn)
     earnings_dates   = _fetch_earnings_dates(conn)
     sector_map       = _fetch_sector_map(conn)
+    companies_data   = _fetch_companies_data(conn)
     sector_clusters  = _detect_sector_clusters(rows, sector_map)
+    today            = date.today()
 
     result: list[dict] = []
     for row in rows:
-        label      = _assign_root_cause(
+        label, diag = _assign_root_cause(
             row,
             score_components=score_components,
             earnings_dates=earnings_dates,
             sector_clusters=sector_clusters,
+            companies_data=companies_data,
+            today=today,
         )
-        enrichment = _build_enrichment(label)
+        enrichment = _build_enrichment(label, diag)
         result.append({**row, **enrichment})
     return result
 
@@ -449,6 +651,44 @@ def _build_md(enriched_rows: list[dict]) -> list[str]:
         confidence = _CONFIDENCE.get(label, "low")
         lines.append(f"| `{label}` | {group} | {label_counts[label]} | {confidence} |")
     lines.append("")
+
+    # --- Incomplete Fundamentals Subcause Breakdown ---
+    incomplete_subcause_labels = {
+        "missing_cik", "missing_sec_companyfacts", "foreign_filer_or_adr",
+        "stale_fundamentals", "recent_ipo_or_short_history", "sector_specific_model_gap",
+        "polygon_fundamentals_missing", "ifrs_mapping_gap", "price_only_scored",
+    }
+    incomplete_rows = [
+        r for r in enriched_rows
+        if r.get("enriched_root_cause") in incomplete_subcause_labels
+    ]
+    if incomplete_rows:
+        subcause_counts: Counter[str] = Counter(
+            r.get("enriched_root_cause", "unknown") for r in incomplete_rows
+        )
+        lines += [
+            "## Incomplete Fundamentals — Subcause Breakdown",
+            "",
+            f"Total Incomplete-tier rows: {len(incomplete_rows)}",
+            "",
+            "| Subcause | Count | Suggested Fix |",
+            "|----------|-------|---------------|",
+        ]
+        for subcause in sorted(subcause_counts, key=lambda l: subcause_counts[l], reverse=True):
+            fix = _SUGGESTED_FIXES.get(subcause, "—")
+            lines.append(f"| `{subcause}` | {subcause_counts[subcause]} | {fix} |")
+        lines.append("")
+
+        # Top tickers per subcause
+        lines += ["### Top Tickers by Subcause", ""]
+        by_subcause: dict[str, list[str]] = {}
+        for r in incomplete_rows:
+            sc = r.get("enriched_root_cause", "unknown")
+            by_subcause.setdefault(sc, []).append(r.get("ticker", ""))
+        for subcause in sorted(subcause_counts, key=lambda l: subcause_counts[l], reverse=True):
+            tickers_for_sc = list(dict.fromkeys(by_subcause.get(subcause, [])))[:10]
+            lines.append(f"**{subcause}**: {', '.join(tickers_for_sc)}")
+        lines.append("")
 
     # --- Top Enriched Rows ---
     lines += [
