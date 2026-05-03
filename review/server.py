@@ -391,6 +391,126 @@ def _format_return_pct(value) -> str:
 
 # ── Price context ─────────────────────────────────────────────────────────────
 
+def _batch_lookup_price_context(
+    tickers: list[str],
+    db_path: str,
+    event_dates: "dict[str, str] | None" = None,
+) -> "dict[str, dict]":
+    """Single-connection batch price lookup for a list of tickers.
+
+    event_dates: optional {ticker: event_date_str} for return_since_event.
+    Returns {ticker: ctx_dict}; missing tickers get {}.
+    """
+    if not tickers or not db_path or not os.path.exists(db_path):
+        return {}
+    try:
+        import duckdb as _duckdb
+        import datetime as _dt
+
+        conn = _duckdb.connect(db_path, read_only=True)
+        placeholders = ",".join("?" * len(tickers))
+        rows = conn.execute(f"""
+            WITH deduped AS (
+                SELECT ticker, trade_date,
+                       COALESCE(adjusted_close, close) AS price,
+                       volume,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY ticker, trade_date
+                           ORDER BY created_at DESC NULLS LAST
+                       ) AS rn
+                FROM prices_daily
+                WHERE ticker IN ({placeholders})
+            ),
+            daily AS (
+                SELECT ticker, trade_date, price, volume,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY ticker ORDER BY trade_date DESC
+                       ) AS seq
+                FROM deduped
+                WHERE rn = 1
+            )
+            SELECT ticker, seq, trade_date, price, volume
+            FROM daily
+            WHERE seq <= 252
+            ORDER BY ticker, seq
+        """, tickers).fetchall()
+        conn.close()
+
+        from collections import defaultdict
+        by_ticker: dict[str, dict[int, dict]] = defaultdict(dict)
+        for ticker, seq, trade_date, price, volume in rows:
+            by_ticker[str(ticker)][int(seq)] = {
+                "date": trade_date, "price": price, "volume": volume
+            }
+
+        result: dict[str, dict] = {}
+        today = _dt.date.today()
+        for ticker in tickers:
+            by_seq = by_ticker.get(ticker, {})
+            if not by_seq or 1 not in by_seq:
+                result[ticker] = {}
+                continue
+
+            def _p(seq: int, _bs=by_seq) -> "float | None":
+                return _bs[seq]["price"] if seq in _bs else None
+
+            def _ret(cur: "float | None", prev: "float | None") -> "float | None":
+                if cur is None or not prev:
+                    return None
+                return (cur - prev) / prev * 100
+
+            latest = by_seq[1]
+            latest_price = latest["price"]
+            latest_date = latest["date"]
+
+            vols = [
+                by_seq[s]["volume"] for s in range(1, 21)
+                if s in by_seq and by_seq[s]["volume"] is not None
+            ]
+            avg_vol = sum(vols) / len(vols) if vols else None
+            vol_latest = latest.get("volume")
+            vol_ratio = vol_latest / avg_vol if vol_latest and avg_vol else None
+
+            prices_all = [d["price"] for d in by_seq.values() if d["price"] is not None]
+            stale = (today - latest_date).days > 5 if isinstance(latest_date, _dt.date) else False
+
+            ctx: dict = {
+                "latest_close": latest_price,
+                "latest_price_date": str(latest_date),
+                "previous_close": _p(2),
+                "return_1d": _ret(latest_price, _p(2)),
+                "return_3d": _ret(latest_price, _p(4)),
+                "return_5d": _ret(latest_price, _p(6)),
+                "return_10d": _ret(latest_price, _p(11)),
+                "return_20d": _ret(latest_price, _p(21)),
+                "volume": vol_latest,
+                "avg_volume_20d": avg_vol,
+                "volume_vs_20d_avg": vol_ratio,
+                "high_52w": max(prices_all) if prices_all else None,
+                "low_52w": min(prices_all) if prices_all else None,
+                "stale": stale,
+            }
+
+            event_date_str = (event_dates or {}).get(ticker, "")
+            if event_date_str:
+                try:
+                    evt = _dt.date.fromisoformat(event_date_str)
+                    before = [(s, d) for s, d in by_seq.items() if d["date"] <= evt]
+                    if before:
+                        best_seq = min(before, key=lambda x: x[0])[0]
+                        event_price = by_seq[best_seq]["price"]
+                        ctx["event_price"] = event_price
+                        ctx["return_since_event"] = _ret(latest_price, event_price)
+                except (ValueError, TypeError):
+                    pass
+
+            result[ticker] = ctx
+
+        return result
+    except Exception:
+        return {}
+
+
 def _lookup_price_context(ticker: str, db_path: str, event_date: str = "") -> dict:
     """Query prices_daily for price context. Returns {} on any error or missing data."""
     if not db_path or not os.path.exists(db_path):
@@ -1512,6 +1632,12 @@ def _learning_page(output_dir: str) -> str:
     )
 
     rc_rows_html = ""
+    subcause_html = ""
+    _INCOMPLETE_SUBCAUSES = {
+        "missing_cik", "missing_sec_companyfacts", "foreign_filer_or_adr",
+        "stale_fundamentals", "recent_ipo_or_short_history", "sector_specific_model_gap",
+        "polygon_fundamentals_missing", "ifrs_mapping_gap", "price_only_scored",
+    }
     if enriched_path.exists():
         with open(enriched_path, newline="") as f:
             enriched = list(_csv.DictReader(f))
@@ -1520,6 +1646,23 @@ def _learning_page(output_dir: str) -> str:
             f"<tr><td>{_esc(k)}</td><td>{v}</td></tr>"
             for k, v in sorted(rc.items(), key=lambda x: -x[1])
         )
+        sc = _Counter(
+            r.get("enriched_root_cause", "")
+            for r in enriched
+            if r.get("enriched_root_cause", "") in _INCOMPLETE_SUBCAUSES
+        )
+        if sc:
+            sc_rows = "".join(
+                f"<tr><td>{_esc(k)}</td><td>{v}</td></tr>"
+                for k, v in sorted(sc.items(), key=lambda x: -x[1])
+            )
+            subcause_html = (
+                '<h2>Incomplete Fundamentals — Subcauses</h2>'
+                '<p class="muted">Each data_gap row where tier=Incomplete split by specific cause.</p>'
+                '<table><tr><th>Subcause</th><th>Count</th></tr>'
+                + sc_rows
+                + '</table>'
+            )
 
     artifact_links = " &bull; ".join(
         f'<a href="/learning/{_esc(atype)}">{_esc(label)}</a>'
@@ -1547,6 +1690,8 @@ def _learning_page(output_dir: str) -> str:
 <tr><th>Group</th><th>Count</th></tr>
 {rc_rows_html if rc_rows_html else '<tr><td colspan="2"><em>Run enrich-root-causes to populate</em></td></tr>'}
 </table>
+
+{subcause_html}
 
 <h2>Artifacts</h2>
 <p class="muted">{artifact_links}</p>
@@ -1895,10 +2040,14 @@ def _moves_page(output_dir: str, db_path: str = "") -> str:
     n_tickers = len(summaries)
     n_events = len(all_rows)
 
-    # Enrich summaries with price context when DB is available
+    # Batch price context lookup (one DB connection for all tickers)
     if db_path and os.path.exists(db_path):
+        event_dates = {s["ticker"]: s["latest_date"] for s in summaries}
+        all_price_ctx = _batch_lookup_price_context(
+            [s["ticker"] for s in summaries], db_path, event_dates
+        )
         for s in summaries:
-            s["price_ctx"] = _lookup_price_context(s["ticker"], db_path, s["latest_date"])
+            s["price_ctx"] = all_price_ctx.get(s["ticker"], {})
 
     # Named sections
     spikes_1d = [s for s in summaries if s["best_window"] == 1]
