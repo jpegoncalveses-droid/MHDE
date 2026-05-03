@@ -14,6 +14,8 @@ from pathlib import Path
 
 import duckdb
 
+from missed.root_cause_enrichment import enrich_rows, _ROOT_CAUSE_GROUPS
+
 logger = logging.getLogger("mhde.missed.prediction_report")
 
 _NEAR_THRESHOLD_MIN = 40.0
@@ -179,14 +181,15 @@ def generate_prediction_report(
     today = date.today().isoformat()
 
     rows = build_rows(conn, lookback_days=lookback_days)
-    label_counts = Counter(r["classification"] for r in rows)
-    join_counts = Counter(r.get("score_join_method", "none") for r in rows)
-    n_with_score = len(rows) - join_counts.get("none", 0)
+    enriched_rows = enrich_rows(rows, conn)
+    label_counts = Counter(r["classification"] for r in enriched_rows)
+    join_counts = Counter(r.get("score_join_method", "none") for r in enriched_rows)
+    n_with_score = len(enriched_rows) - join_counts.get("none", 0)
 
     lines: list[str] = [
         "# Prediction vs Actual Spike Report",
         "",
-        f"Generated: {today} | Lookback: {lookback_days}d | Total events: {len(rows)}",
+        f"Generated: {today} | Lookback: {lookback_days}d | Total events: {len(enriched_rows)}",
         "",
         "> **Shadow-only: no production scores were changed.**",
         "",
@@ -211,13 +214,37 @@ def generate_prediction_report(
         "",
     ]
 
-    lines += _section_lines("1-Day Spikes", [r for r in rows if r.get("window_days") == 1])
-    lines += _section_lines("3d / 5d Spikes", [r for r in rows if r.get("window_days") in (3, 5)])
-    lines += _section_lines("Longer Windows (10d / 20d / 60d)", [r for r in rows if r.get("window_days") in (10, 20, 60)])
-    lines += _section_lines("52-Week Breakouts", [r for r in rows if r.get("window_days") == 252])
-    lines += _section_lines("Out-of-Universe Spikes", [r for r in rows if r["classification"] == "universe_miss"])
-    lines += _section_lines("Near-Threshold Scores", [r for r in rows if r["classification"] == "near_threshold"])
-    lines += _section_lines("No-Score Events", [r for r in rows if r["classification"] in ("unscored_mover", "true_miss")])
+    lines += _section_lines("1-Day Spikes", [r for r in enriched_rows if r.get("window_days") == 1])
+    lines += _section_lines("3d / 5d Spikes", [r for r in enriched_rows if r.get("window_days") in (3, 5)])
+    lines += _section_lines("Longer Windows (10d / 20d / 60d)", [r for r in enriched_rows if r.get("window_days") in (10, 20, 60)])
+    lines += _section_lines("52-Week Breakouts", [r for r in enriched_rows if r.get("window_days") == 252])
+    lines += _section_lines("Out-of-Universe Spikes", [r for r in enriched_rows if r["classification"] == "universe_miss"])
+    lines += _section_lines("Near-Threshold Scores", [r for r in enriched_rows if r["classification"] == "near_threshold"])
+    lines += _section_lines("No-Score Events", [r for r in enriched_rows if r["classification"] in ("unscored_mover", "true_miss")])
+
+    rc_counts = Counter(r.get("enriched_root_cause", "unknown") for r in enriched_rows)
+    group_counts = Counter(r.get("root_cause_group", "unknown") for r in enriched_rows)
+
+    lines += [
+        "---",
+        "",
+        "## Root Cause Summary",
+        "",
+        "| Root Cause Group | Count |",
+        "|------------------|-------|",
+    ]
+    for group in ("data_gap", "scoring_gap", "feature_gap", "near_miss", "universe_gap", "unknown"):
+        lines.append(f"| `{group}` | {group_counts.get(group, 0)} |")
+    lines += [
+        "",
+        "| Root Cause | Count |",
+        "|------------|-------|",
+    ]
+    for label in _ROOT_CAUSE_GROUPS:
+        count = rc_counts.get(label, 0)
+        if count:
+            lines.append(f"| `{label}` | {count} |")
+    lines.append("")
 
     md_path = out / _REPORT_MD
     md_path.write_text("\n".join(lines) + "\n")
@@ -226,12 +253,12 @@ def generate_prediction_report(
     with open(csv_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=_CSV_COLS, extrasaction="ignore")
         writer.writeheader()
-        writer.writerows(rows)
+        writer.writerows(enriched_rows)
 
     jsonl_path = out / _REPORT_JSONL
     with open(jsonl_path, "w") as f:
-        for r in rows:
+        for r in enriched_rows:
             f.write(json.dumps(r, default=str) + "\n")
 
-    logger.info("Prediction-vs-actual report: %s (%d rows)", md_path, len(rows))
+    logger.info("Prediction-vs-actual report: %s (%d rows)", md_path, len(enriched_rows))
     return md_path, csv_path, jsonl_path

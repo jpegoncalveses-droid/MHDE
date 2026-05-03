@@ -114,7 +114,7 @@ def test_universe_miss_classification(conn):
 
 
 def test_report_contains_required_sections(tmp_path, conn):
-    """Markdown report must contain all 9 required section headings."""
+    """Markdown report must contain all 10 required section headings."""
     from missed.prediction_report import generate_prediction_report
     _event(conn, "AAA", window_days=1)
     _event(conn, "BBB", window_days=10, universe_tier="primary")
@@ -130,6 +130,7 @@ def test_report_contains_required_sections(tmp_path, conn):
         "## Out-of-Universe Spikes",
         "## Near-Threshold Scores",
         "## No-Score Events",
+        "## Root Cause Summary",  # new
     ]
     for heading in required:
         assert heading in md, f"Missing section heading: {heading!r}"
