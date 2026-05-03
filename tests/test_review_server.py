@@ -1480,3 +1480,177 @@ def test_not_yet_reason_no_concerns():
     e = {"priced_in_risk": "low", "days_since_event": "2", "impact_estimate": "high"}
     r = _not_yet_reason(e)
     assert r == "—"
+
+
+# ── /ticker/<ticker> route ────────────────────────────────────────────────────
+
+def _make_app_with_db(tmp_path, db_path="", dates=None):
+    """App factory that accepts an optional db_path for ticker tests."""
+    from review.server import create_app
+    history_root = str(tmp_path / "history")
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir, exist_ok=True)
+    if dates:
+        for date, meta, rows in dates:
+            _write_day(history_root, date, meta, rows)
+    return create_app(
+        history_root, output_dir,
+        unsafe_no_auth=True,
+        db_path=db_path or "",
+    )
+
+
+def _seed_db(db_path: str, ticker: str = "AAPL", tier: str = "Reject",
+             score: float = 35.0, is_active: bool = True,
+             universe_tier: str = "primary", with_event: bool = False) -> None:
+    import duckdb
+    conn = duckdb.connect(db_path)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS companies (
+            ticker VARCHAR, company_name VARCHAR, universe_tier VARCHAR,
+            is_active BOOLEAN, sector VARCHAR, industry VARCHAR,
+            universe_exclusion_reason VARCHAR, last_financial_filing_date DATE,
+            PRIMARY KEY (ticker)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS scores (
+            ticker VARCHAR, as_of_date DATE, total_score DOUBLE,
+            tier VARCHAR, why_rejected VARCHAR, missing_data_json VARCHAR,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS missed_opportunity_events (
+            event_id VARCHAR, ticker VARCHAR, event_date DATE,
+            event_type VARCHAR, return_value DOUBLE, window_days INTEGER,
+            tier_before_event VARCHAR, had_catalyst_evidence BOOLEAN,
+            investigation_status VARCHAR
+        )
+    """)
+    conn.execute(
+        "INSERT INTO companies VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [ticker, f"{ticker} Inc.", universe_tier, is_active,
+         "Technology", "Software", None, None],
+    )
+    conn.execute(
+        "INSERT INTO scores VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+        [ticker, "2026-05-01", score, tier,
+         f"Score too low ({score:.0f} < 45)", "[]"],
+    )
+    if with_event:
+        conn.execute(
+            "INSERT INTO missed_opportunity_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ["ev1", ticker, "2026-04-20", "gain_5d_10pct",
+             0.12, 5, tier, True, "investigated"],
+        )
+    conn.close()
+
+
+def test_ticker_route_known_sp_ticker(tmp_path):
+    db = str(tmp_path / "t.duckdb")
+    _seed_db(db, ticker="AAPL", tier="Reject", score=20.0)
+    app = _make_app_with_db(tmp_path, db_path=db)
+    with app.test_client() as c:
+        r = c.get("/ticker/AAPL")
+    assert r.status_code == 200
+    html = r.data.decode()
+    assert "AAPL" in html
+    assert "Universe" in html
+    assert "Latest Score" in html
+    assert "Candidate Status" in html
+
+
+def test_ticker_route_unknown_ticker(tmp_path):
+    db = str(tmp_path / "t.duckdb")
+    _seed_db(db, ticker="AAPL")  # only AAPL in DB
+    app = _make_app_with_db(tmp_path, db_path=db)
+    with app.test_client() as c:
+        r = c.get("/ticker/ZZZQ")
+    assert r.status_code == 200
+    html = r.data.decode()
+    assert "ZZZQ" in html
+    assert "not found" in html.lower() or "Not in universe" in html
+
+
+def test_ticker_route_no_candidate_entry(tmp_path):
+    db = str(tmp_path / "t.duckdb")
+    _seed_db(db, ticker="MSFT", tier="Reject", score=30.0)
+    app = _make_app_with_db(tmp_path, db_path=db)
+    with app.test_client() as c:
+        r = c.get("/ticker/MSFT")
+    assert r.status_code == 200
+    html = r.data.decode()
+    assert "Score too low" in html or "not near" in html.lower() or "30" in html
+
+
+def test_ticker_route_with_move_event(tmp_path):
+    db = str(tmp_path / "t.duckdb")
+    _seed_db(db, ticker="APO", tier="Reject", score=38.0, with_event=True)
+    app = _make_app_with_db(tmp_path, db_path=db)
+    with app.test_client() as c:
+        r = c.get("/ticker/APO")
+    assert r.status_code == 200
+    html = r.data.decode()
+    assert "Missed Move Events" in html
+    assert "gain_5d_10pct" in html
+
+
+def test_ticker_route_requires_auth(tmp_path):
+    from review.server import create_app
+    history_root = str(tmp_path / "history")
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir, exist_ok=True)
+    app = create_app(history_root, output_dir, unsafe_no_auth=False)
+    with app.test_client() as c:
+        r = c.get("/ticker/AAPL")
+    assert r.status_code == 401
+
+
+def test_ticker_route_invalid_format(tmp_path):
+    app = _make_app_with_db(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/ticker/" + "A" * 20)
+    assert r.status_code in (400, 404)
+
+
+def test_search_box_on_today_page(tmp_path):
+    _write_day(str(tmp_path / "history"), "2026-05-01", _BASE_META, [_CROSSING_ROW])
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/today")
+    assert r.status_code == 200
+    html = r.data.decode()
+    assert "Look up" in html or "/ticker/" in html
+
+
+def test_search_box_on_candidates_page(tmp_path):
+    _write_day(str(tmp_path / "history"), "2026-05-01", _BASE_META, [_PRED_ROW])
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/candidates")
+    assert r.status_code == 200
+    html = r.data.decode()
+    assert "Look up" in html or "/ticker/" in html
+
+
+def test_not_candidate_reason_missing_from_universe():
+    from review.server import _not_candidate_reason
+    reason = _not_candidate_reason(None, None, False)
+    assert "Not in universe" in reason
+
+
+def test_not_candidate_reason_low_score():
+    from review.server import _not_candidate_reason
+    score_row = ("2026-05-01", 25.0, "Reject", "score too low", "[]")
+    company = {"is_active": True, "universe_exclusion_reason": None}
+    reason = _not_candidate_reason(company, score_row, False)
+    assert "25" in reason or "too low" in reason.lower()
+
+
+def test_not_candidate_reason_near_threshold_no_catalyst():
+    from review.server import _not_candidate_reason
+    score_row = ("2026-05-01", 42.0, "Reject", "near", "[]")
+    company = {"is_active": True, "universe_exclusion_reason": None}
+    reason = _not_candidate_reason(company, score_row, False)
+    assert "threshold" in reason.lower() or "40" in reason

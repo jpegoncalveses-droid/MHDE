@@ -315,6 +315,9 @@ details summary{cursor:pointer;color:#555;}
 .tw-val{font-size:.82rem;font-weight:500;}
 .ss-active{color:#1b5e20;font-weight:700;}.ss-decaying{color:#c62828;font-weight:600;}.ss-monitoring{color:#e65100;}
 .ss-mostly-expired{color:#9e9e9e;}.ss-inactive{color:#b0bec5;}
+.detail-table{width:100%;border-collapse:collapse;margin:6px 0 14px;}
+.detail-table td{padding:5px 8px;border-bottom:1px solid #e5e7eb;font-size:.88rem;vertical-align:top;}
+.detail-table td.tlabel{color:#6b7280;font-size:.78rem;white-space:nowrap;width:160px;}
 """
 
 _BASE_TMPL = """<!DOCTYPE html>
@@ -1340,7 +1343,8 @@ def _today_page(history_root: str, output_dir: str) -> str:
 
     body = (
         f'<h2>Today — {_esc(latest)}</h2>'
-        f'<div class="stat-grid">{stats}</div>'
+        + _SEARCH_BOX
+        + f'<div class="stat-grid">{stats}</div>'
         + pva_warn
         + review_table
         + nav
@@ -1353,17 +1357,23 @@ def _candidates_page(history_root: str) -> tuple[str, int]:
     if not dates:
         body = (
             '<h2>Candidates — No Runs Found</h2>'
-            '<p class="muted">No catalyst queue runs archived yet.</p>'
+            + _SEARCH_BOX
+            + '<p class="muted">No catalyst queue runs archived yet.</p>'
             '<p><a href="/">Home</a></p>'
         )
         return _render("Candidates — MHDE", body), 200
 
     latest = dates[0]
     html, code = _run_detail(history_root, latest)
-    # Replace page title to say "Candidates — {date}"
     html = html.replace(
         f"<title>{_esc(latest)} — MHDE Catalyst Review</title>",
         f"<title>Candidates — {_esc(latest)}</title>",
+    )
+    # Inject search box right after the opening h2
+    html = html.replace(
+        f"<h2>Run: {_esc(latest)}</h2>",
+        f"<h2>Candidates — {_esc(latest)}</h2>" + _SEARCH_BOX,
+        1,
     )
     return html, code
 
@@ -1518,6 +1528,291 @@ def _ops_page(history_root: str, output_dir: str) -> str:
     return _render("Ops — MHDE", body)
 
 
+# ── Ticker search ─────────────────────────────────────────────────────────────
+
+_TICKER_RE = __import__("re").compile(r"^[A-Z0-9.\-]{1,10}$")
+
+_SEARCH_BOX = (
+    '<form style="margin:8px 0 14px" '
+    'onsubmit="var t=this.q.value.trim().toUpperCase();'
+    "if(t){window.location='/ticker/'+encodeURIComponent(t);}return false;\">"
+    '<input name="q" placeholder="Ticker (e.g. AAPL)" maxlength="10" '
+    'style="padding:5px 8px;border:1px solid #ccc;border-radius:3px;font-size:.9rem;width:140px">'
+    ' <button type="submit" style="padding:5px 10px;background:#1565c0;color:#fff;'
+    'border:none;border-radius:3px;cursor:pointer">Look up</button>'
+    '</form>'
+)
+
+
+def _not_candidate_reason(
+    company: dict | None,
+    score_row: tuple | None,
+    in_queue: bool,
+) -> str:
+    if company is None:
+        return "Not in universe — ticker not found in companies table"
+    if not company.get("is_active"):
+        excl = company.get("universe_exclusion_reason") or ""
+        return f"Not active in universe{(': ' + excl) if excl else ''}"
+    if score_row is None:
+        return "No score found — not yet scored by the pipeline"
+    _, total_score, tier, why_rejected, missing_json = score_row
+    if tier == "Incomplete":
+        try:
+            import json as _json
+            missing = _json.loads(missing_json or "[]")
+            m = ", ".join(missing[:4]) if missing else "unknown"
+        except Exception:
+            m = str(missing_json or "")[:60]
+        return f"Incomplete score — missing data: {m}"
+    if total_score is not None and total_score >= 45:
+        return "Already C-tier or above — score meets threshold"
+    if total_score is not None and total_score >= 40:
+        if in_queue:
+            return "Near threshold (40–45) — present in catalyst queue"
+        return "Near threshold (40–45) — no qualifying catalyst in recent queue run"
+    if total_score is not None and total_score < 40:
+        return f"Score too low ({total_score:.1f} < 40) — not near candidate threshold"
+    return "Unknown — check pipeline logs"
+
+
+def _ticker_page(
+    ticker: str,
+    db_path: str,
+    history_root: str,
+    output_dir: str,
+) -> tuple[str, int]:
+    import csv as _csv
+
+    ticker = ticker.upper().strip()
+    if not _TICKER_RE.match(ticker):
+        return _render("Ticker — MHDE", "<p>Invalid ticker format.</p>"), 400
+
+    nav = (
+        '<p><a href="/today">Today</a> &nbsp;|&nbsp; '
+        '<a href="/candidates">Candidates</a> &nbsp;|&nbsp; '
+        '<a href="/moves">Moves</a> &nbsp;|&nbsp; '
+        '<a href="/learning">Learning</a> &nbsp;|&nbsp; '
+        '<a href="/docs">Docs</a></p>'
+        + _SEARCH_BOX
+    )
+
+    # ── DuckDB lookups ─────────────────────────────────────────────────────────
+    company: dict | None = None
+    score_row: tuple | None = None    # (as_of_date, total_score, tier, why_rejected, missing_json)
+    missed_events: list[dict] = []
+    db_error = ""
+
+    if os.path.exists(db_path):
+        try:
+            import duckdb as _duckdb
+            conn = _duckdb.connect(db_path, read_only=True)
+
+            row = conn.execute(
+                "SELECT ticker, company_name, universe_tier, is_active, sector, industry, "
+                "universe_exclusion_reason, last_financial_filing_date "
+                "FROM companies WHERE ticker = ?",
+                [ticker],
+            ).fetchone()
+            if row:
+                company = {
+                    "ticker": row[0], "company_name": row[1], "universe_tier": row[2],
+                    "is_active": row[3], "sector": row[4], "industry": row[5],
+                    "universe_exclusion_reason": row[6], "last_financial_filing_date": row[7],
+                }
+
+            srow = conn.execute(
+                "SELECT as_of_date, total_score, tier, why_rejected, missing_data_json "
+                "FROM scores WHERE ticker = ? ORDER BY as_of_date DESC LIMIT 1",
+                [ticker],
+            ).fetchone()
+            if srow:
+                score_row = srow
+
+            mrows = conn.execute(
+                "SELECT event_date, event_type, return_value, window_days, "
+                "tier_before_event, had_catalyst_evidence, investigation_status "
+                "FROM missed_opportunity_events WHERE ticker = ? ORDER BY event_date DESC LIMIT 10",
+                [ticker],
+            ).fetchall()
+            missed_events = [
+                {
+                    "event_date": str(r[0]), "event_type": r[1], "return_value": r[2],
+                    "window_days": r[3], "tier_before_event": r[4],
+                    "had_catalyst_evidence": r[5], "investigation_status": r[6],
+                }
+                for r in mrows
+            ]
+            conn.close()
+        except Exception as exc:
+            db_error = f"DB error: {_esc(str(exc)[:120])}"
+    else:
+        db_error = f"Database not found at {_esc(db_path)}"
+
+    # ── Prediction-vs-actual CSV ────────────────────────────────────────────────
+    pva_rows: list[dict] = []
+    pva_path = os.path.join(output_dir, "prediction_vs_actual_rows.csv")
+    if os.path.exists(pva_path):
+        try:
+            with open(pva_path, newline="") as f:
+                pva_rows = [r for r in _csv.DictReader(f) if r.get("ticker") == ticker]
+        except Exception:
+            pass
+
+    # ── Catalyst queue history scan ────────────────────────────────────────────
+    queue_entries: list[dict] = []
+    dates = _dated_dirs(history_root)
+    for d in dates[:10]:
+        csv_path = os.path.join(history_root, d, "daily_catalyst_queue.csv")
+        if not os.path.exists(csv_path):
+            continue
+        try:
+            with open(csv_path, newline="") as f:
+                for row in _csv.DictReader(f):
+                    if row.get("ticker") == ticker:
+                        row["_run_date"] = d
+                        queue_entries.append(row)
+        except Exception:
+            pass
+
+    in_queue = bool(queue_entries)
+    reason = _not_candidate_reason(company, score_row, in_queue)
+
+    # ── Build HTML ─────────────────────────────────────────────────────────────
+    def _row(label: str, val: str) -> str:
+        return f'<tr><td class="tlabel">{_esc(label)}</td><td>{val}</td></tr>'
+
+    # Universe block
+    if company:
+        tier_badge = _esc(company.get("universe_tier") or "—")
+        active_val = "Yes" if company.get("is_active") else '<span style="color:#c62828">No</span>'
+        uni_rows = (
+            _row("Company", _esc(company.get("company_name") or "—"))
+            + _row("Universe tier", tier_badge)
+            + _row("Active", active_val)
+            + _row("Sector", _esc(company.get("sector") or "—"))
+            + _row("Industry", _esc(company.get("industry") or "—"))
+            + _row("Exclusion reason", _esc(company.get("universe_exclusion_reason") or "—"))
+            + _row("Last filing", _esc(str(company.get("last_financial_filing_date") or "—")))
+        )
+        uni_block = f'<h3>Universe</h3><table class="detail-table">{uni_rows}</table>'
+    else:
+        uni_block = (
+            '<h3>Universe</h3>'
+            f'<p class="warn-box">Ticker <strong>{_esc(ticker)}</strong> not found in the companies table.</p>'
+        )
+
+    # Score block
+    if score_row:
+        as_of, total, tier, why_rej, _ = score_row
+        tier_style = "color:#1b5e20;font-weight:700" if tier == "C" else (
+            "color:#e65100" if tier == "Reject" else "color:#9e9e9e"
+        )
+        score_rows_html = (
+            _row("Score date", _esc(str(as_of)))
+            + _row("Total score", f'<strong>{total:.2f}</strong>' if total else "—")
+            + _row("Tier", f'<span style="{tier_style}">{_esc(tier)}</span>')
+            + _row("Why rejected", _esc(str(why_rej or "—")[:200]))
+        )
+        score_block = f'<h3>Latest Score</h3><table class="detail-table">{score_rows_html}</table>'
+    else:
+        score_block = '<h3>Latest Score</h3><p class="muted">No score found.</p>'
+
+    # Candidate status block
+    reason_style = "color:#1b5e20" if "meets threshold" in reason or "present in" in reason else "color:#c62828"
+    cand_block = (
+        f'<h3>Candidate Status</h3>'
+        f'<p><strong>In recent queue:</strong> {"Yes" if in_queue else "No"}</p>'
+        f'<p><strong>Reason not shown as candidate:</strong> '
+        f'<span style="{reason_style}">{_esc(reason)}</span></p>'
+    )
+
+    # Missed events block
+    if missed_events:
+        me_rows = "".join(
+            f'<tr>'
+            f'<td>{_esc(e["event_date"])}</td>'
+            f'<td>{_esc(e["event_type"])}</td>'
+            f'<td>{float(e["return_value"] or 0):.1%}</td>'
+            f'<td>{e["window_days"]}d</td>'
+            f'<td>{_esc(e["tier_before_event"] or "—")}</td>'
+            f'<td>{"✓" if e["had_catalyst_evidence"] else "✗"}</td>'
+            f'<td>{_esc(e["investigation_status"] or "—")}</td>'
+            f'</tr>'
+            for e in missed_events
+        )
+        miss_block = (
+            '<h3>Missed Move Events</h3>'
+            '<div style="overflow-x:auto"><table>'
+            '<tr><th>Date</th><th>Type</th><th>Return</th><th>Window</th>'
+            '<th>Tier before</th><th>Catalyst?</th><th>Status</th></tr>'
+            + me_rows + '</table></div>'
+        )
+    else:
+        miss_block = '<h3>Missed Move Events</h3><p class="muted">None found.</p>'
+
+    # Prediction-vs-actual block
+    if pva_rows:
+        pva_html = "".join(
+            f'<tr>'
+            f'<td>{_esc(r.get("event_date",""))}</td>'
+            f'<td>{_esc(r.get("event_type",""))}</td>'
+            f'<td>{_esc(r.get("classification",""))}</td>'
+            f'<td>{_esc(r.get("return_value",""))}</td>'
+            f'<td>{_esc(r.get("score_before_event",""))[:6]}</td>'
+            f'<td>{_esc(r.get("tier_before_event",""))}</td>'
+            f'</tr>'
+            for r in pva_rows[:10]
+        )
+        pva_block = (
+            '<h3>Prediction-vs-Actual</h3>'
+            '<div style="overflow-x:auto"><table>'
+            '<tr><th>Date</th><th>Event</th><th>Classification</th>'
+            '<th>Return</th><th>Score before</th><th>Tier before</th></tr>'
+            + pva_html + '</table></div>'
+        )
+    else:
+        pva_block = '<h3>Prediction-vs-Actual</h3><p class="muted">No entries found.</p>'
+
+    # Queue entries block
+    if queue_entries:
+        q_html = "".join(
+            f'<tr>'
+            f'<td>{_esc(e.get("_run_date",""))}</td>'
+            f'<td>{_esc(e.get("catalyst_type",""))}</td>'
+            f'<td>{_esc(e.get("shadow_tier",""))}</td>'
+            f'<td>{_esc(e.get("scaled_shadow_score",""))}</td>'
+            f'<td>{_esc(e.get("final_should_affect_score",""))}</td>'
+            f'<td>{_esc(str(e.get("expected_move_summary",""))[:60])}</td>'
+            f'</tr>'
+            for e in queue_entries[:10]
+        )
+        queue_block = (
+            '<h3>Catalyst Queue History</h3>'
+            '<div style="overflow-x:auto"><table>'
+            '<tr><th>Run</th><th>Catalyst</th><th>Shadow tier</th>'
+            '<th>Scaled score</th><th>Promoted</th><th>Summary</th></tr>'
+            + q_html + '</table></div>'
+        )
+    else:
+        queue_block = '<h3>Catalyst Queue History</h3><p class="muted">No entries found.</p>'
+
+    db_warn = f'<div class="warn-box">{db_error}</div>' if db_error else ""
+
+    body = (
+        f'<h2>Ticker: {_esc(ticker)}</h2>'
+        + db_warn
+        + uni_block
+        + score_block
+        + cand_block
+        + queue_block
+        + pva_block
+        + miss_block
+        + nav
+    )
+    return _render(f"{ticker} — MHDE", body), 200
+
+
 # ── App factory ───────────────────────────────────────────────────────────────
 
 def create_app(
@@ -1525,7 +1820,10 @@ def create_app(
     output_dir: str,
     unsafe_no_auth: bool = False,
     unsafe_public_bind: bool = False,
+    db_path: str = "",
 ) -> Flask:
+    _db_path = db_path or os.path.join(os.getcwd(), "data", "mhde.duckdb")
+
     app = Flask(__name__)
     app.config["UNSAFE_NO_AUTH"] = unsafe_no_auth
     app.config["UNSAFE_PUBLIC_BIND"] = unsafe_public_bind
@@ -1676,6 +1974,12 @@ def create_app(
     @_require_auth
     def doc_download(doc_key: str):
         return _doc_download(doc_key)
+
+    @app.route("/ticker/<ticker_sym>")
+    @_require_auth
+    def ticker_lookup(ticker_sym: str):
+        html, code = _ticker_page(ticker_sym, _db_path, history_root, output_dir)
+        return html, code
 
     return app
 
