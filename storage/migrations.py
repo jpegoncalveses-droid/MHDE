@@ -8,7 +8,7 @@ from storage.db import init_schema
 
 logger = logging.getLogger("mhde.storage.migrations")
 
-_CURRENT_VERSION = 7
+_CURRENT_VERSION = 8
 
 
 def run_migrations(conn: duckdb.DuckDBPyConnection) -> None:
@@ -112,3 +112,26 @@ def run_migrations(conn: duckdb.DuckDBPyConnection) -> None:
             "VALUES (7, 'Add earnings_estimates table') ON CONFLICT DO NOTHING"
         )
         logger.info("Applied migration v7: earnings_estimates table")
+
+    if current < 8:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS move_episodes (
+                episode_id VARCHAR PRIMARY KEY,
+                ticker VARCHAR NOT NULL,
+                start_date DATE NOT NULL,
+                latest_date DATE NOT NULL,
+                cumulative_return DOUBLE DEFAULT 0,
+                max_1d_return DOUBLE,
+                max_3d_return DOUBLE,
+                max_5d_return DOUBLE,
+                status VARCHAR DEFAULT 'active',
+                parent_catalyst_event_id VARCHAR,
+                attribution_type VARCHAR,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute(
+            "INSERT INTO schema_version (version, description) "
+            "VALUES (8, 'Add move_episodes table') ON CONFLICT DO NOTHING"
+        )
+        logger.info("Applied migration v8: move_episodes table")
