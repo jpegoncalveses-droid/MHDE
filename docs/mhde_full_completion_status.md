@@ -80,20 +80,20 @@ All warnings are `DeprecationWarning: datetime.datetime.utcnow()` — no functio
 
 | Phase | Name | Status |
 |---|---|---|
-| 0 | Preflight status and baseline docs | In Progress |
-| 1 | Dashboard control center — /today, /candidates, /moves, /ops routes | Not Started |
-| 2 | Daily automation script and systemd timer | Not Started |
-| 3 | Universe modes and Polygon ticker-details enrichment | Not Started |
-| 4 | Incomplete score diagnostics report | Not Started |
-| 5 | Deterministic catalyst classification rules | Not Started |
-| 6 | Sector ETF ingestion and sympathy attribution | Not Started |
-| 7 | Earnings estimates and surprises | Not Started |
-| 8 | GDELT news ingestion and catalyst classifiers | Not Started |
-| 9 | Move episode lifecycle tracking | Not Started |
-| 10 | Auto-populate forward returns daily | Not Started |
-| 11 | Feature flag registry | Not Started |
-| 12 | Production scoring governance CLI | Not Started |
-| 13 | Operating manual and architecture docs | Not Started |
+| 0 | Preflight status and baseline docs | Complete |
+| 1 | Dashboard control center — /today, /candidates, /moves, /ops routes | Complete |
+| 2 | Daily automation script and systemd timer | Complete |
+| 3 | Universe modes and Polygon ticker-details enrichment | Complete |
+| 4 | Incomplete score diagnostics report | Complete |
+| 5 | Deterministic catalyst classification rules | Complete |
+| 6 | Sector ETF ingestion and sympathy attribution | Complete |
+| 7 | Earnings estimates and surprises | Complete |
+| 8 | GDELT news ingestion and catalyst classifiers | Complete |
+| 9 | Move episode lifecycle tracking | Complete |
+| 10 | Auto-populate forward returns daily | Complete |
+| 11 | Feature flag registry | Complete |
+| 12 | Production scoring governance CLI | Complete |
+| 13 | Operating manual and architecture docs | Complete |
 
 ---
 
@@ -118,3 +118,30 @@ These files exist locally but are not tracked by git:
 | `docs/superpowers/plans/2026-05-03-prediction-vs-actual-report.md` | Plan doc (untracked) |
 
 **Note:** `data/processed/` files must NOT be committed. `.claude/` files are local tooling.
+
+---
+
+## Final Project Completion — 2026-05-03
+
+**All 14 phases complete. Test suite: 1037 passing, 0 failed.**
+
+Completion date: 2026-05-03
+
+### Phase Delivery Summary
+
+| Phase | Name | What it delivered |
+|---|---|---|
+| 0 | Preflight status and baseline docs | Established git baseline, test count (904 passing at start), artifact inventory, and phase checklist |
+| 1 | Dashboard control center | Flask review server routes: `/today`, `/candidates`, `/moves`, `/ops`, `/runs`, `/runs/<date>` with HTTP Basic Auth and live DuckDB queries |
+| 2 | Daily automation script and systemd timer | `run_mhde_daily_analysis.sh`, systemd service + timer (`mhde-daily-analysis.timer`), `MHDE_DAILY_SKIP_INGESTION` flag for dry runs |
+| 3 | Universe modes and Polygon ticker-details enrichment | Universe builder with core/extended/research modes, Polygon ticker-detail ingestion (market_cap, exchange, SIC) |
+| 4 | Incomplete score diagnostics report | Diagnostics report surfacing tickers with missing feature data, data freshness gaps, and partial scores |
+| 5 | Deterministic catalyst classification rules | 14-category rule-based catalyst classifier (`missed/deterministic_catalyst_rules.py`), full test coverage |
+| 6 | Sector ETF ingestion and sympathy attribution | Sector ETF ingestor (11 ETFs), sympathy move detector, sector attribution in missed spike pipeline |
+| 7 | Earnings estimates and surprises | Alpha Vantage earnings ingestor, earnings surprise feature, surprise boost signal (behind feature flag) |
+| 8 | GDELT news ingestion and catalyst classifiers | GDELT DOC API ingestor, news-based catalyst classifier, GDELT tone integration in sentiment features |
+| 9 | Move episode lifecycle tracking | `episode_tracker.py` with open/closed/validated lifecycle, episode table in DuckDB |
+| 10 | Auto-populate forward returns daily | `outcomes/tracker.py` populating forward returns (1d/3d/5d/10d/20d/60d/120d), drawdown and runup fields |
+| 11 | Feature flag registry | `governance/feature_flags.py` with `FeatureFlagRegistry`, `apply_shadow_adjustments()`, all flags off by default |
+| 12 | Production scoring governance CLI | `governance/signal_governance.py` with propose/approve/rollback, append-only audit log, CLI commands under `main.py learn` |
+| 13 | Operating manual and architecture docs | Four operator-facing documentation files: operating manual, architecture overview, data sources guide, scoring governance guide |
