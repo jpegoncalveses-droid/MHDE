@@ -3,101 +3,125 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime
+from pathlib import Path
 
 import duckdb
 
 from universe.sec_company_tickers import fetch_sec_company_tickers
 from universe.filters import filter_non_equities, classify_company
+from universe.sp500_loader import load_sp500_yaml
 
 logger = logging.getLogger("mhde.universe")
 
+_SP500_YAML = Path(__file__).parent / "sp500_tickers.yaml"
+
 _WARNING = (
-    "WARNING: Universe is built from SEC company list with name-based filters only. "
-    "No market cap, liquidity, or price filters applied. May include micro-caps. "
-    "Review candidates carefully."
+    "Universe primary tier sourced from universe/sp500_tickers.yaml + "
+    "config fallback_tickers. Extended tier filled from SEC list filtered "
+    "by name heuristics. No market-cap or liquidity filter applied."
 )
 
 
 def build_universe(conn: duckdb.DuckDBPyConnection, cfg: dict) -> int:
-    """Fetch SEC company tickers, filter, and upsert into companies table.
-
-    Returns number of companies in universe after build.
+    """Build the universe: primary tier from S&P 500 YAML + config fallback,
+    extended tier from filtered SEC list. Returns active company count.
     """
     universe_cfg = cfg.get("universe", {})
     max_symbols = universe_cfg.get("max_symbols", 500)
-    fallback_tickers = [t.upper() for t in universe_cfg.get("fallback_tickers", [])]
+    config_fallback = [t.upper() for t in universe_cfg.get("fallback_tickers", [])]
+
+    # --- Merge YAML + config into one ordered primary dict (YAML first) ---
+    sp500_entries = load_sp500_yaml(_SP500_YAML)
+    primary_meta: dict[str, dict] = {}
+    for e in sp500_entries:
+        t = e.get("ticker", "").upper()
+        if t:
+            primary_meta[t] = e
+    for t in config_fallback:
+        if t not in primary_meta:
+            primary_meta[t] = {"ticker": t}
 
     logger.warning(_WARNING)
 
-    # Fetch from SEC
+    # --- Fetch SEC list ---
     raw = fetch_sec_company_tickers()
-
     if not raw:
-        logger.warning("SEC fetch failed — falling back to config tickers only")
+        logger.warning("SEC fetch failed — using primary list only")
         raw = []
 
-    # Filter non-equities
     filtered = filter_non_equities(raw, universe_cfg)
+    filtered_lookup: dict[str, dict] = {co["ticker"]: co for co in filtered}
 
-    # Build a lookup for fast dedup
     seen: set[str] = set()
     ordered: list[dict] = []
 
-    # Fallback tickers always go first (highest priority)
-    fallback_lookup = {co["ticker"]: co for co in filtered}
-    for ticker in fallback_tickers:
-        if ticker not in seen:
-            if ticker in fallback_lookup:
-                co = fallback_lookup[ticker].copy()
-            else:
-                co = {
-                    "ticker": ticker,
-                    "cik": None,
-                    "company_name": ticker,
-                    "is_etf": False,
-                    "is_fund": False,
-                    "is_adr": False,
-                    "is_active": True,
-                }
-                co = classify_company(co)
-            co["universe_tier"] = "primary"
-            ordered.append(co)
-            seen.add(ticker)
+    # Primary tier: never capped by max_symbols
+    for ticker, meta in primary_meta.items():
+        if ticker in seen:
+            continue
+        if ticker in filtered_lookup:
+            co = filtered_lookup[ticker].copy()
+        else:
+            co = {
+                "ticker": ticker,
+                "cik": meta.get("cik"),
+                "company_name": meta.get("company_name", ticker),
+                "is_etf": False,
+                "is_fund": False,
+                "is_adr": False,
+                "is_active": True,
+            }
+            co = classify_company(co)
+        co["universe_tier"] = "primary"
+        # YAML sector/industry override SEC (which has none anyway)
+        co["sector"] = meta.get("sector")
+        co["industry"] = meta.get("industry")
+        # YAML CIK takes precedence (needed for dot-class tickers)
+        if meta.get("cik"):
+            co["cik"] = meta["cik"]
+        ordered.append(co)
+        seen.add(ticker)
 
-    # Fill remaining up to max_symbols
+    # Extended tier: fills up to max_symbols
     for co in filtered:
         if len(ordered) >= max_symbols:
             break
         if co["ticker"] not in seen:
             co["universe_tier"] = "extended"
+            co["sector"] = None
+            co["industry"] = None
             ordered.append(co)
             seen.add(co["ticker"])
 
     now = datetime.utcnow()
-    inserted = 0
     for co in ordered:
         try:
             conn.execute(
                 """
                 INSERT INTO companies
-                    (ticker, cik, company_name, is_etf, is_fund, is_adr,
-                     is_active, universe_tier, last_seen_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (ticker, cik, company_name, sector, industry,
+                     is_etf, is_fund, is_adr, is_active, universe_tier,
+                     last_seen_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (ticker) DO UPDATE SET
-                    cik = excluded.cik,
-                    company_name = excluded.company_name,
-                    is_etf = excluded.is_etf,
-                    is_fund = excluded.is_fund,
-                    is_adr = excluded.is_adr,
-                    is_active = excluded.is_active,
-                    universe_tier = excluded.universe_tier,
-                    last_seen_at = excluded.last_seen_at,
-                    updated_at = excluded.updated_at
+                    cik            = COALESCE(excluded.cik, companies.cik),
+                    company_name   = excluded.company_name,
+                    sector         = COALESCE(excluded.sector, companies.sector),
+                    industry       = COALESCE(excluded.industry, companies.industry),
+                    is_etf         = excluded.is_etf,
+                    is_fund        = excluded.is_fund,
+                    is_adr         = excluded.is_adr,
+                    is_active      = excluded.is_active,
+                    universe_tier  = excluded.universe_tier,
+                    last_seen_at   = excluded.last_seen_at,
+                    updated_at     = excluded.updated_at
                 """,
                 [
                     co["ticker"],
                     co.get("cik"),
                     co.get("company_name", co["ticker"]),
+                    co.get("sector"),
+                    co.get("industry"),
                     co.get("is_etf", False),
                     co.get("is_fund", False),
                     co.get("is_adr", False),
@@ -107,10 +131,35 @@ def build_universe(conn: duckdb.DuckDBPyConnection, cfg: dict) -> int:
                     now,
                 ],
             )
-            inserted += 1
         except Exception as exc:
             logger.warning("Failed to upsert %s: %s", co.get("ticker"), exc)
 
-    count = conn.execute("SELECT COUNT(*) FROM companies WHERE is_active = true").fetchone()[0]
-    logger.info("Universe built: %d companies (primary: %d)", count, len(fallback_tickers))
+    # Reconcile: deactivate primary-tier rows no longer in the primary set
+    current_primary = list(primary_meta.keys())
+    if current_primary:
+        placeholders = ", ".join("?" * len(current_primary))
+        conn.execute(
+            f"""
+            UPDATE companies
+            SET is_active = false
+            WHERE universe_tier = 'primary'
+              AND ticker NOT IN ({placeholders})
+            """,
+            current_primary,
+        )
+    else:
+        # No primary tickers at all — deactivate every primary-tier row
+        conn.execute(
+            "UPDATE companies SET is_active = false WHERE universe_tier = 'primary'"
+        )
+
+    count = conn.execute(
+        "SELECT COUNT(*) FROM companies WHERE is_active = true"
+    ).fetchone()[0]
+    logger.info(
+        "Universe built: %d active (%d primary, %d extended slots used)",
+        count,
+        len(current_primary),
+        max(0, count - len(current_primary)),
+    )
     return count
