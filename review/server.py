@@ -318,6 +318,10 @@ details summary{cursor:pointer;color:#555;}
 .detail-table{width:100%;border-collapse:collapse;margin:6px 0 14px;}
 .detail-table td{padding:5px 8px;border-bottom:1px solid #e5e7eb;font-size:.88rem;vertical-align:top;}
 .detail-table td.tlabel{color:#6b7280;font-size:.78rem;white-space:nowrap;width:160px;}
+.price-confirm{color:#1b5e20;font-weight:600}
+.price-extended{color:#e65100;font-weight:600}
+.price-stale{color:#78909c}
+.price-none{color:#9e9e9e}
 """
 
 _BASE_TMPL = """<!DOCTYPE html>
@@ -382,6 +386,202 @@ def _format_return_pct(value) -> str:
     if abs(v) < 2.0:
         v = v * 100
     return f"{v:.1f}%"
+
+
+# ── Price context ─────────────────────────────────────────────────────────────
+
+def _lookup_price_context(ticker: str, db_path: str, event_date: str = "") -> dict:
+    """Query prices_daily for price context. Returns {} on any error or missing data."""
+    if not db_path or not os.path.exists(db_path):
+        return {}
+    try:
+        import duckdb as _duckdb
+        import datetime as _dt
+
+        conn = _duckdb.connect(db_path, read_only=True)
+        rows = conn.execute("""
+            WITH deduped AS (
+                SELECT trade_date,
+                       COALESCE(adjusted_close, close) AS price,
+                       volume,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY trade_date ORDER BY created_at DESC NULLS LAST
+                       ) AS rn
+                FROM prices_daily
+                WHERE ticker = ?
+            ),
+            daily AS (
+                SELECT trade_date, price, volume,
+                       ROW_NUMBER() OVER (ORDER BY trade_date DESC) AS seq
+                FROM deduped
+                WHERE rn = 1
+            )
+            SELECT seq, trade_date, price, volume
+            FROM daily
+            WHERE seq <= 252
+            ORDER BY seq
+        """, [ticker]).fetchall()
+        conn.close()
+
+        if not rows:
+            return {}
+
+        by_seq: dict[int, dict] = {
+            r[0]: {"date": r[1], "price": r[2], "volume": r[3]}
+            for r in rows
+        }
+
+        def _p(seq: int) -> "float | None":
+            return by_seq[seq]["price"] if seq in by_seq else None
+
+        def _ret(cur: "float | None", prev: "float | None") -> "float | None":
+            if cur is None or not prev:
+                return None
+            return (cur - prev) / prev * 100
+
+        latest = by_seq[1]
+        latest_price = latest["price"]
+        latest_date = latest["date"]
+
+        vols = [
+            by_seq[s]["volume"] for s in range(1, 21)
+            if s in by_seq and by_seq[s]["volume"] is not None
+        ]
+        avg_vol = sum(vols) / len(vols) if vols else None
+        vol_latest = latest.get("volume")
+        vol_ratio = vol_latest / avg_vol if vol_latest and avg_vol else None
+
+        prices_all = [d["price"] for d in by_seq.values() if d["price"] is not None]
+        today = _dt.date.today()
+        stale = (today - latest_date).days > 5 if isinstance(latest_date, _dt.date) else False
+
+        ctx: dict = {
+            "latest_close": latest_price,
+            "latest_price_date": str(latest_date),
+            "previous_close": _p(2),
+            "return_1d": _ret(latest_price, _p(2)),
+            "return_3d": _ret(latest_price, _p(4)),
+            "return_5d": _ret(latest_price, _p(6)),
+            "return_10d": _ret(latest_price, _p(11)),
+            "return_20d": _ret(latest_price, _p(21)),
+            "volume": vol_latest,
+            "avg_volume_20d": avg_vol,
+            "volume_vs_20d_avg": vol_ratio,
+            "high_52w": max(prices_all) if prices_all else None,
+            "low_52w": min(prices_all) if prices_all else None,
+            "stale": stale,
+        }
+
+        if event_date:
+            try:
+                evt = _dt.date.fromisoformat(event_date)
+                # Most recent trading day on or before event_date
+                before = [(s, d) for s, d in by_seq.items() if d["date"] <= evt]
+                if before:
+                    best_seq = min(before, key=lambda x: x[0])[0]
+                    event_price = by_seq[best_seq]["price"]
+                    ctx["event_price"] = event_price
+                    ctx["return_since_event"] = _ret(latest_price, event_price)
+            except (ValueError, TypeError):
+                pass
+
+        return ctx
+    except Exception:
+        return {}
+
+
+def _price_status_label(ctx: dict) -> tuple[str, str]:
+    """Return (label, css_class) describing current price vs. signal."""
+    if not ctx or ctx.get("latest_close") is None:
+        return ("no price data", "price-none")
+    if ctx.get("stale"):
+        return ("stale price data", "price-stale")
+
+    since = ctx.get("return_since_event")
+    if since is not None:
+        if since > 10:
+            return ("price extended", "price-extended")
+        if since > 2:
+            return ("price confirming", "price-confirm")
+        return ("no price confirmation", "price-none")
+
+    r5d = ctx.get("return_5d") or 0
+    r1d = ctx.get("return_1d") or 0
+    r3d = ctx.get("return_3d") or 0
+    if r5d > 8:
+        return ("price extended", "price-extended")
+    if r1d > 1.5 or r3d > 2:
+        return ("price confirming", "price-confirm")
+    return ("no price confirmation", "price-none")
+
+
+def _price_block(ctx: dict) -> str:
+    """Render detailed price context table for the ticker page."""
+    if not ctx:
+        return '<h3>Price Context</h3><p class="muted">No price data in prices_daily for this ticker.</p>'
+
+    def _prow(label: str, val: str) -> str:
+        return f'<tr><td class="tlabel">{_esc(label)}</td><td>{val}</td></tr>'
+
+    def _ret_html(pct: "float | None") -> str:
+        if pct is None:
+            return "—"
+        css = "price-confirm" if pct > 0 else ("price-extended" if pct < -2 else "")
+        sign = "+" if pct > 0 else ""
+        return f'<span class="{css}">{sign}{pct:.1f}%</span>'
+
+    close = ctx.get("latest_close")
+    date_str = ctx.get("latest_price_date") or "—"
+    stale = ctx.get("stale", False)
+    stale_html = ' <span class="price-stale">⚠ stale (&gt;5 days old)</span>' if stale else ""
+
+    high = ctx.get("high_52w")
+    low = ctx.get("low_52w")
+    close_str = f"${close:.2f}" if close is not None else "—"
+    if high and low and close:
+        pct_hi = (close - high) / high * 100
+        pct_lo = (close - low) / low * 100
+        close_str += (
+            f' <span class="muted">'
+            f'52w: ${low:.0f}–${high:.0f} · {pct_hi:+.1f}% from high · +{pct_lo:.1f}% from low'
+            f'</span>'
+        )
+
+    vol = ctx.get("volume")
+    avg_vol = ctx.get("avg_volume_20d")
+    vol_ratio = ctx.get("volume_vs_20d_avg")
+    if vol is not None and avg_vol and vol_ratio:
+        vol_str = f'{vol:,.0f} ({vol_ratio:.1f}x 20d avg)'
+    elif vol is not None:
+        vol_str = f'{vol:,.0f}'
+    else:
+        vol_str = "—"
+
+    label, label_css = _price_status_label(ctx)
+
+    rows_html = ""
+    if ctx.get("return_since_event") is not None:
+        ep = ctx.get("event_price")
+        ep_str = f" from ${ep:.2f}" if ep else ""
+        rows_html += _prow(
+            "Move since event",
+            _ret_html(ctx["return_since_event"])
+            + f' <span class="muted">{_esc(ep_str)}</span>',
+        )
+
+    rows_html += (
+        _prow("Price date", f'{_esc(date_str)}{stale_html}')
+        + _prow("Latest close", close_str)
+        + _prow("1d return", _ret_html(ctx.get("return_1d")))
+        + _prow("3d return", _ret_html(ctx.get("return_3d")))
+        + _prow("5d return", _ret_html(ctx.get("return_5d")))
+        + _prow("10d return", _ret_html(ctx.get("return_10d")))
+        + _prow("20d return", _ret_html(ctx.get("return_20d")))
+        + _prow("Volume", vol_str)
+        + _prow("Signal", f'<span class="{label_css}">{_esc(label)}</span>')
+    )
+
+    return f'<h3>Price Context</h3><table class="detail-table">{rows_html}</table>'
 
 
 # ── Docs viewer ───────────────────────────────────────────────────────────────
@@ -1369,7 +1569,63 @@ def _today_page(history_root: str, output_dir: str) -> str:
     return _render("Today — MHDE", body)
 
 
-def _candidates_page(history_root: str) -> tuple[str, int]:
+def _candidates_price_snapshot(entries: list[dict], db_path: str) -> str:
+    """Compact price-context table for all promoted candidates."""
+    promoted = [e for e in entries if _is_promoted(e)]
+    if not promoted or not db_path:
+        return ""
+
+    def _r(v: "float | None") -> str:
+        if v is None:
+            return "—"
+        sign = "+" if v > 0 else ""
+        css = "price-confirm" if v > 0 else "price-extended"
+        return f'<span class="{css}">{sign}{v:.1f}%</span>'
+
+    trs = ""
+    for e in promoted:
+        ticker = e.get("ticker", "")
+        event_date = e.get("event_date", "")
+        ctx = _lookup_price_context(ticker, db_path, event_date)
+        label, label_css = _price_status_label(ctx)
+
+        close = ctx.get("latest_close")
+        close_str = f"${close:.2f}" if close is not None else "—"
+        if ctx.get("stale"):
+            close_str += " ⚠"
+        date_str = ctx.get("latest_price_date") or "—"
+        vol_ratio = ctx.get("volume_vs_20d_avg")
+        vol_str = f'{vol_ratio:.1f}x' if vol_ratio is not None else "—"
+        since_html = _r(ctx.get("return_since_event")) if "return_since_event" in ctx else "—"
+
+        trs += (
+            f'<tr>'
+            f'<td><a href="/ticker/{_esc(ticker)}">{_esc(ticker)}</a></td>'
+            f'<td>{close_str}</td>'
+            f'<td class="muted">{_esc(date_str)}</td>'
+            f'<td>{_r(ctx.get("return_1d"))}</td>'
+            f'<td>{_r(ctx.get("return_5d"))}</td>'
+            f'<td>{vol_str}</td>'
+            f'<td>{since_html}</td>'
+            f'<td><span class="{label_css}">{_esc(label)}</span></td>'
+            f'</tr>'
+        )
+
+    if not trs:
+        return ""
+
+    return (
+        '<h3>Price Snapshot — Promoted Candidates</h3>'
+        '<div style="overflow-x:auto"><table>'
+        '<tr><th>Ticker</th><th>Close</th><th>Date</th>'
+        '<th>1d</th><th>5d</th><th>Vol/avg</th>'
+        '<th>Since event</th><th>Signal</th></tr>'
+        + trs
+        + '</table></div>'
+    )
+
+
+def _candidates_page(history_root: str, db_path: str = "") -> tuple[str, int]:
     dates = _dated_dirs(history_root)
     if not dates:
         body = (
@@ -1381,15 +1637,18 @@ def _candidates_page(history_root: str) -> tuple[str, int]:
         return _render("Candidates — MHDE", body), 200
 
     latest = dates[0]
+    entries = _read_csv_entries(history_root, latest)
+    price_snapshot = _candidates_price_snapshot(entries, db_path)
+
     html, code = _run_detail(history_root, latest)
     html = html.replace(
         f"<title>{_esc(latest)} — MHDE Catalyst Review</title>",
         f"<title>Candidates — {_esc(latest)}</title>",
     )
-    # Inject search box right after the opening h2
+    # Inject search box + price snapshot right after the opening h2
     html = html.replace(
         f"<h2>Run: {_esc(latest)}</h2>",
-        f"<h2>Candidates — {_esc(latest)}</h2>" + _SEARCH_BOX,
+        f"<h2>Candidates — {_esc(latest)}</h2>" + _SEARCH_BOX + price_snapshot,
         1,
     )
     return html, code
@@ -1466,28 +1725,46 @@ def _build_ticker_summary(rows: list[dict]) -> list[dict]:
 def _summary_table(rows: list[dict], max_rows: int = 50) -> str:
     if not rows:
         return "<p class='muted'>None.</p>"
+    has_price = any(r.get("price_ctx") for r in rows)
+    th_price = "<th>Close</th><th>Signal</th>" if has_price else ""
     th = (
-        "<tr><th>Ticker</th><th>Latest date</th><th>Best window</th>"
-        "<th>Max return</th><th>Classification</th>"
-        "<th>Root cause</th><th>Events</th></tr>"
+        f"<tr><th>Ticker</th><th>Latest date</th><th>Best window</th>"
+        f"<th>Max return</th><th>Classification</th>"
+        f"<th>Root cause</th><th>Events</th>{th_price}</tr>"
     )
-    trs = "".join(
-        f'<tr>'
-        f'<td><a href="/ticker/{_esc(s["ticker"])}">{_esc(s["ticker"])}</a></td>'
-        f'<td>{_esc(s["latest_date"])}</td>'
-        f'<td>{s["best_window"]}d</td>'
-        f'<td><strong>{s["max_abs_return"]:.1f}%</strong></td>'
-        f'<td><span class="badge {_esc(_CLF_BADGE.get(s["classification"], ""))}">'
-        f'{_esc(s["classification"])}</span></td>'
-        f'<td class="muted">{_esc(s["root_cause_hint"])}</td>'
-        f'<td class="muted">{s["n_events"]}</td>'
-        f'</tr>'
-        for s in rows[:max_rows]
-    )
+    trs_parts = []
+    for s in rows[:max_rows]:
+        ctx = s.get("price_ctx") or {}
+        if has_price:
+            close = ctx.get("latest_close")
+            close_str = f"${close:.2f}" if close is not None else "—"
+            if ctx.get("stale"):
+                close_str += " ⚠"
+            label, label_css = _price_status_label(ctx)
+            price_cells = (
+                f'<td>{close_str}</td>'
+                f'<td><span class="{label_css}">{_esc(label)}</span></td>'
+            )
+        else:
+            price_cells = ""
+        trs_parts.append(
+            f'<tr>'
+            f'<td><a href="/ticker/{_esc(s["ticker"])}">{_esc(s["ticker"])}</a></td>'
+            f'<td>{_esc(s["latest_date"])}</td>'
+            f'<td>{s["best_window"]}d</td>'
+            f'<td><strong>{s["max_abs_return"]:.1f}%</strong></td>'
+            f'<td><span class="badge {_esc(_CLF_BADGE.get(s["classification"], ""))}">'
+            f'{_esc(s["classification"])}</span></td>'
+            f'<td class="muted">{_esc(s["root_cause_hint"])}</td>'
+            f'<td class="muted">{s["n_events"]}</td>'
+            f'{price_cells}'
+            f'</tr>'
+        )
+    trs = "".join(trs_parts)
     return f'<div style="overflow-x:auto"><table>{th}{trs}</table></div>'
 
 
-def _moves_page(output_dir: str) -> str:
+def _moves_page(output_dir: str, db_path: str = "") -> str:
     import csv as _csv
     from pathlib import Path
 
@@ -1516,6 +1793,11 @@ def _moves_page(output_dir: str) -> str:
     summaries = _build_ticker_summary(all_rows)
     n_tickers = len(summaries)
     n_events = len(all_rows)
+
+    # Enrich summaries with price context when DB is available
+    if db_path and os.path.exists(db_path):
+        for s in summaries:
+            s["price_ctx"] = _lookup_price_context(s["ticker"], db_path, s["latest_date"])
 
     # Named sections
     spikes_1d = [s for s in summaries if s["best_window"] == 1]
@@ -1828,6 +2110,10 @@ def _ticker_page(
     in_queue = bool(queue_entries)
     reason = _not_candidate_reason(company, score_row, in_queue)
 
+    # ── Price context ──────────────────────────────────────────────────────────
+    latest_event_date = missed_events[0]["event_date"] if missed_events else ""
+    price_ctx = _lookup_price_context(ticker, db_path, event_date=latest_event_date)
+
     # ── Build HTML ─────────────────────────────────────────────────────────────
     def _row(label: str, val: str) -> str:
         return f'<tr><td class="tlabel">{_esc(label)}</td><td>{val}</td></tr>'
@@ -1962,6 +2248,7 @@ def _ticker_page(
         f'<h2>Ticker: {_esc(ticker)}</h2>'
         + db_warn
         + uni_block
+        + _price_block(price_ctx)
         + score_block
         + cand_block
         + queue_block
@@ -2105,13 +2392,13 @@ def create_app(
     @app.route("/candidates")
     @_require_auth
     def candidates():
-        html, code = _candidates_page(history_root)
+        html, code = _candidates_page(history_root, _db_path)
         return html, code
 
     @app.route("/moves")
     @_require_auth
     def moves():
-        return _moves_page(output_dir)
+        return _moves_page(output_dir, _db_path)
 
     @app.route("/ops")
     @_require_auth

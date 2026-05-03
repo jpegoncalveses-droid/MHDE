@@ -1847,3 +1847,198 @@ def test_ticker_unscored_mover_explanation_appears(tmp_path):
     html = r.data.decode()
     # had_catalyst_evidence=False triggers unscored note
     assert "unscored" in html.lower() or "no prior score" in html.lower()
+
+
+# ── Price context tests ───────────────────────────────────────────────────────
+
+def _add_prices_to_db(db_path: str, ticker: str, rows: list[tuple]) -> None:
+    """Insert (date_str, close, volume) rows into prices_daily."""
+    import duckdb
+    conn = duckdb.connect(db_path)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS prices_daily (
+            id VARCHAR,
+            ticker VARCHAR NOT NULL,
+            trade_date DATE NOT NULL,
+            open DOUBLE,
+            high DOUBLE,
+            low DOUBLE,
+            close DOUBLE NOT NULL,
+            volume BIGINT,
+            adjusted_close DOUBLE,
+            source VARCHAR DEFAULT 'test',
+            run_id VARCHAR,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (id)
+        )
+    """)
+    for i, (date_str, close, volume) in enumerate(rows):
+        conn.execute(
+            "INSERT INTO prices_daily (id, ticker, trade_date, close, volume, adjusted_close) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            [f"{ticker}_{date_str}_{i}", ticker, date_str, close, volume, close],
+        )
+    conn.close()
+
+
+def test_price_context_on_ticker_page(tmp_path):
+    db = str(tmp_path / "t.duckdb")
+    _seed_db(db, ticker="AAPL", tier="Reject", score=35.0)
+    _add_prices_to_db(db, "AAPL", [
+        ("2026-05-01", 175.50, 80_000_000),
+        ("2026-04-30", 172.00, 70_000_000),
+        ("2026-04-29", 170.00, 65_000_000),
+    ])
+    app = _make_app_with_db(tmp_path, db_path=db)
+    with app.test_client() as c:
+        r = c.get("/ticker/AAPL")
+    html = r.data.decode()
+    assert r.status_code == 200
+    assert "Price Context" in html
+    assert "175.50" in html
+    assert "Latest close" in html
+
+
+def test_price_context_missing_data_graceful(tmp_path):
+    # No prices_daily table — page must still return 200
+    db = str(tmp_path / "t.duckdb")
+    _seed_db(db, ticker="AAPL", tier="Reject", score=35.0)
+    app = _make_app_with_db(tmp_path, db_path=db)
+    with app.test_client() as c:
+        r = c.get("/ticker/AAPL")
+    assert r.status_code == 200
+    html = r.data.decode()
+    assert "Price Context" in html
+    assert "No price data" in html
+
+
+def test_price_context_stale_flagged(tmp_path):
+    import datetime
+    db = str(tmp_path / "t.duckdb")
+    _seed_db(db, ticker="AAPL", tier="Reject", score=35.0)
+    stale_date = (datetime.date.today() - datetime.timedelta(days=8)).isoformat()
+    _add_prices_to_db(db, "AAPL", [(stale_date, 150.0, 50_000_000)])
+    app = _make_app_with_db(tmp_path, db_path=db)
+    with app.test_client() as c:
+        r = c.get("/ticker/AAPL")
+    html = r.data.decode()
+    assert "stale" in html.lower()
+
+
+def test_candidates_price_snapshot_appears(tmp_path):
+    db = str(tmp_path / "t.duckdb")
+    _seed_db(db, ticker="AAAA", tier="C", score=50.0)
+    _add_prices_to_db(db, "AAAA", [
+        ("2026-05-01", 100.0, 1_000_000),
+        ("2026-04-30",  98.0, 900_000),
+    ])
+    row = {
+        "ticker": "AAAA", "original_score": "48.0", "shadow_score": "51.0",
+        "shadow_tier": "C", "llm_adjustment": "3.0", "is_promoted": "true",
+        "final_should_affect_score": "true", "sentiment": "bullish",
+        "expected_direction": "bullish", "expected_timeframe": "5-10 days",
+        "expected_move_summary": "Test", "action_reason": "reason",
+        "catalyst_type": "earnings", "materiality": "high", "confidence": "0.8",
+        "days_since_event": "3", "event_date": "2026-04-28",
+        "priced_in_risk": "low", "impact_estimate": "high",
+        "key_checks": "check1", "constructed_url": "",
+        "scaled_adjustment": "3.0", "scaled_shadow_score": "51.0",
+    }
+    app = _make_app_with_db(tmp_path, db_path=db, dates=[("2026-05-01", {}, [row])])
+    with app.test_client() as c:
+        r = c.get("/candidates")
+    html = r.data.decode()
+    assert r.status_code == 200
+    assert "Price Snapshot" in html
+
+
+def test_moves_price_context_appears(tmp_path):
+    import io, csv
+    db = str(tmp_path / "t.duckdb")
+    _seed_db(db, ticker="AAPL", tier="Reject", score=35.0)
+    _add_prices_to_db(db, "AAPL", [
+        ("2026-05-01", 175.0, 80_000_000),
+        ("2026-04-30", 170.0, 75_000_000),
+    ])
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir, exist_ok=True)
+    pva_path = os.path.join(output_dir, "prediction_vs_actual_rows.csv")
+    cols = ["ticker", "event_date", "event_type", "return_value", "window_days",
+            "classification", "universe_tier", "root_cause_hint", "score_before_event",
+            "tier_before_event"]
+    with open(pva_path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=cols)
+        w.writeheader()
+        w.writerow({
+            "ticker": "AAPL", "event_date": "2026-04-20", "event_type": "gain_5d_10pct",
+            "return_value": "12.0", "window_days": "5", "classification": "true_miss",
+            "universe_tier": "primary", "root_cause_hint": "earnings beat",
+            "score_before_event": "35.0", "tier_before_event": "Reject",
+        })
+    app = _make_app_with_db(tmp_path, db_path=db)
+    app.config["OUTPUT_DIR"] = output_dir
+    # Override the moves route to use the right output_dir
+    from review.server import create_app as _ca
+    history_root = str(tmp_path / "history")
+    os.makedirs(history_root, exist_ok=True)
+    test_app = _ca(history_root, output_dir, unsafe_no_auth=True, db_path=db)
+    with test_app.test_client() as c:
+        r = c.get("/moves")
+    html = r.data.decode()
+    assert r.status_code == 200
+    assert "175" in html or "Close" in html
+
+
+def test_price_status_label_confirming():
+    from review.server import _price_status_label
+    ctx = {"latest_close": 100.0, "return_1d": 2.0, "stale": False}
+    label, css = _price_status_label(ctx)
+    assert label == "price confirming"
+    assert css == "price-confirm"
+
+
+def test_price_status_label_extended():
+    from review.server import _price_status_label
+    ctx = {"latest_close": 100.0, "return_5d": 10.0, "stale": False}
+    label, css = _price_status_label(ctx)
+    assert label == "price extended"
+    assert css == "price-extended"
+
+
+def test_price_status_label_stale():
+    from review.server import _price_status_label
+    ctx = {"latest_close": 100.0, "stale": True}
+    label, css = _price_status_label(ctx)
+    assert label == "stale price data"
+    assert css == "price-stale"
+
+
+def test_price_status_label_no_data():
+    from review.server import _price_status_label
+    label, css = _price_status_label({})
+    assert "no price" in label
+    assert css == "price-none"
+
+
+def test_lookup_price_context_missing_db():
+    from review.server import _lookup_price_context
+    ctx = _lookup_price_context("AAPL", "/nonexistent/path.duckdb")
+    assert ctx == {}
+
+
+def test_lookup_price_context_returns_fields(tmp_path):
+    from review.server import _lookup_price_context
+    db = str(tmp_path / "p.duckdb")
+    _add_prices_to_db(db, "AAPL", [
+        ("2026-05-01", 175.0, 80_000_000),
+        ("2026-04-30", 172.0, 75_000_000),
+        ("2026-04-29", 170.0, 70_000_000),
+        ("2026-04-28", 169.0, 65_000_000),
+    ])
+    ctx = _lookup_price_context("AAPL", db)
+    assert ctx["latest_close"] == pytest.approx(175.0)
+    assert ctx["latest_price_date"] == "2026-05-01"
+    assert ctx["return_1d"] == pytest.approx((175.0 - 172.0) / 172.0 * 100, abs=0.01)
+    assert ctx["high_52w"] == pytest.approx(175.0)
+    assert ctx["low_52w"] == pytest.approx(169.0)
+    assert not ctx["stale"]
