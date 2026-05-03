@@ -1,0 +1,341 @@
+"""Root-cause enrichment — TDD suite."""
+from __future__ import annotations
+
+import uuid
+from datetime import date, timedelta
+
+import pytest
+
+from storage.db import get_connection, init_schema
+
+ENRICHMENT_FIELDS = [
+    "enriched_root_cause",
+    "root_cause_group",
+    "explanation_short",
+    "evidence_fields_used",
+    "suggested_fix",
+    "confidence",
+]
+
+
+@pytest.fixture
+def conn(tmp_path):
+    c = get_connection(str(tmp_path / "test.duckdb"))
+    init_schema(c)
+    yield c
+    c.close()
+
+
+def _row(**kwargs) -> dict:
+    defaults = dict(
+        ticker="TST",
+        event_date=date.today() - timedelta(days=3),
+        event_type="gain_1d",
+        return_value=10.0,
+        window_days=1,
+        classification="true_miss",
+        was_in_universe=True,
+        was_scored=True,
+        score_before_event=30.0,
+        tier_before_event="Reject",
+        had_catalyst_evidence=True,
+        universe_tier="primary",
+        root_cause_hint="scoring_blind_spot",
+        score_join_method="scores_join",
+        priority_score=5.3,
+    )
+    defaults.update(kwargs)
+    return defaults
+
+
+def _insert_score(conn, ticker, as_of_date, *, catalyst_score=50.0, quality_score=50.0):
+    conn.execute(
+        """INSERT INTO scores
+           (id, run_id, ticker, as_of_date, total_score, tier,
+            catalyst_score, quality_score, momentum_score, cheap_score)
+           VALUES (?, ?, ?, ?, 55.0, 'C', ?, ?, 40.0, 40.0)""",
+        [uuid.uuid4().hex[:16], uuid.uuid4().hex[:16],
+         ticker, as_of_date, catalyst_score, quality_score],
+    )
+
+
+def _insert_earnings_event(conn, ticker, event_date):
+    conn.execute(
+        """INSERT INTO events (id, ticker, event_type, event_date)
+           VALUES (?, ?, 'earnings', ?)""",
+        [uuid.uuid4().hex[:16], ticker, event_date],
+    )
+
+
+def _insert_company(conn, ticker, sector):
+    conn.execute(
+        """INSERT INTO companies (ticker, company_name, sector, universe_tier)
+           VALUES (?, ?, ?, 'extended')
+           ON CONFLICT (ticker) DO UPDATE SET sector = excluded.sector""",
+        [ticker, ticker, sector],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 1: enrich_rows attaches all six fields
+# ---------------------------------------------------------------------------
+
+def test_enrich_rows_attaches_all_six_fields(conn):
+    from missed.root_cause_enrichment import enrich_rows
+
+    rows = [_row()]
+    enriched = enrich_rows(rows, conn)
+    assert len(enriched) == 1
+    for field in ENRICHMENT_FIELDS:
+        assert field in enriched[0], f"Missing field: {field}"
+
+
+# ---------------------------------------------------------------------------
+# Test 2: does not mutate input rows
+# ---------------------------------------------------------------------------
+
+def test_enrich_rows_does_not_mutate_input(conn):
+    from missed.root_cause_enrichment import enrich_rows
+
+    original = _row()
+    rows = [original]
+    enrich_rows(rows, conn)
+    for field in ENRICHMENT_FIELDS:
+        assert field not in original, f"Input row was mutated — field {field!r} added"
+
+
+# ---------------------------------------------------------------------------
+# Test 3: universe_miss → universe_not_seeded
+# ---------------------------------------------------------------------------
+
+def test_universe_miss_yields_universe_not_seeded(conn):
+    from missed.root_cause_enrichment import enrich_rows
+
+    row = _row(classification="universe_miss", was_in_universe=False)
+    enriched = enrich_rows([row], conn)[0]
+    assert enriched["enriched_root_cause"] == "universe_not_seeded"
+    assert enriched["root_cause_group"] == "universe_gap"
+    assert enriched["confidence"] == "high"
+
+
+# ---------------------------------------------------------------------------
+# Test 4: unscored_mover → pre_score_history
+# ---------------------------------------------------------------------------
+
+def test_unscored_mover_yields_pre_score_history(conn):
+    from missed.root_cause_enrichment import enrich_rows
+
+    row = _row(classification="unscored_mover", was_scored=False, score_before_event=None)
+    enriched = enrich_rows([row], conn)[0]
+    assert enriched["enriched_root_cause"] == "pre_score_history"
+    assert enriched["root_cause_group"] == "data_gap"
+    assert enriched["confidence"] == "high"
+
+
+# ---------------------------------------------------------------------------
+# Test 5: tier_before_event=Incomplete → incomplete_fundamentals
+# ---------------------------------------------------------------------------
+
+def test_incomplete_tier_yields_incomplete_fundamentals(conn):
+    from missed.root_cause_enrichment import enrich_rows
+
+    row = _row(
+        classification="true_miss",
+        tier_before_event="Incomplete",
+    )
+    enriched = enrich_rows([row], conn)[0]
+    assert enriched["enriched_root_cause"] == "incomplete_fundamentals"
+    assert enriched["root_cause_group"] == "data_gap"
+    assert enriched["confidence"] == "high"
+
+
+# ---------------------------------------------------------------------------
+# Test 6: earnings within 7 days → missing_earnings_context
+# ---------------------------------------------------------------------------
+
+def test_earnings_within_7_days_yields_missing_earnings_context(conn):
+    from missed.root_cause_enrichment import enrich_rows
+
+    event_date = date.today() - timedelta(days=10)
+    earnings_date = event_date + timedelta(days=4)
+    _insert_earnings_event(conn, "TST", earnings_date.isoformat())
+
+    row = _row(
+        event_date=event_date,
+        classification="true_miss",
+        tier_before_event="Reject",
+    )
+    enriched = enrich_rows([row], conn)[0]
+    assert enriched["enriched_root_cause"] == "missing_earnings_context"
+    assert enriched["root_cause_group"] == "feature_gap"
+
+
+# ---------------------------------------------------------------------------
+# Test 7: no catalyst evidence → no_evidence_no_filing
+# ---------------------------------------------------------------------------
+
+def test_no_catalyst_evidence_yields_no_evidence_no_filing(conn):
+    from missed.root_cause_enrichment import enrich_rows
+
+    row = _row(
+        classification="true_miss",
+        tier_before_event="Reject",
+        had_catalyst_evidence=False,
+    )
+    enriched = enrich_rows([row], conn)[0]
+    assert enriched["enriched_root_cause"] == "no_evidence_no_filing"
+    assert enriched["root_cause_group"] == "data_gap"
+
+
+# ---------------------------------------------------------------------------
+# Test 8: sector cluster → sector_cluster_move
+# ---------------------------------------------------------------------------
+
+def test_sector_cluster_yields_sector_cluster_move(conn):
+    from missed.root_cause_enrichment import enrich_rows
+
+    event_date = date.today() - timedelta(days=10)
+    for ticker in ("TST", "P1", "P2"):
+        _insert_company(conn, ticker, "Technology")
+
+    rows = [
+        _row(ticker="TST", event_date=event_date, classification="true_miss",
+             tier_before_event="Reject", had_catalyst_evidence=True, window_days=1),
+        _row(ticker="P1", event_date=event_date, classification="true_miss",
+             tier_before_event="Reject", had_catalyst_evidence=True, window_days=1),
+        _row(ticker="P2", event_date=event_date, classification="true_miss",
+             tier_before_event="Reject", had_catalyst_evidence=True, window_days=1),
+    ]
+    enriched = enrich_rows(rows, conn)
+    tst_row = next(r for r in enriched if r["ticker"] == "TST")
+    assert tst_row["enriched_root_cause"] == "sector_cluster_move"
+    assert tst_row["root_cause_group"] == "feature_gap"
+
+
+# ---------------------------------------------------------------------------
+# Test 9: low catalyst score → low_catalyst_score
+# ---------------------------------------------------------------------------
+
+def test_low_catalyst_score_yields_low_catalyst_score(conn):
+    from missed.root_cause_enrichment import enrich_rows
+
+    event_date = date.today() - timedelta(days=5)
+    score_date = (event_date - timedelta(days=1)).isoformat()
+    _insert_score(conn, "TST", score_date, catalyst_score=20.0, quality_score=60.0)
+
+    row = _row(
+        event_date=event_date,
+        classification="true_miss",
+        tier_before_event="Reject",
+        score_before_event=35.0,
+        had_catalyst_evidence=True,
+    )
+    enriched = enrich_rows([row], conn)[0]
+    assert enriched["enriched_root_cause"] == "low_catalyst_score"
+    assert enriched["root_cause_group"] == "scoring_gap"
+
+
+# ---------------------------------------------------------------------------
+# Test 10: near_threshold + low catalyst → near_threshold_no_catalyst
+# ---------------------------------------------------------------------------
+
+def test_near_threshold_low_catalyst_yields_near_threshold_no_catalyst(conn):
+    from missed.root_cause_enrichment import enrich_rows
+
+    event_date = date.today() - timedelta(days=5)
+    score_date = (event_date - timedelta(days=1)).isoformat()
+    _insert_score(conn, "TST", score_date, catalyst_score=20.0, quality_score=60.0)
+
+    row = _row(
+        event_date=event_date,
+        classification="near_threshold",
+        tier_before_event="Reject",
+        score_before_event=42.0,
+        had_catalyst_evidence=True,
+    )
+    enriched = enrich_rows([row], conn)[0]
+    assert enriched["enriched_root_cause"] == "near_threshold_no_catalyst"
+    assert enriched["root_cause_group"] == "near_miss"
+
+
+# ---------------------------------------------------------------------------
+# Test 11: near_threshold + good catalyst → near_threshold_scored
+# ---------------------------------------------------------------------------
+
+def test_near_threshold_good_catalyst_yields_near_threshold_scored(conn):
+    from missed.root_cause_enrichment import enrich_rows
+
+    event_date = date.today() - timedelta(days=5)
+    score_date = (event_date - timedelta(days=1)).isoformat()
+    _insert_score(conn, "TST", score_date, catalyst_score=50.0, quality_score=60.0)
+
+    row = _row(
+        event_date=event_date,
+        classification="near_threshold",
+        tier_before_event="Reject",
+        score_before_event=42.0,
+        had_catalyst_evidence=True,
+    )
+    enriched = enrich_rows([row], conn)[0]
+    assert enriched["enriched_root_cause"] == "near_threshold_scored"
+    assert enriched["root_cause_group"] == "near_miss"
+
+
+# ---------------------------------------------------------------------------
+# Test 12: generate_enrichment_report writes CSV and MD
+# ---------------------------------------------------------------------------
+
+def test_generate_enrichment_report_writes_csv_and_md(tmp_path, conn):
+    from missed.root_cause_enrichment import enrich_rows, generate_enrichment_report
+
+    rows = [_row(classification="universe_miss", was_in_universe=False)]
+    enriched = enrich_rows(rows, conn)
+    csv_path, md_path = generate_enrichment_report(enriched, output_dir=str(tmp_path))
+
+    assert csv_path.exists(), "CSV not written"
+    assert md_path.exists(), "MD not written"
+
+
+# ---------------------------------------------------------------------------
+# Test 13: markdown report contains required section headings
+# ---------------------------------------------------------------------------
+
+def test_md_report_contains_required_sections(tmp_path, conn):
+    from missed.root_cause_enrichment import enrich_rows, generate_enrichment_report
+
+    rows = [_row(classification="universe_miss", was_in_universe=False)]
+    enriched = enrich_rows(rows, conn)
+    _, md_path = generate_enrichment_report(enriched, output_dir=str(tmp_path))
+    md = md_path.read_text()
+
+    required = [
+        "# Root Cause Enrichment Report",
+        "## Root Cause Group Summary",
+        "## Detailed Root Cause Breakdown",
+        "## Top Enriched Rows (true_miss / scored_missed / near_threshold)",
+    ]
+    for heading in required:
+        assert heading in md, f"Missing section heading: {heading!r}"
+
+
+# ---------------------------------------------------------------------------
+# Test 14: no production score mutation
+# ---------------------------------------------------------------------------
+
+def test_no_production_score_mutation(conn):
+    from missed.root_cause_enrichment import enrich_rows
+
+    score_id = uuid.uuid4().hex[:16]
+    conn.execute(
+        """INSERT INTO scores (id, run_id, ticker, as_of_date, total_score, tier)
+           VALUES (?, ?, 'SCORE_TST', CURRENT_DATE, 55.0, 'C')""",
+        [score_id, uuid.uuid4().hex[:16]],
+    )
+    rows = [_row(ticker="SCORE_TST")]
+    enrich_rows(rows, conn)
+    row = conn.execute(
+        "SELECT total_score FROM scores WHERE id = ?", [score_id]
+    ).fetchone()
+    assert row is not None and row[0] == 55.0, (
+        f"Score was mutated: expected 55.0, got {row}"
+    )
