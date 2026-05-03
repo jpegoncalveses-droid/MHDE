@@ -7,6 +7,8 @@ import duckdb
 
 from ingestion.ingest_sec import SECIngestor
 from ingestion.ingest_prices import PricesIngestor
+from ingestion.ingest_stooq import StooqPricesIngestor
+from ingestion.ingest_yahoo_historical import YahooHistoricalIngestor
 from ingestion.ingest_fred import FREDIngestor
 from ingestion.ingest_finra import FINRAIngestor
 from ingestion.ingest_cftc import CFTCIngestor
@@ -20,7 +22,9 @@ logger = logging.getLogger("mhde.ingestion.orchestrator")
 
 _ALL_INGESTORS = [
     SECIngestor,
-    PricesIngestor,
+    PricesIngestor,       # Polygon — runs first, fills what it can
+    StooqPricesIngestor,      # Stooq — fills gaps for tickers Polygon missed
+    YahooHistoricalIngestor,  # Yahoo — bootstraps/increments price history for momentum
     FREDIngestor,
     FINRAIngestor,
     CFTCIngestor,
@@ -39,6 +43,7 @@ def run_all(
     target: str = "all",
     dry_run: bool = False,
     run_id: str | None = None,
+    tickers_override: list[str] | None = None,
 ) -> dict:
     """Run all active ingestors. Returns summary of results."""
     sources_cfg = cfg.get("sources", {}).get("sources", {})
@@ -50,11 +55,30 @@ def run_all(
     universe_count = build_universe(conn, cfg)
     logger.info("Universe: %d companies", universe_count)
 
-    # Get tickers from DB
-    rows = conn.execute(
-        "SELECT ticker FROM companies WHERE is_active = true ORDER BY universe_tier, ticker"
-    ).fetchall()
-    tickers = [r[0] for r in rows]
+    if cfg.get("ingestion", {}).get("skip_all_ingestion", False):
+        logger.info("Skipping all ingestion (skip_all_ingestion=True)")
+        return {
+            "run_id": run_id,
+            "universe_size": universe_count,
+            "sources_succeeded": 0,
+            "sources_failed": 0,
+            "sources_skipped": len(_ALL_INGESTORS),
+            "skipped_reason": "skip_all_ingestion",
+            "results": {},
+        }
+
+    if tickers_override is not None:
+        tickers = tickers_override
+        logger.info("Tickers capped to %d (override)", len(tickers))
+    else:
+        rows = conn.execute(
+            "SELECT ticker FROM companies WHERE is_active = true ORDER BY universe_tier, ticker"
+        ).fetchall()
+        tickers = [r[0] for r in rows]
+        max_symbols = cfg.get("universe", {}).get("max_symbols")
+        if max_symbols and len(tickers) > max_symbols:
+            tickers = tickers[:max_symbols]
+            logger.info("Tickers capped to %d by max_symbols config", max_symbols)
 
     if dry_run:
         logger.info("[DRY RUN] Would ingest %d tickers from %d sources",

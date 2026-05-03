@@ -98,3 +98,22 @@ def test_404_summary_warning_emitted(conn, monkeypatch, caplog):
     assert len(warning_404_msgs) == 1
     # The summary message should include a count or "404"
     assert "404" in warning_404_msgs[0].message
+
+
+def test_skip_ingestion_flag_skips_all_sources(conn, monkeypatch):
+    """When cfg['ingestion']['skip_all_ingestion'] is True, orchestrator returns
+    immediately with sources_succeeded=0 and sources_skipped=N."""
+    monkeypatch.setattr(
+        "universe.universe_builder.build_universe", lambda conn, cfg: 5
+    )
+
+    from ingestion.orchestrator import run_all
+    cfg = {
+        "sources": {"sources": {}},
+        "universe": {"max_symbols": 10, "fallback_tickers": []},
+        "ingestion": {"skip_all_ingestion": True},
+    }
+    result = run_all(conn, cfg, tickers_override=["AAPL"])
+    assert result["sources_succeeded"] == 0
+    assert result["sources_skipped"] > 0
+    assert result.get("skipped_reason") == "skip_all_ingestion"

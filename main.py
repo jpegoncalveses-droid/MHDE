@@ -110,9 +110,11 @@ def run():
               help="Cap universe to N symbols for dev/test runs.")
 @click.option("--skip-sec-fundamentals", is_flag=True,
               help="Skip XBRL fundamentals fetch (use cached data).")
+@click.option("--skip-ingestion", is_flag=True,
+              help="Skip all data ingestion (score from cached data). Useful for smoke tests.")
 @click.option("--incremental", is_flag=True, default=True,
               help="Skip sources with fresh data (default: on).")
-def daily_radar(max_symbols, skip_sec_fundamentals, incremental):
+def daily_radar(max_symbols, skip_sec_fundamentals, skip_ingestion, incremental):
     """Run the full daily opportunity discovery pipeline."""
     from pipelines.daily_radar import run as pipeline_run
     cfg, conn = _engine_setup()
@@ -120,6 +122,8 @@ def daily_radar(max_symbols, skip_sec_fundamentals, incremental):
         cfg.setdefault("universe", {})["max_symbols"] = max_symbols
     if skip_sec_fundamentals:
         cfg.setdefault("ingestion", {})["skip_sec_fundamentals"] = True
+    if skip_ingestion:
+        cfg.setdefault("ingestion", {})["skip_all_ingestion"] = True
     cfg.setdefault("ingestion", {})["incremental"] = incremental
     try:
         pipeline_run(cfg, conn)
