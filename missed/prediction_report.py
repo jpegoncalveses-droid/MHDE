@@ -19,7 +19,7 @@ logger = logging.getLogger("mhde.missed.prediction_report")
 _NEAR_THRESHOLD_MIN = 40.0
 _NEAR_THRESHOLD_MAX = 45.0
 
-_WINDOW_URGENCY: dict[int, int] = {1: 5, 3: 4, 10: 3, 20: 2, 60: 1}
+_WINDOW_URGENCY: dict[int, int] = {1: 5, 3: 4, 5: 3, 10: 3, 20: 2, 60: 1, 252: 1}
 
 _REPORT_MD = "prediction_vs_actual_report.md"
 _REPORT_CSV = "prediction_vs_actual_rows.csv"
@@ -77,6 +77,8 @@ def _root_cause_hint(classification: str, row: dict) -> str:
     if classification == "near_threshold":
         return "near_threshold"
     if classification == "true_miss":
+        if row.get("tier_before_event") == "Incomplete":
+            return "data_gap"
         return "scoring_blind_spot"
     if classification == "scored_missed":
         return "catalyst_missed" if not row.get("had_catalyst_evidence") else "scoring_blind_spot"
@@ -127,8 +129,9 @@ def _section_lines(title: str, events: list[dict]) -> list[str]:
             score = f"{e['score_before_event']:.1f}" if e.get("score_before_event") is not None else "—"
             tier = e.get("tier_before_event") or "—"
             ut = e.get("universe_tier") or "—"
+            ret_str = f"+{e['return_value']:.1f}%" if e["return_value"] >= 0 else f"{e['return_value']:.1f}%"
             lines.append(
-                f"| {e['ticker']} | +{e['return_value']:.1f}% | {e['window_days']}d"
+                f"| {e['ticker']} | {ret_str} | {e['window_days']}d"
                 f" | {score} | {tier} | {ut} | `{e['classification']}` | {e['root_cause_hint']} |"
             )
     else:
@@ -174,8 +177,9 @@ def generate_prediction_report(
     lines.append("")
 
     lines += _section_lines("1-Day Spikes", [r for r in rows if r.get("window_days") == 1])
-    lines += _section_lines("3d / 10d Spikes", [r for r in rows if r.get("window_days") in (3, 10)])
-    lines += _section_lines("Longer Windows (20d / 60d)", [r for r in rows if r.get("window_days") in (20, 60)])
+    lines += _section_lines("3d / 5d Spikes", [r for r in rows if r.get("window_days") in (3, 5)])
+    lines += _section_lines("Longer Windows (10d / 20d / 60d)", [r for r in rows if r.get("window_days") in (10, 20, 60)])
+    lines += _section_lines("52-Week Breakouts", [r for r in rows if r.get("window_days") == 252])
     lines += _section_lines("Out-of-Universe Spikes", [r for r in rows if r["classification"] == "universe_miss"])
     lines += _section_lines("Near-Threshold Scores", [r for r in rows if r["classification"] == "near_threshold"])
     lines += _section_lines("No-Score Events", [r for r in rows if r["classification"] in ("unscored_mover", "true_miss")])
