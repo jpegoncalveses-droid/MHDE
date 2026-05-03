@@ -9,10 +9,12 @@ import duckdb
 from universe.sec_company_tickers import fetch_sec_company_tickers
 from universe.filters import filter_non_equities, classify_company
 from universe.sp500_loader import load_sp500_yaml
+from universe.cik_validator import validate_cik_vs_sec, write_validation_report
 
 logger = logging.getLogger("mhde.universe")
 
 _SP500_YAML = Path(__file__).parent / "sp500_tickers.yaml"
+_VALIDATION_REPORT = Path("data/processed/sp500_cik_validation_report.csv")
 
 _WARNING = (
     "Universe primary tier sourced from universe/sp500_tickers.yaml + "
@@ -29,24 +31,33 @@ def build_universe(conn: duckdb.DuckDBPyConnection, cfg: dict) -> int:
     max_symbols = universe_cfg.get("max_symbols", 500)
     config_fallback = [t.upper() for t in universe_cfg.get("fallback_tickers", [])]
 
-    # --- Merge YAML + config into one ordered primary dict (YAML first) ---
     sp500_entries = load_sp500_yaml(_SP500_YAML)
+
+    logger.warning(_WARNING)
+
+    # Fetch SEC list first so we can validate and correct YAML CIKs
+    raw = fetch_sec_company_tickers()
+    if not raw:
+        logger.warning("SEC fetch failed — using primary list only")
+        raw = []
+
+    # Validate YAML CIKs against SEC authoritative list
+    sec_map: dict[str, str] = {co["ticker"]: co["cik"] for co in raw if co.get("cik")}
+    corrected_sp500, report_rows = validate_cik_vs_sec(sp500_entries, sec_map)
+    try:
+        write_validation_report(report_rows, _VALIDATION_REPORT)
+    except Exception as exc:
+        logger.warning("Could not write CIK validation report: %s", exc)
+
+    # Build primary_meta from CIK-corrected YAML entries
     primary_meta: dict[str, dict] = {}
-    for e in sp500_entries:
+    for e in corrected_sp500:
         t = e.get("ticker", "").upper()
         if t:
             primary_meta[t] = e
     for t in config_fallback:
         if t not in primary_meta:
             primary_meta[t] = {"ticker": t}
-
-    logger.warning(_WARNING)
-
-    # --- Fetch SEC list ---
-    raw = fetch_sec_company_tickers()
-    if not raw:
-        logger.warning("SEC fetch failed — using primary list only")
-        raw = []
 
     filtered = filter_non_equities(raw, universe_cfg)
     filtered_lookup: dict[str, dict] = {co["ticker"]: co for co in filtered}
@@ -72,10 +83,8 @@ def build_universe(conn: duckdb.DuckDBPyConnection, cfg: dict) -> int:
             }
             co = classify_company(co)
         co["universe_tier"] = "primary"
-        # YAML sector/industry override SEC (which has none anyway)
         co["sector"] = meta.get("sector")
         co["industry"] = meta.get("industry")
-        # YAML CIK takes precedence (needed for dot-class tickers)
         if meta.get("cik"):
             co["cik"] = meta["cik"]
         ordered.append(co)
@@ -147,7 +156,6 @@ def build_universe(conn: duckdb.DuckDBPyConnection, cfg: dict) -> int:
             current_primary,
         )
     else:
-        # No primary tickers at all — deactivate every primary-tier row
         conn.execute(
             "UPDATE companies SET is_active = false WHERE universe_tier = 'primary'"
         )
