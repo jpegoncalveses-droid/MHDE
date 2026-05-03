@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-# Minimum fraction of positive-weight components that must be observed to assign a real tier.
-# positive weights: cheap=0.30, quality=0.25, catalyst=0.25, momentum=0.10, sentiment=0.10 → sum=1.00
-# With only quality+catalyst observed: coverage=0.50 → below threshold → Incomplete
-# With cheap+quality+catalyst: coverage=0.80 → above threshold → can rank
-_COVERAGE_THRESHOLD = 0.60
+# Minimum number of major components that must be observed to assign a real tier.
+# Major components: cheap, quality, catalyst, momentum, sentiment (5 total).
+# 0 or 1 observed → Incomplete (not enough signal to rank).
+# 2+ observed → score normally, apply missing-data penalty via confidence label.
+# Valuation missing alone should NOT force Incomplete if quality+catalyst are present.
+_MIN_OBSERVED_COMPONENTS = 2
+
+# Kept for tests that still reference it via import
+_COVERAGE_THRESHOLD = 0.50
 
 
 def assign_tier(
@@ -12,15 +16,17 @@ def assign_tier(
     catalyst_score: float | None,
     risk_penalty: float | None,
     coverage: float = 1.0,
+    observed_count: int | None = None,
 ) -> str:
     """
     Assign a tier to a candidate.
 
-    coverage: fraction of positive-weight components with real observed data (0.0–1.0).
-    When coverage < _COVERAGE_THRESHOLD, the data is insufficient to rank — return "Incomplete".
+    observed_count: number of major components (cheap/quality/catalyst/momentum/sentiment)
+    with non-null scores. When < _MIN_OBSERVED_COMPONENTS, return "Incomplete".
+    Falls back to coverage-based rule when observed_count is None (backward compat).
 
     Tiers: A > B > C > Reject > Incomplete
-    "Incomplete" means: interesting signals exist but data coverage is too thin to rank.
+    "Incomplete" means: interesting signals may exist but data coverage is too thin to rank.
     """
     risk = risk_penalty if risk_penalty is not None else 0.0
     catalyst = catalyst_score if catalyst_score is not None else 0.0
@@ -29,11 +35,16 @@ def assign_tier(
     if risk > 75:
         return "Reject"
 
-    # Insufficient data coverage — cannot rank
-    if coverage < _COVERAGE_THRESHOLD:
-        return "Incomplete"
+    # Insufficient data — cannot rank
+    if observed_count is not None:
+        if observed_count < _MIN_OBSERVED_COMPONENTS:
+            return "Incomplete"
+    else:
+        # Legacy: coverage-based fallback for callers that don't pass observed_count
+        if coverage < _COVERAGE_THRESHOLD:
+            return "Incomplete"
 
-    # Full tier logic (requires coverage >= _COVERAGE_THRESHOLD)
+    # Full tier logic
     if total_score >= 75 and catalyst >= 50 and risk <= 50 and coverage >= 0.80:
         return "A"
     if total_score >= 60 and coverage >= 0.65:

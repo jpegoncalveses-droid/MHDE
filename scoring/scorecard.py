@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import csv
 import json
 import logging
+import os
 import uuid
 from datetime import date, datetime
 
@@ -23,19 +25,14 @@ _DEFAULT_WEIGHTS = {
 
 _POSITIVE_COMPONENTS = ("cheap", "quality", "catalyst", "momentum", "sentiment")
 
-
-def _avg_scores(conn: duckdb.DuckDBPyConnection, run_id: str, ticker: str, group: str) -> float | None:
-    rows = conn.execute(
-        """
-        SELECT feature_score FROM features
-        WHERE run_id = ? AND ticker = ? AND feature_group = ?
-          AND feature_score IS NOT NULL
-        """,
-        [run_id, ticker, group],
-    ).fetchall()
-    if not rows:
-        return None
-    return sum(r[0] for r in rows) / len(rows)
+_GROUP_TO_COMPONENT = {
+    "valuation": "cheap",
+    "quality": "quality",
+    "catalyst": "catalyst",
+    "momentum": "momentum",
+    "sentiment": "sentiment",
+    "risk": "risk_penalty",
+}
 
 
 def _compute_coverage(component_scores: dict[str, float | None], weights: dict) -> float:
@@ -65,15 +62,36 @@ def compute_scores(
 ) -> int:
     weights = cfg.get("scoring", {}).get("weights", _DEFAULT_WEIGHTS)
     as_of = date.today()
-    count = 0
+
+    # Single bulk query: average feature_score per ticker per group
+    bulk_rows = conn.execute(
+        """
+        SELECT ticker, feature_group, AVG(feature_score) AS avg_score
+        FROM features
+        WHERE run_id = ? AND feature_score IS NOT NULL AND ticker IS NOT NULL
+        GROUP BY ticker, feature_group
+        """,
+        [run_id],
+    ).fetchall()
+
+    # Index: ticker -> {component_key: avg_score}
+    ticker_scores: dict[str, dict[str, float]] = {}
+    for ticker, group, avg in bulk_rows:
+        comp = _GROUP_TO_COMPONENT.get(group)
+        if comp:
+            ticker_scores.setdefault(ticker, {})[comp] = avg
+
+    score_rows: list[list] = []
 
     for ticker in tickers:
-        cheap = _avg_scores(conn, run_id, ticker, "valuation")
-        quality = _avg_scores(conn, run_id, ticker, "quality")
-        catalyst = _avg_scores(conn, run_id, ticker, "catalyst")
-        momentum = _avg_scores(conn, run_id, ticker, "momentum")
-        sentiment = _avg_scores(conn, run_id, ticker, "sentiment")
-        risk_raw = _avg_scores(conn, run_id, ticker, "risk")
+        scores = ticker_scores.get(ticker, {})
+
+        cheap = scores.get("cheap")
+        quality = scores.get("quality")
+        catalyst = scores.get("catalyst")
+        momentum = scores.get("momentum")
+        sentiment = scores.get("sentiment")
+        risk_raw = scores.get("risk_penalty")
 
         component_scores = {
             "cheap": cheap,
@@ -84,8 +102,6 @@ def compute_scores(
         }
 
         # Unknown is not neutral. Only sum observed components.
-        # Missing components contribute 0 to the positive sum (they are simply absent).
-        # Risk is the one component that defaults when absent (it is a penalty, not a signal).
         total = 0.0
         for key, score in component_scores.items():
             if score is not None:
@@ -95,12 +111,13 @@ def compute_scores(
         total -= weights.get("risk_penalty", 0.20) * risk_s
         total = max(0.0, min(100.0, total))
 
-        # Coverage = fraction of positive-weight components with real data
         coverage = _compute_coverage(component_scores, weights)
         confidence = _confidence_label(coverage)
+        observed_count = sum(1 for v in component_scores.values() if v is not None)
 
         missing = [k for k, v in component_scores.items() if v is None]
-        tier = assign_tier(total, catalyst, risk_s, coverage=coverage)
+        tier = assign_tier(total, catalyst, risk_s, coverage=coverage,
+                           observed_count=observed_count)
 
         score_data = {
             "cheap_score": cheap,
@@ -120,8 +137,19 @@ def compute_scores(
             why_ranked = ""
             why_rejected = generate_why_rejected(score_data, missing, tier=tier)
 
+        score_rows.append([
+            uuid.uuid4().hex[:16], run_id, ticker, as_of,
+            cheap, quality, catalyst,
+            momentum, sentiment, risk_s,
+            total, tier, confidence,
+            why_ranked, why_rejected,
+            json.dumps(missing) if missing else None,
+            datetime.utcnow(),
+        ])
+
+    if score_rows:
         try:
-            conn.execute(
+            conn.executemany(
                 """
                 INSERT INTO scores
                     (id, run_id, ticker, as_of_date,
@@ -137,19 +165,56 @@ def compute_scores(
                     why_ranked = excluded.why_ranked,
                     why_rejected = excluded.why_rejected
                 """,
-                [
-                    uuid.uuid4().hex[:16], run_id, ticker, as_of,
-                    cheap, quality, catalyst,
-                    momentum, sentiment, risk_s,
-                    total, tier, confidence,
-                    why_ranked, why_rejected,
-                    json.dumps(missing) if missing else None,
-                    datetime.utcnow(),
-                ],
+                score_rows,
             )
-            count += 1
         except Exception as exc:
-            logger.warning("Score insert failed for %s: %s", ticker, exc)
+            logger.warning("Scores batch insert failed: %s", exc)
+            return 0
 
+    count = len(score_rows)
     logger.info("Scored %d tickers", count)
     return count
+
+
+_SCORE_COMPONENTS_CSV = "latest_score_components.csv"
+_SCORE_COMPONENTS_COLS = [
+    "ticker", "total_score", "tier",
+    "cheap_score", "quality_score", "catalyst_score",
+    "momentum_score", "sentiment_score", "risk_penalty",
+    "confidence",
+]
+
+
+def export_score_components(
+    conn: duckdb.DuckDBPyConnection,
+    output_dir: str,
+) -> str:
+    """Export component scores for all tickers in the latest run to CSV.
+
+    Returns the path to the written CSV file.
+    """
+    try:
+        rows = conn.execute(
+            """
+            SELECT ticker, total_score, tier,
+                   cheap_score, quality_score, catalyst_score,
+                   momentum_score, sentiment_score, risk_penalty,
+                   confidence
+            FROM scores
+            ORDER BY total_score DESC
+            """
+        ).fetchall()
+    except Exception as exc:
+        logger.warning("export_score_components query failed: %s", exc)
+        rows = []
+
+    os.makedirs(output_dir, exist_ok=True)
+    path = os.path.join(output_dir, _SCORE_COMPONENTS_CSV)
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=_SCORE_COMPONENTS_COLS)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(dict(zip(_SCORE_COMPONENTS_COLS, row)))
+
+    logger.info("Exported %d score component rows to %s", len(rows), path)
+    return path

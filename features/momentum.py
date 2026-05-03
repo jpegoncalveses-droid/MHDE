@@ -37,7 +37,7 @@ def compute_momentum(
                 "feature_value": None,
                 "feature_score": None,
                 "confidence": "low",
-                "source": "polygon",
+                "source": "prices_daily",
                 "metadata": {"warning": msg},
             })
         return features
@@ -68,7 +68,7 @@ def compute_momentum(
             "feature_value": round(ret_20, 2),
             "feature_score": score,
             "confidence": "high",
-            "source": "polygon",
+            "source": "prices_daily",
         })
 
     # 60d return score
@@ -87,7 +87,7 @@ def compute_momentum(
             "feature_value": round(ret_60, 2),
             "feature_score": score,
             "confidence": "high",
-            "source": "polygon",
+            "source": "prices_daily",
         })
 
     # Volume spike (current volume vs 20d avg)
@@ -103,7 +103,7 @@ def compute_momentum(
                 "feature_value": round(vol_ratio, 2),
                 "feature_score": max(0.0, score),
                 "confidence": "high",
-                "source": "polygon",
+                "source": "prices_daily",
             })
 
     # Drawdown from recent high
@@ -117,7 +117,7 @@ def compute_momentum(
             "feature_value": round(drawdown, 2),
             "feature_score": min(100.0, score),
             "confidence": "high",
-            "source": "polygon",
+            "source": "prices_daily",
         })
 
     return features

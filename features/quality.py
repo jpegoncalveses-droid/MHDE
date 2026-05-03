@@ -5,7 +5,32 @@ from datetime import date
 
 import duckdb
 
+from features.industry_utils import detect_industry
+from features.period_utils import check_period_alignment
+
 logger = logging.getLogger("mhde.features.quality")
+
+_STALE_FUNDAMENTALS_DAYS = 180
+
+
+def _fundamentals_age_days(conn, ticker: str, as_of: date) -> int | None:
+    row = conn.execute(
+        "SELECT MAX(as_of_date) FROM fundamentals_raw WHERE ticker = ? AND as_of_date IS NOT NULL",
+        [ticker],
+    ).fetchone()
+    if not row or not row[0]:
+        return None
+    return (as_of - row[0]).days
+
+
+def _apply_staleness_annotations(features: list[dict], age_days: int | None) -> list[dict]:
+    if age_days is None or age_days <= _STALE_FUNDAMENTALS_DAYS:
+        return features
+    for f in features:
+        f["confidence"] = "low"
+        existing = f.get("metadata") or {}
+        f["metadata"] = {**existing, "stale_fundamentals_days": age_days}
+    return features
 
 
 def compute_quality(
@@ -15,6 +40,10 @@ def compute_quality(
     as_of: date,
 ) -> list[dict]:
     features = []
+
+    industry = detect_industry(conn, ticker)
+    is_bank = industry["is_bank"]
+    is_insurer = industry["is_insurer"]
 
     # Net income positive/negative
     ni_rows = conn.execute(
@@ -48,35 +77,75 @@ def compute_quality(
             "source": "sec_edgar",
         })
 
-    # Revenue growth YoY
+    # Revenue growth YoY — requires same concept and aligned periods
     rev_rows = conn.execute(
         """
-        SELECT value, as_of_date FROM fundamentals_raw
+        SELECT concept, value, as_of_date, form FROM fundamentals_raw
         WHERE ticker = ? AND concept LIKE '%Revenues%'
         ORDER BY as_of_date DESC LIMIT 2
         """,
         [ticker],
     ).fetchall()
 
-    if len(rev_rows) >= 2 and rev_rows[1][0] and rev_rows[1][0] != 0:
-        growth = (rev_rows[0][0] - rev_rows[1][0]) / abs(rev_rows[1][0]) * 100
-        # Score: > 20% growth → 90, 10-20% → 75, 0-10% → 60, negative → 30
-        if growth > 20:
-            score = 90.0
-        elif growth > 10:
-            score = 75.0
-        elif growth >= 0:
-            score = 60.0
-        else:
-            score = 30.0
+    same_concept = (
+        len(rev_rows) >= 2
+        and rev_rows[0][0] == rev_rows[1][0]
+        and rev_rows[1][1] and rev_rows[1][1] != 0
+    )
+    if same_concept:
+        alignment = check_period_alignment(
+            rev_rows[0][2], rev_rows[0][3],
+            rev_rows[1][2], rev_rows[1][3],
+        )
+        period_aligned = alignment["period_alignment_status"] == "aligned"
+    else:
+        alignment = None
+        period_aligned = False
+
+    rev_growth_ok = same_concept and period_aligned
+
+    if same_concept and not period_aligned:
         features.append({
             "feature_group": "quality",
             "feature_name": "revenue_growth_yoy",
-            "feature_value": round(growth, 2),
-            "feature_score": score,
-            "confidence": "medium",
+            "feature_value": None,
+            "feature_score": None,
+            "confidence": "low",
             "source": "sec_edgar",
+            "metadata": {"missing_reason": "period_mismatch", **(alignment or {})},
         })
+    elif rev_growth_ok:
+        growth = (rev_rows[0][1] - rev_rows[1][1]) / abs(rev_rows[1][1]) * 100
+        # Sanity: > 500% growth is almost certainly a concept mismatch or restatement artifact
+        if abs(growth) > 500:
+            features.append({
+                "feature_group": "quality",
+                "feature_name": "revenue_growth_yoy",
+                "feature_value": None,
+                "feature_score": None,
+                "confidence": "low",
+                "source": "sec_edgar",
+                "metadata": {"missing_reason": "valuation_denominator_invalid"},
+            })
+        else:
+            # Score: > 20% growth → 90, 10-20% → 75, 0-10% → 60, negative → 30
+            if growth > 20:
+                score = 90.0
+            elif growth > 10:
+                score = 75.0
+            elif growth >= 0:
+                score = 60.0
+            else:
+                score = 30.0
+            features.append({
+                "feature_group": "quality",
+                "feature_name": "revenue_growth_yoy",
+                "feature_value": round(growth, 2),
+                "feature_score": score,
+                "confidence": "low" if is_bank else "medium",
+                "source": "sec_edgar",
+                "metadata": alignment,
+            })
     else:
         features.append({
             "feature_group": "quality",
@@ -89,25 +158,45 @@ def compute_quality(
 
     # Net margin
     ni_val = ni_rows[0][0] if ni_rows else None
-    rev_val = rev_rows[0][0] if rev_rows else None
+    rev_val = rev_rows[0][1] if rev_rows else None
     if ni_val is not None and rev_val and rev_val != 0:
-        margin = ni_val / rev_val * 100
-        if margin > 20:
-            score = 90.0
-        elif margin > 10:
-            score = 75.0
-        elif margin > 0:
-            score = 55.0
+        # NI > revenue is financially impossible — mismatched XBRL concepts
+        if ni_val > 0 and rev_val > 0 and ni_val > rev_val:
+            features.append({
+                "feature_group": "quality",
+                "feature_name": "net_margin",
+                "feature_value": None,
+                "feature_score": None,
+                "confidence": "low",
+                "source": "sec_edgar",
+                "metadata": {"missing_reason": "financial_concept_mismatch"},
+            })
         else:
-            score = 20.0
-        features.append({
-            "feature_group": "quality",
-            "feature_name": "net_margin",
-            "feature_value": round(margin, 2),
-            "feature_score": score,
-            "confidence": "medium",
-            "source": "sec_edgar",
-        })
+            margin = ni_val / rev_val * 100
+            if margin > 20:
+                score = 90.0
+            elif margin > 10:
+                score = 75.0
+            elif margin > 0:
+                score = 55.0
+            else:
+                score = 20.0
+            if is_bank:
+                quality_warning = "bank_specific_quality_required"
+            elif is_insurer:
+                quality_warning = "insurance_specific_quality_required"
+            else:
+                quality_warning = None
+            meta = {"quality_warning": quality_warning} if quality_warning else None
+            features.append({
+                "feature_group": "quality",
+                "feature_name": "net_margin",
+                "feature_value": round(margin, 2),
+                "feature_score": score,
+                "confidence": "low" if (is_bank or is_insurer) else "medium",
+                "source": "sec_edgar",
+                "metadata": meta,
+            })
     else:
         features.append({
             "feature_group": "quality",
@@ -155,4 +244,5 @@ def compute_quality(
             "source": "sec_edgar",
         })
 
-    return features
+    age = _fundamentals_age_days(conn, ticker, as_of)
+    return _apply_staleness_annotations(features, age)

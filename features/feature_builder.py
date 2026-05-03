@@ -17,35 +17,39 @@ from features.risk import compute_risk
 
 logger = logging.getLogger("mhde.features")
 
+_INSERT_SQL = """
+    INSERT INTO features
+        (id, run_id, ticker, as_of_date, feature_group, feature_name,
+         feature_value, feature_score, source, confidence, metadata_json, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT (run_id, ticker, feature_group, feature_name) DO UPDATE SET
+        feature_value = excluded.feature_value,
+        feature_score = excluded.feature_score,
+        confidence = excluded.confidence,
+        metadata_json = excluded.metadata_json
+"""
+
 
 def _upsert_feature(conn: duckdb.DuckDBPyConnection, run_id: str, ticker: str | None, as_of: date, f: dict) -> None:
-    metadata = f.get("metadata")
-    metadata_json = json.dumps(metadata) if metadata else None
+    """Single-feature upsert — used by tests and one-off callers."""
     try:
-        conn.execute(
-            """
-            INSERT INTO features
-                (id, run_id, ticker, as_of_date, feature_group, feature_name,
-                 feature_value, feature_score, source, confidence, metadata_json, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (run_id, ticker, feature_group, feature_name) DO UPDATE SET
-                feature_value = excluded.feature_value,
-                feature_score = excluded.feature_score,
-                confidence = excluded.confidence,
-                metadata_json = excluded.metadata_json
-            """,
-            [
-                uuid.uuid4().hex[:16], run_id,
-                ticker if ticker is not None else f.get("ticker"),
-                as_of,
-                f["feature_group"], f["feature_name"],
-                f.get("feature_value"), f.get("feature_score"),
-                f.get("source"), f.get("confidence", "medium"),
-                metadata_json, datetime.utcnow(),
-            ],
-        )
+        conn.executemany(_INSERT_SQL, [_make_row(run_id, ticker, as_of, f)])
     except Exception as exc:
         logger.debug("Feature upsert failed %s/%s: %s", ticker, f.get("feature_name"), exc)
+
+
+def _make_row(run_id: str, ticker: str | None, as_of: date, f: dict) -> list:
+    metadata = f.get("metadata")
+    return [
+        uuid.uuid4().hex[:16], run_id,
+        ticker if ticker is not None else f.get("ticker"),
+        as_of,
+        f["feature_group"], f["feature_name"],
+        f.get("feature_value"), f.get("feature_score"),
+        f.get("source"), f.get("confidence", "medium"),
+        json.dumps(metadata) if metadata else None,
+        datetime.utcnow(),
+    ]
 
 
 def build_features(
@@ -58,11 +62,16 @@ def build_features(
     total = len(tickers)
     covered = 0
 
-    # Macro features (ticker-independent)
+    # Macro features (ticker-independent) — one batch
     macro_features = compute_macro(conn, run_id, as_of)
-    for f in macro_features:
-        _upsert_feature(conn, run_id, None, as_of, f)
+    if macro_features:
+        rows = [_make_row(run_id, None, as_of, f) for f in macro_features]
+        try:
+            conn.executemany(_INSERT_SQL, rows)
+        except Exception as exc:
+            logger.debug("Macro feature batch insert failed: %s", exc)
 
+    # Per-ticker features — one executemany() per ticker
     for ticker in tickers:
         per_ticker_features: list[dict] = []
 
@@ -80,8 +89,12 @@ def build_features(
         if scored_count > 0:
             covered += 1
 
-        for f in per_ticker_features:
-            _upsert_feature(conn, run_id, ticker, as_of, f)
+        if per_ticker_features:
+            rows = [_make_row(run_id, ticker, as_of, f) for f in per_ticker_features]
+            try:
+                conn.executemany(_INSERT_SQL, rows)
+            except Exception as exc:
+                logger.debug("Feature batch insert failed for %s: %s", ticker, exc)
 
     coverage_pct = covered / total * 100 if total > 0 else 0
     logger.info(
