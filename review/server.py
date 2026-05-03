@@ -266,6 +266,11 @@ details summary{cursor:pointer;color:#555;}
 .review-form{margin-top:6px;font-size:.85rem;}
 .review-form select,.review-form input[type=text]{padding:3px 6px;border:1px solid #ccc;border-radius:3px;}
 .review-form button{padding:3px 10px;background:#1565c0;color:#fff;border:none;border-radius:3px;cursor:pointer;}
+.stat-grid{display:flex;flex-wrap:wrap;gap:12px;margin:16px 0}
+.stat-card{background:#f8f9fa;border:1px solid #e0e0e0;border-radius:8px;padding:12px 18px;min-width:140px}
+.stat-label{display:block;font-size:0.75rem;color:#666;margin-bottom:4px}
+.stat-val{font-size:1.4rem;font-weight:700;color:#1565c0}
+.warn-box{background:#fff3e0;border-left:4px solid #ff9800;padding:10px 14px;margin:10px 0}
 """
 
 _BASE_TMPL = """<!DOCTYPE html>
@@ -617,6 +622,270 @@ def _learning_page(output_dir: str) -> str:
     return _render("Learning — MHDE", body)
 
 
+def _today_page(history_root: str, output_dir: str) -> str:
+    import csv as _csv
+    from pathlib import Path
+
+    dates = _dated_dirs(history_root)
+    nav = (
+        '<p><a href="/candidates">Candidates</a> &nbsp;|&nbsp; '
+        '<a href="/learning">Learning</a> &nbsp;|&nbsp; '
+        '<a href="/moves">Moves</a> &nbsp;|&nbsp; '
+        '<a href="/ops">Ops</a> &nbsp;|&nbsp; '
+        '<a href="/">Home</a></p>'
+    )
+
+    if not dates:
+        body = (
+            '<h2>Today — No Runs Found</h2>'
+            '<p class="muted">No catalyst queue runs archived yet.</p>'
+            + nav
+        )
+        return _render("Today — MHDE", body)
+
+    latest = dates[0]
+    entries = _read_csv_entries(history_root, latest)
+    meta = _read_metadata(history_root, latest)
+
+    crossings = sum(1 for r in entries if _is_crossing(r))
+    needs_review = sum(
+        1 for r in entries
+        if not r.get("analyst_decision") or r.get("analyst_decision") == "unknown"
+    )
+
+    pva_path = Path(output_dir) / "prediction_vs_actual_rows.csv"
+    pva_counts: dict[str, int] = {}
+    pva_warn = ""
+    if pva_path.exists():
+        with open(pva_path, newline="") as f:
+            for row in _csv.DictReader(f):
+                clf = row.get("classification", "")
+                pva_counts[clf] = pva_counts.get(clf, 0) + 1
+    else:
+        pva_warn = (
+            '<div class="warn-box">prediction_vs_actual_rows.csv not found. '
+            'Run <code>python main.py missed prediction-vs-actual</code>.</div>'
+        )
+
+    def _stat(label: str, val) -> str:
+        return (
+            f'<div class="stat-card">'
+            f'<span class="stat-label">{_esc(label)}</span>'
+            f'<span class="stat-val">{_esc(str(val))}</span>'
+            f'</div>'
+        )
+
+    stats = (
+        _stat("Latest Run", latest)
+        + _stat("Entries", len(entries))
+        + _stat("Reject→C", crossings)
+        + _stat("Needs Review", needs_review)
+        + _stat("True Miss", pva_counts.get("true_miss", "—"))
+        + _stat("Near Threshold", pva_counts.get("near_threshold", "—"))
+        + _stat("Scored Missed", pva_counts.get("scored_missed", "—"))
+    )
+
+    top_rows = [
+        r for r in entries
+        if not r.get("analyst_decision") or r.get("analyst_decision") == "unknown"
+    ][:10]
+
+    review_table = ""
+    if top_rows:
+        tr_html = "".join(
+            f"<tr>"
+            f"<td>{_esc(r.get('ticker', ''))}</td>"
+            f"<td>{_esc(r.get('shadow_tier', ''))}</td>"
+            f"<td>{_esc(r.get('scaled_shadow_score', r.get('shadow_score', '')))}</td>"
+            f"</tr>"
+            for r in top_rows
+        )
+        review_table = (
+            '<h2>Needs Review (top 10)</h2>'
+            '<table>'
+            '<tr><th>Ticker</th><th>Shadow Tier</th><th>Scaled Shadow Score</th></tr>'
+            + tr_html
+            + '</table>'
+        )
+
+    body = (
+        f'<h2>Today — {_esc(latest)}</h2>'
+        f'<div class="stat-grid">{stats}</div>'
+        + pva_warn
+        + review_table
+        + nav
+    )
+    return _render("Today — MHDE", body)
+
+
+def _candidates_page(history_root: str) -> tuple[str, int]:
+    dates = _dated_dirs(history_root)
+    if not dates:
+        body = (
+            '<h2>Candidates — No Runs Found</h2>'
+            '<p class="muted">No catalyst queue runs archived yet.</p>'
+            '<p><a href="/">Home</a></p>'
+        )
+        return _render("Candidates — MHDE", body), 200
+
+    latest = dates[0]
+    html, code = _run_detail(history_root, latest)
+    # Replace page title to say "Candidates — {date}"
+    html = html.replace(
+        f"<title>{_esc(latest)} — MHDE Catalyst Review</title>",
+        f"<title>Candidates — {_esc(latest)}</title>",
+    )
+    return html, code
+
+
+def _moves_page(output_dir: str) -> str:
+    import csv as _csv
+    from pathlib import Path
+
+    nav = (
+        '<p><a href="/today">Today</a> &nbsp;|&nbsp; '
+        '<a href="/candidates">Candidates</a> &nbsp;|&nbsp; '
+        '<a href="/learning">Learning</a> &nbsp;|&nbsp; '
+        '<a href="/ops">Ops</a> &nbsp;|&nbsp; '
+        '<a href="/">Home</a></p>'
+    )
+
+    pva_path = Path(output_dir) / "prediction_vs_actual_rows.csv"
+    if not pva_path.exists():
+        body = (
+            '<h2>Moves</h2>'
+            '<p class="muted">prediction_vs_actual_rows.csv not found.</p>'
+            '<p class="muted">Run: <code>python main.py missed prediction-vs-actual</code></p>'
+            + nav
+        )
+        return _render("Moves — MHDE", body)
+
+    with open(pva_path, newline="") as f:
+        rows = list(_csv.DictReader(f))
+
+    by_window: dict[str, list[dict]] = {}
+    for r in rows:
+        w = r.get("window_days", "unknown")
+        by_window.setdefault(w, []).append(r)
+
+    sections = []
+    for window in sorted(by_window.keys(), key=lambda x: (int(x) if x.isdigit() else 9999)):
+        group = sorted(
+            by_window[window],
+            key=lambda r: float(r.get("return_value", 0) or 0),
+            reverse=True,
+        )[:20]
+        tr_html = "".join(
+            f"<tr>"
+            f"<td>{_esc(r.get('ticker', ''))}</td>"
+            f"<td>{_esc(r.get('event_date', ''))}</td>"
+            f"<td>{_esc(r.get('return_value', ''))}</td>"
+            f"<td>{_esc(r.get('classification', ''))}</td>"
+            f"</tr>"
+            for r in group
+        )
+        sections.append(
+            f'<h2>Window: {_esc(window)} days</h2>'
+            f'<table>'
+            f'<tr><th>Ticker</th><th>Date</th><th>Return</th><th>Classification</th></tr>'
+            f'{tr_html}'
+            f'</table>'
+        )
+
+    body = '<h2>Moves — Prediction vs Actual</h2>' + "".join(sections) + nav
+    return _render("Moves — MHDE", body)
+
+
+def _ops_page(history_root: str, output_dir: str) -> str:
+    import subprocess
+    from pathlib import Path
+
+    nav = (
+        '<p><a href="/today">Today</a> &nbsp;|&nbsp; '
+        '<a href="/candidates">Candidates</a> &nbsp;|&nbsp; '
+        '<a href="/learning">Learning</a> &nbsp;|&nbsp; '
+        '<a href="/moves">Moves</a> &nbsp;|&nbsp; '
+        '<a href="/">Home</a></p>'
+    )
+
+    # Artifact checks
+    artifact_names = [
+        "prediction_vs_actual_rows.csv",
+        "prediction_vs_actual_enriched_rows.csv",
+        "root_cause_enrichment_report.md",
+        "daily_catalyst_queue.csv",
+    ]
+    artifact_rows = []
+    for fname in artifact_names:
+        fpath = Path(output_dir) / fname
+        if fpath.exists():
+            stat = fpath.stat()
+            from datetime import datetime as _dt
+            mtime = _dt.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M")
+            size_kb = f"{stat.st_size / 1024:.1f} KB"
+            status = "&#9989;"
+        else:
+            mtime = "—"
+            size_kb = "—"
+            status = "&#10060; missing"
+        artifact_rows.append(
+            f"<tr><td>{_esc(fname)}</td><td>{status}</td><td>{mtime}</td><td>{size_kb}</td></tr>"
+        )
+
+    # Latest run date
+    dates = _dated_dirs(history_root)
+    latest_run = dates[0] if dates else "—"
+
+    # Systemd timers
+    timer_lines = []
+    try:
+        result = subprocess.run(
+            ["systemctl", "list-timers", "--no-legend", "--no-pager"],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in result.stdout.splitlines():
+            if "mhde" in line.lower():
+                timer_lines.append(line)
+    except Exception:
+        pass
+
+    if timer_lines:
+        timer_html = "<pre>" + _esc("\n".join(timer_lines)) + "</pre>"
+    else:
+        timer_html = '<p class="muted">No mhde timers active.</p>'
+
+    # Env var presence checks (NEVER show values or full key names)
+    env_keys = ["POLYGON_API_KEY", "ALPHA_VANTAGE_API_KEY", "OPENAI_API_KEY"]
+    env_labels = {
+        "POLYGON_API_KEY": "Polygon",
+        "ALPHA_VANTAGE_API_KEY": "Alpha Vantage",
+        "OPENAI_API_KEY": "OpenAI",
+    }
+    missing_keys = [k for k in env_keys if not bool(os.environ.get(k))]
+    env_warn = ""
+    if missing_keys:
+        env_warn = (
+            '<div class="warn-box">Missing credentials: '
+            + ", ".join(_esc(env_labels.get(k, k)) for k in missing_keys)
+            + ". Set the required environment variables before running the pipeline.</div>"
+        )
+
+    body = (
+        '<h2>Ops</h2>'
+        f'<p><strong>Latest run:</strong> {_esc(latest_run)}</p>'
+        '<h2>Artifacts</h2>'
+        '<table>'
+        '<tr><th>File</th><th>Status</th><th>Modified</th><th>Size</th></tr>'
+        + "".join(artifact_rows)
+        + '</table>'
+        + env_warn
+        + '<h2>Systemd Timers</h2>'
+        + timer_html
+        + nav
+    )
+    return _render("Ops — MHDE", body)
+
+
 # ── App factory ───────────────────────────────────────────────────────────────
 
 def create_app(
@@ -738,6 +1007,27 @@ def create_app(
         with open(fpath, "rb") as f:
             data = f.read()
         return Response(data, mimetype=_LEARNING_ARTIFACT_MIME[atype])
+
+    @app.route("/today")
+    @_require_auth
+    def today():
+        return _today_page(history_root, output_dir)
+
+    @app.route("/candidates")
+    @_require_auth
+    def candidates():
+        html, code = _candidates_page(history_root)
+        return html, code
+
+    @app.route("/moves")
+    @_require_auth
+    def moves():
+        return _moves_page(output_dir)
+
+    @app.route("/ops")
+    @_require_auth
+    def ops():
+        return _ops_page(history_root, output_dir)
 
     return app
 

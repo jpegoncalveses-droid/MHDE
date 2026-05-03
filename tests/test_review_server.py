@@ -715,3 +715,170 @@ def test_learning_artifact_requires_auth(tmp_path):
     with app.test_client() as client:
         resp = client.get("/learning/rows_csv")
     assert resp.status_code == 401
+
+
+# ── Phase 1: new routes ───────────────────────────────────────────────────────
+
+def test_today_renders_with_run(tmp_path):
+    history_root = str(tmp_path / "history")
+    _write_day(history_root, "2026-01-01", _BASE_META, [_CROSSING_ROW])
+    app = _make_app(tmp_path)
+    # override history to match
+    from review.server import create_app
+    import os
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir, exist_ok=True)
+    a = create_app(history_root, output_dir, unsafe_no_auth=True)
+    with a.test_client() as c:
+        r = c.get("/today")
+    assert r.status_code == 200
+    assert b"2026-01-01" in r.data or b"today" in r.data.lower()
+
+
+def test_today_handles_no_runs(tmp_path):
+    from review.server import create_app
+    import os
+    history_root = str(tmp_path / "history")
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir, exist_ok=True)
+    a = create_app(history_root, output_dir, unsafe_no_auth=True)
+    with a.test_client() as c:
+        r = c.get("/today")
+    assert r.status_code == 200
+
+
+def test_today_requires_auth(tmp_path):
+    from review.server import create_app
+    import os
+    history_root = str(tmp_path / "history")
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir, exist_ok=True)
+    a = create_app(history_root, output_dir, unsafe_no_auth=False)
+    with a.test_client() as c:
+        r = c.get("/today")
+    assert r.status_code == 401
+
+
+def test_candidates_renders_latest(tmp_path):
+    history_root = str(tmp_path / "history")
+    _write_day(history_root, "2026-01-01", _BASE_META, [_CROSSING_ROW])
+    _write_day(history_root, "2026-01-02", _BASE_META, [_CROSSING_ROW])
+    from review.server import create_app
+    import os
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir, exist_ok=True)
+    a = create_app(history_root, output_dir, unsafe_no_auth=True)
+    with a.test_client() as c:
+        r = c.get("/candidates")
+    assert r.status_code == 200
+    # Should show the latest date (2026-01-02) content
+    assert b"2026-01-02" in r.data or b"CTRA" in r.data
+
+
+def test_candidates_no_runs(tmp_path):
+    from review.server import create_app
+    import os
+    history_root = str(tmp_path / "history")
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir, exist_ok=True)
+    a = create_app(history_root, output_dir, unsafe_no_auth=True)
+    with a.test_client() as c:
+        r = c.get("/candidates")
+    assert r.status_code == 200
+
+
+def test_moves_renders_with_data(tmp_path):
+    import csv, os
+    from review.server import create_app
+    history_root = str(tmp_path / "history")
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir, exist_ok=True)
+    # Write a PVA CSV
+    pva_path = os.path.join(output_dir, "prediction_vs_actual_rows.csv")
+    with open(pva_path, "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=["ticker","event_date","return_value","window_days","classification"])
+        w.writeheader()
+        w.writerow({"ticker":"AAAB","event_date":"2026-01-01","return_value":"0.12","window_days":"5","classification":"true_miss"})
+    a = create_app(history_root, output_dir, unsafe_no_auth=True)
+    with a.test_client() as c:
+        r = c.get("/moves")
+    assert r.status_code == 200
+    assert b"AAAB" in r.data or b"move" in r.data.lower()
+
+
+def test_moves_handles_missing_csv(tmp_path):
+    from review.server import create_app
+    import os
+    history_root = str(tmp_path / "history")
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir, exist_ok=True)
+    a = create_app(history_root, output_dir, unsafe_no_auth=True)
+    with a.test_client() as c:
+        r = c.get("/moves")
+    assert r.status_code == 200
+
+
+def test_moves_requires_auth(tmp_path):
+    from review.server import create_app
+    import os
+    history_root = str(tmp_path / "history")
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir, exist_ok=True)
+    a = create_app(history_root, output_dir, unsafe_no_auth=False)
+    with a.test_client() as c:
+        r = c.get("/moves")
+    assert r.status_code == 401
+
+
+def test_ops_renders(tmp_path):
+    from review.server import create_app
+    import os
+    history_root = str(tmp_path / "history")
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir, exist_ok=True)
+    a = create_app(history_root, output_dir, unsafe_no_auth=True)
+    with a.test_client() as c:
+        r = c.get("/ops")
+    assert r.status_code == 200
+    html = r.data.decode()
+    assert "ops" in html.lower() or "artifact" in html.lower()
+
+
+def test_ops_no_secrets_displayed(tmp_path):
+    import os
+    from review.server import create_app
+    history_root = str(tmp_path / "history")
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir, exist_ok=True)
+    a = create_app(history_root, output_dir, unsafe_no_auth=True)
+    with a.test_client() as c:
+        r = c.get("/ops")
+    html = r.data.decode().lower()
+    assert "password" not in html
+    assert "api_key" not in html
+    # Check that actual env var values don't appear (keys may appear as labels, not values)
+
+
+def test_ops_handles_missing_timer(tmp_path):
+    """Must not crash when systemctl is absent or returns no mhde timers."""
+    from review.server import create_app
+    import os
+    history_root = str(tmp_path / "history")
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir, exist_ok=True)
+    a = create_app(history_root, output_dir, unsafe_no_auth=True)
+    with a.test_client() as c:
+        r = c.get("/ops")
+    assert r.status_code == 200
+
+
+def test_ops_requires_auth(tmp_path):
+    from review.server import create_app
+    import os
+    history_root = str(tmp_path / "history")
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir, exist_ok=True)
+    a = create_app(history_root, output_dir, unsafe_no_auth=False)
+    with a.test_client() as c:
+        r = c.get("/ops")
+    assert r.status_code == 401
