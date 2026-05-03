@@ -722,8 +722,6 @@ def test_learning_artifact_requires_auth(tmp_path):
 def test_today_renders_with_run(tmp_path):
     history_root = str(tmp_path / "history")
     _write_day(history_root, "2026-01-01", _BASE_META, [_CROSSING_ROW])
-    app = _make_app(tmp_path)
-    # override history to match
     from review.server import create_app
     import os
     output_dir = str(tmp_path / "output")

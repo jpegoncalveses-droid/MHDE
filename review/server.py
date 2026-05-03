@@ -313,6 +313,13 @@ def _esc(s) -> str:
     return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _safe_float(v, default: float = 0.0) -> float:
+    try:
+        return float(v or 0)
+    except (ValueError, TypeError):
+        return default
+
+
 # ── Route handlers ────────────────────────────────────────────────────────────
 
 def _homepage(history_root: str, output_dir: str) -> str:
@@ -773,7 +780,7 @@ def _moves_page(output_dir: str) -> str:
     for window in sorted(by_window.keys(), key=lambda x: (int(x) if x.isdigit() else 9999)):
         group = sorted(
             by_window[window],
-            key=lambda r: float(r.get("return_value", 0) or 0),
+            key=lambda r: _safe_float(r.get("return_value")),
             reverse=True,
         )[:20]
         tr_html = "".join(
@@ -816,12 +823,12 @@ def _ops_page(history_root: str, output_dir: str) -> str:
         "root_cause_enrichment_report.md",
         "daily_catalyst_queue.csv",
     ]
+    from datetime import datetime as _dt
     artifact_rows = []
     for fname in artifact_names:
         fpath = Path(output_dir) / fname
         if fpath.exists():
             stat = fpath.stat()
-            from datetime import datetime as _dt
             mtime = _dt.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M")
             size_kb = f"{stat.st_size / 1024:.1f} KB"
             status = "&#9989;"
