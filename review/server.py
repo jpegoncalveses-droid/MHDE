@@ -222,6 +222,19 @@ _ARTIFACT_MIME = {
     "jsonl": "text/plain; charset=utf-8",
 }
 
+_LEARNING_ARTIFACT_FILES = {
+    "report_md":     "prediction_vs_actual_report.md",
+    "rows_csv":      "prediction_vs_actual_rows.csv",
+    "enriched_csv":  "prediction_vs_actual_enriched_rows.csv",
+    "root_cause_md": "root_cause_enrichment_report.md",
+}
+_LEARNING_ARTIFACT_MIME = {
+    "report_md":     "text/plain; charset=utf-8",
+    "rows_csv":      "text/csv; charset=utf-8",
+    "enriched_csv":  "text/csv; charset=utf-8",
+    "root_cause_md": "text/plain; charset=utf-8",
+}
+
 
 def _is_valid_date(s: str) -> bool:
     """Return True iff s is exactly YYYY-MM-DD with digit/dash only."""
@@ -533,6 +546,77 @@ def _run_detail(history_root: str, date_str: str) -> tuple[str, int]:
     return _render(f"{date_str} — MHDE Catalyst Review", body), 200
 
 
+def _learning_page(output_dir: str) -> str:
+    import csv as _csv
+    from collections import Counter as _Counter
+    from pathlib import Path
+
+    rows_path = Path(output_dir) / "prediction_vs_actual_rows.csv"
+    enriched_path = Path(output_dir) / "prediction_vs_actual_enriched_rows.csv"
+
+    if not rows_path.exists():
+        body = (
+            '<h2>Prediction vs Actual — Learning Summary</h2>'
+            '<p class="muted">No prediction report found. '
+            'Run <code>python main.py missed prediction-vs-actual</code> to generate.</p>'
+        )
+        return _render("Learning — MHDE", body)
+
+    with open(rows_path, newline="") as f:
+        rows = list(_csv.DictReader(f))
+    total = len(rows)
+    clf = _Counter(r.get("classification", "") for r in rows)
+    report_date = rows[0].get("event_date", "") if rows else ""
+
+    clf_rows = "".join(
+        f"<tr><td>{_esc(k)}</td><td>{v}</td></tr>"
+        for k, v in sorted(clf.items(), key=lambda x: -x[1])
+    )
+
+    rc_rows_html = ""
+    if enriched_path.exists():
+        with open(enriched_path, newline="") as f:
+            enriched = list(_csv.DictReader(f))
+        rc = _Counter(r.get("root_cause_group", "unknown") for r in enriched)
+        rc_rows_html = "".join(
+            f"<tr><td>{_esc(k)}</td><td>{v}</td></tr>"
+            for k, v in sorted(rc.items(), key=lambda x: -x[1])
+        )
+
+    artifact_links = " &bull; ".join(
+        f'<a href="/learning/{_esc(atype)}">{_esc(label)}</a>'
+        for atype, label in [
+            ("report_md", "Prediction Report"),
+            ("rows_csv", "Rows CSV"),
+            ("enriched_csv", "Enriched CSV"),
+            ("root_cause_md", "Root Cause Report"),
+        ]
+    )
+
+    body = f"""
+<h2>Prediction vs Actual — Learning Summary</h2>
+<p class="muted">Report date: {_esc(report_date)} &mdash; Total events: {total}</p>
+<div class="banner shadow">&#128274; Shadow-only — production scores unchanged.</div>
+
+<h2>Classification Breakdown</h2>
+<table>
+<tr><th>Classification</th><th>Count</th></tr>
+{clf_rows}
+</table>
+
+<h2>Root Cause Groups</h2>
+<table>
+<tr><th>Group</th><th>Count</th></tr>
+{rc_rows_html if rc_rows_html else '<tr><td colspan="2"><em>Run enrich-root-causes to populate</em></td></tr>'}
+</table>
+
+<h2>Artifacts</h2>
+<p class="muted">{artifact_links}</p>
+<p><a href="/">&#8592; Home</a></p>
+"""
+    return _render("Learning — MHDE", body)
+
+
 # ── App factory ───────────────────────────────────────────────────────────────
 
 def create_app(
@@ -637,6 +721,23 @@ def create_app(
 
         _write_review(history_root, date_str, ticker, decision, notes)
         return redirect(url_for("run_detail", date_str=date_str))
+
+    @app.route("/learning")
+    @_require_auth
+    def learning_page():
+        return _learning_page(output_dir)
+
+    @app.route("/learning/<atype>")
+    @_require_auth
+    def learning_artifact(atype: str):
+        if atype not in _LEARNING_ARTIFACT_FILES:
+            return Response("Unknown artifact type", 404)
+        fpath = os.path.join(output_dir, _LEARNING_ARTIFACT_FILES[atype])
+        if not os.path.exists(fpath):
+            return Response("Artifact not found", 404)
+        with open(fpath, "rb") as f:
+            data = f.read()
+        return Response(data, mimetype=_LEARNING_ARTIFACT_MIME[atype])
 
     return app
 

@@ -658,3 +658,60 @@ def test_homepage_shows_artifact_download_links(tmp_path):
     body = resp.data.decode()
     assert "/artifacts/latest/html" in body or "html" in body.lower()
     assert "/artifacts/latest/csv" in body or "csv" in body.lower()
+
+
+# ── /learning page tests ──────────────────────────────────────────────────────
+
+def test_learning_page_returns_200_no_artifacts(tmp_path):
+    """/learning returns 200 even when no prediction CSVs exist."""
+    app = _make_app(tmp_path)
+    with app.test_client() as client:
+        resp = client.get("/learning")
+    assert resp.status_code == 200
+    body = resp.data.decode()
+    assert "learning" in body.lower() or "prediction" in body.lower()
+
+
+def test_learning_artifact_rows_csv_returns_content(tmp_path):
+    """/learning/rows_csv serves prediction_vs_actual_rows.csv from output_dir."""
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir, exist_ok=True)
+    csv_path = os.path.join(output_dir, "prediction_vs_actual_rows.csv")
+    with open(csv_path, "w") as f:
+        f.write("ticker,classification\nAAPL,true_miss\n")
+    app = _make_app(tmp_path)
+    with app.test_client() as client:
+        resp = client.get("/learning/rows_csv")
+    assert resp.status_code == 200
+    assert b"true_miss" in resp.data
+
+
+def test_learning_artifact_returns_404_for_missing_file(tmp_path):
+    """/learning/rows_csv returns 404 when file does not exist."""
+    app = _make_app(tmp_path)
+    with app.test_client() as client:
+        resp = client.get("/learning/rows_csv")
+    assert resp.status_code == 404
+
+
+def test_learning_artifact_returns_404_for_unknown_type(tmp_path):
+    """/learning/bad_type returns 404."""
+    app = _make_app(tmp_path)
+    with app.test_client() as client:
+        resp = client.get("/learning/bad_type")
+    assert resp.status_code == 404
+
+
+def test_learning_artifact_requires_auth(tmp_path):
+    """/learning/rows_csv returns 401 without credentials when auth is enabled."""
+    from review.server import create_app
+    history_root = str(tmp_path / "history")
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir, exist_ok=True)
+    csv_path = os.path.join(output_dir, "prediction_vs_actual_rows.csv")
+    with open(csv_path, "w") as f:
+        f.write("ticker,classification\nAAPL,true_miss\n")
+    app = create_app(history_root, output_dir, unsafe_no_auth=False)
+    with app.test_client() as client:
+        resp = client.get("/learning/rows_csv")
+    assert resp.status_code == 401

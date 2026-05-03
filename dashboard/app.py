@@ -45,6 +45,23 @@ except Exception as exc:
     st.error(f"Could not connect to database: {exc}")
     st.info(f"DB path: `{db_path}`")
 
+output_dir = os.environ.get("MHDE_OUTPUT_DIR", "data/processed")
+from dashboard.services.learning_stats import get_learning_stats
+lstats = get_learning_stats(output_dir)
+if lstats["total"]:
+    st.subheader("Prediction vs Actual")
+    lc1, lc2, lc3, lc4 = st.columns(4)
+    lc1.metric("Events Analyzed", lstats["total"])
+    lc2.metric("True Miss", lstats["true_miss"])
+    lc3.metric("Near Threshold", lstats["near_threshold"])
+    lc4.metric("Scored Missed", lstats["scored_missed"])
+    if lstats["report_date"]:
+        st.caption(
+            f"Report date: `{lstats['report_date']}`  |  "
+            f"Top root cause: `{lstats['top_rc_group'] or '—'}`  |  "
+            "[Full learning report →](17_learning_predictions)"
+        )
+
 st.markdown("""
 ---
 **Navigation** — use the sidebar pages to explore:

@@ -57,10 +57,62 @@ def _subject(entries: list[dict], metadata: dict) -> str:
     return f"MHDE Catalyst Queue — {n_cross} Reject→C, {n_action} actionable [{date}]"
 
 
+def _learning_section_txt(output_dir: str) -> list[str]:
+    from pathlib import Path
+    import csv as _csv
+    rows_path = Path(output_dir) / "prediction_vs_actual_rows.csv"
+    if not rows_path.exists():
+        return []
+    with open(rows_path, newline="") as f:
+        rows = list(_csv.DictReader(f))
+    if not rows:
+        return []
+    total = len(rows)
+    clf = Counter(r.get("classification", "") for r in rows)
+    report_date = rows[0].get("event_date", "")
+    return [
+        "=" * 70,
+        "PREDICTION VS ACTUAL — LEARNING SUMMARY",
+        "=" * 70,
+        f"  Report date:     {report_date}",
+        f"  Total events:    {total}",
+        f"  True miss:       {clf.get('true_miss', 0)}  |  "
+        f"Near threshold: {clf.get('near_threshold', 0)}  |  "
+        f"Scored missed: {clf.get('scored_missed', 0)}",
+        "",
+    ]
+
+
+def _learning_section_html(output_dir: str) -> str:
+    from pathlib import Path
+    import csv as _csv
+    rows_path = Path(output_dir) / "prediction_vs_actual_rows.csv"
+    if not rows_path.exists():
+        return ""
+    with open(rows_path, newline="") as f:
+        rows = list(_csv.DictReader(f))
+    if not rows:
+        return ""
+    total = len(rows)
+    clf = Counter(r.get("classification", "") for r in rows)
+    report_date = rows[0].get("event_date", "")
+    return (
+        '<h2>Prediction vs Actual — Learning Summary</h2>'
+        '<table>'
+        f'<tr><td>Report date</td><td>{report_date}</td></tr>'
+        f'<tr><td>Total events</td><td>{total}</td></tr>'
+        f'<tr><td>True miss</td><td>{clf.get("true_miss", 0)}</td></tr>'
+        f'<tr><td>Near threshold</td><td>{clf.get("near_threshold", 0)}</td></tr>'
+        f'<tr><td>Scored missed</td><td>{clf.get("scored_missed", 0)}</td></tr>'
+        '</table>'
+    )
+
+
 def generate_digest_txt(
     queue_entries: list[dict],
     revalidated: list[dict],
     metadata: dict,
+    output_dir: str = "data/processed",
 ) -> str:
     """Return the full text/plain digest body including the subject as the first line."""
     subj = _subject(queue_entries, metadata)
@@ -180,6 +232,9 @@ def generate_digest_txt(
         "Artifacts:  daily_catalyst_queue.md / .csv / .jsonl / .html",
         "",
     ]
+    learning = _learning_section_txt(output_dir)
+    if learning:
+        lines += [""] + learning
     return "\n".join(lines)
 
 
@@ -187,6 +242,7 @@ def generate_digest_html(
     queue_entries: list[dict],
     revalidated: list[dict],
     metadata: dict,
+    output_dir: str = "data/processed",
 ) -> str:
     """Return the full text/html digest body."""
     subj = _subject(queue_entries, metadata)
@@ -271,6 +327,7 @@ a{{color:#1565c0;}}
 
 {"<p><a href=" + chr(34) + _esc(review_url) + chr(34) + ">Open Dashboard</a></p>" if review_url else ""}
 <p style="font-size:.8rem;color:#888;">Artifacts: daily_catalyst_queue.md / .csv / .jsonl / .html</p>
+{_learning_section_html(output_dir)}
 </body>
 </html>"""
 
@@ -283,8 +340,8 @@ def write_digest_artifacts(
 ) -> tuple[str, str]:
     """Write daily_catalyst_digest.txt and .html. Returns (txt_path, html_path)."""
     os.makedirs(output_dir, exist_ok=True)
-    txt = generate_digest_txt(queue_entries, revalidated, metadata)
-    html = generate_digest_html(queue_entries, revalidated, metadata)
+    txt = generate_digest_txt(queue_entries, revalidated, metadata, output_dir)
+    html = generate_digest_html(queue_entries, revalidated, metadata, output_dir)
     txt_path = os.path.join(output_dir, _DIGEST_TXT)
     html_path = os.path.join(output_dir, _DIGEST_HTML)
     with open(txt_path, "w") as f:
