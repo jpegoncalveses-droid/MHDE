@@ -161,6 +161,9 @@ def run(cfg: dict, conn: duckdb.DuckDBPyConnection) -> RunSummary:
                         conn, run_id, row["ticker"], date.today(),
                         row["tier"], row["total_score"], ref_price,
                     )
+            # Populate forward returns for all mature outcome windows
+            from outcomes.tracker import populate_forward_returns
+            populate_forward_returns(conn, as_of_date=date.today().isoformat())
         except Exception as exc:
             logger.error("Outcome tracking failed: %s", exc)
 
