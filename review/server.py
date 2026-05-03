@@ -1068,11 +1068,11 @@ def _ops_page(history_root: str, output_dir: str) -> str:
     dates = _dated_dirs(history_root)
     latest_run = dates[0] if dates else "—"
 
-    # Systemd timers
+    # Systemd timers — check user-level units (all mhde services run as --user)
     timer_lines = []
     try:
         result = subprocess.run(
-            ["systemctl", "list-timers", "--no-legend", "--no-pager"],
+            ["systemctl", "--user", "list-timers", "--no-legend", "--no-pager"],
             capture_output=True, text=True, timeout=5,
         )
         for line in result.stdout.splitlines():
