@@ -263,9 +263,10 @@ details summary{cursor:pointer;color:#555;}
 .badge-watch{background:#fff9c4;color:#f57f17;}
 .badge-reject{background:#ffcdd2;color:#b71c1c;}
 .badge-unknown{background:#e0e0e0;color:#444;}
-.review-form{margin-top:6px;font-size:.85rem;}
-.review-form select,.review-form input[type=text]{padding:3px 6px;border:1px solid #ccc;border-radius:3px;}
-.review-form button{padding:3px 10px;background:#1565c0;color:#fff;border:none;border-radius:3px;cursor:pointer;}
+.review-form{margin-top:6px;font-size:.85rem;display:flex;flex-wrap:wrap;gap:4px;align-items:center;}
+.review-form select{padding:4px 6px;border:1px solid #ccc;border-radius:3px;min-width:90px;}
+.review-form input[type=text]{padding:4px 6px;border:1px solid #ccc;border-radius:3px;flex:1;min-width:100px;}
+.review-form button{padding:4px 10px;background:#1565c0;color:#fff;border:none;border-radius:3px;cursor:pointer;white-space:nowrap;}
 .stat-grid{display:flex;flex-wrap:wrap;gap:12px;margin:16px 0}
 .stat-card{background:#f8f9fa;border:1px solid #e0e0e0;border-radius:8px;padding:12px 18px;min-width:140px}
 .stat-label{display:block;font-size:0.75rem;color:#666;margin-bottom:4px}
@@ -904,22 +905,22 @@ def _run_detail(history_root: str, date_str: str) -> tuple[str, int]:
 {cards_html}
 
 <h2>Reject→C Crossings</h2>
-<table>
+<div style="overflow-x:auto"><table>
 <tr><th>Ticker</th><th>Score</th><th>Catalyst</th><th>Conf</th><th>Evidence</th></tr>
 {_cross_rows()}
-</table>
+</table></div>
 
 <h2>Valid — No Tier Change</h2>
-<table>
+<div style="overflow-x:auto"><table>
 <tr><th>Ticker</th><th>Score</th><th>Catalyst</th><th>Conf</th><th>Evidence</th></tr>
 {_reviewable_rows(valid_no_cross)}
-</table>
+</table></div>
 
 <h2>Bearish Downgrades</h2>
-<table>
+<div style="overflow-x:auto"><table>
 <tr><th>Ticker</th><th>Score</th><th>Catalyst</th><th>Evidence</th></tr>
 {_simple_rows(bear)}
-</table>
+</table></div>
 
 <h2>Weak / Rejected Evidence</h2>
 <details open>
