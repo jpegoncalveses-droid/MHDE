@@ -2042,3 +2042,87 @@ def test_lookup_price_context_returns_fields(tmp_path):
     assert ctx["high_52w"] == pytest.approx(175.0)
     assert ctx["low_52w"] == pytest.approx(169.0)
     assert not ctx["stale"]
+
+
+# ── Tradability tests ─────────────────────────────────────────────────────────
+
+def _make_ticker_app(tmp_path, db_path=""):
+    """Minimal app for tradability tests with an output_dir."""
+    from review.server import create_app
+    history_root = str(tmp_path / "history")
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir, exist_ok=True)
+    return create_app(
+        history_root, output_dir,
+        unsafe_no_auth=True,
+        db_path=db_path or "",
+    ), output_dir
+
+
+def test_tradability_status_persists(tmp_path):
+    db = str(tmp_path / "t.duckdb")
+    _seed_db(db, ticker="AAPL", tier="Reject", score=35.0)
+    app, output_dir = _make_ticker_app(tmp_path, db_path=db)
+    with app.test_client() as c:
+        # POST tradability
+        r = c.post("/ticker/AAPL/tradability", data={
+            "tradability_status": "not_tradable",
+            "broker_note": "Not available on IBKR",
+        })
+        assert r.status_code in (200, 302)
+        # GET ticker page shows persisted status
+        r2 = c.get("/ticker/AAPL")
+    html = r2.data.decode()
+    assert "not_tradable" in html
+    assert "Not available on IBKR" in html
+
+
+def test_not_tradable_displays_warning(tmp_path):
+    db = str(tmp_path / "t.duckdb")
+    _seed_db(db, ticker="AAPL", tier="Reject", score=35.0)
+    app, output_dir = _make_ticker_app(tmp_path, db_path=db)
+    with app.test_client() as c:
+        c.post("/ticker/AAPL/tradability", data={
+            "tradability_status": "not_tradable",
+            "broker_note": "",
+        })
+        r = c.get("/ticker/AAPL")
+    html = r.data.decode()
+    assert "not tradable in selected broker" in html.lower()
+
+
+def test_broker_note_sanitized(tmp_path):
+    db = str(tmp_path / "t.duckdb")
+    _seed_db(db, ticker="AAPL", tier="Reject", score=35.0)
+    app, output_dir = _make_ticker_app(tmp_path, db_path=db)
+    malicious_note = "<script>alert('xss')</script>"
+    with app.test_client() as c:
+        c.post("/ticker/AAPL/tradability", data={
+            "tradability_status": "not_tradable",
+            "broker_note": malicious_note,
+        })
+        r = c.get("/ticker/AAPL")
+    html = r.data.decode()
+    # The XSS payload must be HTML-escaped, not executed verbatim
+    assert "<script>alert" not in html
+
+
+def test_tradability_no_scoring_change(tmp_path):
+    db = str(tmp_path / "t.duckdb")
+    _seed_db(db, ticker="AAPL", tier="Reject", score=35.0)
+    app, output_dir = _make_ticker_app(tmp_path, db_path=db)
+    with app.test_client() as c:
+        # Get score before
+        r_before = c.get("/ticker/AAPL")
+        html_before = r_before.data.decode()
+        # Set tradability
+        c.post("/ticker/AAPL/tradability", data={
+            "tradability_status": "not_tradable",
+            "broker_note": "unavailable",
+        })
+        # Get score after
+        r_after = c.get("/ticker/AAPL")
+        html_after = r_after.data.decode()
+    # Score should be identical in both renders
+    assert "35.00" in html_before
+    assert "35.00" in html_after

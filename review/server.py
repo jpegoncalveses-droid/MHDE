@@ -217,7 +217,7 @@ if ('serviceWorker' in navigator) {
 
 # ── HTML templates ────────────────────────────────────────────────────────────
 
-_VALID_DECISIONS = {"accept", "reject", "watch", "unknown"}
+_VALID_DECISIONS = {"accept", "reject", "watch", "unknown", "broker_unavailable"}
 
 _ARTIFACT_FILES = {
     "html": "daily_catalyst_queue.html",
@@ -273,6 +273,7 @@ details summary{cursor:pointer;color:#555;}
 .badge-watch{background:#fff9c4;color:#f57f17;}
 .badge-reject{background:#ffcdd2;color:#b71c1c;}
 .badge-unknown{background:#e0e0e0;color:#444;}
+.badge-broker_unavailable{background:#fff3e0;color:#e65100;font-weight:700;}
 .review-form{margin-top:6px;font-size:.85rem;display:flex;flex-wrap:wrap;gap:4px;align-items:center;}
 .review-form select{padding:4px 6px;border:1px solid #ccc;border-radius:3px;min-width:90px;}
 .review-form input[type=text]{padding:4px 6px;border:1px solid #ccc;border-radius:3px;flex:1;min-width:100px;}
@@ -582,6 +583,91 @@ def _price_block(ctx: dict) -> str:
     )
 
     return f'<h3>Price Context</h3><table class="detail-table">{rows_html}</table>'
+
+
+# ── Tradability ────────────────────────────────────────────────────────────────
+
+_TRADABILITY_STATUSES = ("unknown", "tradable", "not_tradable")
+
+
+def _tradability_path(output_dir: str) -> str:
+    return os.path.join(output_dir, "ticker_tradability.json")
+
+
+def _read_tradability(output_dir: str) -> dict:
+    """Return {ticker: {tradability_status, broker_note, updated_at}}."""
+    path = _tradability_path(output_dir)
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _write_tradability(output_dir: str, ticker: str, status: str, note: str) -> None:
+    """Upsert tradability record for a ticker. No scoring change."""
+    if status not in _TRADABILITY_STATUSES:
+        return
+    data = _read_tradability(output_dir)
+    data[ticker] = {
+        "tradability_status": status,
+        "broker_note": note[:200],
+        "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    with open(_tradability_path(output_dir), "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+
+def _tradability_block(ticker: str, output_dir: str) -> str:
+    """Render tradability section for the ticker page."""
+    data = _read_tradability(output_dir)
+    rec = data.get(ticker, {})
+    status = rec.get("tradability_status") or "unknown"
+    note = rec.get("broker_note") or ""
+    updated = rec.get("updated_at") or ""
+
+    status_color = {
+        "tradable": "color:#1b5e20;font-weight:700",
+        "not_tradable": "color:#c62828;font-weight:700",
+        "unknown": "color:#888",
+    }.get(status, "color:#888")
+
+    warn = (
+        '<div class="warn-box">Valid public ticker, but not tradable in selected broker.</div>'
+        if status == "not_tradable" else ""
+    )
+
+    def _prow(label: str, val: str) -> str:
+        return f'<tr><td class="tlabel">{_esc(label)}</td><td>{val}</td></tr>'
+
+    opts = "".join(
+        f'<option value="{s}"{" selected" if status == s else ""}>{_esc(s)}</option>'
+        for s in _TRADABILITY_STATUSES
+    )
+    form = (
+        f'<form class="review-form" method="post" '
+        f'action="/ticker/{_esc(ticker)}/tradability">'
+        f'<select name="tradability_status">{opts}</select>'
+        f' <input type="text" name="broker_note" placeholder="broker note" '
+        f'value="{_esc(note)}" maxlength="200">'
+        f' <button type="submit">Save</button>'
+        f'</form>'
+    )
+
+    rows_html = _prow("Status", f'<span style="{status_color}">{_esc(status)}</span>')
+    if note:
+        rows_html += _prow("Broker note", _esc(note))
+    if updated:
+        rows_html += _prow("Updated", _esc(updated))
+
+    return (
+        '<h3>Tradability</h3>'
+        + warn
+        + f'<table class="detail-table">{rows_html}</table>'
+        + form
+    )
 
 
 # ── Docs viewer ───────────────────────────────────────────────────────────────
@@ -1261,7 +1347,7 @@ def _run_detail(history_root: str, date_str: str) -> tuple[str, int]:
                 badge += f'<span class="muted">{notes}</span><br>'
         options = "".join(
             f'<option value="{v}"{" selected" if d == v else ""}>{v}</option>'
-            for v in ("accept", "watch", "reject", "unknown")
+            for v in ("accept", "watch", "reject", "unknown", "broker_unavailable")
         )
         form = (
             f'<form class="review-form" method="post" action="/runs/{_esc(date_str)}/review">'
@@ -1569,11 +1655,15 @@ def _today_page(history_root: str, output_dir: str) -> str:
     return _render("Today — MHDE", body)
 
 
-def _candidates_price_snapshot(entries: list[dict], db_path: str) -> str:
+def _candidates_price_snapshot(
+    entries: list[dict], db_path: str, output_dir: str = ""
+) -> str:
     """Compact price-context table for all promoted candidates."""
     promoted = [e for e in entries if _is_promoted(e)]
-    if not promoted or not db_path:
+    if not promoted:
         return ""
+
+    tradability_data = _read_tradability(output_dir) if output_dir else {}
 
     def _r(v: "float | None") -> str:
         if v is None:
@@ -1586,7 +1676,7 @@ def _candidates_price_snapshot(entries: list[dict], db_path: str) -> str:
     for e in promoted:
         ticker = e.get("ticker", "")
         event_date = e.get("event_date", "")
-        ctx = _lookup_price_context(ticker, db_path, event_date)
+        ctx = _lookup_price_context(ticker, db_path, event_date) if db_path else {}
         label, label_css = _price_status_label(ctx)
 
         close = ctx.get("latest_close")
@@ -1598,6 +1688,14 @@ def _candidates_price_snapshot(entries: list[dict], db_path: str) -> str:
         vol_str = f'{vol_ratio:.1f}x' if vol_ratio is not None else "—"
         since_html = _r(ctx.get("return_since_event")) if "return_since_event" in ctx else "—"
 
+        trd_rec = tradability_data.get(ticker, {})
+        trd_status = trd_rec.get("tradability_status") or "unknown"
+        trd_cell = ""
+        if trd_status == "not_tradable":
+            trd_cell = '<span class="price-extended">✗ not tradable</span>'
+        elif trd_status == "tradable":
+            trd_cell = '<span class="price-confirm">✓</span>'
+
         trs += (
             f'<tr>'
             f'<td><a href="/ticker/{_esc(ticker)}">{_esc(ticker)}</a></td>'
@@ -1608,6 +1706,7 @@ def _candidates_price_snapshot(entries: list[dict], db_path: str) -> str:
             f'<td>{vol_str}</td>'
             f'<td>{since_html}</td>'
             f'<td><span class="{label_css}">{_esc(label)}</span></td>'
+            f'<td>{trd_cell}</td>'
             f'</tr>'
         )
 
@@ -1619,13 +1718,15 @@ def _candidates_price_snapshot(entries: list[dict], db_path: str) -> str:
         '<div style="overflow-x:auto"><table>'
         '<tr><th>Ticker</th><th>Close</th><th>Date</th>'
         '<th>1d</th><th>5d</th><th>Vol/avg</th>'
-        '<th>Since event</th><th>Signal</th></tr>'
+        '<th>Since event</th><th>Signal</th><th>Tradable?</th></tr>'
         + trs
         + '</table></div>'
     )
 
 
-def _candidates_page(history_root: str, db_path: str = "") -> tuple[str, int]:
+def _candidates_page(
+    history_root: str, db_path: str = "", output_dir: str = ""
+) -> tuple[str, int]:
     dates = _dated_dirs(history_root)
     if not dates:
         body = (
@@ -1638,7 +1739,7 @@ def _candidates_page(history_root: str, db_path: str = "") -> tuple[str, int]:
 
     latest = dates[0]
     entries = _read_csv_entries(history_root, latest)
-    price_snapshot = _candidates_price_snapshot(entries, db_path)
+    price_snapshot = _candidates_price_snapshot(entries, db_path, output_dir)
 
     html, code = _run_detail(history_root, latest)
     html = html.replace(
@@ -2251,6 +2352,7 @@ def _ticker_page(
         + _price_block(price_ctx)
         + score_block
         + cand_block
+        + _tradability_block(ticker, output_dir)
         + queue_block
         + pva_block
         + miss_block
@@ -2365,6 +2467,8 @@ def create_app(
             return Response(f"Invalid decision: {_esc(decision)}", 400)
 
         _write_review(history_root, date_str, ticker, decision, notes)
+        if decision == "broker_unavailable":
+            _write_tradability(output_dir, ticker, "not_tradable", notes)
         return redirect(url_for("run_detail", date_str=date_str))
 
     @app.route("/learning")
@@ -2392,7 +2496,7 @@ def create_app(
     @app.route("/candidates")
     @_require_auth
     def candidates():
-        html, code = _candidates_page(history_root, _db_path)
+        html, code = _candidates_page(history_root, _db_path, output_dir)
         return html, code
 
     @app.route("/moves")
@@ -2426,6 +2530,19 @@ def create_app(
     def ticker_lookup(ticker_sym: str):
         html, code = _ticker_page(ticker_sym, _db_path, history_root, output_dir)
         return html, code
+
+    @app.route("/ticker/<ticker_sym>/tradability", methods=["POST"])
+    @_require_auth
+    def ticker_tradability(ticker_sym: str):
+        ticker = ticker_sym.upper().strip()
+        if not _TICKER_RE.match(ticker):
+            return Response("Invalid ticker format", 400)
+        status = (request.form.get("tradability_status") or "").strip().lower()
+        note = (request.form.get("broker_note") or "").strip()[:200]
+        if status not in _TRADABILITY_STATUSES:
+            return Response(f"Invalid tradability_status: {_esc(status)}", 400)
+        _write_tradability(output_dir, ticker, status, note)
+        return redirect(url_for("ticker_lookup", ticker_sym=ticker))
 
     return app
 
