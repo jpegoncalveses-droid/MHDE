@@ -2188,7 +2188,15 @@ def _ticker_page(
     if os.path.exists(pva_path):
         try:
             with open(pva_path, newline="") as f:
-                pva_rows = [r for r in _csv.DictReader(f) if r.get("ticker") == ticker]
+                seen_pva: set[tuple] = set()
+                for r in _csv.DictReader(f):
+                    if r.get("ticker") != ticker:
+                        continue
+                    key = (r.get("event_date", ""), r.get("event_type", ""), r.get("window_days", ""))
+                    if key in seen_pva:
+                        continue
+                    seen_pva.add(key)
+                    pva_rows.append(r)
         except Exception:
             pass
 
