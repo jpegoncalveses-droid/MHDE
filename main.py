@@ -325,6 +325,68 @@ def learn_summarize(output):
         conn.close()
 
 
+_GOVERNANCE_AUDIT_LOG = "data/processed/signal_governance_audit.jsonl"
+
+
+@learn.command("propose-signal")
+@click.option("--signal-name", required=True, help="Name of the signal/feature flag.")
+@click.option("--evidence-period", required=True, help="Date range of evidence, e.g. '2025-01-01 to 2026-01-01'.")
+@click.option("--sample-size", required=True, type=int, help="Number of events in evidence.")
+@click.option("--precision", required=True, type=float, help="Precision of the signal (0–1).")
+@click.option("--recall", required=True, type=float, help="Recall of the signal (0–1).")
+@click.option("--avg-return", required=True, type=float, help="Average outcome return.")
+@click.option("--rollback-criteria", required=True, help="Conditions under which to roll back.")
+@click.option("--actor", default="cli", show_default=True, help="Who is proposing.")
+@click.option("--audit-path", default=_GOVERNANCE_AUDIT_LOG, show_default=True)
+def learn_propose_signal(
+    signal_name, evidence_period, sample_size, precision, recall,
+    avg_return, rollback_criteria, actor, audit_path,
+):
+    """Propose a scoring signal for governance review."""
+    from governance.signal_governance import create_proposal
+
+    pid = create_proposal(
+        signal_name=signal_name,
+        evidence_period=evidence_period,
+        sample_size=sample_size,
+        precision=precision,
+        recall=recall,
+        avg_return=avg_return,
+        rollback_criteria=rollback_criteria,
+        audit_path=audit_path,
+        actor=actor,
+    )
+    click.echo(f"Proposal created: {pid}")
+    click.echo(f"Audit log: {audit_path}")
+
+
+@learn.command("approve-signal")
+@click.argument("proposal_id")
+@click.option("--actor", default="cli", show_default=True)
+@click.option("--audit-path", default=_GOVERNANCE_AUDIT_LOG, show_default=True)
+def learn_approve_signal(proposal_id, actor, audit_path):
+    """Approve a signal proposal (still requires feature flag enable in config)."""
+    from governance.signal_governance import approve_proposal
+
+    approve_proposal(proposal_id, actor=actor, audit_path=audit_path)
+    click.echo(f"Approved: {proposal_id}")
+    click.echo("Next step: set the feature flag to true in config/settings.yaml.")
+
+
+@learn.command("rollback-signal")
+@click.argument("proposal_id")
+@click.option("--reason", required=True, help="Why the signal is being rolled back.")
+@click.option("--actor", default="cli", show_default=True)
+@click.option("--audit-path", default=_GOVERNANCE_AUDIT_LOG, show_default=True)
+def learn_rollback_signal(proposal_id, reason, actor, audit_path):
+    """Roll back an approved signal and record the reason."""
+    from governance.signal_governance import rollback_proposal
+
+    rollback_proposal(proposal_id, reason=reason, actor=actor, audit_path=audit_path)
+    click.echo(f"Rolled back: {proposal_id}")
+    click.echo("Next step: set the feature flag to false in config/settings.yaml.")
+
+
 @cli.group()
 def data():
     """Data inventory and inspection commands."""
