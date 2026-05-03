@@ -9,9 +9,11 @@ from __future__ import annotations
 import csv
 import logging
 from collections import Counter, defaultdict
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 from typing import Any
+
+import duckdb
 
 logger = logging.getLogger("mhde.missed.root_cause_enrichment")
 
@@ -132,7 +134,7 @@ _NEAR_THRESHOLD_MAX = 45.0
 # ---------------------------------------------------------------------------
 
 
-def _fetch_score_components(conn) -> dict[tuple[str, str], dict[str, Any]]:
+def _fetch_score_components(conn: duckdb.DuckDBPyConnection) -> dict[tuple[str, str], dict[str, Any]]:
     """Return {(ticker, as_of_date_str): {catalyst_score, quality_score, ...}}."""
     rows = conn.execute("""
         SELECT ticker, as_of_date, catalyst_score, quality_score, momentum_score, cheap_score
@@ -153,7 +155,7 @@ def _fetch_score_components(conn) -> dict[tuple[str, str], dict[str, Any]]:
     return result
 
 
-def _fetch_earnings_dates(conn) -> dict[str, list[date]]:
+def _fetch_earnings_dates(conn: duckdb.DuckDBPyConnection) -> dict[str, list[date]]:
     """Return {ticker: [earnings_date, ...]} from the events table."""
     rows = conn.execute(
         "SELECT ticker, event_date FROM events "
@@ -162,12 +164,13 @@ def _fetch_earnings_dates(conn) -> dict[str, list[date]]:
     result: dict[str, list[date]] = defaultdict(list)
     for ticker, event_date in rows:
         if event_date is not None:
-            d = event_date if isinstance(event_date, date) else date.fromisoformat(str(event_date))
-            result[str(ticker)].append(d)
+            d = _coerce_date(event_date)
+            if d is not None:
+                result[str(ticker)].append(d)
     return dict(result)
 
 
-def _fetch_sector_map(conn) -> dict[str, str]:
+def _fetch_sector_map(conn: duckdb.DuckDBPyConnection) -> dict[str, str]:
     """Return {ticker: sector} for companies with non-NULL sector."""
     rows = conn.execute(
         "SELECT ticker, sector FROM companies WHERE sector IS NOT NULL"
@@ -237,17 +240,17 @@ def _best_score_key(
     event_date = _coerce_date(event_date_raw)
     if event_date is None:
         return None
-    candidate_dates: list[date] = []
-    for (t, d_str) in score_components:
-        if t != ticker:
-            continue
-        d = _coerce_date(d_str)
-        if d is not None and d <= event_date:
-            candidate_dates.append(d)
-    if not candidate_dates:
+    candidates = [
+        (date.fromisoformat(d_str), components)
+        for (t, d_str), components in score_components.items()
+        if t == ticker
+        and _coerce_date(d_str) is not None
+        and date.fromisoformat(d_str) <= event_date
+    ]
+    if not candidates:
         return None
-    best = max(candidate_dates)
-    return score_components.get((ticker, str(best)))
+    _, best_components = max(candidates, key=lambda x: x[0])
+    return best_components
 
 
 # ---------------------------------------------------------------------------
@@ -289,7 +292,7 @@ def _assign_root_cause(
                 return "missing_earnings_context"
 
     # Priority 5 — sector cluster
-    if (ticker, str(event_date), window) in sector_clusters:
+    if event_date is not None and (ticker, str(event_date), window) in sector_clusters:
         return "sector_cluster_move"
 
     # Priority 6
@@ -342,7 +345,7 @@ def _build_enrichment(label: str) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
-def enrich_rows(rows: list[dict], conn) -> list[dict]:
+def enrich_rows(rows: list[dict], conn: duckdb.DuckDBPyConnection) -> list[dict]:
     """Add 6 enrichment fields to every row.
 
     Returns a new list; input rows are NOT mutated.
@@ -404,8 +407,7 @@ def generate_enrichment_report(
 
 def _build_md(enriched_rows: list[dict]) -> list[str]:
     """Render the markdown report as a list of lines."""
-    from datetime import date as _date
-    today = _date.today().isoformat()
+    today = date.today().isoformat()
 
     group_counts: Counter[str] = Counter(
         r.get("root_cause_group", "unknown") for r in enriched_rows
@@ -430,8 +432,9 @@ def _build_md(enriched_rows: list[dict]) -> list[str]:
         "| Group | Count |",
         "|-------|-------|",
     ]
-    for group in sorted(group_counts):
-        lines.append(f"| `{group}` | {group_counts[group]} |")
+    for group in ("data_gap", "scoring_gap", "feature_gap", "near_miss", "universe_gap", "unknown"):
+        if group in group_counts:
+            lines.append(f"| `{group}` | {group_counts[group]} |")
     lines.append("")
 
     # --- Detailed Breakdown ---
