@@ -434,6 +434,9 @@ hr{border:none;border-top:1px solid var(--border);margin:28px 0;}
   margin-top:48px;padding-top:16px;border-top:1px solid var(--border);
   font-size:.7rem;color:var(--text3);font-family:var(--mono);letter-spacing:.05em;
 }
+.badge-green{background:var(--green);color:#022c22;font-weight:600}
+.badge-amber{background:var(--amber);color:#1c1309;font-weight:600}
+.badge-red{background:var(--red);color:#1f0707;font-weight:600}
 """
 
 _BASE_TMPL = """<!DOCTYPE html>
@@ -2004,8 +2007,43 @@ def _candidates_price_snapshot(
     )
 
 
+def _load_freshness_map(db_path: str) -> dict:
+    """Load per-ticker freshness data. Returns {ticker: dict}. Never raises."""
+    try:
+        import duckdb as _duckdb
+        from health.data_freshness import compute_freshness
+        conn = _duckdb.connect(db_path, read_only=True)
+        results = compute_freshness(conn)
+        conn.close()
+        return {
+            r.ticker: {
+                "has_prices": r.has_prices,
+                "price_age_days": r.price_age_days,
+                "has_fundamentals": r.has_fundamentals,
+                "freshness_label": r.freshness_label,
+            }
+            for r in results
+        }
+    except Exception:
+        return {}
+
+
+def _freshness_badge(freshness_map: dict, ticker: str) -> str:
+    """Return an HTML badge for data readiness. Empty string if no data available."""
+    f = freshness_map.get(ticker)
+    if f is None:
+        return ""
+    if f["freshness_label"] == "missing":
+        return '<span class="badge-red" style="font-size:0.65rem;padding:2px 5px;border-radius:3px;margin-left:6px">NO PRICES</span>'
+    if f["freshness_label"] == "stale":
+        return '<span class="badge-amber" style="font-size:0.65rem;padding:2px 5px;border-radius:3px;margin-left:6px">STALE</span>'
+    if not f.get("has_fundamentals"):
+        return '<span class="badge-amber" style="font-size:0.65rem;padding:2px 5px;border-radius:3px;margin-left:6px">NO FUND.</span>'
+    return '<span class="badge-green" style="font-size:0.65rem;padding:2px 5px;border-radius:3px;margin-left:6px">FRESH</span>'
+
+
 def _candidates_page(
-    history_root: str, db_path: str = "", output_dir: str = ""
+    history_root: str, db_path: str = "", output_dir: str = "", freshness_map: dict = None
 ) -> tuple[str, int]:
     dates = _dated_dirs(history_root)
     if not dates:
@@ -2032,6 +2070,17 @@ def _candidates_page(
         f"<h2>Candidates — {_esc(latest)}</h2>" + _SEARCH_BOX + price_snapshot,
         1,
     )
+
+    # Inject data-readiness badges next to each promoted ticker
+    if freshness_map:
+        for ticker in {e["ticker"] for e in entries if _is_promoted(e)}:
+            badge = _freshness_badge(freshness_map, ticker)
+            if badge:
+                html = html.replace(
+                    f"<strong>{_esc(ticker)}</strong>",
+                    f"<strong>{_esc(ticker)}</strong>{badge}",
+                )
+
     return html, code
 
 
@@ -2823,7 +2872,8 @@ def create_app(
     @app.route("/candidates")
     @_require_auth
     def candidates():
-        html, code = _candidates_page(history_root, _db_path, output_dir)
+        freshness_map = _load_freshness_map(_db_path)
+        html, code = _candidates_page(history_root, _db_path, output_dir, freshness_map=freshness_map)
         return html, code
 
     @app.route("/moves")

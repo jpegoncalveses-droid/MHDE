@@ -2145,3 +2145,13 @@ def test_ops_coverage_no_db_crash(tmp_path):
     with app.test_client() as c:
         r = c.get("/ops")
     assert r.status_code == 200
+
+
+# ── Task 7: data-readiness badges ─────────────────────────────────────────
+
+def test_candidates_renders_without_crash_no_db(tmp_path):
+    app = _make_app(tmp_path, dates=[("2026-05-03", _BASE_META, [_CROSSING_ROW])])
+    with app.test_client() as c:
+        r = c.get("/candidates")
+    # Must not crash even without a real DB -- badges are best-effort
+    assert r.status_code == 200
