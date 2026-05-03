@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 import duckdb
+from click.testing import CliRunner
 
 from storage.db import get_connection, init_schema
 from storage.inventory import (
@@ -239,3 +240,37 @@ def test_write_csv_has_header_and_rows(conn, tmp_path):
     required_keys = {"asset_type", "name", "row_count"}
     for key in required_keys:
         assert key in reader.fieldnames, f"CSV missing column: {key}"
+
+
+# ── CLI integration test ───────────────────────────────────────────────────────
+
+from main import cli
+
+
+def test_data_inventory_cli(tmp_path):
+    runner = CliRunner()
+    docs_out = str(tmp_path / "data_inventory.md")
+    csv_out = str(tmp_path / "data_inventory_summary.csv")
+    base_dir = str(tmp_path / "processed")
+    os.makedirs(base_dir, exist_ok=True)
+
+    result = runner.invoke(cli, [
+        "data", "inventory",
+        "--docs-out", docs_out,
+        "--csv-out", csv_out,
+        "--base-dir", base_dir,
+    ])
+
+    assert result.exit_code == 0, f"CLI failed: {result.output}\n{result.exception}"
+    assert os.path.exists(docs_out), "Markdown output not created"
+    assert os.path.exists(csv_out), "CSV output not created"
+
+    content = Path(docs_out).read_text()
+    assert "# MHDE Data Inventory" in content
+    assert "prices_daily" in content
+
+    with open(csv_out) as fh:
+        reader = csv.DictReader(fh)
+        rows = list(reader)
+    assert any(r["name"] == "prices_daily" for r in rows)
+    assert any(r["asset_type"] == "db_table" for r in rows)
