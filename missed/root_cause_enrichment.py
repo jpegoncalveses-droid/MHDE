@@ -70,7 +70,7 @@ _EXPLANATIONS: dict[str, str] = {
     "ifrs_mapping_gap":
         "Tier=Incomplete: active domestic reporter with filing history — likely IFRS or non-standard reporting format.",
     "price_only_scored":
-        "Tier=Incomplete: companies data present but no specific gap identified — price-only scoring fallback.",
+        "Tier=Incomplete: has market_cap (SEC EDGAR) but last_financial_filing_date not yet ingested — fundamental ratios unavailable.",
     "no_evidence_no_filing":
         "No catalyst text found; had_catalyst_evidence=False.",
     "missing_earnings_context":
@@ -113,7 +113,7 @@ _SUGGESTED_FIXES: dict[str, str] = {
     "ifrs_mapping_gap":
         "Add IFRS-to-US-GAAP field mapping in features/valuation.py for non-standard metric names.",
     "price_only_scored":
-        "Investigate why company is Incomplete despite having companies DB entry; check SEC ingest logs.",
+        "Ingest last_financial_filing_date and fundamental ratios (P/E, revenue, margins) via SEC EDGAR XBRL or financials pipeline.",
     "no_evidence_no_filing":
         "Add EFTS fallback or press-release scraper to increase filing coverage.",
     "missing_earnings_context":
