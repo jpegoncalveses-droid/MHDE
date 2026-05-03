@@ -347,23 +347,23 @@ def _classify_incomplete_subcause(
     elif last_filing is not None and (today - last_filing).days > 180:
         subcause = "stale_fundamentals"
 
-    # Rule 5: Sector with non-standard ratios (Financials, Real Estate, Utilities)
+    # Rule 5: No data at all — no filing date AND no market_cap (truly unknown)
+    elif last_filing is None and market_cap is None:
+        subcause = "recent_ipo_or_short_history"
+
+    # Rule 6: Sector with non-standard ratios (Financials, Real Estate, Utilities)
     elif sector in _SECTOR_MODEL_GAPS:
         subcause = "sector_specific_model_gap"
 
-    # Rule 6: No market_cap from Polygon
-    elif market_cap is None:
+    # Rule 7: Has filing date but no market_cap (Polygon enrichment missing)
+    elif last_filing is not None and market_cap is None:
         subcause = "polygon_fundamentals_missing"
 
-    # Rule 7: No filing date on record (new addition to universe, no SEC history)
-    elif last_filing is None:
-        subcause = "recent_ipo_or_short_history"
-
-    # Rule 8: Has CIK, active reporter, domestic, has filing — likely IFRS format
+    # Rule 8: Has CIK, active reporter, domestic, recent filing — likely IFRS
     elif active_sec is True and not is_adr and last_filing is not None:
         subcause = "ifrs_mapping_gap"
 
-    # Rule 9: Everything else (companies entry exists but no clear gap identified)
+    # Rule 9: Has some data (market_cap via SEC) but no filing date — data gap
     else:
         subcause = "price_only_scored"
 
