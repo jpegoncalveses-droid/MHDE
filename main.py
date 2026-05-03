@@ -322,6 +322,44 @@ def learn_summarize(output):
 
 
 @cli.group()
+def data():
+    """Data inventory and inspection commands."""
+
+
+@data.command("inventory")
+@click.option("--docs-out", default="docs/data_inventory.md", show_default=True,
+              help="Path for the markdown inventory output.")
+@click.option("--csv-out", default="data/processed/data_inventory_summary.csv",
+              show_default=True, help="Path for the CSV summary output.")
+@click.option("--base-dir", default="data/processed", show_default=True,
+              help="Base directory to scan for flat files.")
+def data_inventory(docs_out, csv_out, base_dir):
+    """Generate a complete data inventory: DB tables + flat files.
+
+    Writes docs/data_inventory.md and data/processed/data_inventory_summary.csv.
+    """
+    from storage.inventory import build_inventory, write_markdown, write_csv
+
+    cfg, conn = _engine_setup()
+    try:
+        click.echo("Building inventory...")
+        tables, files = build_inventory(conn, base_dir=base_dir)
+        click.echo(f"  DB tables : {len(tables)}")
+        click.echo(f"  Flat files: {len(files)}")
+
+        write_markdown(tables, files, docs_out)
+        click.echo(f"  Markdown  : {docs_out}")
+
+        write_csv(tables, files, csv_out)
+        click.echo(f"  CSV       : {csv_out}")
+
+        total_rows = sum(t["row_count"] or 0 for t in tables)
+        click.echo(f"\nTotal DB rows across all tables: {total_rows:,}")
+    finally:
+        conn.close()
+
+
+@cli.group()
 def review():
     """Candidate review commands: build review packets, import completed reviews."""
 
@@ -818,8 +856,17 @@ def missed_shadow(input_enriched, output_dir):
 @click.option("--cache-path", default=None, help="Path to JSONL cache file (avoids re-classifying).")
 @click.option("--refresh-cache", is_flag=True, default=False, help="Ignore existing cache entries.")
 @click.option("--rpm-limit", default=None, type=int, help="Max requests/min for real provider.")
+@click.option("--history-root", default=None,
+              help="Archive artifacts to history_root/YYYY-MM-DD/.")
+@click.option("--html", "write_html", is_flag=True, default=False,
+              help="Also write HTML report artifact.")
+@click.option("--send-email", is_flag=True, default=False,
+              help="Send email digest (opt-in).")
+@click.option("--email-to", default=None, envvar="DAILY_CATALYST_EMAIL_TO",
+              help="Email recipient (overrides DAILY_CATALYST_EMAIL_TO).")
 def missed_daily_catalyst_queue(n, score_min, score_max, max_events_per_ticker, mock, provider, model,
-                                output_dir, cache_path, refresh_cache, rpm_limit):
+                                output_dir, cache_path, refresh_cache, rpm_limit,
+                                history_root, write_html, send_email, email_to):
     """Build the daily shadow catalyst review queue for near-threshold Reject tickers.
 
     Samples tickers with score in [score_min, score_max] and tier=Reject, resolves
@@ -882,13 +929,51 @@ def missed_daily_catalyst_queue(n, score_min, score_max, max_events_per_ticker, 
         click.echo("  (none in this run)")
 
     os.makedirs(output_dir, exist_ok=True)
+
+    html_path = None
+    if write_html:
+        from missed.catalyst_queue import generate_html_report
+        html_path = generate_html_report(entries, revalidated, output_dir, run_metadata=metadata)
+        click.echo(f"HTML   : {html_path}")
+
     md_path, csv_path, jsonl_path = generate_queue_report(
-        entries, revalidated, output_dir, run_metadata=metadata
+        entries, revalidated, output_dir, run_metadata=metadata,
+        history_root=history_root, html_path=html_path,
     )
     click.echo(f"\nReport : {md_path}")
     click.echo(f"CSV    : {csv_path}")
     click.echo(f"JSONL  : {jsonl_path}")
+
+    if send_email:
+        from missed.catalyst_digest import send_catalyst_digest, write_digest_artifacts
+        write_digest_artifacts(entries, revalidated, metadata, output_dir)
+        ok = send_catalyst_digest(cfg, entries, revalidated, metadata, email_to=email_to or "")
+        if ok:
+            click.echo(f"Digest sent to {email_to}")
+        else:
+            click.echo("Digest send failed — check logs.")
+
     click.echo("\nNote: scores table is unchanged. This is a shadow-only analysis.")
+
+
+@missed.command("review-server")
+@click.option("--host", default="127.0.0.1", show_default=True,
+              help="Bind host. Use 127.0.0.1 (default) behind a reverse proxy.")
+@click.option("--port", default=8765, show_default=True, help="Bind port.")
+@click.option("--history-root", default="data/processed/catalyst_queue_history",
+              show_default=True, help="Directory containing dated run archives.")
+@click.option("--output-dir", default="data/processed", show_default=True,
+              help="Directory with latest artifacts.")
+@click.option("--unsafe-no-auth", is_flag=True, default=False,
+              help="Disable auth. Local testing only.")
+@click.option("--unsafe-public-bind", is_flag=True, default=False,
+              help="Allow 0.0.0.0 bind. Requires a TLS reverse proxy in front.")
+def missed_review_server(host, port, history_root, output_dir, unsafe_no_auth, unsafe_public_bind):
+    """Start the read-only catalyst queue review server."""
+    from review.server import run_server
+    run_server(host, port, history_root, output_dir,
+               unsafe_no_auth=unsafe_no_auth,
+               unsafe_public_bind=unsafe_public_bind)
 
 
 @cli.group(invoke_without_command=True)
