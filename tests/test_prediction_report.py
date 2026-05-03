@@ -20,6 +20,14 @@ def conn(tmp_path):
     c.close()
 
 
+def _score(conn, ticker, score_date, score=55.0, tier="C"):
+    conn.execute(
+        """INSERT INTO scores (id, run_id, ticker, as_of_date, total_score, tier)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        [uuid.uuid4().hex[:16], uuid.uuid4().hex[:16], ticker, score_date, score, tier],
+    )
+
+
 def _event(conn, ticker, window_days, return_value=15.0, *,
            was_in_universe=True, was_scored=True,
            score=55.0, tier="C",
@@ -158,3 +166,63 @@ def test_no_production_score_mutation(tmp_path, conn):
     assert row is not None and row[0] == 55.0, (
         f"Score was mutated: expected 55.0, got {row}"
     )
+
+
+def test_event_joins_to_prior_day_score(conn):
+    """build_rows joins to a score from the day before the event."""
+    from missed.prediction_report import build_rows
+    event_date = (date.today() - timedelta(days=5)).isoformat()
+    score_date = (date.today() - timedelta(days=6)).isoformat()
+    _score(conn, "PRIOR", score_date, score=62.0, tier="B")
+    _event(conn, "PRIOR", window_days=1, was_scored=False, event_date=event_date)
+    rows = build_rows(conn)
+    found = [r for r in rows if r["ticker"] == "PRIOR"]
+    assert found, "PRIOR should appear"
+    assert found[0]["was_scored"] is True, "Should be was_scored=True via join"
+    assert abs(found[0]["score_before_event"] - 62.0) < 0.01, "Should pick up joined score"
+    assert found[0]["classification"] == "scored_correct", "B tier should be scored_correct"
+    assert found[0]["score_join_method"] == "scores_join"
+
+
+def test_event_joins_to_earlier_score_not_exact_date(conn):
+    """build_rows picks the latest score <= event_date even when it's not from the adjacent day."""
+    from missed.prediction_report import build_rows
+    event_date = (date.today() - timedelta(days=5)).isoformat()
+    score_date = (date.today() - timedelta(days=12)).isoformat()  # 7 days before event
+    _score(conn, "OLDER", score_date, score=42.0, tier="Reject")
+    _event(conn, "OLDER", window_days=3, was_scored=False, event_date=event_date)
+    rows = build_rows(conn)
+    found = [r for r in rows if r["ticker"] == "OLDER"]
+    assert found, "OLDER should appear"
+    assert abs(found[0]["score_before_event"] - 42.0) < 0.01, "Should pick up score from 7 days before"
+    assert found[0]["classification"] == "near_threshold", "score 42.0 in [40, 45) → near_threshold"
+
+
+def test_event_with_future_score_remains_unscored_mover(conn):
+    """Score dated AFTER the event must not be joined — event stays unscored_mover."""
+    from missed.prediction_report import build_rows
+    event_date = (date.today() - timedelta(days=10)).isoformat()
+    score_date = (date.today() - timedelta(days=5)).isoformat()  # after event
+    _score(conn, "FUTURE", score_date, score=60.0, tier="B")
+    _event(conn, "FUTURE", window_days=1, was_scored=False, event_date=event_date)
+    rows = build_rows(conn)
+    found = [r for r in rows if r["ticker"] == "FUTURE"]
+    assert found, "FUTURE should appear"
+    assert found[0]["classification"] == "unscored_mover", (
+        "Score dated after event must not be picked up"
+    )
+    assert found[0]["score_join_method"] == "none"
+
+
+def test_high_tier_event_is_scored_correct_via_join(conn):
+    """A-tier score from scores table join produces scored_correct classification."""
+    from missed.prediction_report import build_rows
+    event_date = (date.today() - timedelta(days=3)).isoformat()
+    score_date = (date.today() - timedelta(days=4)).isoformat()
+    _score(conn, "ATIER", score_date, score=78.0, tier="A")
+    _event(conn, "ATIER", window_days=1, was_scored=False, event_date=event_date)
+    rows = build_rows(conn)
+    found = [r for r in rows if r["ticker"] == "ATIER"]
+    assert found
+    assert found[0]["classification"] == "scored_correct", "A tier via join should be scored_correct"
+    assert found[0]["score_join_method"] == "scores_join"

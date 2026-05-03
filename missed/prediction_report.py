@@ -30,16 +30,39 @@ _CSV_COLS = [
     "classification", "priority_score", "universe_tier",
     "score_before_event", "tier_before_event",
     "had_catalyst_evidence", "was_in_universe", "was_scored",
-    "root_cause_hint",
+    "root_cause_hint", "score_join_method",
 ]
 
+# Deduplicate scores so multiple runs on the same date don't fan out event rows.
+# Join to the latest score on or before the event date; derive was_scored from
+# actual data presence rather than the stored field (which may be stale/NULL).
 _QUERY = """
+WITH latest_scores AS (
+    SELECT ticker, as_of_date, total_score, tier
+    FROM scores
+    QUALIFY ROW_NUMBER() OVER (
+        PARTITION BY ticker, as_of_date
+        ORDER BY created_at DESC
+    ) = 1
+)
 SELECT m.ticker, m.event_date, m.event_type, m.return_value, m.window_days,
-       m.was_in_universe, m.was_scored, m.score_before_event,
-       m.tier_before_event, m.had_catalyst_evidence,
-       c.universe_tier
+       m.was_in_universe,
+       CASE WHEN s.total_score IS NOT NULL OR m.score_before_event IS NOT NULL
+            THEN true ELSE false END AS was_scored,
+       COALESCE(s.total_score, m.score_before_event)  AS score_before_event,
+       COALESCE(s.tier,        m.tier_before_event)   AS tier_before_event,
+       m.had_catalyst_evidence,
+       c.universe_tier,
+       CASE WHEN s.total_score IS NOT NULL    THEN 'scores_join'
+            WHEN m.score_before_event IS NOT NULL THEN 'event_stored'
+            ELSE 'none' END AS score_join_method
 FROM missed_opportunity_events m
 LEFT JOIN companies c ON m.ticker = c.ticker
+LEFT JOIN latest_scores s ON s.ticker = m.ticker
+    AND s.as_of_date = (
+        SELECT MAX(s2.as_of_date) FROM latest_scores s2
+        WHERE s2.ticker = m.ticker AND s2.as_of_date <= m.event_date
+    )
 WHERE m.event_date >= ?
 ORDER BY m.event_date DESC
 """
@@ -48,6 +71,7 @@ _QUERY_COLS = [
     "ticker", "event_date", "event_type", "return_value", "window_days",
     "was_in_universe", "was_scored", "score_before_event",
     "tier_before_event", "had_catalyst_evidence", "universe_tier",
+    "score_join_method",
 ]
 
 
@@ -156,6 +180,8 @@ def generate_prediction_report(
 
     rows = build_rows(conn, lookback_days=lookback_days)
     label_counts = Counter(r["classification"] for r in rows)
+    join_counts = Counter(r.get("score_join_method", "none") for r in rows)
+    n_with_score = len(rows) - join_counts.get("none", 0)
 
     lines: list[str] = [
         "# Prediction vs Actual Spike Report",
@@ -174,7 +200,16 @@ def generate_prediction_report(
     for label in ("scored_correct", "scored_missed", "near_threshold",
                   "true_miss", "unscored_mover", "universe_miss"):
         lines.append(f"| `{label}` | {label_counts.get(label, 0)} |")
-    lines.append("")
+    lines += [
+        "",
+        "| Score Join Diagnostics | Count |",
+        "|------------------------|-------|",
+        f"| Events with prior score | {n_with_score} |",
+        f"| — via scores table join | {join_counts.get('scores_join', 0)} |",
+        f"| — via event stored field | {join_counts.get('event_stored', 0)} |",
+        f"| Events with no score data | {join_counts.get('none', 0)} |",
+        "",
+    ]
 
     lines += _section_lines("1-Day Spikes", [r for r in rows if r.get("window_days") == 1])
     lines += _section_lines("3d / 5d Spikes", [r for r in rows if r.get("window_days") in (3, 5)])
