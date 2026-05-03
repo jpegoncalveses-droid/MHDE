@@ -721,6 +721,27 @@ def _run_detail(history_root: str, date_str: str) -> tuple[str, int]:
             )
         return "\n".join(out)
 
+    def _reviewable_rows(lst: list[dict]) -> str:
+        """Like _simple_rows but includes the analyst review form."""
+        if not lst:
+            return '<tr><td colspan="5"><em>None</em></td></tr>'
+        out = []
+        for e in lst:
+            ticker = e["ticker"]
+            url = e.get("constructed_url") or ""
+            sec = f' <a href="{_esc(url)}">[SEC]</a>' if url else ""
+            quote = _esc(str(e.get("evidence_quote", ""))[:200])
+            out.append(
+                f"<tr>"
+                f"<td><strong>{_esc(ticker)}</strong><br>{_review_cell(ticker)}</td>"
+                f"<td>{_score_cell(e)}</td>"
+                f"<td>{_esc(e.get('catalyst_type', ''))}</td>"
+                f"<td>{float(e.get('confidence', 0) or 0):.2f}</td>"
+                f"<td>{quote}{sec}</td>"
+                f"</tr>"
+            )
+        return "\n".join(out)
+
     weak_summary = ""
     if weak:
         from collections import Counter
@@ -755,8 +776,8 @@ def _run_detail(history_root: str, date_str: str) -> tuple[str, int]:
 
 <h2>Valid — No Tier Change</h2>
 <table>
-<tr><th>Ticker</th><th>Score</th><th>Catalyst</th><th>Evidence</th></tr>
-{_simple_rows(valid_no_cross)}
+<tr><th>Ticker</th><th>Score</th><th>Catalyst</th><th>Conf</th><th>Evidence</th></tr>
+{_reviewable_rows(valid_no_cross)}
 </table>
 
 <h2>Bearish Downgrades</h2>
@@ -924,7 +945,7 @@ def _today_page(history_root: str, output_dir: str) -> str:
     if top_rows:
         tr_html = "".join(
             f"<tr>"
-            f"<td>{_esc(r.get('ticker', ''))}</td>"
+            f"<td><a href='/candidates'>{_esc(r.get('ticker', ''))}</a></td>"
             f"<td>{_esc(r.get('shadow_tier', ''))}</td>"
             f"<td>{_esc(r.get('scaled_shadow_score', r.get('shadow_score', '')))}</td>"
             f"</tr>"
@@ -932,6 +953,7 @@ def _today_page(history_root: str, output_dir: str) -> str:
         )
         review_table = (
             '<h2>Needs Review (top 10)</h2>'
+            '<p class="muted">Review forms are on the <a href="/candidates">Candidates</a> page — scroll to "Valid — No Tier Change".</p>'
             '<table>'
             '<tr><th>Ticker</th><th>Shadow Tier</th><th>Scaled Shadow Score</th></tr>'
             + tr_html
