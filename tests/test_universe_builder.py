@@ -232,3 +232,52 @@ def test_universe_stats_cli(tmp_path, monkeypatch):
     assert "Primary tier" in result.output
     assert "Distinct sectors" in result.output
     assert "Null sector" in result.output
+
+
+# ---------------------------------------------------------------------------
+# CIK validator integration tests (Task 2 makes these pass)
+# ---------------------------------------------------------------------------
+
+def test_builder_corrects_yaml_cik_from_sec(conn, monkeypatch):
+    """Builder should store SEC CIK when YAML CIK mismatches."""
+    from universe.universe_builder import build_universe
+
+    yaml_entries = [{
+        "ticker": "AAPL",
+        "company_name": "Apple Inc",
+        "sector": "Information Technology",
+        "cik": "WRONG_CIK",
+    }]
+    sec_raw = [{"ticker": "AAPL", "cik": "0000320193", "company_name": "Apple Inc"}]
+
+    monkeypatch.setattr("universe.universe_builder.load_sp500_yaml", lambda p: yaml_entries)
+    monkeypatch.setattr("universe.universe_builder.fetch_sec_company_tickers", lambda: sec_raw)
+    monkeypatch.setattr("universe.universe_builder.write_validation_report", lambda rows, path: None)
+
+    build_universe(conn, _cfg())
+
+    row = conn.execute("SELECT cik FROM companies WHERE ticker = 'AAPL'").fetchone()
+    assert row is not None
+    assert row[0] == "0000320193"
+
+
+def test_builder_keeps_yaml_cik_when_missing_in_sec(conn, monkeypatch):
+    """Builder keeps YAML CIK when ticker not in SEC company_tickers.json."""
+    from universe.universe_builder import build_universe
+
+    yaml_entries = [{
+        "ticker": "BRK.B",
+        "company_name": "Berkshire Hathaway Inc",
+        "sector": "Financials",
+        "cik": "0001067983",
+    }]
+    # BRK.B not present in SEC raw list
+    monkeypatch.setattr("universe.universe_builder.load_sp500_yaml", lambda p: yaml_entries)
+    monkeypatch.setattr("universe.universe_builder.fetch_sec_company_tickers", lambda: [])
+    monkeypatch.setattr("universe.universe_builder.write_validation_report", lambda rows, path: None)
+
+    build_universe(conn, _cfg())
+
+    row = conn.execute("SELECT cik FROM companies WHERE ticker = 'BRK.B'").fetchone()
+    assert row is not None
+    assert row[0] == "0001067983"
