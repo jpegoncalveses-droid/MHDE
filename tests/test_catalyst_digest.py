@@ -297,3 +297,50 @@ def test_no_production_score_mutation(tmp_path):
     score_after = conn2.execute("SELECT total_score FROM scores WHERE ticker='CTRA'").fetchone()[0]
     conn2.close()
     assert score_before == score_after
+
+
+# ── Learning section tests ────────────────────────────────────────────────────
+
+def test_digest_txt_omits_learning_when_no_artifacts(tmp_path):
+    """No learning section when prediction CSVs are absent."""
+    from missed.catalyst_digest import generate_digest_txt
+    txt = generate_digest_txt(
+        [_crossing_entry()], [], {"run_time": "2026-05-03T12:00:00Z"},
+        output_dir=str(tmp_path),
+    )
+    assert "PREDICTION VS ACTUAL" not in txt
+
+
+def test_digest_txt_includes_learning_when_rows_csv_present(tmp_path):
+    """Learning section appears with true_miss count when prediction rows exist."""
+    import csv
+    rows_path = tmp_path / "prediction_vs_actual_rows.csv"
+    with open(rows_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["ticker", "classification", "event_date"])
+        writer.writeheader()
+        writer.writerow({"ticker": "AAPL", "classification": "true_miss", "event_date": "2026-05-01"})
+        writer.writerow({"ticker": "GOOGL", "classification": "near_threshold", "event_date": "2026-05-01"})
+    from missed.catalyst_digest import generate_digest_txt
+    txt = generate_digest_txt(
+        [_crossing_entry()], [], {"run_time": "2026-05-03T12:00:00Z"},
+        output_dir=str(tmp_path),
+    )
+    assert "PREDICTION VS ACTUAL" in txt
+    assert "True miss" in txt or "true_miss" in txt.lower()
+
+
+def test_digest_html_includes_learning_when_rows_csv_present(tmp_path):
+    """HTML digest includes learning table when prediction rows exist."""
+    import csv
+    rows_path = tmp_path / "prediction_vs_actual_rows.csv"
+    with open(rows_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["ticker", "classification", "event_date"])
+        writer.writeheader()
+        writer.writerow({"ticker": "AAPL", "classification": "true_miss", "event_date": "2026-05-01"})
+    from missed.catalyst_digest import generate_digest_html
+    html = generate_digest_html(
+        [_crossing_entry()], [], {"run_time": "2026-05-03T12:00:00Z"},
+        output_dir=str(tmp_path),
+    )
+    assert "Prediction vs Actual" in html
+    assert "true_miss" in html or "True miss" in html
