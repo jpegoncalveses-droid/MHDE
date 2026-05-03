@@ -13,6 +13,14 @@ logger = logging.getLogger("mhde.ingestion.polygon")
 
 _BASE = "https://api.polygon.io"
 
+_INSERT_SQL = """
+INSERT INTO prices_daily
+    (id, ticker, trade_date, open, high, low, close,
+     volume, adjusted_close, source, run_id, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (ticker, trade_date) DO NOTHING
+"""
+
 
 class PricesIngestor(BaseIngestor):
     source_name = "polygon"
@@ -31,7 +39,9 @@ class PricesIngestor(BaseIngestor):
         started = datetime.utcnow()
         date_to = datetime.utcnow().date()
         date_from = date_to - timedelta(days=90)
-        inserted = failed = attempted = 0
+        all_rows: list[list] = []
+        failed = attempted = 0
+        now = datetime.utcnow()
 
         for ticker in tickers:
             url = (
@@ -53,27 +63,22 @@ class PricesIngestor(BaseIngestor):
                     attempted += 1
                     try:
                         trade_date = datetime.utcfromtimestamp(bar["t"] / 1000).date()
-                        conn.execute(
-                            """
-                            INSERT INTO prices_daily
-                                (id, ticker, trade_date, open, high, low, close,
-                                 volume, adjusted_close, run_id, created_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            ON CONFLICT (ticker, trade_date) DO NOTHING
-                            """,
-                            [
-                                uuid.uuid4().hex[:16], ticker, trade_date,
-                                bar.get("o"), bar.get("h"), bar.get("l"),
-                                bar.get("c"), bar.get("v"), bar.get("c"),
-                                run_id, datetime.utcnow(),
-                            ],
-                        )
-                        inserted += 1
+                        all_rows.append([
+                            uuid.uuid4().hex[:16], ticker, trade_date,
+                            bar.get("o"), bar.get("h"), bar.get("l"),
+                            bar.get("c"), bar.get("v"), bar.get("c"),
+                            "polygon", run_id, now,
+                        ])
                     except Exception:
                         failed += 1
             except Exception as exc:
                 logger.warning("Price fetch failed for %s: %s", ticker, exc)
                 failed += 1
+
+        inserted = 0
+        if all_rows:
+            conn.executemany(_INSERT_SQL, all_rows)
+            inserted = len(all_rows)
 
         self.log_run(conn, run_id, "prices_daily", "ok",
                      attempted, inserted, failed, started_at=started)

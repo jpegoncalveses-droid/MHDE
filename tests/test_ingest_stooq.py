@@ -214,23 +214,23 @@ def test_logs_source_run_on_success(conn):
 def test_polygon_prices_not_overwritten_by_stooq(conn):
     from ingestion.ingest_stooq import StooqPricesIngestor
 
-    # Seed a Polygon price for the same date that Stooq would return
+    # Use yesterday so this date is always within the 2-day freshness window
+    fresh_date = (date.today() - timedelta(days=1)).isoformat()
     conn.execute(
         """INSERT INTO prices_daily (id, ticker, trade_date, close, source)
-           VALUES (?, 'AAPL', '2026-04-30', 999.0, 'polygon')""",
-        [uuid.uuid4().hex[:16]],
+           VALUES (?, 'AAPL', ?, 999.0, 'polygon')""",
+        [uuid.uuid4().hex[:16], fresh_date],
     )
-    # Stooq returns 186.0 for same date
     rsps_lib.add(rsps_lib.GET, _STOOQ_RE, body=_SAMPLE_CSV, status=200,
                  content_type="text/csv", match_querystring=False)
 
     ingestor = StooqPricesIngestor({})
-    # AAPL has price from 2026-04-30 but freshness check uses today's date;
-    # since 2026-04-30 is still within freshness window, ingestor should skip AAPL
+    # AAPL already has a price within the freshness window — ingestor should skip it
     result = ingestor.ingest(conn, "run_conflict", ["AAPL"])
 
     close = conn.execute(
-        "SELECT close FROM prices_daily WHERE ticker='AAPL' AND trade_date='2026-04-30'"
+        "SELECT close FROM prices_daily WHERE ticker='AAPL' AND trade_date=?",
+        [fresh_date],
     ).fetchone()[0]
     assert abs(close - 999.0) < 0.01, "Polygon price should not be overwritten"
     assert result["records"] == 0
