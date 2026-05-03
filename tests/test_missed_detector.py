@@ -244,3 +244,81 @@ def test_new_detection_labels_present():
     assert "gain_1d_5pct" in EVENT_TYPES
     assert "gain_3d_8pct" in EVENT_TYPES
     assert "gain_10d_12pct" in EVENT_TYPES
+
+
+def test_gain_1d_5pct_detected(conn):
+    """Ticker rising +6% in 1 calendar day → gain_1d_5pct event detected."""
+    from missed.detector import detect_missed_opportunities
+    ticker = "UP1D"
+    _company(conn, ticker)
+    today = date.today()
+    for i in range(10, 2, -1):
+        _price(conn, ticker, today - timedelta(days=i), 100.0)
+    for i in range(2, 0, -1):
+        _price(conn, ticker, today - timedelta(days=i), 106.0)  # +6% > 5%
+
+    events = detect_missed_opportunities(conn, lookback_days=30)
+    matching = [e for e in events if e["ticker"] == ticker and e["event_type"] == "gain_1d_5pct"]
+    assert len(matching) >= 1, f"Expected gain_1d_5pct for {ticker}, got {[e['event_type'] for e in events if e['ticker'] == ticker]}"
+
+
+def test_gain_3d_8pct_detected(conn):
+    """Ticker rising +10% over 3 calendar days → gain_3d_8pct event detected."""
+    from missed.detector import detect_missed_opportunities
+    ticker = "UP3D"
+    _company(conn, ticker)
+    today = date.today()
+    for i in range(15, 5, -1):
+        _price(conn, ticker, today - timedelta(days=i), 100.0)
+    for i in range(5, 0, -1):
+        _price(conn, ticker, today - timedelta(days=i), 110.0)  # +10% > 8%
+
+    events = detect_missed_opportunities(conn, lookback_days=30)
+    matching = [e for e in events if e["ticker"] == ticker and e["event_type"] == "gain_3d_8pct"]
+    assert len(matching) >= 1, f"Expected gain_3d_8pct for {ticker}, got {[e['event_type'] for e in events if e['ticker'] == ticker]}"
+
+
+def test_gain_10d_12pct_detected(conn):
+    """Ticker rising +15% over 10 calendar days → gain_10d_12pct event detected."""
+    from missed.detector import detect_missed_opportunities
+    ticker = "UP10D"
+    _company(conn, ticker)
+    today = date.today()
+    for i in range(30, 12, -1):
+        _price(conn, ticker, today - timedelta(days=i), 100.0)
+    for i in range(12, 0, -1):
+        _price(conn, ticker, today - timedelta(days=i), 115.0)  # +15% > 12%
+
+    events = detect_missed_opportunities(conn, lookback_days=30)
+    matching = [e for e in events if e["ticker"] == ticker and e["event_type"] == "gain_10d_12pct"]
+    assert len(matching) >= 1, f"Expected gain_10d_12pct for {ticker}, got {[e['event_type'] for e in events if e['ticker'] == ticker]}"
+
+
+def test_no_duplicate_event_for_same_ticker_date_window(conn):
+    """detect_missed_opportunities never returns two events with the same (ticker, event_date, event_type)."""
+    from missed.detector import detect_missed_opportunities
+    ticker = "NODUP"
+    _company(conn, ticker)
+    today = date.today()
+    for i in range(30, 12, -1):
+        _price(conn, ticker, today - timedelta(days=i), 100.0)
+    for i in range(12, 0, -1):
+        _price(conn, ticker, today - timedelta(days=i), 120.0)
+
+    events = detect_missed_opportunities(conn, lookback_days=30)
+    matching = [e for e in events if e["ticker"] == ticker]
+    triples = [(e["ticker"], e["event_date"], e["event_type"]) for e in matching]
+    assert len(triples) == len(set(triples)), f"Duplicate (ticker, date, type) events: {triples}"
+
+
+def test_insufficient_history_handled_gracefully(conn):
+    """Ticker with only 1 day of prices causes no crash and no events (no prior reference)."""
+    from missed.detector import detect_missed_opportunities
+    ticker = "SPARSE"
+    _company(conn, ticker)
+    today = date.today()
+    _price(conn, ticker, today - timedelta(days=1), 200.0)  # only 1 data point
+
+    events = detect_missed_opportunities(conn, lookback_days=30)
+    matching = [e for e in events if e["ticker"] == ticker]
+    assert len(matching) == 0, f"No events expected for single-day history, got {matching}"
