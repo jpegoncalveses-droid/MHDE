@@ -13,6 +13,9 @@ from universe.cik_validator import validate_cik_vs_sec, write_validation_report
 
 logger = logging.getLogger("mhde.universe")
 
+UNIVERSE_MODES = ("sp500", "us_large_cap", "extended")
+DEFAULT_UNIVERSE_MODE = "sp500"
+
 _SP500_YAML = Path(__file__).parent / "sp500_tickers.yaml"
 _VALIDATION_REPORT = Path("data/processed/sp500_cik_validation_report.csv")
 

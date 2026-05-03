@@ -22,3 +22,25 @@ fallback_tickers:
   - JPM
   - UBER
   - RKLB
+
+# Universe mode definitions
+# Default mode is sp500 (primary tier only).
+# us_large_cap includes extended tickers with market_cap >= min_market_cap_usd.
+# extended includes all active tickers regardless of market_cap.
+universe_modes:
+  sp500:
+    description: "S&P 500 primary tickers only"
+    tier_filter:
+      - primary
+  us_large_cap:
+    description: "S&P 500 plus extended tickers with market_cap >= threshold"
+    tier_filter:
+      - primary
+      - extended
+    min_market_cap_usd: 10000000000
+  extended:
+    description: "All active tickers regardless of market_cap"
+    tier_filter:
+      - primary
+      - extended
+    min_market_cap_usd: null

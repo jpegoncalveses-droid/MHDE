@@ -389,6 +389,25 @@ def data_universe_stats():
         conn.close()
 
 
+@data.command("enrich-ticker-details")
+@click.option("--db-path", default="data/mhde.duckdb", show_default=True,
+              help="DuckDB file path.")
+@click.option("--delay", default=0.25, type=float, show_default=True,
+              help="Seconds between Polygon API calls.")
+def data_enrich_ticker_details(db_path, delay):
+    """Enrich companies table with Polygon ticker details (market_cap, SIC).
+
+    Requires POLYGON_API_KEY in environment. Safe to run when key is absent — logs
+    a warning and exits cleanly.
+    """
+    import os
+    from universe.ticker_details_enricher import run_enrichment
+
+    api_key = os.environ.get("POLYGON_API_KEY")
+    result = run_enrichment(db_path=db_path, api_key=api_key, delay=delay)
+    click.echo(f"Ticker details enrichment: {result}")
+
+
 @cli.group()
 def review():
     """Candidate review commands: build review packets, import completed reviews."""
