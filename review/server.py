@@ -122,6 +122,16 @@ def _is_crossing(row: dict) -> bool:
     return _is_promoted(row) and "→C" in str(row.get("tier_move", ""))
 
 
+def _is_scaled_crossing(row: dict) -> bool:
+    """Scaled crossing: scaled_adjustment also contributed (not just raw LLM)."""
+    if not _is_crossing(row):
+        return False
+    try:
+        return float(row.get("scaled_adjustment") or 0) > 0
+    except (ValueError, TypeError):
+        return False
+
+
 def _is_weak(row: dict) -> bool:
     return row.get("validation_status", "") in (
         "weak_evidence", "invalid_quote", "neutral_sentiment"
@@ -280,14 +290,16 @@ details summary{cursor:pointer;color:#555;}
 .doc-content .tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:8px 0;}
 .doc-content ul,.doc-content ol{padding-left:1.4em;}
 .pred-card{border-left:4px solid #bbb;background:#fff;border-radius:4px;padding:12px 14px;margin:10px 0;box-shadow:0 1px 3px rgba(0,0,0,.07);}
-.pred-card-review{border-color:#43a047;}.pred-card-watch{border-color:#fb8c00;}
-.pred-card-investigate{border-color:#1565c0;}.pred-card-ignore{border-color:#9e9e9e;}
+.pred-card-high{border-color:#1b5e20;}.pred-card-watch{border-color:#fb8c00;}
+.pred-card-investigate{border-color:#1565c0;}.pred-card-low{border-color:#ef9a9a;}
+.pred-card-context{border-color:#b0bec5;}.pred-card-ignore{border-color:#9e9e9e;}
 .pred-header{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px;margin-bottom:6px;}
 .pred-ticker{font-size:1.15rem;font-weight:700;}
 .pred-score{font-weight:600;color:#1565c0;}
 .pred-action{padding:2px 8px;border-radius:3px;font-size:.73rem;font-weight:700;}
-.pred-action-review{background:#e8f5e9;color:#2e7d32;}.pred-action-watch{background:#fff3e0;color:#e65100;}
+.pred-action-high{background:#e8f5e9;color:#1b5e20;}.pred-action-watch{background:#fff3e0;color:#e65100;}
 .pred-action-investigate{background:#e3f2fd;color:#0d47a1;}.pred-action-ignore{background:#f5f5f5;color:#757575;}
+.pred-action-low{background:#ffebee;color:#b71c1c;}.pred-action-context{background:#eceff1;color:#546e7a;}
 .pred-dir-bullish{color:#2e7d32;font-weight:600;}.pred-dir-bearish{color:#c62828;font-weight:600;}.pred-dir-neutral{color:#757575;}
 .pred-timeframe{font-size:.78rem;color:#888;}
 .pred-summary{font-size:.9rem;font-weight:500;margin:4px 0 8px;}
@@ -297,6 +309,12 @@ details summary{cursor:pointer;color:#555;}
 .pred-reason{font-size:.83rem;padding:5px 8px;background:#f9f9f9;border-radius:3px;margin:6px 0;}
 .pred-checks{margin:4px 0 4px 16px;font-size:.82rem;padding:0;}
 .pred-risk{font-size:.8rem;color:#666;margin-top:4px;}
+.sig-str-high{color:#1b5e20;font-weight:700;}.sig-str-medium{color:#e65100;}.sig-str-low{color:#9e9e9e;}
+.trade-win{margin-top:10px;display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;padding:8px 10px;background:#f8f9fa;border-radius:4px;}
+.tw-label{display:block;font-size:.68rem;color:#999;text-transform:uppercase;letter-spacing:.04em;}
+.tw-val{font-size:.82rem;font-weight:500;}
+.ss-active{color:#1b5e20;font-weight:700;}.ss-decaying{color:#c62828;font-weight:600;}.ss-monitoring{color:#e65100;}
+.ss-mostly-expired{color:#9e9e9e;}.ss-inactive{color:#b0bec5;}
 """
 
 _BASE_TMPL = """<!DOCTYPE html>
@@ -547,14 +565,203 @@ def _doc_download(key: str) -> "Response | tuple[str, int]":
 
 # ── Prediction cards ──────────────────────────────────────────────────────────
 
-_ACTION_LABEL = {
-    "accept": ("Review", "review"),
-    "watch": ("Watch", "watch"),
-    "investigate": ("Investigate", "investigate"),
-    "reject": ("Ignore", "ignore"),
+_DIR_ARROW = {"bullish": "↑", "bearish": "↓", "neutral": "→", "mixed": "↔"}
+
+_TRADING_WINDOWS: dict[str, tuple[int, int]] = {
+    "merger_acquisition": (5, 60),
+    "earnings": (1, 20),
+    "guidance": (1, 60),
+    "regulatory": (20, 60),
+    "settlement": (20, 60),
+    "management_change": (5, 20),
+    "product_launch": (5, 30),
+    "restructuring": (5, 20),
+    "government_contract": (5, 30),
+    "contract_expansion": (5, 30),
+    "subscriber_metric": (5, 20),
+    "insider_buying": (5, 15),
 }
 
-_DIR_ARROW = {"bullish": "↑", "bearish": "↓", "neutral": "→", "mixed": "↔"}
+
+def _compute_signal_strength(e: dict) -> str:
+    try:
+        conf = float(e.get("confidence") or 0)
+    except (ValueError, TypeError):
+        conf = 0.0
+    try:
+        days = int(float(e.get("days_since_event") or 0))
+    except (ValueError, TypeError):
+        days = 0
+    impact = (e.get("impact_estimate") or "").lower()
+    if conf >= 0.8 and impact == "high" and days <= 10:
+        return "High"
+    if conf < 0.5 or impact == "low" or days > 45:
+        return "Low"
+    return "Medium"
+
+
+def _compute_action_priority(e: dict) -> tuple[str, str]:
+    """Returns (label, css_key). Uses signal characteristics, not action_guidance."""
+    direction = (e.get("expected_direction") or "").lower()
+    pir = (e.get("priced_in_risk") or "").lower()
+    impact = (e.get("impact_estimate") or "").lower()
+    tier_move = str(e.get("tier_move") or "")
+    try:
+        days = int(float(e.get("days_since_event") or 0))
+    except (ValueError, TypeError):
+        days = 0
+    try:
+        scaled_adj = float(e.get("scaled_adjustment") or 0)
+    except (ValueError, TypeError):
+        scaled_adj = 0.0
+
+    if direction == "neutral":
+        return ("Investigate", "investigate")
+
+    already_c = tier_move.startswith("C→") or (
+        (e.get("original_tier") or "").upper() == "C" and not tier_move
+    )
+    if already_c and abs(scaled_adj) < 2.0:
+        return ("Context", "context")
+
+    if pir == "high" and days > 30:
+        return ("Context", "context")
+
+    if pir == "high":
+        return ("Watch", "watch")
+
+    if impact == "low":
+        return ("Low Priority", "low")
+
+    if pir == "medium" and days > 20:
+        return ("Watch", "watch")
+
+    if days > 45:
+        return ("Watch", "watch")
+
+    if scaled_adj >= 3.0 and days <= 14 and pir not in ("high", "medium"):
+        return ("High Priority", "high")
+
+    if pir == "medium":
+        return ("Watch", "watch")
+
+    return ("Watch", "watch")
+
+
+def _compute_trading_window(e: dict) -> dict:
+    import datetime as _dt
+    catalyst_type = (e.get("catalyst_type") or "").lower().replace(" ", "_")
+    try:
+        days_since = int(float(e.get("days_since_event") or 0))
+    except (ValueError, TypeError):
+        days_since = 0
+    pir = (e.get("priced_in_risk") or "").lower()
+    direction = (e.get("expected_direction") or "").lower()
+
+    _NONE = {
+        "trading_window": "None",
+        "signal_status": "Inactive",
+        "signal_status_css": "ss-inactive",
+        "signal_expiry_date": "",
+        "entry_trigger": "—",
+        "invalidation_condition": "—",
+        "review_cadence": "—",
+    }
+
+    window_range = _TRADING_WINDOWS.get(catalyst_type)
+    if not window_range or direction == "neutral":
+        return _NONE
+
+    lo, hi = window_range
+
+    if catalyst_type == "merger_acquisition":
+        if pir == "high" and days_since > 75:
+            status, css = "Mostly expired", "ss-mostly-expired"
+        elif days_since > 45:
+            status, css = "Decaying", "ss-decaying"
+        elif days_since > lo:
+            status, css = "Monitoring", "ss-monitoring"
+        else:
+            status, css = "Active", "ss-active"
+    elif catalyst_type in ("regulatory", "settlement"):
+        if days_since > 45:
+            status, css = "Decaying", "ss-decaying"
+        elif days_since > lo:
+            status, css = "Monitoring", "ss-monitoring"
+        else:
+            status, css = "Active", "ss-active"
+    elif catalyst_type == "management_change":
+        if days_since > hi:
+            status, css = "Mostly expired", "ss-mostly-expired"
+        elif days_since > lo:
+            status, css = "Monitoring", "ss-monitoring"
+        else:
+            status, css = "Active", "ss-active"
+    elif catalyst_type in ("earnings", "guidance"):
+        if days_since > hi:
+            status, css = "Mostly expired", "ss-mostly-expired"
+        elif days_since > lo:
+            status, css = "Monitoring", "ss-monitoring"
+        else:
+            status, css = "Active", "ss-active"
+    else:
+        if days_since > hi:
+            status, css = "Mostly expired", "ss-mostly-expired"
+        elif days_since > lo:
+            status, css = "Monitoring", "ss-monitoring"
+        else:
+            status, css = "Active", "ss-active"
+
+    if pir == "high" and status in ("Active", "Monitoring"):
+        status, css = "Mostly expired", "ss-mostly-expired"
+
+    trading_window = f"{lo}–{hi} trading days"
+
+    expiry_str = ""
+    try:
+        event_date_raw = e.get("event_date") or ""
+        if event_date_raw:
+            base = _dt.date.fromisoformat(str(event_date_raw)[:10])
+            expiry = base + _dt.timedelta(days=int(hi * 1.4))
+            expiry_str = expiry.isoformat()
+    except Exception:
+        pass
+
+    if catalyst_type == "merger_acquisition":
+        entry_trigger = "Deal confirmed, no competing bid, spread > 2%"
+        invalidation = "Deal terminated or regulatory block announced"
+    elif catalyst_type in ("earnings", "guidance"):
+        entry_trigger = "Beat confirmed, guidance raised, no prior run-up"
+        invalidation = "Guide-down in follow-up commentary or sector rotation"
+    elif catalyst_type in ("regulatory", "settlement"):
+        entry_trigger = "FDA/regulatory decision or settlement terms confirmed"
+        invalidation = "Rejection, CRL, or appeal; settlement voided"
+    elif catalyst_type == "management_change":
+        entry_trigger = "Strategy announcement or restructuring plan within 30d"
+        invalidation = "No strategy update within window; departure reversed"
+    elif catalyst_type in ("government_contract", "contract_expansion"):
+        entry_trigger = "Contract value and start date officially announced"
+        invalidation = "Contract cancelled, delayed, or competitor win announced"
+    else:
+        entry_trigger = "Confirmation via follow-on news or volume spike"
+        invalidation = "Catalyst reversal or negative follow-on announcement"
+
+    if status == "Active":
+        cadence = "Weekly"
+    elif status == "Monitoring":
+        cadence = "Bi-weekly"
+    else:
+        cadence = "Monthly or archive"
+
+    return {
+        "trading_window": trading_window,
+        "signal_status": status,
+        "signal_status_css": css,
+        "signal_expiry_date": expiry_str,
+        "entry_trigger": entry_trigger,
+        "invalidation_condition": invalidation,
+        "review_cadence": cadence,
+    }
 
 
 def _not_yet_reason(e: dict) -> str:
@@ -576,14 +783,22 @@ def _not_yet_reason(e: dict) -> str:
 
 def _prediction_card(e: dict, review_form_html: str) -> str:
     ticker = _esc(e.get("ticker", ""))
+
+    try:
+        orig_score = float(e.get("original_score") or 0)
+        orig_fmt = f"{orig_score:.1f}"
+    except (ValueError, TypeError):
+        orig_fmt = "—"
+
     scaled = e.get("scaled_shadow_score") or e.get("shadow_score") or ""
     try:
         scaled_fmt = f"{float(scaled):.1f}"
     except (ValueError, TypeError):
         scaled_fmt = _esc(str(scaled))
 
-    guidance = (e.get("action_guidance") or "").lower()
-    label, css_key = _ACTION_LABEL.get(guidance, ("Review", "review"))
+    label, css_key = _compute_action_priority(e)
+    strength = _compute_signal_strength(e)
+    tw = _compute_trading_window(e)
 
     direction = (e.get("expected_direction") or "").lower()
     arrow = _DIR_ARROW.get(direction, "")
@@ -610,11 +825,25 @@ def _prediction_card(e: dict, review_form_html: str) -> str:
     url = e.get("constructed_url") or ""
     sec_link = f'<a href="{_esc(url)}" target="_blank">[SEC filing]</a>' if url else ""
 
+    str_css = f"sig-str-{strength.lower()}"
+    ss_css = tw["signal_status_css"]
+
+    tw_html = (
+        f'<div class="trade-win">'
+        f'<div><span class="tw-label">Trading window</span><span class="tw-val">{_esc(tw["trading_window"])}</span></div>'
+        f'<div><span class="tw-label">Signal status</span><span class="tw-val {ss_css}">{_esc(tw["signal_status"])}</span></div>'
+        f'<div><span class="tw-label">Review cadence</span><span class="tw-val">{_esc(tw["review_cadence"])}</span></div>'
+        + (f'<div><span class="tw-label">Est. expiry</span><span class="tw-val">{_esc(tw["signal_expiry_date"])}</span></div>' if tw["signal_expiry_date"] else "")
+        + f'<div><span class="tw-label">Entry trigger</span><span class="tw-val">{_esc(tw["entry_trigger"])}</span></div>'
+        f'<div><span class="tw-label">Invalidation</span><span class="tw-val">{_esc(tw["invalidation_condition"])}</span></div>'
+        f'</div>'
+    )
+
     return (
         f'<div class="pred-card pred-card-{css_key}">'
         f'<div class="pred-header">'
         f'<span class="pred-ticker">{ticker}</span>'
-        f'<span class="pred-score">{scaled_fmt}</span>'
+        f'<span class="pred-score">Prod: {orig_fmt} &rarr; Scaled: {scaled_fmt}</span>'
         f'<span class="pred-action pred-action-{css_key}">{_esc(label)}</span>'
         f'{dir_html}'
         f'<span class="pred-timeframe">{timeframe}</span>'
@@ -622,12 +851,14 @@ def _prediction_card(e: dict, review_form_html: str) -> str:
         f'<div class="pred-summary">{summary}</div>'
         f'<div class="pred-meta">'
         f'<div class="pred-col"><span class="pred-label">Catalyst</span><span class="pred-val">{catalyst}</span></div>'
+        f'<div class="pred-col"><span class="pred-label">Signal strength</span><span class="pred-val {str_css}">{_esc(strength)}</span></div>'
         f'<div class="pred-col"><span class="pred-label">Materiality</span><span class="pred-val">{materiality}</span></div>'
         f'<div class="pred-col"><span class="pred-label">Confidence</span><span class="pred-val">{conf_fmt}</span></div>'
         f'<div class="pred-col"><span class="pred-label">Days since event</span><span class="pred-val">{days}</span></div>'
         f'</div>'
         f'<div class="pred-reason"><strong>Why it may move:</strong> {why_move}</div>'
         f'<div class="pred-reason"><strong>Reason to wait:</strong> {not_yet}</div>'
+        f'{tw_html}'
         f'<details><summary style="cursor:pointer;font-size:.82rem;color:#555">Key checks &amp; review form</summary>'
         f'<ul class="pred-checks">{checks_html}</ul>'
         f'<div class="pred-risk">Priced-in risk: <strong>{_esc(e.get("priced_in_risk") or "—")}</strong>'
@@ -705,7 +936,7 @@ def _homepage(history_root: str, output_dir: str) -> str:
             ("Sampled", meta.get("sampled", "—")),
             ("Source available", meta.get("source_available", "—")),
             ("Valid actionable", meta.get("valid_actionable", promoted)),
-            ("Reject→C crossings", crossings),
+            ("Crossings (scaled+static)", crossings),
             ("Provider", meta.get("provider", "—")),
         ]
     )
@@ -761,7 +992,7 @@ def _runs_list(history_root: str) -> str:
     body = f"""
 <h2>Historical Runs</h2>
 <table>
-<tr><th>Date</th><th>Sampled</th><th>Promoted</th><th>Reject→C</th></tr>
+<tr><th>Date</th><th>Sampled</th><th>Promoted</th><th>Crossings</th></tr>
 {''.join(rows)}
 </table>
 <p><a href="/">← Home</a></p>
@@ -778,6 +1009,8 @@ def _run_detail(history_root: str, date_str: str) -> tuple[str, int]:
     entries = _read_csv_entries(history_root, date_str)
     reviews = _read_reviews(history_root, date_str)
     crossings = [e for e in entries if _is_crossing(e)]
+    scaled_crossings = [e for e in crossings if _is_scaled_crossing(e)]
+    static_crossings = [e for e in crossings if not _is_scaled_crossing(e)]
     valid_no_cross = [e for e in entries if _is_promoted(e) and not _is_crossing(e)]
     bear = [e for e in entries if not _is_promoted(e)
             and e.get("sentiment") == "bearish"
@@ -820,11 +1053,11 @@ def _run_detail(history_root: str, date_str: str) -> tuple[str, int]:
         )
         return badge + form
 
-    def _cross_rows() -> str:
-        if not crossings:
+    def _cross_rows(lst: list[dict]) -> str:
+        if not lst:
             return '<tr><td colspan="6"><em>None</em></td></tr>'
         out = []
-        for e in crossings:
+        for e in lst:
             url = e.get("constructed_url") or ""
             sec = f' <a href="{_esc(url)}">[SEC]</a>' if url else ""
             quote = _esc(str(e.get("evidence_quote", ""))[:200])
@@ -889,7 +1122,8 @@ def _run_detail(history_root: str, date_str: str) -> tuple[str, int]:
             ("Sampled", meta.get("sampled", "—")),
             ("Source available", meta.get("source_available", "—")),
             ("Valid actionable", meta.get("valid_actionable", "—")),
-            ("Reject→C", len(crossings)),
+            ("Scaled crossings", len(scaled_crossings)),
+            ("Static-only crossings", len(static_crossings)),
             ("Bearish", len(bear)),
             ("Weak/rejected", len(weak)),
             ("Provider", meta.get("provider", "—")),
@@ -904,10 +1138,18 @@ def _run_detail(history_root: str, date_str: str) -> tuple[str, int]:
 
 {cards_html}
 
-<h2>Reject→C Crossings</h2>
+<h2>Scaled Crossings</h2>
+<p class="muted">Scaled adjustment also crossed tier threshold.</p>
 <div style="overflow-x:auto"><table>
 <tr><th>Ticker</th><th>Score</th><th>Catalyst</th><th>Conf</th><th>Evidence</th></tr>
-{_cross_rows()}
+{_cross_rows(scaled_crossings)}
+</table></div>
+
+<h2>Static-only Crossings</h2>
+<p class="muted">LLM shadow score crosses but scaled adjustment does not.</p>
+<div style="overflow-x:auto"><table>
+<tr><th>Ticker</th><th>Score</th><th>Catalyst</th><th>Conf</th><th>Evidence</th></tr>
+{_cross_rows(static_crossings)}
 </table></div>
 
 <h2>Valid — No Tier Change</h2>
@@ -1067,7 +1309,7 @@ def _today_page(history_root: str, output_dir: str) -> str:
     stats = (
         _stat("Latest Run", latest)
         + _stat("Entries", len(entries))
-        + _stat("Reject→C", crossings)
+        + _stat("Crossings", crossings)
         + _stat("Needs Review", len(needs_review))
         + _stat("Watch", watch_count)
         + _stat("True Miss", pva_counts.get("true_miss", "—"))

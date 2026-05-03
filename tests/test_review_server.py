@@ -31,7 +31,7 @@ def _write_day(history_root: str, date: str, metadata: dict, csv_rows: list[dict
         "expected_direction", "expected_move_summary", "expected_timeframe",
         "action_guidance", "action_reason", "key_checks",
         "priced_in_risk", "days_since_event", "impact_estimate",
-        "scaled_shadow_score", "constructed_url",
+        "scaled_shadow_score", "scaled_adjustment",
     ]
     with open(csv_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
@@ -51,6 +51,9 @@ _CROSSING_ROW = {
     "validation_status": "valid", "quote_validation_pass": "True",
     "final_should_affect_score": "True",
     "evidence_quote": "CTRA entered into a definitive merger agreement.",
+    "scaled_adjustment": "4.0", "scaled_shadow_score": "47.0",
+    "expected_direction": "bullish", "days_since_event": "5",
+    "impact_estimate": "high", "priced_in_risk": "low",
 }
 _WEAK_ROW = {
     "ticker": "PCG", "event_date": "2026-01-11",
@@ -1118,15 +1121,20 @@ _PRED_ROW = {
     "action_guidance": "accept",
     "action_reason": "Earnings surprise with bullish guidance revision",
     "key_checks": "guidance revision; analyst estimates; peer reaction",
-    "priced_in_risk": "medium",
+    "priced_in_risk": "low",
     "days_since_event": "3",
     "impact_estimate": "high",
     "scaled_shadow_score": "46.5",
+    "scaled_adjustment": "3.5",
     "constructed_url": "https://sec.gov/fake",
+    "event_date": "2026-04-30",
 }
 
-_PRED_WATCH_ROW = {**_PRED_ROW, "ticker": "TWCH", "action_guidance": "watch",
-                   "tier_move": "", "shadow_tier": "C", "original_tier": "C"}
+_PRED_WATCH_ROW = {
+    **_PRED_ROW, "ticker": "TWCH", "action_guidance": "watch",
+    "tier_move": "", "shadow_tier": "C", "original_tier": "C",
+    "priced_in_risk": "medium", "scaled_adjustment": "1.0",
+}
 _PRED_IGNORE_ROW = {**_PRED_ROW, "ticker": "TIGN", "action_guidance": "reject",
                     "final_should_affect_score": "False"}
 
@@ -1170,22 +1178,28 @@ def test_prediction_card_shows_summary(tmp_path):
     assert "Strong beat likely drives upward revision" in html
 
 
-def test_prediction_card_action_label_review(tmp_path):
+def test_prediction_card_action_label_no_review_default(tmp_path):
     _write_day(str(tmp_path / "history"), "2026-05-01", _BASE_META, [_PRED_ROW])
     app = _make_app(tmp_path)
     with app.test_client() as c:
         r = c.get("/candidates")
     html = r.data.decode()
-    assert "Review" in html
+    # "Review" must not appear as an action badge; fresh bullish earnings → High Priority
+    assert "High Priority" in html or "Watch" in html
+    # Verify "Review" is not used as an action label (it may appear in form elements)
+    import re
+    badges = re.findall(r'pred-action[^>]*>([^<]+)<', html)
+    assert "Review" not in badges
 
 
-def test_prediction_card_action_label_watch(tmp_path):
+def test_prediction_card_action_label_watch_or_context(tmp_path):
+    # C-tier entry with small scaled adjustment — should not be High Priority or Investigate
     _write_day(str(tmp_path / "history"), "2026-05-01", _BASE_META, [_PRED_WATCH_ROW])
     app = _make_app(tmp_path)
     with app.test_client() as c:
         r = c.get("/candidates")
     html = r.data.decode()
-    assert "Watch" in html
+    assert "Watch" in html or "Context" in html
 
 
 def test_prediction_card_shows_key_checks(tmp_path):
@@ -1260,6 +1274,205 @@ def test_not_yet_reason_helper():
     assert "priced-in" in r
     assert "45d" in r
     assert "low" in r
+
+
+# ── Action priority and signal strength ───────────────────────────────────────
+
+def test_stale_ma_high_pir_becomes_context():
+    from review.server import _compute_action_priority
+    e = {
+        "catalyst_type": "merger_acquisition",
+        "expected_direction": "bullish",
+        "priced_in_risk": "high",
+        "days_since_event": "80",
+        "impact_estimate": "high",
+        "tier_move": "Reject→C",
+        "original_tier": "Reject",
+        "scaled_adjustment": "1.0",
+    }
+    label, _ = _compute_action_priority(e)
+    assert label in ("Context", "Low Priority")
+
+
+def test_bullish_settlement_moderate_decay_becomes_watch():
+    from review.server import _compute_action_priority
+    e = {
+        "catalyst_type": "settlement",
+        "expected_direction": "bullish",
+        "priced_in_risk": "medium",
+        "days_since_event": "25",
+        "impact_estimate": "high",
+        "tier_move": "Reject→C",
+        "original_tier": "Reject",
+        "scaled_adjustment": "2.0",
+    }
+    label, _ = _compute_action_priority(e)
+    assert label == "Watch"
+
+
+def test_neutral_management_change_becomes_investigate():
+    from review.server import _compute_action_priority
+    e = {
+        "catalyst_type": "management_change",
+        "expected_direction": "neutral",
+        "priced_in_risk": "low",
+        "days_since_event": "5",
+        "impact_estimate": "medium",
+        "tier_move": "Reject→C",
+        "original_tier": "Reject",
+        "scaled_adjustment": "3.0",
+    }
+    label, _ = _compute_action_priority(e)
+    assert label == "Investigate"
+
+
+def test_already_c_tier_low_impact_becomes_context():
+    from review.server import _compute_action_priority
+    e = {
+        "catalyst_type": "earnings",
+        "expected_direction": "bullish",
+        "priced_in_risk": "low",
+        "days_since_event": "5",
+        "impact_estimate": "high",
+        "tier_move": "C→C",
+        "original_tier": "C",
+        "scaled_adjustment": "0.5",
+    }
+    label, _ = _compute_action_priority(e)
+    assert label == "Context"
+
+
+def test_low_impact_catalyst_becomes_low_priority():
+    from review.server import _compute_action_priority
+    e = {
+        "catalyst_type": "earnings",
+        "expected_direction": "bullish",
+        "priced_in_risk": "low",
+        "days_since_event": "3",
+        "impact_estimate": "low",
+        "tier_move": "Reject→C",
+        "original_tier": "Reject",
+        "scaled_adjustment": "4.0",
+    }
+    label, _ = _compute_action_priority(e)
+    assert label == "Low Priority"
+
+
+# ── Trading window ────────────────────────────────────────────────────────────
+
+def test_stale_ma_high_pir_gets_mostly_expired():
+    from review.server import _compute_trading_window
+    e = {
+        "catalyst_type": "merger_acquisition",
+        "expected_direction": "bullish",
+        "priced_in_risk": "high",
+        "days_since_event": "80",
+        "event_date": "2026-02-01",
+    }
+    tw = _compute_trading_window(e)
+    assert tw["signal_status"] in ("Mostly expired", "Decaying")
+
+
+def test_regulatory_settlement_gets_20_60_window():
+    from review.server import _compute_trading_window
+    e = {
+        "catalyst_type": "regulatory",
+        "expected_direction": "bullish",
+        "priced_in_risk": "low",
+        "days_since_event": "5",
+        "event_date": "2026-04-28",
+    }
+    tw = _compute_trading_window(e)
+    assert "20" in tw["trading_window"] and "60" in tw["trading_window"]
+
+
+def test_management_change_gets_5_20_window():
+    from review.server import _compute_trading_window
+    e = {
+        "catalyst_type": "management_change",
+        "expected_direction": "bullish",
+        "priced_in_risk": "low",
+        "days_since_event": "3",
+        "event_date": "2026-04-30",
+    }
+    tw = _compute_trading_window(e)
+    assert "5" in tw["trading_window"] and "20" in tw["trading_window"]
+
+
+def test_neutral_direction_gets_no_trading_window():
+    from review.server import _compute_trading_window
+    e = {
+        "catalyst_type": "management_change",
+        "expected_direction": "neutral",
+        "priced_in_risk": "low",
+        "days_since_event": "2",
+        "event_date": "2026-05-01",
+    }
+    tw = _compute_trading_window(e)
+    assert tw["trading_window"] == "None"
+    assert tw["signal_status"] == "Inactive"
+
+
+def test_high_pir_shortens_active_to_mostly_expired():
+    from review.server import _compute_trading_window
+    e = {
+        "catalyst_type": "earnings",
+        "expected_direction": "bullish",
+        "priced_in_risk": "high",
+        "days_since_event": "2",
+        "event_date": "2026-05-01",
+    }
+    tw = _compute_trading_window(e)
+    assert tw["signal_status"] == "Mostly expired"
+
+
+# ── Section renaming (scaled vs static-only) ──────────────────────────────────
+
+def test_static_only_crossing_not_labeled_scaled(tmp_path):
+    static_row = {
+        **_CROSSING_ROW,
+        "ticker": "STAT",
+        "scaled_adjustment": "0",
+    }
+    _write_day(str(tmp_path / "history"), "2026-05-01", _BASE_META, [static_row])
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/candidates")
+    html = r.data.decode()
+    assert "Static-only Crossings" in html
+    assert "STAT" in html
+
+
+def test_scaled_crossing_appears_in_scaled_section(tmp_path):
+    scaled_row = {**_CROSSING_ROW, "ticker": "SCAL", "scaled_adjustment": "3.5"}
+    _write_day(str(tmp_path / "history"), "2026-05-01", _BASE_META, [scaled_row])
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/candidates")
+    html = r.data.decode()
+    assert "Scaled Crossings" in html
+    assert "SCAL" in html
+
+
+def test_signal_strength_appears_on_card(tmp_path):
+    _write_day(str(tmp_path / "history"), "2026-05-01", _BASE_META, [_PRED_ROW])
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/candidates")
+    html = r.data.decode()
+    assert "Signal strength" in html or "sig-str-" in html
+
+
+def test_trading_window_appears_on_card(tmp_path):
+    _write_day(str(tmp_path / "history"), "2026-05-01", _BASE_META, [_PRED_ROW])
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/candidates")
+    html = r.data.decode()
+    assert "Trading window" in html
+    assert "Signal status" in html
+    assert "Entry trigger" in html
+    assert "Invalidation" in html
 
 
 def test_not_yet_reason_no_concerns():
