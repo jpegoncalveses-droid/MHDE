@@ -201,3 +201,34 @@ def test_dot_ticker_bypasses_filter(conn, monkeypatch):
     assert row is not None, "BRK.B must be in companies table"
     assert row[1] == "primary"
     assert row[2] == "0001067983"
+
+
+def test_universe_stats_cli(tmp_path, monkeypatch):
+    """Smoke-test the universe-stats CLI: outputs four labelled counts."""
+    import storage.config as _cfg_mod
+    from click.testing import CliRunner
+    from main import cli
+
+    db_path = str(tmp_path / "test.duckdb")
+    import duckdb as _ddb
+    from storage.db import init_schema
+    tmp_conn = _ddb.connect(db_path)
+    init_schema(tmp_conn)
+    tmp_conn.execute(
+        "INSERT INTO companies (ticker, company_name, universe_tier, sector, is_active) "
+        "VALUES ('AAPL', 'Apple Inc', 'primary', 'Information Technology', true)"
+    )
+    tmp_conn.execute(
+        "INSERT INTO companies (ticker, company_name, universe_tier, sector, is_active) "
+        "VALUES ('MSFT', 'Microsoft Corp', 'primary', NULL, true)"
+    )
+    tmp_conn.close()
+
+    monkeypatch.setattr(_cfg_mod, "load_engine_config", lambda: {"db_path": db_path})
+    runner = CliRunner()
+    result = runner.invoke(cli, ["data", "universe-stats"])
+    assert result.exit_code == 0, result.output
+    assert "Active companies" in result.output
+    assert "Primary tier" in result.output
+    assert "Distinct sectors" in result.output
+    assert "Null sector" in result.output

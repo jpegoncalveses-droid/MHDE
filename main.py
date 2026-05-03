@@ -359,6 +359,32 @@ def data_inventory(docs_out, csv_out, base_dir):
         conn.close()
 
 
+@data.command("universe-stats")
+def data_universe_stats():
+    """Show universe composition: active count, primary count, sector coverage."""
+    cfg, conn = _engine_setup()
+    try:
+        total = conn.execute(
+            "SELECT COUNT(*) FROM companies WHERE is_active = true"
+        ).fetchone()[0]
+        primary = conn.execute(
+            "SELECT COUNT(*) FROM companies WHERE is_active = true AND universe_tier = 'primary'"
+        ).fetchone()[0]
+        sectors = conn.execute(
+            "SELECT COUNT(DISTINCT sector) FROM companies "
+            "WHERE is_active = true AND sector IS NOT NULL"
+        ).fetchone()[0]
+        null_sector = conn.execute(
+            "SELECT COUNT(*) FROM companies WHERE is_active = true AND sector IS NULL"
+        ).fetchone()[0]
+        click.echo(f"Active companies : {total}")
+        click.echo(f"Primary tier     : {primary}")
+        click.echo(f"Distinct sectors : {sectors}")
+        click.echo(f"Null sector      : {null_sector}")
+    finally:
+        conn.close()
+
+
 @cli.group()
 def review():
     """Candidate review commands: build review packets, import completed reviews."""
