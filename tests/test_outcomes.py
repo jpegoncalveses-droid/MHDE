@@ -63,3 +63,21 @@ def test_update_review_status_invalid(conn):
     cid = conn.execute("SELECT candidate_id FROM candidate_outcomes").fetchone()[0]
     ok = update_review_status(conn, cid, "invalid_status")
     assert not ok
+
+
+def test_update_forward_returns_3d_10d(conn):
+    """forward_return_3d and forward_return_10d can be persisted via update_forward_returns."""
+    create_outcome_record(conn, "run002", "NVDA", date.today(), "A", 85.0, 200.0)
+    candidate_id = conn.execute(
+        "SELECT candidate_id FROM candidate_outcomes WHERE ticker = 'NVDA'"
+    ).fetchone()[0]
+    update_forward_returns(conn, candidate_id, {
+        "forward_return_3d": 0.09,
+        "forward_return_10d": 0.14,
+    })
+    row = conn.execute(
+        "SELECT forward_return_3d, forward_return_10d FROM candidate_outcomes WHERE candidate_id = ?",
+        [candidate_id],
+    ).fetchone()
+    assert row[0] == pytest.approx(0.09)
+    assert row[1] == pytest.approx(0.14)
