@@ -35,7 +35,7 @@ and load them as `fallback_tickers` — no schema changes required.
 
 ## 2. Move Episode Detection — Can we detect 1d, 3d, 5d, and 10d moves?
 
-**Status: PARTIAL (5d and 20d only)**
+**Status: PARTIAL (5d, 20d, and 60d supported; 1d, 3d, and 10d missing)**
 
 ### What works
 - `missed/detector.py` detects three event types from `prices_daily`:
@@ -68,7 +68,7 @@ in `missed/detector.py`. Add `forward_return_3d`, `forward_return_10d` columns t
 ### What works
 - `filings` table holds SEC EDGAR accession numbers and doc URLs for all tickers.
 - `missed/catalyst_source_resolver.py` fetches filing text from EDGAR (~50%
-  coverage for text-format filings with resolvable accession numbers).
+  coverage for text-format filings with resolvable accession numbers — estimated from pilot run diagnostics).
 - `missed/catalyst_classifier.py` + LLM pipeline classifies catalyst type
   (merger_acquisition, regulatory, earnings, etc.) with materiality and sentiment.
 - `missed daily-catalyst-queue` produces structured enrichment with shadow score projection.
@@ -245,8 +245,10 @@ alerting would require a Polygon WebSocket or IEX Cloud SSE feed (out of scope).
 | Sector/industry mapping | High — enables sector features | Low (CSV seed or Polygon) | P1 |
 | 1d/3d/10d episode detection | High — closes labelling gaps | Low (additive to detector) | P1 |
 | Auto-populate `candidate_outcomes` | High — enables live calibration | Medium | P1 |
+| Pre-event catalyst attribution (SEC EFTS) | Medium — moves attribution from reactive to prospective | Medium | P2 |
 | Analyst estimates/revisions | Medium — leading signal | High (new adapter + schema) | P2 |
 | News feed (GDELT/Stocktwits) | Medium — theme/sentiment signal | Medium (implement stubs) | P2 |
+| Earnings calendar EPS estimates | Medium — closes surprise signal gap | Medium (new adapter) | P2 |
 | Options / IV | Medium — event-uncertainty signal | High (paid API + schema) | P2 |
 | Form 4 structured parser | Low — insider as lagging signal | Medium (XML parsing) | P3 |
 | Intraday volume shock | Low — daily granularity sufficient | High (real-time feed) | P3 |
