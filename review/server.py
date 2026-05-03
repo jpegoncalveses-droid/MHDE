@@ -367,6 +367,23 @@ def _safe_float(v, default: float = 0.0) -> float:
         return default
 
 
+def _format_return_pct(value) -> str:
+    """Format a return value as a percentage string.
+
+    Stored values may be decimal (0.1673) or already-percent (16.73).
+    Heuristic: if |value| < 2.0 treat as decimal fraction → multiply by 100.
+    """
+    if value is None:
+        return "—"
+    try:
+        v = float(value)
+    except (ValueError, TypeError):
+        return "—"
+    if abs(v) < 2.0:
+        v = v * 100
+    return f"{v:.1f}%"
+
+
 # ── Docs viewer ───────────────────────────────────────────────────────────────
 
 _DOCS_ROOT = os.path.normpath(
@@ -1765,14 +1782,17 @@ def _ticker_page(
                 "FROM missed_opportunity_events WHERE ticker = ? ORDER BY event_date DESC LIMIT 10",
                 [ticker],
             ).fetchall()
-            missed_events = [
-                {
+            seen_keys: set[tuple] = set()
+            for r in mrows:
+                key = (str(r[0]), r[1], r[3])  # event_date, event_type, window_days
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                missed_events.append({
                     "event_date": str(r[0]), "event_type": r[1], "return_value": r[2],
                     "window_days": r[3], "tier_before_event": r[4],
                     "had_catalyst_evidence": r[5], "investigation_status": r[6],
-                }
-                for r in mrows
-            ]
+                })
             conn.close()
         except Exception as exc:
             db_error = f"DB error: {_esc(str(exc)[:120])}"
@@ -1850,20 +1870,28 @@ def _ticker_page(
 
     # Candidate status block
     reason_style = "color:#1b5e20" if "meets threshold" in reason or "present in" in reason else "color:#c62828"
+    not_cand_label = "Not a candidate because: " if "meets threshold" not in reason else "Status: "
     cand_block = (
         f'<h3>Candidate Status</h3>'
         f'<p><strong>In recent queue:</strong> {"Yes" if in_queue else "No"}</p>'
-        f'<p><strong>Reason not shown as candidate:</strong> '
+        f'<p><strong>{_esc(not_cand_label)}</strong>'
         f'<span style="{reason_style}">{_esc(reason)}</span></p>'
     )
 
     # Missed events block
+    has_unscored = any(not e.get("had_catalyst_evidence") for e in missed_events)
+    unscored_note = (
+        '<p class="muted" style="font-size:.82rem">'
+        'Rows without catalyst evidence are unscored movers — no prior score existed '
+        'before those dates or the event was outside the scored universe at the time.</p>'
+        if has_unscored else ""
+    )
     if missed_events:
         me_rows = "".join(
             f'<tr>'
             f'<td>{_esc(e["event_date"])}</td>'
             f'<td>{_esc(e["event_type"])}</td>'
-            f'<td>{float(e["return_value"] or 0):.1%}</td>'
+            f'<td>{_format_return_pct(e["return_value"])}</td>'
             f'<td>{e["window_days"]}d</td>'
             f'<td>{_esc(e["tier_before_event"] or "—")}</td>'
             f'<td>{"✓" if e["had_catalyst_evidence"] else "✗"}</td>'
@@ -1873,7 +1901,8 @@ def _ticker_page(
         )
         miss_block = (
             '<h3>Missed Move Events</h3>'
-            '<div style="overflow-x:auto"><table>'
+            + unscored_note
+            + '<div style="overflow-x:auto"><table>'
             '<tr><th>Date</th><th>Type</th><th>Return</th><th>Window</th>'
             '<th>Tier before</th><th>Catalyst?</th><th>Status</th></tr>'
             + me_rows + '</table></div>'
@@ -1888,7 +1917,7 @@ def _ticker_page(
             f'<td>{_esc(r.get("event_date",""))}</td>'
             f'<td>{_esc(r.get("event_type",""))}</td>'
             f'<td>{_esc(r.get("classification",""))}</td>'
-            f'<td>{_esc(r.get("return_value",""))}</td>'
+            f'<td>{_format_return_pct(r.get("return_value"))}</td>'
             f'<td>{_esc(r.get("score_before_event",""))[:6]}</td>'
             f'<td>{_esc(r.get("tier_before_event",""))}</td>'
             f'</tr>'

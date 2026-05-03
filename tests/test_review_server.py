@@ -1759,3 +1759,91 @@ def test_not_candidate_reason_near_threshold_no_catalyst():
     company = {"is_active": True, "universe_exclusion_reason": None}
     reason = _not_candidate_reason(company, score_row, False)
     assert "threshold" in reason.lower() or "40" in reason
+
+
+# ── format_return_pct helper ──────────────────────────────────────────────────
+
+def test_format_return_pct_decimal_form():
+    from review.server import _format_return_pct
+    assert _format_return_pct(0.1673) == "16.7%"
+
+
+def test_format_return_pct_percent_form():
+    from review.server import _format_return_pct
+    assert _format_return_pct(16.73) == "16.7%"
+
+
+def test_format_return_pct_none():
+    from review.server import _format_return_pct
+    assert _format_return_pct(None) == "—"
+
+
+def test_format_return_pct_invalid():
+    from review.server import _format_return_pct
+    assert _format_return_pct("not_a_number") == "—"
+
+
+# ── Ticker page: return formatting, dedup, unscored note ─────────────────────
+
+def _seed_db_with_events(db_path: str, return_value: float, n_dupes: int = 1) -> None:
+    import duckdb
+    conn = duckdb.connect(db_path)
+    for tbl_sql in [
+        """CREATE TABLE IF NOT EXISTS companies (
+            ticker VARCHAR, company_name VARCHAR, universe_tier VARCHAR,
+            is_active BOOLEAN, sector VARCHAR, industry VARCHAR,
+            universe_exclusion_reason VARCHAR, last_financial_filing_date DATE,
+            PRIMARY KEY (ticker))""",
+        """CREATE TABLE IF NOT EXISTS scores (
+            ticker VARCHAR, as_of_date DATE, total_score DOUBLE,
+            tier VARCHAR, why_rejected VARCHAR, missing_data_json VARCHAR,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
+        """CREATE TABLE IF NOT EXISTS missed_opportunity_events (
+            event_id VARCHAR, ticker VARCHAR, event_date DATE,
+            event_type VARCHAR, return_value DOUBLE, window_days INTEGER,
+            tier_before_event VARCHAR, had_catalyst_evidence BOOLEAN,
+            investigation_status VARCHAR)""",
+    ]:
+        conn.execute(tbl_sql)
+    conn.execute("INSERT OR IGNORE INTO companies VALUES (?,?,?,?,?,?,?,?)",
+                 ["MSFT", "Microsoft Corp", "primary", True, "Tech", "Software", None, None])
+    conn.execute("INSERT INTO scores VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP)",
+                 ["MSFT", "2026-05-01", 35.0, "Reject", "score too low", "[]"])
+    for i in range(n_dupes):
+        conn.execute("INSERT INTO missed_opportunity_events VALUES (?,?,?,?,?,?,?,?,?)",
+                     [f"ev{i}", "MSFT", "2026-04-17", "gain_5d_10pct",
+                      return_value, 5, "Reject", False, "investigated"])
+    conn.close()
+
+
+def test_ticker_percent_values_render_correctly(tmp_path):
+    db = str(tmp_path / "t.duckdb")
+    _seed_db_with_events(db, return_value=16.73, n_dupes=1)
+    app = _make_app_with_db(tmp_path, db_path=db)
+    with app.test_client() as c:
+        r = c.get("/ticker/MSFT")
+    html = r.data.decode()
+    assert "16.7%" in html
+    assert "1673" not in html
+
+
+def test_ticker_duplicate_move_rows_collapse(tmp_path):
+    db = str(tmp_path / "t.duckdb")
+    _seed_db_with_events(db, return_value=14.0, n_dupes=3)
+    app = _make_app_with_db(tmp_path, db_path=db)
+    with app.test_client() as c:
+        r = c.get("/ticker/MSFT")
+    html = r.data.decode()
+    # gain_5d_10pct should appear exactly once despite 3 duplicate DB rows
+    assert html.count("gain_5d_10pct") == 1
+
+
+def test_ticker_unscored_mover_explanation_appears(tmp_path):
+    db = str(tmp_path / "t.duckdb")
+    _seed_db_with_events(db, return_value=14.0, n_dupes=1)
+    app = _make_app_with_db(tmp_path, db_path=db)
+    with app.test_client() as c:
+        r = c.get("/ticker/MSFT")
+    html = r.data.decode()
+    # had_catalyst_evidence=False triggers unscored note
+    assert "unscored" in html.lower() or "no prior score" in html.lower()
