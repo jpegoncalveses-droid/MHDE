@@ -117,7 +117,7 @@ def test_report_contains_required_sections(tmp_path, conn):
         "## Summary",
         "## 1-Day Spikes",
         "## 3d / 10d Spikes",
-        "## Longer Windows",
+        "## Longer Windows (20d / 60d)",
         "## Out-of-Universe Spikes",
         "## Near-Threshold Scores",
         "## No-Score Events",
