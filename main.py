@@ -306,6 +306,19 @@ def health():
         conn.close()
 
 
+@cli.command("coverage-report")
+@click.option("--db-path", default="data/mhde.duckdb", show_default=True)
+@click.option("--output-dir", default="data/processed", show_default=True)
+def coverage_report_cmd(db_path, output_dir):
+    """Write data coverage report (MD + CSV) for all active tickers."""
+    from health.coverage_report import generate_coverage_report
+    result = generate_coverage_report(db_path=db_path, output_dir=output_dir)
+    s = result["summary"]
+    click.echo(f"Total: {s['total']}  Fresh: {s['fresh']}  Stale: {s['stale']}  Missing: {s['missing']}")
+    click.echo(f"Has fundamentals: {s['has_fundamentals']}  Has market_cap: {s['has_market_cap']}")
+    click.echo(f"Written: {result['md']}  {result['csv']}")
+
+
 @cli.group()
 def learn():
     """Learning loop commands: calibration, insights, experiments."""
