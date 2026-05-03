@@ -76,10 +76,15 @@ def ingest_earnings_for_ticker(ticker: str, api_key: Optional[str], db_path: str
     if not api_key:
         logger.warning("ALPHA_VANTAGE_API_KEY not set — earnings estimates unavailable for %s", ticker)
         return 0
+    from ingestion._av_daily_counter import is_cap_reached, record_call
+    if is_cap_reached():
+        logger.warning("av_daily_cap: 25-call daily cap reached -- skipping %s", ticker)
+        return 0
     import duckdb
 
     try:
         raw = _fetch_alpha_vantage_earnings(ticker, api_key)
+        record_call(1)
         surprises = parse_alpha_vantage_earnings(ticker, raw)
         if not surprises:
             return 0
