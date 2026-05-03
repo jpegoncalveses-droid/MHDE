@@ -1,4 +1,9 @@
-max_symbols: 500
+# Primary tier: all tickers in universe/sp500_tickers.yaml + fallback_tickers below.
+# Primary tickers are never capped by max_symbols.
+#
+# max_symbols caps only the extended tier (SEC-filtered fillers).
+# Set high enough to leave a few extended slots after ~503 S&P primaries.
+max_symbols: 520
 min_price: 2.0
 exclude_etfs: true
 exclude_funds: true
@@ -8,6 +13,8 @@ exchanges:
   - NASDAQ
   - AMEX
 
+# Additional primary tickers beyond the S&P 500 YAML.
+# These receive universe_tier="primary" and bypass the max_symbols cap.
 fallback_tickers:
   - AAPL
   - NVDA
