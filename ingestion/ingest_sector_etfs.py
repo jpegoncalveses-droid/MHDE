@@ -70,6 +70,7 @@ def get_sector_returns(date: str, api_key: Optional[str]) -> dict[str, float]:
 
 def ingest_sector_etfs_to_db(db_path: str, date: str, api_key: Optional[str]) -> int:
     """Fetch sector ETF returns and upsert into prices_daily. Returns row count written."""
+    import uuid as _uuid
     import duckdb
 
     returns = get_sector_returns(date, api_key)
@@ -81,13 +82,13 @@ def ingest_sector_etfs_to_db(db_path: str, date: str, api_key: Optional[str]) ->
         for etf, ret in returns.items():
             conn.execute(
                 """
-                INSERT INTO prices_daily (ticker, trade_date, close, adjusted_close, source)
-                VALUES (?, ?, ?, ?, 'polygon_sector_etf')
+                INSERT INTO prices_daily (id, ticker, trade_date, close, adjusted_close, source)
+                VALUES (?, ?, ?, ?, ?, 'polygon_sector_etf')
                 ON CONFLICT (ticker, trade_date) DO UPDATE
                     SET adjusted_close = excluded.adjusted_close,
                         source = excluded.source
                 """,
-                [etf, date, ret, ret],
+                [_uuid.uuid4().hex[:16], etf, date, ret, ret],
             )
             count += 1
         return count

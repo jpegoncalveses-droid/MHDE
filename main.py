@@ -593,6 +593,44 @@ def data_sector_diagnostics_cmd(db_path, enriched_csv):
         )
 
 
+@data.command("ingest-sector-etfs")
+@click.option("--db-path", default="data/mhde.duckdb", show_default=True)
+@click.option("--date", "trade_date", default=None, help="Trade date YYYY-MM-DD (default: today).")
+@click.option("--lookback-days", default=1, type=int, show_default=True,
+              help="Number of recent trading days to fetch (1 = today only).")
+def data_ingest_sector_etfs_cmd(db_path, trade_date, lookback_days):
+    """Fetch sector ETF 1-day returns from Polygon and store in prices_daily."""
+    import datetime
+    import os as _os
+    import duckdb as _duckdb
+    from ingestion.ingest_sector_etfs import ingest_sector_etfs_to_db, SECTOR_ETFS
+
+    api_key = _os.environ.get("POLYGON_API_KEY")
+    if not api_key:
+        click.echo("ERROR: POLYGON_API_KEY not set in environment.", err=True)
+        raise SystemExit(1)
+
+    if trade_date:
+        dates = [trade_date]
+    else:
+        today = datetime.date.today()
+        dates = []
+        d = today
+        while len(dates) < lookback_days:
+            if d.weekday() < 5:  # Mon–Fri
+                dates.append(str(d))
+            d -= datetime.timedelta(days=1)
+        dates.reverse()
+
+    click.echo(f"Fetching {len(SECTOR_ETFS)} sector ETFs for {len(dates)} date(s): {', '.join(dates)}")
+    total = 0
+    for dt in dates:
+        n = ingest_sector_etfs_to_db(db_path, dt, api_key)
+        click.echo(f"  {dt}: {n} ETF rows written")
+        total += n
+    click.echo(f"Done. Total rows written: {total}")
+
+
 @cli.group()
 def review():
     """Candidate review commands: build review packets, import completed reviews."""
