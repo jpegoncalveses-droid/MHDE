@@ -122,6 +122,19 @@ def _is_crossing(row: dict) -> bool:
     return _is_promoted(row) and "→C" in str(row.get("tier_move", ""))
 
 
+def _dedup_pva_rows(rows: list[dict]) -> list[dict]:
+    """Deduplicate prediction-vs-actual rows by (ticker, event_date, event_type, window_days)."""
+    seen: set[tuple] = set()
+    out: list[dict] = []
+    for r in rows:
+        key = (r.get("ticker", ""), r.get("event_date", ""), r.get("event_type", ""), r.get("window_days", ""))
+        if key not in seen:
+            seen.add(key)
+            out.append(r)
+    return out
+
+
+
 def _is_scaled_crossing(row: dict) -> bool:
     """Scaled crossing: scaled_adjustment also contributed (not just raw LLM)."""
     if not _is_crossing(row):
@@ -1759,8 +1772,11 @@ def _learning_page(output_dir: str) -> str:
         return _render("Learning — MHDE", body)
 
     with open(rows_path, newline="") as f:
-        rows = list(_csv.DictReader(f))
+        raw_rows = list(_csv.DictReader(f))
+    rows = _dedup_pva_rows(raw_rows)
+    raw_total = len(raw_rows)
     total = len(rows)
+    dupes_removed = raw_total - total
     clf = _Counter(r.get("classification", "") for r in rows)
     report_date = rows[0].get("event_date", "") if rows else ""
 
@@ -1770,7 +1786,9 @@ def _learning_page(output_dir: str) -> str:
     )
 
     rc_rows_html = ""
+    erc_rows_html = ""
     subcause_html = ""
+    price_only_warning = ""
     _INCOMPLETE_SUBCAUSES = {
         "missing_cik", "missing_sec_companyfacts", "foreign_filer_or_adr",
         "stale_fundamentals", "recent_ipo_or_short_history", "sector_specific_model_gap",
@@ -1778,11 +1796,17 @@ def _learning_page(output_dir: str) -> str:
     }
     if enriched_path.exists():
         with open(enriched_path, newline="") as f:
-            enriched = list(_csv.DictReader(f))
+            enriched_raw = list(_csv.DictReader(f))
+        enriched = _dedup_pva_rows(enriched_raw)
         rc = _Counter(r.get("root_cause_group", "unknown") for r in enriched)
         rc_rows_html = "".join(
             f"<tr><td>{_esc(k)}</td><td>{v}</td></tr>"
             for k, v in sorted(rc.items(), key=lambda x: -x[1])
+        )
+        erc = _Counter(r.get("enriched_root_cause", "unknown") for r in enriched)
+        erc_rows_html = "".join(
+            f"<tr><td>{_esc(k)}</td><td>{v}</td></tr>"
+            for k, v in sorted(erc.items(), key=lambda x: -x[1])
         )
         sc = _Counter(
             r.get("enriched_root_cause", "")
@@ -1801,6 +1825,13 @@ def _learning_page(output_dir: str) -> str:
                 + sc_rows
                 + '</table>'
             )
+        price_only_count = erc.get("price_only_scored", 0)
+        if price_only_count:
+            price_only_warning = (
+                f'<div class="warn-box">&#9888; <strong>{price_only_count} events</strong> '
+                f'scored with <code>price_only_scored</code> — fundamentals missing, score based '
+                f'on price momentum only. Confidence is limited for these tickers.</div>'
+            )
 
     artifact_links = " &bull; ".join(
         f'<a href="/learning/{_esc(atype)}">{_esc(label)}</a>'
@@ -1814,10 +1845,15 @@ def _learning_page(output_dir: str) -> str:
 
     body = f"""
 <h2>Prediction vs Actual — Learning Summary</h2>
-<p class="muted">Report date: {_esc(report_date)} &mdash; Total events: {total}</p>
+<p class="muted">Report date: {_esc(report_date)} &mdash;
+  Deduped events: <strong>{total}</strong>
+  (raw: {raw_total}, duplicates removed: {dupes_removed})</p>
 <div class="banner shadow">&#128274; Shadow-only — production scores unchanged.</div>
 
+{price_only_warning}
+
 <h2>Classification Breakdown</h2>
+<p class="muted">Based on {total} deduped events.</p>
 <table>
 <tr><th>Classification</th><th>Count</th></tr>
 {clf_rows}
@@ -1827,6 +1863,13 @@ def _learning_page(output_dir: str) -> str:
 <table>
 <tr><th>Group</th><th>Count</th></tr>
 {rc_rows_html if rc_rows_html else '<tr><td colspan="2"><em>Run enrich-root-causes to populate</em></td></tr>'}
+</table>
+
+<h2>Enriched Root Causes</h2>
+<p class="muted">Granular breakdown within each root cause group.</p>
+<table>
+<tr><th>Enriched Root Cause</th><th>Count</th></tr>
+{erc_rows_html if erc_rows_html else '<tr><td colspan="2"><em>Run enrich-root-causes to populate</em></td></tr>'}
 </table>
 
 {subcause_html}
@@ -2220,9 +2263,12 @@ def _moves_page(output_dir: str, db_path: str = "") -> str:
     with open(pva_path, newline="") as f:
         all_rows = list(_csv.DictReader(f))
 
-    summaries = _build_ticker_summary(all_rows)
+    deduped_rows = _dedup_pva_rows(all_rows)
+    summaries = _build_ticker_summary(deduped_rows)
     n_tickers = len(summaries)
     n_events = len(all_rows)
+    n_deduped = len(deduped_rows)
+    n_dupes = n_events - n_deduped
 
     # Batch price context lookup (one DB connection for all tickers)
     if db_path and os.path.exists(db_path):
@@ -2288,7 +2334,8 @@ def _moves_page(output_dir: str, db_path: str = "") -> str:
     body = (
         '<h2>Moves — Actual Movers</h2>'
         '<p class="muted">Detected price moves with prediction status. '
-        f'{n_tickers} unique tickers, {n_events} raw events.</p>'
+        f'{n_tickers} unique tickers &mdash; '
+        f'<strong>{n_deduped}</strong> deduped events (raw: {n_events}, duplicates removed: {n_dupes}).</p>'
         + _section("New 1d Spikes", spikes_1d, "Single-day moves ≥ threshold.")
         + _section("Active Accumulations", accumulations, "3d or 5d moves — short-term build-up.")
         + _section("Longer Trend Moves", trends, "10d/20d/60d moves — sustained trend or drift.")
@@ -2568,6 +2615,26 @@ def _ticker_page(
         except Exception:
             pass
 
+    # ── Enriched root cause for this ticker ────────────────────────────────────
+    ticker_enriched_root_causes: list[str] = []
+    enriched_path = os.path.join(output_dir, "prediction_vs_actual_enriched_rows.csv")
+    if os.path.exists(enriched_path):
+        try:
+            with open(enriched_path, newline="") as f:
+                seen_erc: set[tuple] = set()
+                for r in _csv.DictReader(f):
+                    if r.get("ticker") != ticker:
+                        continue
+                    key = (r.get("event_date", ""), r.get("event_type", ""), r.get("window_days", ""))
+                    if key in seen_erc:
+                        continue
+                    seen_erc.add(key)
+                    erc = r.get("enriched_root_cause", "")
+                    if erc:
+                        ticker_enriched_root_causes.append(erc)
+        except Exception:
+            pass
+
     # ── Catalyst queue history scan ────────────────────────────────────────────
     queue_entries: list[dict] = []
     dates = _dated_dirs(history_root)
@@ -2614,6 +2681,50 @@ def _ticker_page(
             '<h3>Universe</h3>'
             f'<p class="warn-box">Ticker <strong>{_esc(ticker)}</strong> not found in the companies table.</p>'
         )
+
+    # Data readiness block
+    freshness_map = _load_freshness_map(db_path)
+    f_data = freshness_map.get(ticker)
+    if f_data:
+        erc_set = set(ticker_enriched_root_causes)
+        if "price_only_scored" in erc_set:
+            dr_label, dr_style = "price_only", "color:#b45309;font-weight:700"
+            dr_note = "Scored on price momentum only — fundamentals missing. Limited confidence."
+        elif not f_data["has_fundamentals"]:
+            dr_label, dr_style = "missing_fundamentals", "color:#c62828;font-weight:700"
+            dr_note = "No SEC fundamentals data available."
+        elif "stale_fundamentals" in erc_set:
+            dr_label, dr_style = "stale_fundamentals", "color:#b45309;font-weight:700"
+            dr_note = "Fundamentals data is stale."
+        elif "missing_earnings_context" in erc_set or "sector_cluster_move" in erc_set:
+            dr_label, dr_style = "missing_news_context", "color:#78350f;font-weight:700"
+            dr_note = "Earnings/news context missing."
+        else:
+            dr_label, dr_style = "fresh", "color:#166534;font-weight:700"
+            dr_note = "All data signals available."
+        dr_badge = _freshness_badge(freshness_map, ticker)
+        dr_rows = (
+            _row("Readiness", f'<span style="{dr_style}">{_esc(dr_label)}</span>{dr_badge}')
+            + _row("Note", _esc(dr_note))
+            + _row("Has prices", "Yes" if f_data["has_prices"] else '<span style="color:#c62828">No</span>')
+            + _row("Price age", f'{f_data["price_age_days"]}d' if f_data["price_age_days"] is not None else "—")
+            + _row("Has fundamentals", "Yes" if f_data["has_fundamentals"] else '<span style="color:#c62828">No</span>')
+        )
+        if "price_only_scored" in erc_set:
+            price_only_warning_html = (
+                '<div class="warn-box">&#9888; <strong>Limited confidence</strong> — '
+                'this ticker was scored on price momentum only. '
+                'Fundamentals data was missing at scoring time.</div>'
+            )
+        else:
+            price_only_warning_html = ""
+        dr_block = (
+            f'<h3>Data Readiness</h3>'
+            + price_only_warning_html
+            + f'<table class="detail-table">{dr_rows}</table>'
+        )
+    else:
+        dr_block = '<h3>Data Readiness</h3><p class="muted">No freshness data available.</p>'
 
     # Score block
     if score_row:
@@ -2725,6 +2836,7 @@ def _ticker_page(
         f'<h2>Ticker: {_esc(ticker)}</h2>'
         + db_warn
         + uni_block
+        + dr_block
         + _price_block(price_ctx)
         + score_block
         + cand_block

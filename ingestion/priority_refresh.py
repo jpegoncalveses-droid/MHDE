@@ -10,15 +10,17 @@ def build_priority_queue(
     conn,
     as_of_date: Optional[str] = None,
     max_tickers: int = 100,
+    price_only_tickers: Optional[set[str]] = None,
 ) -> list[dict]:
     """Return tickers that need data refresh, sorted by urgency (1 = most urgent).
 
     Priority levels:
       1 -- no prices ever
+      1 -- price_only_scored true_miss or near_threshold (elevated alongside no_prices)
       2 -- stale prices (> 10 days old)
       3 -- no fundamentals (last_financial_filing_date IS NULL)
       4 -- no market_cap
-    Tickers with complete data are excluded.
+    Tickers with complete data are excluded unless they are price_only_scored.
     """
     if as_of_date is None:
         as_of_date = str(datetime.date.today())
@@ -41,6 +43,8 @@ def build_priority_queue(
         ORDER BY c.ticker
     """, [as_of_date]).fetchall()
 
+    price_only_set = price_only_tickers or set()
+
     queue: list[dict] = []
     for ticker, last_filing, market_cap, sector, last_price_date, price_age in rows:
         reasons: list[str] = []
@@ -60,6 +64,10 @@ def build_priority_queue(
         if market_cap is None:
             reasons.append("no_market_cap")
             priority = min(priority, 4)
+
+        if ticker in price_only_set:
+            reasons.append("price_only_scored")
+            priority = min(priority, 1)
 
         if reasons:
             queue.append({

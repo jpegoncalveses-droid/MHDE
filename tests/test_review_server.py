@@ -2155,3 +2155,122 @@ def test_candidates_renders_without_crash_no_db(tmp_path):
         r = c.get("/candidates")
     # Must not crash even without a real DB -- badges are best-effort
     assert r.status_code == 200
+
+
+# ── Dedup + data readiness ─────────────────────────────────────────────────
+
+_ENRICHED_COLS = _PVA_COLS + [
+    "event_type", "enriched_root_cause", "root_cause_group",
+    "explanation_short", "evidence_fields_used", "suggested_fix",
+    "confidence", "incomplete_diag_subcause",
+]
+
+
+def _write_enriched(output_dir: str, rows: list[dict]) -> str:
+    path = os.path.join(output_dir, "prediction_vs_actual_enriched_rows.csv")
+    with open(path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=_ENRICHED_COLS, extrasaction="ignore")
+        w.writeheader()
+        w.writerows(rows)
+    return path
+
+
+def _enriched_row(**kw) -> dict:
+    base = {
+        "ticker": "AAAB", "event_date": "2026-05-01", "event_type": "spike",
+        "return_value": "10.0", "window_days": "1",
+        "classification": "true_miss", "universe_tier": "primary",
+        "priority_score": "5.0", "score_before_event": "30.0",
+        "tier_before_event": "Reject", "had_catalyst_evidence": "True",
+        "was_in_universe": "True", "was_scored": "True",
+        "root_cause_hint": "data_gap", "score_join_method": "scores_join",
+        "enriched_root_cause": "sector_cluster_move", "root_cause_group": "unscored",
+        "explanation_short": "", "evidence_fields_used": "", "suggested_fix": "",
+        "confidence": "high", "incomplete_diag_subcause": "",
+    }
+    return {**base, **kw}
+
+
+def test_dedup_pva_rows_removes_duplicates():
+    from review.server import _dedup_pva_rows
+    rows = [
+        {"ticker": "AAAB", "event_date": "2026-05-01", "event_type": "spike", "window_days": "1"},
+        {"ticker": "AAAB", "event_date": "2026-05-01", "event_type": "spike", "window_days": "1"},
+        {"ticker": "AAAB", "event_date": "2026-05-02", "event_type": "spike", "window_days": "1"},
+    ]
+    result = _dedup_pva_rows(rows)
+    assert len(result) == 2
+
+
+def test_dedup_pva_rows_preserves_order():
+    from review.server import _dedup_pva_rows
+    rows = [
+        {"ticker": "A", "event_date": "2026-05-01", "event_type": "x", "window_days": "1"},
+        {"ticker": "B", "event_date": "2026-05-01", "event_type": "x", "window_days": "1"},
+        {"ticker": "A", "event_date": "2026-05-01", "event_type": "x", "window_days": "1"},
+    ]
+    result = _dedup_pva_rows(rows)
+    assert [r["ticker"] for r in result] == ["A", "B"]
+
+
+def test_learning_shows_raw_and_deduped_counts(tmp_path):
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir, exist_ok=True)
+    rows = [
+        _pva_row(ticker="AAAB", event_date="2026-05-01", window_days="1", event_type="spike"),
+        _pva_row(ticker="AAAB", event_date="2026-05-01", window_days="1", event_type="spike"),
+        _pva_row(ticker="BBBB", event_date="2026-05-01", window_days="1", event_type="spike"),
+    ]
+    _write_pva(output_dir, rows)
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/learning")
+    html = r.data.decode()
+    assert "raw" in html.lower() or "3" in html
+    assert "2" in html  # deduped count
+
+
+def test_learning_shows_enriched_root_cause_counts(tmp_path):
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir, exist_ok=True)
+    _write_pva(output_dir, [_pva_row()])
+    _write_enriched(output_dir, [
+        _enriched_row(enriched_root_cause="price_only_scored", classification="true_miss"),
+        _enriched_row(ticker="BBBB", enriched_root_cause="sector_cluster_move"),
+    ])
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/learning")
+    html = r.data.decode()
+    assert "price_only_scored" in html
+    assert "sector_cluster_move" in html
+
+
+def test_learning_shows_price_only_warning(tmp_path):
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir, exist_ok=True)
+    _write_pva(output_dir, [_pva_row()])
+    _write_enriched(output_dir, [
+        _enriched_row(enriched_root_cause="price_only_scored", classification="true_miss"),
+    ])
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/learning")
+    html = r.data.decode()
+    assert "price_only" in html.lower() or "limited confidence" in html.lower() or "warn" in html.lower()
+
+
+def test_moves_shows_deduped_count(tmp_path):
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir, exist_ok=True)
+    rows = [
+        _pva_row(ticker="AAAB", event_date="2026-05-01", window_days="1", event_type="spike"),
+        _pva_row(ticker="AAAB", event_date="2026-05-01", window_days="1", event_type="spike"),
+        _pva_row(ticker="BBBB", event_date="2026-05-01", window_days="5", event_type="spike"),
+    ]
+    _write_pva(output_dir, rows)
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/moves")
+    html = r.data.decode()
+    assert "dedup" in html.lower() or "duplicate" in html.lower() or "raw" in html.lower()

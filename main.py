@@ -323,18 +323,31 @@ def coverage_report_cmd(db_path, output_dir):
 @click.option("--db-path", default="data/mhde.duckdb", show_default=True)
 @click.option("--output", default="data/processed/priority_refresh_queue.csv", show_default=True)
 @click.option("--max-tickers", default=100, type=int, show_default=True)
-def priority_refresh_queue_cmd(db_path, output, max_tickers):
+@click.option("--enriched-csv", default="data/processed/prediction_vs_actual_enriched_rows.csv", show_default=True)
+def priority_refresh_queue_cmd(db_path, output, max_tickers, enriched_csv):
     """Build priority refresh queue -- tickers ordered by data staleness."""
+    import csv as _csv
     import duckdb as _duckdb
     from ingestion.priority_refresh import build_priority_queue, save_priority_queue
+
+    price_only_tickers: set[str] = set()
+    if os.path.exists(enriched_csv):
+        with open(enriched_csv, newline="") as f:
+            for row in _csv.DictReader(f):
+                if (row.get("enriched_root_cause") == "price_only_scored"
+                        and row.get("classification") in ("true_miss", "near_threshold")):
+                    price_only_tickers.add(row["ticker"])
+
     conn = _duckdb.connect(db_path, read_only=True)
-    queue = build_priority_queue(conn, max_tickers=max_tickers)
+    queue = build_priority_queue(conn, max_tickers=max_tickers, price_only_tickers=price_only_tickers)
     conn.close()
     save_priority_queue(queue, output)
     by_priority: dict[int, int] = {}
     for item in queue:
         by_priority.setdefault(item["priority"], 0)
         by_priority[item["priority"]] += 1
+    if price_only_tickers:
+        click.echo(f"  price_only_scored tickers flagged: {len(price_only_tickers)}")
     click.echo(f"Priority queue: {len(queue)} tickers -> {output}")
     for p in sorted(by_priority):
         click.echo(f"  Priority {p}: {by_priority[p]} tickers")
