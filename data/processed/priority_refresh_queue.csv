@@ -1,0 +1,225 @@
+ticker,priority,reason,last_price_date,last_filing_date,market_cap,sector
+AAPL,1,no_prices,,2026-05-01,4109006116320.0,Information Technology
+AES,1,no_prices|no_market_cap,,2026-03-02,,Utilities
+AIZ,1,no_prices|no_market_cap,,2026-02-19,,Financials
+AKAM,1,no_prices|no_market_cap,,2026-02-20,,Information Technology
+ALB,1,no_prices|no_market_cap,,2026-02-11,,Materials
+ALGN,1,no_prices|no_market_cap,,2026-02-27,,Health Care
+ALLE,1,no_prices|no_market_cap,,2026-04-28,,Industrials
+AMCR,1,no_prices|no_market_cap,,2026-02-04,,Materials
+AOS,1,no_prices|no_market_cap,,2026-04-30,,Industrials
+APA,1,no_prices|no_market_cap,,2026-02-26,,Energy
+APTV,1,no_prices|no_market_cap,,2026-02-06,,Consumer Discretionary
+ARE,1,no_prices|no_market_cap,,2026-04-27,,Real Estate
+AVB,1,no_prices|no_fundamentals|no_market_cap,,,,Real Estate
+AVY,1,no_prices|no_fundamentals|no_market_cap,,,,Materials
+AWK,1,no_prices|no_fundamentals|no_market_cap,,,,Utilities
+BALL,1,no_prices|no_fundamentals|no_market_cap,,,,Materials
+BAX,1,no_prices|no_fundamentals|no_market_cap,,,,Health Care
+BBY,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Discretionary
+BEN,1,no_prices|no_fundamentals|no_market_cap,,,,Financials
+BF.B,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Staples
+BG,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Staples
+BLDR,1,no_prices|no_fundamentals|no_market_cap,,,,Industrials
+BR,1,no_prices|no_fundamentals|no_market_cap,,,,Industrials
+BRK.B,1,no_prices|no_fundamentals|no_market_cap,,,,Financials
+BRO,1,no_prices|no_fundamentals|no_market_cap,,,,Financials
+BXP,1,no_prices|no_fundamentals|no_market_cap,,,,Real Estate
+CAG,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Staples
+CDW,1,no_prices|no_fundamentals|no_market_cap,,,,Information Technology
+CF,1,no_prices|no_fundamentals|no_market_cap,,,,Materials
+CHD,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Staples
+CHRW,1,no_prices|no_fundamentals|no_market_cap,,,,Industrials
+CINF,1,no_prices|no_fundamentals|no_market_cap,,,,Financials
+CLX,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Staples
+CMS,1,no_prices|no_fundamentals|no_market_cap,,,,Utilities
+COO,1,no_prices|no_fundamentals,,,12167333859.28,Health Care
+CPAY,1,no_prices|no_fundamentals|no_market_cap,,,,Financials
+CPB,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Staples
+CPT,1,no_prices|no_fundamentals|no_market_cap,,,,Real Estate
+CRL,1,no_prices|no_fundamentals|no_market_cap,,,,Health Care
+CSGP,1,no_prices|no_fundamentals|no_market_cap,,,,Real Estate
+CTSH,1,no_prices|no_fundamentals|no_market_cap,,,,Information Technology
+DD,1,no_prices|no_fundamentals|no_market_cap,,,,Materials
+DECK,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Discretionary
+DGX,1,no_prices|no_fundamentals|no_market_cap,,,,Health Care
+DLR,1,no_prices|no_fundamentals|no_market_cap,,,,Real Estate
+DLTR,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Staples
+DOC,1,no_prices|no_fundamentals|no_market_cap,,,,Real Estate
+DPZ,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Discretionary
+DRI,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Discretionary
+DVA,1,no_prices|no_fundamentals|no_market_cap,,,,Health Care
+DXCM,1,no_prices|no_fundamentals|no_market_cap,,,,Health Care
+EFX,1,no_prices|no_fundamentals|no_market_cap,,,,Industrials
+EG,1,no_prices|no_fundamentals|no_market_cap,,,,Financials
+EPAM,1,no_prices|no_fundamentals|no_market_cap,,,,Information Technology
+EQR,1,no_prices|no_fundamentals|no_market_cap,,,,Real Estate
+ERIE,1,no_prices|no_fundamentals|no_market_cap,,,,Financials
+ES,1,no_prices|no_fundamentals|no_market_cap,,,,Utilities
+ESS,1,no_prices|no_fundamentals|no_market_cap,,,,Real Estate
+EVRG,1,no_prices|no_fundamentals|no_market_cap,,,,Utilities
+EXE,1,no_prices|no_fundamentals|no_market_cap,,,,Energy
+EXPD,1,no_prices|no_fundamentals|no_market_cap,,,,Industrials
+FDS,1,no_prices|no_fundamentals|no_market_cap,,,,Financials
+FFIV,1,no_prices|no_fundamentals|no_market_cap,,,,Information Technology
+FICO,1,no_prices|no_fundamentals|no_market_cap,,,,Information Technology
+FIS,1,no_prices|no_fundamentals|no_market_cap,,,,Financials
+FOX,1,no_prices|no_fundamentals|no_market_cap,,,,Communication Services
+FRT,1,no_prices|no_fundamentals,,,9962288723.16,Real Estate
+FSLR,1,no_prices|no_fundamentals,,,22748875265.13,Information Technology
+FTV,1,no_prices|no_fundamentals|no_market_cap,,,,Industrials
+GDDY,1,no_prices|no_fundamentals|no_market_cap,,,,Information Technology
+GEN,1,no_prices|no_fundamentals|no_market_cap,,,,Information Technology
+GIS,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Staples
+GL,1,no_prices|no_fundamentals|no_market_cap,,,,Financials
+GNRC,1,no_prices|no_fundamentals|no_market_cap,,,,Industrials
+GOOG,1,no_prices|no_fundamentals|no_market_cap,,,,Communication Services
+GPC,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Discretionary
+GPN,1,no_prices|no_fundamentals|no_market_cap,,,,Financials
+HAS,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Discretionary
+HII,1,no_prices|no_fundamentals|no_market_cap,,,,Industrials
+HPQ,1,no_prices|no_fundamentals|no_market_cap,,,,Information Technology
+HRL,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Staples
+HSIC,1,no_prices|no_fundamentals|no_market_cap,,,,Health Care
+HST,1,no_prices|no_fundamentals|no_market_cap,,,,Real Estate
+IEX,1,no_prices|no_fundamentals|no_market_cap,,,,Industrials
+IFF,1,no_prices|no_fundamentals|no_market_cap,,,,Materials
+INCY,1,no_prices|no_fundamentals|no_market_cap,,,,Health Care
+INVH,1,no_prices|no_fundamentals|no_market_cap,,,,Real Estate
+IP,1,no_prices|no_fundamentals|no_market_cap,,,,Materials
+IT,1,no_prices|no_fundamentals|no_market_cap,,,,Information Technology
+IVZ,1,no_prices|no_fundamentals|no_market_cap,,,,Financials
+J,1,no_prices|no_fundamentals|no_market_cap,,,,Industrials
+JBHT,1,no_prices|no_fundamentals|no_market_cap,,,,Industrials
+JKHY,1,no_prices|no_fundamentals|no_market_cap,,,,Financials
+JPM,1,no_prices|no_market_cap,,2026-02-13,,Financials
+KEY,1,no_prices|no_fundamentals|no_market_cap,,,,Financials
+KIM,1,no_prices|no_fundamentals|no_market_cap,,,,Real Estate
+L,1,no_prices|no_fundamentals|no_market_cap,,,,Financials
+LDOS,1,no_prices|no_fundamentals|no_market_cap,,,,Industrials
+LEN,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Discretionary
+LH,1,no_prices|no_fundamentals|no_market_cap,,,,Health Care
+LII,1,no_prices|no_fundamentals|no_market_cap,,,,Industrials
+LNT,1,no_prices|no_fundamentals|no_market_cap,,,,Utilities
+LULU,1,no_prices|no_fundamentals,,,15441665262.560001,Consumer Discretionary
+LUV,1,no_prices|no_fundamentals,,,18944869115.879997,Industrials
+LYB,1,no_prices|no_fundamentals|no_market_cap,,,,Materials
+MAA,1,no_prices|no_fundamentals|no_market_cap,,,,Real Estate
+MAS,1,no_prices|no_fundamentals|no_market_cap,,,,Industrials
+MGM,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Discretionary
+MKC,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Staples
+MOS,1,no_prices|no_fundamentals|no_market_cap,,,,Materials
+MRNA,1,no_prices|no_fundamentals|no_market_cap,,,,Health Care
+MTD,1,no_prices|no_fundamentals|no_market_cap,,,,Health Care
+NCLH,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Discretionary
+NDSN,1,no_prices|no_fundamentals|no_market_cap,,,,Industrials
+NFLX,1,no_prices|no_fundamentals|no_market_cap,,,,Communication Services
+NI,1,no_prices|no_fundamentals|no_market_cap,,,,Utilities
+NTAP,1,no_prices|no_fundamentals|no_market_cap,,,,Information Technology
+NTRS,1,no_prices|no_fundamentals|no_market_cap,,,,Financials
+NVDA,1,no_prices|no_market_cap,,2026-02-25,,Information Technology
+NVR,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Discretionary
+NWS,1,no_prices|no_fundamentals|no_market_cap,,,,Communication Services
+NWSA,1,no_prices|no_fundamentals|no_market_cap,,,,Communication Services
+OMC,1,no_prices|no_fundamentals|no_market_cap,,,,Communication Services
+PFG,1,no_prices|no_fundamentals|no_market_cap,,,,Financials
+PHM,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Discretionary
+PKG,1,no_prices|no_fundamentals|no_market_cap,,,,Materials
+PNR,1,no_prices|no_fundamentals|no_market_cap,,,,Industrials
+PNW,1,no_prices|no_fundamentals|no_market_cap,,,,Utilities
+PODD,1,no_prices|no_fundamentals|no_market_cap,,,,Health Care
+POOL,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Discretionary
+PPG,1,no_prices|no_fundamentals|no_market_cap,,,,Materials
+PSKY,1,no_prices|no_fundamentals,,,12329208898.81,Communication Services
+PTC,1,no_prices|no_fundamentals,,,16246539717.48,Information Technology
+REG,1,no_prices|no_fundamentals|no_market_cap,,,,Real Estate
+RF,1,no_prices|no_fundamentals|no_market_cap,,,,Financials
+RKLB,1,no_prices|no_market_cap,,2026-02-26,,
+RL,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Discretionary
+RVTY,1,no_prices|no_fundamentals|no_market_cap,,,,Health Care
+SBAC,1,no_prices|no_fundamentals|no_market_cap,,,,Real Estate
+SJM,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Staples
+SMCI,1,no_prices|no_fundamentals|no_market_cap,,,,Information Technology
+SNA,1,no_prices|no_fundamentals|no_market_cap,,,,Industrials
+SOLV,1,no_prices|no_fundamentals|no_market_cap,,,,Health Care
+STE,1,no_prices|no_fundamentals|no_market_cap,,,,Health Care
+SW,1,no_prices|no_fundamentals|no_market_cap,,,,Materials
+SWK,1,no_prices|no_fundamentals|no_market_cap,,,,Industrials
+SWKS,1,no_prices|no_fundamentals|no_market_cap,,,,Information Technology
+SYF,1,no_prices|no_fundamentals|no_market_cap,,,,Financials
+TAP,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Staples
+TECH,1,no_prices|no_fundamentals|no_market_cap,,,,Health Care
+TKO,1,no_prices|no_fundamentals|no_market_cap,,,,Communication Services
+TRMB,1,no_prices|no_fundamentals|no_market_cap,,,,Information Technology
+TROW,1,no_prices|no_fundamentals|no_market_cap,,,,Financials
+TSCO,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Discretionary
+TSLA,1,no_prices|no_market_cap,,2026-04-23,,Consumer Discretionary
+TSN,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Staples
+TTD,1,no_prices|no_fundamentals|no_market_cap,,,,Communication Services
+TXT,1,no_prices|no_fundamentals,,,16490646955.52,Industrials
+TYL,1,no_prices|no_fundamentals,,,14147181152.5,Information Technology
+UBER,1,no_prices,,2026-02-13,153006283332.96002,Industrials
+UDR,1,no_prices|no_fundamentals|no_market_cap,,,,Real Estate
+UHS,1,no_prices|no_fundamentals|no_market_cap,,,,Health Care
+ULTA,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Discretionary
+VLTO,1,no_prices|no_fundamentals|no_market_cap,,,,Industrials
+VRSK,1,no_prices|no_fundamentals|no_market_cap,,,,Industrials
+VRSN,1,no_prices|no_fundamentals|no_market_cap,,,,Information Technology
+VTRS,1,no_prices|no_fundamentals|no_market_cap,,,,Health Care
+WRB,1,no_prices|no_fundamentals|no_market_cap,,,,Financials
+WSM,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Discretionary
+WST,1,no_prices|no_fundamentals|no_market_cap,,,,Health Care
+WY,1,no_prices|no_fundamentals|no_market_cap,,,,Real Estate
+WYNN,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Discretionary
+XYZ,1,no_prices|no_market_cap,,2026-02-26,,Financials
+YUM,1,no_prices|no_market_cap,,2026-02-20,,Consumer Discretionary
+ZBH,1,no_prices|no_fundamentals|no_market_cap,,,,Health Care
+ZBRA,1,no_prices|no_fundamentals|no_market_cap,,,,Information Technology
+ZM,1,no_prices|no_market_cap,,2026-02-27,,
+ZTS,1,no_prices|no_market_cap,,2026-02-12,,Health Care
+BAESY,3,no_fundamentals|no_market_cap,2026-05-01,,,
+CSLLY,3,no_fundamentals|no_market_cap,2026-05-01,,,
+FSNUY,3,no_fundamentals|no_market_cap,2026-05-01,,,
+LSEGY,3,no_fundamentals|no_market_cap,2026-05-01,,,
+RSHGY,3,no_fundamentals|no_market_cap,2026-05-01,,,
+ASTS,4,no_market_cap,2026-05-01,2026-03-02,,
+AXIA,4,no_market_cap,2026-05-01,2026-04-24,,
+AZN,4,no_market_cap,2026-05-01,2026-02-24,,
+BAM,4,no_market_cap,2026-05-01,2026-03-02,,
+BIDU,4,no_market_cap,2026-05-01,2026-03-17,,
+BN,4,no_market_cap,2026-05-01,2026-03-18,,
+BP,4,no_market_cap,2026-05-01,2026-03-06,,
+BSBR,4,no_market_cap,2026-05-01,2026-02-27,,
+CPNG,4,no_market_cap,2026-05-01,2026-02-26,,
+CRWV,4,no_market_cap,2026-05-01,2026-03-02,,
+CVNA,4,no_market_cap,2026-05-01,2026-04-29,,Consumer Discretionary
+DASH,4,no_market_cap,2026-05-01,2026-02-18,,Consumer Discretionary
+DDOG,4,no_market_cap,2026-05-01,2026-02-18,,Information Technology
+DTEGY,4,no_market_cap,2026-05-01,2010-02-25,,
+EL,4,no_market_cap,2026-05-01,2026-02-05,,Consumer Staples
+EONGY,4,no_market_cap,2026-05-01,2007-03-07,,
+ERIC,4,no_market_cap,2026-05-01,2026-03-12,,
+FMX,4,no_market_cap,2026-05-01,2026-04-24,,
+GWLIF,4,no_market_cap,2026-05-01,2003-07-02,,
+HOOD,4,no_market_cap,2026-05-01,2026-04-29,,Financials
+IBN,4,no_market_cap,2026-05-01,2025-07-25,,
+IFNNY,4,no_market_cap,2026-05-01,2009-12-08,,
+MDLN,4,no_market_cap,2026-05-01,2026-02-25,,
+META,4,no_market_cap,2026-05-01,2026-04-30,,Communication Services
+MFC,4,no_market_cap,2026-05-01,2026-02-11,,
+MSTR,4,no_market_cap,2026-05-01,2026-02-19,,
+NET,4,no_market_cap,2026-05-01,2026-02-26,,
+NU,4,no_market_cap,2026-05-01,2026-04-08,,
+NVO,4,no_market_cap,2026-05-01,2026-02-04,,
+NWG,4,no_market_cap,2026-05-01,2026-02-17,,
+RDDT,4,no_market_cap,2026-05-01,2026-05-01,,
+RKT,4,no_market_cap,2026-05-01,2026-03-02,,
+RTNTF,4,no_market_cap,2026-05-01,2026-02-19,,
+SCMWY,4,no_market_cap,2026-05-01,2007-04-23,,
+SE,4,no_market_cap,2026-05-01,2026-04-17,,
+SHOP,4,no_market_cap,2026-05-01,2026-02-11,,
+SLF,4,no_market_cap,2026-05-01,2026-02-12,,
+STZ,4,no_market_cap,2026-05-01,2026-04-22,,Consumer Staples
+TECK,4,no_market_cap,2026-05-01,2026-02-19,,
+VG,4,no_market_cap,2026-05-01,2026-03-02,,
+VIK,4,no_market_cap,2026-05-01,2026-03-03,,

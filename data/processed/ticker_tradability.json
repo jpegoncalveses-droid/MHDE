@@ -1,0 +1,22 @@
+{
+  "CTRA": {
+    "tradability_status": "tradable",
+    "broker_note": "",
+    "updated_at": "2026-05-03T21:05:32Z"
+  },
+  "VG": {
+    "tradability_status": "tradable",
+    "broker_note": "",
+    "updated_at": "2026-05-03T21:05:52Z"
+  },
+  "EPD": {
+    "tradability_status": "not_tradable",
+    "broker_note": "",
+    "updated_at": "2026-05-03T21:06:01Z"
+  },
+  "ORCL": {
+    "tradability_status": "tradable",
+    "broker_note": "",
+    "updated_at": "2026-05-03T21:06:19Z"
+  }
+}
