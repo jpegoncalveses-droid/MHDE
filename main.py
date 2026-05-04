@@ -812,6 +812,95 @@ def missed_enrich_root_causes(input_csv, output_dir):
         conn.close()
 
 
+@missed.command("refresh-learning")
+@click.option("--output-dir", default="data/processed", show_default=True,
+              help="Directory for output artifacts.")
+@click.option("--lookback-days", default=90, type=int, show_default=True,
+              help="Days of events to include in prediction-vs-actual.")
+@click.option("--db-path", default="data/mhde.duckdb", show_default=True,
+              help="DuckDB path for freshness check.")
+def missed_refresh_learning(output_dir, lookback_days, db_path):
+    """Re-run prediction-vs-actual then enrich-root-causes in correct order.
+
+    Checks PvA freshness first and warns if already up-to-date.
+    Enforces pipeline order: PvA must complete before enrichment runs.
+    No scoring changes.
+    """
+    import os
+    import csv as csv_mod
+    from pathlib import Path
+    from datetime import date as _date
+    from health.pva_freshness import check_pva_freshness
+    from missed.prediction_report import generate_prediction_report
+    from missed.root_cause_enrichment import enrich_rows, generate_enrichment_report
+
+    pva_csv = os.path.join(output_dir, "prediction_vs_actual_rows.csv")
+    freshness = check_pva_freshness(db_path=db_path, pva_csv_path=pva_csv)
+    if not freshness.is_stale:
+        click.echo(f"PvA already current: {freshness.reason}")
+        click.echo("Re-running anyway to ensure consistency.")
+    else:
+        click.secho(f"PvA stale: {freshness.reason}", fg="yellow")
+
+    # Step 1: prediction-vs-actual
+    click.echo("\n[1/2] Running prediction-vs-actual...")
+    cfg, conn = _engine_setup()
+    try:
+        md_path, csv_path, jsonl_path = generate_prediction_report(
+            conn, output_dir=output_dir, lookback_days=lookback_days
+        )
+        click.echo(f"  Written: {csv_path}")
+    finally:
+        conn.close()
+
+    # Step 2: enrich-root-causes (reads CSV just written)
+    click.echo("\n[2/2] Running enrich-root-causes...")
+    input_path = Path(pva_csv)
+    if not input_path.exists():
+        raise click.ClickException(f"PvA CSV missing after generation: {pva_csv}")
+
+    with open(input_path, newline="") as f:
+        raw_rows = list(csv_mod.DictReader(f))
+
+    for r in raw_rows:
+        for numeric_field in ("return_value", "score_before_event", "priority_score"):
+            val = r.get(numeric_field)
+            if val not in (None, "", "None"):
+                try:
+                    r[numeric_field] = float(val)
+                except ValueError:
+                    r[numeric_field] = None
+            else:
+                r[numeric_field] = None
+        for bool_field in ("was_in_universe", "was_scored", "had_catalyst_evidence"):
+            r[bool_field] = r.get(bool_field, "").lower() in ("true", "1", "yes")
+        event_date_str = r.get("event_date")
+        if event_date_str not in (None, "", "None"):
+            r["event_date"] = _date.fromisoformat(event_date_str)
+        win = r.get("window_days")
+        if win not in (None, "", "None"):
+            try:
+                r["window_days"] = int(win)
+            except ValueError:
+                r["window_days"] = None
+
+    cfg2, conn2 = _engine_setup()
+    try:
+        enriched = enrich_rows(raw_rows, conn2)
+        csv_e, md_e = generate_enrichment_report(enriched, output_dir=output_dir)
+        click.echo(f"  Written: {csv_e}")
+        click.echo(f"  Rows enriched: {len(enriched)}")
+    finally:
+        conn2.close()
+
+    # Final freshness check
+    freshness2 = check_pva_freshness(db_path=db_path, pva_csv_path=pva_csv)
+    if freshness2.is_stale:
+        click.secho(f"\nWarning: PvA still stale after refresh: {freshness2.reason}", fg="yellow")
+    else:
+        click.secho(f"\nLearning refresh complete. PvA current through {freshness2.pva_max_event_date}.", fg="green")
+
+
 @missed.command("pilot")
 @click.option("--n", default=100, type=int, show_default=True,
               help="Number of events to sample.")

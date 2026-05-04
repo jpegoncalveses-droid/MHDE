@@ -2613,3 +2613,109 @@ def test_candidates_snapshot_shows_outcome_column(tmp_path):
     html = r.data.decode()
     assert r.status_code == 200
     assert "Outcome" in html
+
+
+# ── PvA freshness warning on /learning ────────────────────────────────────────
+
+def _write_pva_csv_for_learning(tmp_path, event_dates: list[str]) -> None:
+    """Write a minimal prediction_vs_actual_rows.csv into tmp_path/data/processed/."""
+    out_dir = os.path.join(str(tmp_path), "data", "processed")
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, "prediction_vs_actual_rows.csv")
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["event_date", "ticker", "classification",
+                                                "return_value", "window_days", "event_type",
+                                                "was_in_universe", "was_scored", "score_before_event",
+                                                "priority_score", "tier_before_event",
+                                                "had_catalyst_evidence", "investigation_status"])
+        writer.writeheader()
+        for ed in event_dates:
+            writer.writerow({
+                "event_date": ed, "ticker": "MSFT", "classification": "true_miss",
+                "return_value": "0.12", "window_days": "5", "event_type": "gain_5d_10pct",
+                "was_in_universe": "True", "was_scored": "True", "score_before_event": "35.0",
+                "priority_score": "", "tier_before_event": "Reject",
+                "had_catalyst_evidence": "False", "investigation_status": "pending",
+            })
+
+
+def _make_db_with_prices(tmp_path, latest_date: str) -> str:
+    """Create a minimal mhde.duckdb with one price row."""
+    db_dir = os.path.join(str(tmp_path), "data")
+    os.makedirs(db_dir, exist_ok=True)
+    db_path = os.path.join(db_dir, "mhde.duckdb")
+    import duckdb as _duckdb
+    conn = _duckdb.connect(db_path)
+    conn.execute("CREATE TABLE IF NOT EXISTS prices_daily (id VARCHAR, ticker VARCHAR, trade_date DATE, close DOUBLE)")
+    conn.execute("INSERT INTO prices_daily VALUES ('x1', 'MSFT', ?, 100.0)", [latest_date])
+    conn.close()
+    return db_path
+
+
+def _make_app_with_pva(tmp_path, db_path: str, event_dates: list[str]):
+    """App with PvA CSV in the output_dir the app will serve."""
+    from review.server import create_app
+    history_root = str(tmp_path / "history")
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir, exist_ok=True)
+    # Write PvA CSV into the output_dir the app uses
+    pva_path = os.path.join(output_dir, "prediction_vs_actual_rows.csv")
+    with open(pva_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["event_date", "ticker", "classification",
+                                                "return_value", "window_days", "event_type",
+                                                "was_in_universe", "was_scored", "score_before_event",
+                                                "priority_score", "tier_before_event",
+                                                "had_catalyst_evidence", "investigation_status"])
+        writer.writeheader()
+        for ed in event_dates:
+            writer.writerow({
+                "event_date": ed, "ticker": "MSFT", "classification": "true_miss",
+                "return_value": "0.12", "window_days": "5", "event_type": "gain_5d_10pct",
+                "was_in_universe": "True", "was_scored": "True", "score_before_event": "35.0",
+                "priority_score": "", "tier_before_event": "Reject",
+                "had_catalyst_evidence": "False", "investigation_status": "pending",
+            })
+    _write_day(history_root, "2026-05-01", _BASE_META, [])
+    return create_app(history_root, output_dir, unsafe_no_auth=True, db_path=db_path)
+
+
+def test_learning_shows_stale_warning_when_prices_newer_than_pva(tmp_path):
+    """Learning page shows stale warning when prices are newer than PvA coverage."""
+    db_path = _make_db_with_prices(tmp_path, "2026-05-01")
+    _seed_db_with_events(db_path, return_value=0.12)
+    app = _make_app_with_pva(tmp_path, db_path=db_path, event_dates=["2026-04-28", "2026-04-29"])
+    with app.test_client() as c:
+        r = c.get("/learning")
+    html = r.data.decode()
+    assert r.status_code == 200
+    assert "stale" in html.lower() or "refresh-learning" in html.lower()
+
+
+def test_learning_no_stale_warning_when_aligned(tmp_path):
+    """Learning page shows no stale warning when PvA covers latest price date."""
+    db_path = _make_db_with_prices(tmp_path, "2026-05-01")
+    _seed_db_with_events(db_path, return_value=0.12)
+    app = _make_app_with_pva(tmp_path, db_path=db_path, event_dates=["2026-05-01"])
+    with app.test_client() as c:
+        r = c.get("/learning")
+    html = r.data.decode()
+    assert r.status_code == 200
+    assert "refresh-learning" not in html
+
+
+def test_learning_stale_no_crash_without_db(tmp_path):
+    """Learning page must not crash if DB path is missing during freshness check."""
+    from review.server import create_app
+    history_root = str(tmp_path / "history")
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir, exist_ok=True)
+    pva_path = os.path.join(output_dir, "prediction_vs_actual_rows.csv")
+    with open(pva_path, "w", newline="") as f:
+        f.write("event_date,ticker,classification\n2026-05-01,MSFT,true_miss\n")
+    _write_day(history_root, "2026-05-01", _BASE_META, [])
+    app = create_app(history_root, output_dir, unsafe_no_auth=True,
+                     db_path="/nonexistent/mhde.duckdb")
+    with app.test_client() as c:
+        r = c.get("/learning")
+    assert r.status_code == 200
+    assert "Learning" in r.data.decode()

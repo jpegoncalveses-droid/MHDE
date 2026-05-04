@@ -1954,10 +1954,26 @@ def _learning_page(output_dir: str, history_root: str = "", db_path: str = "") -
     rows_path = Path(output_dir) / "prediction_vs_actual_rows.csv"
     enriched_path = Path(output_dir) / "prediction_vs_actual_enriched_rows.csv"
 
+    # PvA freshness warning (best-effort)
+    pva_stale_html = ""
+    if db_path:
+        try:
+            from health.pva_freshness import check_pva_freshness
+            fr = check_pva_freshness(db_path=db_path, pva_csv_path=str(rows_path))
+            if fr.is_stale:
+                pva_stale_html = (
+                    f'<div class="warn-box">&#9888; <strong>Prediction-vs-actual is stale</strong> — '
+                    f'{_esc(fr.reason)} '
+                    f'Run: <code>python main.py missed refresh-learning</code></div>'
+                )
+        except Exception:
+            pass
+
     if not rows_path.exists():
         body = (
             '<h2>Prediction vs Actual — Learning Summary</h2>'
-            '<p class="muted">No prediction report found. '
+            + pva_stale_html
+            + '<p class="muted">No prediction report found. '
             'Run <code>python main.py missed prediction-vs-actual</code> to generate.</p>'
         )
         return _render("Learning — MHDE", body)
@@ -2128,6 +2144,8 @@ def _learning_page(output_dir: str, history_root: str = "", db_path: str = "") -
   Deduped events: <strong>{total}</strong>
   (raw: {raw_total}, duplicates removed: {dupes_removed})</p>
 <div class="banner shadow">&#128274; Shadow-only — production scores unchanged.</div>
+
+{pva_stale_html}
 
 {price_only_warning}
 
