@@ -327,12 +327,13 @@ def coverage_report_cmd(db_path, output_dir):
 def priority_refresh_queue_cmd(db_path, output, max_tickers, enriched_csv):
     """Build priority refresh queue -- tickers ordered by data staleness."""
     import csv as _csv
+    import os as _os
     import duckdb as _duckdb
     from ingestion.priority_refresh import build_priority_queue, save_priority_queue
 
     price_only_p1: set[str] = set()
     price_only_p2: set[str] = set()
-    if os.path.exists(enriched_csv):
+    if _os.path.exists(enriched_csv):
         with open(enriched_csv, newline="") as f:
             for row in _csv.DictReader(f):
                 if row.get("enriched_root_cause") == "price_only_scored":
