@@ -198,6 +198,7 @@ _ENRICHMENT_EXTRA_COLS = [
     "incomplete_diag_sector",
     "incomplete_diag_market_cap_known",
     "incomplete_diag_subcause",
+    "sector_cluster_subcause",
 ]
 
 _INCOMPLETE_DIAG_EMPTY: dict[str, str] = {
@@ -210,6 +211,7 @@ _INCOMPLETE_DIAG_EMPTY: dict[str, str] = {
     "incomplete_diag_sector": "",
     "incomplete_diag_market_cap_known": "",
     "incomplete_diag_subcause": "",
+    "sector_cluster_subcause": "",
 }
 
 # Threshold boundaries (must match prediction_report.py)
@@ -458,6 +460,8 @@ def _assign_root_cause(
     earnings_dates: dict[str, list[date]],
     sector_clusters: set[tuple[str, str, Any]],
     companies_data: dict[str, dict[str, Any]],
+    sector_map: dict[str, str] | None = None,
+    etf_coverage: dict[str, int] | None = None,
     today: date,
 ) -> tuple[str, dict[str, str]]:
     """First-match root-cause assignment; returns (label, diag_fields)."""
@@ -490,7 +494,13 @@ def _assign_root_cause(
 
     # Priority 5 — sector cluster
     if event_date is not None and (ticker, str(event_date), window) in sector_clusters:
-        return "sector_cluster_move", dict(_INCOMPLETE_DIAG_EMPTY)
+        diag = dict(_INCOMPLETE_DIAG_EMPTY)
+        if sector_map is not None and etf_coverage is not None:
+            from health.sector_diagnostics import classify_sector_cluster_row
+            diag["sector_cluster_subcause"] = classify_sector_cluster_row(
+                ticker, sector_map.get(ticker), etf_coverage
+            )
+        return "sector_cluster_move", diag
 
     # Priority 6
     if not row.get("had_catalyst_evidence"):
@@ -549,11 +559,13 @@ def enrich_rows(rows: list[dict], conn: duckdb.DuckDBPyConnection) -> list[dict]
     Returns a new list; input rows are NOT mutated.
     Shadow-only — no scores are written to the database.
     """
+    from health.sector_diagnostics import get_etf_coverage
     score_components = _fetch_score_components(conn)
     earnings_dates   = _fetch_earnings_dates(conn)
     sector_map       = _fetch_sector_map(conn)
     companies_data   = _fetch_companies_data(conn)
     sector_clusters  = _detect_sector_clusters(rows, sector_map)
+    etf_coverage     = get_etf_coverage(conn)
     today            = date.today()
 
     result: list[dict] = []
@@ -564,6 +576,8 @@ def enrich_rows(rows: list[dict], conn: duckdb.DuckDBPyConnection) -> list[dict]
             earnings_dates=earnings_dates,
             sector_clusters=sector_clusters,
             companies_data=companies_data,
+            sector_map=sector_map,
+            etf_coverage=etf_coverage,
             today=today,
         )
         enrichment = _build_enrichment(label, diag)
