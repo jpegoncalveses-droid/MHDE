@@ -306,56 +306,6 @@ def health():
         conn.close()
 
 
-@cli.command("priority-refresh-queue")
-@click.option("--db-path", default="data/mhde.duckdb", show_default=True)
-@click.option("--output", default="data/processed/priority_refresh_queue.csv", show_default=True)
-@click.option("--max-tickers", default=100, type=int, show_default=True)
-@click.option("--enriched-csv", default="data/processed/prediction_vs_actual_enriched_rows.csv", show_default=True)
-def priority_refresh_queue_cmd(db_path, output, max_tickers, enriched_csv):
-    """Build priority refresh queue -- tickers ordered by data staleness."""
-    import csv as _csv
-    import os as _os
-    import duckdb as _duckdb
-    from ingestion.priority_refresh import build_priority_queue, save_priority_queue
-
-    price_only_p1: set[str] = set()
-    price_only_p2: set[str] = set()
-    polygon_missing: set[str] = set()
-    if _os.path.exists(enriched_csv):
-        with open(enriched_csv, newline="") as f:
-            for row in _csv.DictReader(f):
-                rc = row.get("enriched_root_cause", "")
-                clf = row.get("classification", "")
-                if rc == "price_only_scored":
-                    if clf == "true_miss":
-                        price_only_p1.add(row["ticker"])
-                    elif clf in ("near_threshold", "scored_missed"):
-                        price_only_p2.add(row["ticker"])
-                elif rc == "polygon_fundamentals_missing" and clf in ("true_miss", "near_threshold", "scored_missed"):
-                    polygon_missing.add(row["ticker"])
-
-    conn = _duckdb.connect(db_path, read_only=True)
-    queue = build_priority_queue(
-        conn, max_tickers=max_tickers,
-        price_only_p1_tickers=price_only_p1,
-        price_only_p2_tickers=price_only_p2,
-        polygon_missing_tickers=polygon_missing,
-    )
-    conn.close()
-    save_priority_queue(queue, output)
-    by_priority: dict[int, int] = {}
-    for item in queue:
-        by_priority.setdefault(item["priority"], 0)
-        by_priority[item["priority"]] += 1
-    if price_only_p1 or price_only_p2:
-        click.echo(f"  price_only_scored_miss P1: {len(price_only_p1)}  P2: {len(price_only_p2)}")
-    if polygon_missing:
-        click.echo(f"  polygon_fundamentals_missing_miss: {len(polygon_missing)}")
-    click.echo(f"Priority queue: {len(queue)} tickers -> {output}")
-    for p in sorted(by_priority):
-        click.echo(f"  Priority {p}: {by_priority[p]} tickers")
-
-
 @cli.group()
 def learn():
     """Learning loop commands: calibration, insights, experiments."""
@@ -555,6 +505,56 @@ def coverage_report_cmd(db_path, output_dir):
     click.echo(f"Total: {s['total']}  Fresh: {s['fresh']}  Stale: {s['stale']}  Missing: {s['missing']}")
     click.echo(f"Has fundamentals: {s['has_fundamentals']}  Has market_cap: {s['has_market_cap']}")
     click.echo(f"Written: {result['md']}  {result['csv']}")
+
+
+@data.command("priority-refresh-queue")
+@click.option("--db-path", default="data/mhde.duckdb", show_default=True)
+@click.option("--output", default="data/processed/priority_refresh_queue.csv", show_default=True)
+@click.option("--max-tickers", default=100, type=int, show_default=True)
+@click.option("--enriched-csv", default="data/processed/prediction_vs_actual_enriched_rows.csv", show_default=True)
+def data_priority_refresh_queue_cmd(db_path, output, max_tickers, enriched_csv):
+    """Build priority refresh queue -- tickers ordered by data staleness."""
+    import csv as _csv
+    import os as _os
+    import duckdb as _duckdb
+    from ingestion.priority_refresh import build_priority_queue, save_priority_queue
+
+    price_only_p1: set[str] = set()
+    price_only_p2: set[str] = set()
+    polygon_missing: set[str] = set()
+    if _os.path.exists(enriched_csv):
+        with open(enriched_csv, newline="") as f:
+            for row in _csv.DictReader(f):
+                rc = row.get("enriched_root_cause", "")
+                clf = row.get("classification", "")
+                if rc == "price_only_scored":
+                    if clf == "true_miss":
+                        price_only_p1.add(row["ticker"])
+                    elif clf in ("near_threshold", "scored_missed"):
+                        price_only_p2.add(row["ticker"])
+                elif rc == "polygon_fundamentals_missing" and clf in ("true_miss", "near_threshold", "scored_missed"):
+                    polygon_missing.add(row["ticker"])
+
+    conn = _duckdb.connect(db_path, read_only=True)
+    queue = build_priority_queue(
+        conn, max_tickers=max_tickers,
+        price_only_p1_tickers=price_only_p1,
+        price_only_p2_tickers=price_only_p2,
+        polygon_missing_tickers=polygon_missing,
+    )
+    conn.close()
+    save_priority_queue(queue, output)
+    by_priority: dict[int, int] = {}
+    for item in queue:
+        by_priority.setdefault(item["priority"], 0)
+        by_priority[item["priority"]] += 1
+    if price_only_p1 or price_only_p2:
+        click.echo(f"  price_only_scored_miss P1: {len(price_only_p1)}  P2: {len(price_only_p2)}")
+    if polygon_missing:
+        click.echo(f"  polygon_fundamentals_missing_miss: {len(polygon_missing)}")
+    click.echo(f"Priority queue: {len(queue)} tickers -> {output}")
+    for p in sorted(by_priority):
+        click.echo(f"  Priority {p}: {by_priority[p]} tickers")
 
 
 @cli.group()
