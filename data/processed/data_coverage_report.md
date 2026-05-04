@@ -8,7 +8,7 @@ Generated: 2026-05-04
 |---|---|---|
 | Has prices | 621 | 91.6% |
 | Has fundamentals | 624 | 92.0% |
-| Has market_cap | 465 | 68.6% |
+| Has market_cap | 575 | 84.8% |
 | Fresh (price <= 10 days old) | 621 | 91.6% |
 | Stale (price > 10 days old) | 0 | 0.0% |
 | Missing prices entirely | 57 | 8.4% |
