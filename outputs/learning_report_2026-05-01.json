@@ -1,0 +1,643 @@
+{
+  "generated_at": "2026-05-01T23:56:53.199927",
+  "as_of_date": "2026-05-01",
+  "outcome_count": 970,
+  "review_count": 7,
+  "insufficient_data": false,
+  "outcome_by_tier": [
+    {
+      "tier": "C",
+      "count": 290,
+      "avg_return_20d": null,
+      "avg_return_60d": null,
+      "avg_drawdown_20d": null,
+      "hit_rate_count": 0
+    },
+    {
+      "tier": "Incomplete",
+      "count": 680,
+      "avg_return_20d": null,
+      "avg_return_60d": null,
+      "avg_drawdown_20d": null,
+      "hit_rate_count": 0
+    }
+  ],
+  "outcome_by_score_bucket": [
+    {
+      "score_bucket": "<50",
+      "count": 902,
+      "avg_return_20d": null,
+      "avg_return_60d": null
+    },
+    {
+      "score_bucket": "50-59",
+      "count": 68,
+      "avg_return_20d": null,
+      "avg_return_60d": null
+    }
+  ],
+  "outcome_by_review_status": [
+    {
+      "review_status": "needs_more_evidence",
+      "count": 4,
+      "avg_usefulness": 3.25,
+      "avg_thesis_quality": 3.0,
+      "avg_evidence_quality": 2.75
+    },
+    {
+      "review_status": "invalid_due_to_data_issue",
+      "count": 3,
+      "avg_usefulness": 1.3333333333333333,
+      "avg_thesis_quality": 1.0,
+      "avg_evidence_quality": 1.0
+    }
+  ],
+  "false_positive_reasons": [
+    {
+      "reason": "bad_data",
+      "count": 3
+    }
+  ],
+  "score_component_vs_outcome": [],
+  "feature_coverage": [
+    {
+      "run_id": "e8c8987c9866473b",
+      "ticker": "A",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "e8c8987c9866473b",
+      "ticker": "AJG",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "38ae929592c74dd8",
+      "ticker": "AIG",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "38ae929592c74dd8",
+      "ticker": "AFL",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "ea4177a6860f43b0",
+      "ticker": "AJG",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "ea4177a6860f43b0",
+      "ticker": "AIG",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "e8c8987c9866473b",
+      "ticker": "BIIB",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "ea4177a6860f43b0",
+      "ticker": "AEE",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "e8c8987c9866473b",
+      "ticker": "AIG",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "5b3846fdb31c49cb",
+      "ticker": "A",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "ea4177a6860f43b0",
+      "ticker": "BK",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "e8c8987c9866473b",
+      "ticker": "AFL",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "04f667da0b68492c",
+      "ticker": "AEM",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "ea4177a6860f43b0",
+      "ticker": "AFL",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "ea4177a6860f43b0",
+      "ticker": "APO",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "ea4177a6860f43b0",
+      "ticker": "A",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "ea4177a6860f43b0",
+      "ticker": "BIIB",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "5b3846fdb31c49cb",
+      "ticker": "AEE",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "5b3846fdb31c49cb",
+      "ticker": "APO",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "38ae929592c74dd8",
+      "ticker": "AJG",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "5b3846fdb31c49cb",
+      "ticker": "AJG",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "5b3846fdb31c49cb",
+      "ticker": "AFL",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "5b3846fdb31c49cb",
+      "ticker": "BK",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "e8c8987c9866473b",
+      "ticker": "BK",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "e8c8987c9866473b",
+      "ticker": "AEE",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "04f667da0b68492c",
+      "ticker": "AVGO",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "04f667da0b68492c",
+      "ticker": "AIG",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "04f667da0b68492c",
+      "ticker": "A",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "ee52b2be783945c9",
+      "ticker": "AVGO",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "38ae929592c74dd8",
+      "ticker": "A",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "182fcd13b0984d15",
+      "ticker": "AVGO",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "38ae929592c74dd8",
+      "ticker": "AEE",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "04f667da0b68492c",
+      "ticker": "AEE",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "182fcd13b0984d15",
+      "ticker": "A",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "38ae929592c74dd8",
+      "ticker": "BK",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "ee52b2be783945c9",
+      "ticker": "A",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "5b3846fdb31c49cb",
+      "ticker": "BIIB",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "ecdbc56087ae42a7",
+      "ticker": "A",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "04f667da0b68492c",
+      "ticker": "AFL",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "5b3846fdb31c49cb",
+      "ticker": "AIG",
+      "total_features": 16,
+      "non_null_features": 14,
+      "coverage_pct": 87.5,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "53561874394a46d8",
+      "ticker": "FTI",
+      "total_features": 14,
+      "non_null_features": 12,
+      "coverage_pct": 85.71428571428571,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "153b5a2b6e5442e8",
+      "ticker": "STLD",
+      "total_features": 14,
+      "non_null_features": 12,
+      "coverage_pct": 85.71428571428571,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "153b5a2b6e5442e8",
+      "ticker": "COIN",
+      "total_features": 14,
+      "non_null_features": 12,
+      "coverage_pct": 85.71428571428571,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "153b5a2b6e5442e8",
+      "ticker": "RSG",
+      "total_features": 14,
+      "non_null_features": 12,
+      "coverage_pct": 85.71428571428571,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "fdfefb6eadb34152",
+      "ticker": "A",
+      "total_features": 14,
+      "non_null_features": 12,
+      "coverage_pct": 85.71428571428571,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "153b5a2b6e5442e8",
+      "ticker": "STM",
+      "total_features": 14,
+      "non_null_features": 12,
+      "coverage_pct": 85.71428571428571,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "153b5a2b6e5442e8",
+      "ticker": "A",
+      "total_features": 14,
+      "non_null_features": 12,
+      "coverage_pct": 85.71428571428571,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "53561874394a46d8",
+      "ticker": "AVGO",
+      "total_features": 14,
+      "non_null_features": 12,
+      "coverage_pct": 85.71428571428571,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "53561874394a46d8",
+      "ticker": "GOOGL",
+      "total_features": 14,
+      "non_null_features": 12,
+      "coverage_pct": 85.71428571428571,
+      "high_conf_features": 6
+    },
+    {
+      "run_id": "213cbc501fc84538",
+      "ticker": "AVGO",
+      "total_features": 14,
+      "non_null_features": 12,
+      "coverage_pct": 85.71428571428571,
+      "high_conf_features": 6
+    }
+  ],
+  "source_failure_impact": [
+    {
+      "source_name": "fred",
+      "total_runs": 15,
+      "error_count": 0,
+      "error_rate_pct": 0.0,
+      "last_run": "2026-05-01T23:53:21.085336"
+    },
+    {
+      "source_name": "events",
+      "total_runs": 14,
+      "error_count": 0,
+      "error_rate_pct": 0.0,
+      "last_run": "2026-05-01T23:55:58.460308"
+    },
+    {
+      "source_name": "finra",
+      "total_runs": 14,
+      "error_count": 0,
+      "error_rate_pct": 0.0,
+      "last_run": "2026-05-01T23:55:44.988820"
+    },
+    {
+      "source_name": "sec_edgar",
+      "total_runs": 16,
+      "error_count": 0,
+      "error_rate_pct": 0.0,
+      "last_run": "2026-05-01T23:52:47.037231"
+    },
+    {
+      "source_name": "polygon",
+      "total_runs": 15,
+      "error_count": 0,
+      "error_rate_pct": 0.0,
+      "last_run": "2026-05-01T23:53:19.322035"
+    },
+    {
+      "source_name": "cftc",
+      "total_runs": 14,
+      "error_count": 0,
+      "error_rate_pct": 0.0,
+      "last_run": "2026-05-01T23:55:48.031864"
+    },
+    {
+      "source_name": "stooq",
+      "total_runs": 8,
+      "error_count": 0,
+      "error_rate_pct": 0.0,
+      "last_run": "2026-05-01T23:53:19.329186"
+    }
+  ],
+  "llm_vs_human_review": [
+    {
+      "model": "mock",
+      "count": 2,
+      "avg_usefulness": 3.0,
+      "avg_thesis_quality": 3.0
+    }
+  ],
+  "insights": [
+    {
+      "category": "data_quality",
+      "message": "3 candidates failed due to bad or stale data. Address XBRL concept selection, foreign filer currency, and industry-specific financial logic before changing score weights. See experiment history.",
+      "severity": "high",
+      "suggested_experiment": null
+    }
+  ],
+  "experiments": [
+    {
+      "experiment_id": "c129101b591b43a4",
+      "based_on_run_ids": [
+        "04f667da0b68492c"
+      ],
+      "hypothesis": "Broken shares, equity, or denominator values can create fake cheap scores. Implausible P/S, P/E, or P/B values should be nulled rather than used.",
+      "proposed_change_json": {
+        "ps_bounds": "null if P/S < 0.05 or P/S > 100",
+        "pe_bounds": "null if P/E < 0 or P/E > 500",
+        "pb_negative_equity": "null if book value <= 0 (negative equity)",
+        "shares_sanity": "require shares_outstanding > 1M; null if stale > 5 years",
+        "revenue_growth_sanity": "require same XBRL concept across both periods; flag cross-concept comparisons",
+        "action": "set affected ratio to null; add missing_reason=valuation_denominator_invalid"
+      },
+      "affected_components_json": [
+        "features/valuation.py",
+        "features/quality.py",
+        "scoring/scorecard.py"
+      ],
+      "expected_effect": "Suppress valuation artifacts like CHTR P/S=0.003 and P/B=0.002. Prevent revenue growth artifacts like BAC 302% / CFG 289%.",
+      "backtest_result_json": null,
+      "backtest_notes": null,
+      "status": "applied",
+      "review_notes": "Applied: valuation sanity checks in features/valuation.py and quality.py. P/S null if <0.05 or >100; P/E null if >150; P/B null if >50 or equity<=0; shares null if <1M; revenue growth null if cross-concept or |growth|>500%.",
+      "approved_by": "jp_goncalves",
+      "applied_by": "jp_goncalves",
+      "applied_at": "2026-05-01T22:47:40.910451",
+      "created_at": "2026-05-01T22:36:32.184246",
+      "updated_at": "2026-05-01T22:47:40.910451"
+    },
+    {
+      "experiment_id": "5c873dcb5ac24a80",
+      "based_on_run_ids": [
+        "04f667da0b68492c"
+      ],
+      "hypothesis": "Banks and insurers need industry-specific revenue and quality concepts. Generic revenue and margin logic creates false quality signals for these sectors.",
+      "proposed_change_json": {
+        "detect_industry": "SIC, sector, or company metadata",
+        "banks": "avoid RevenueFromContractWithCustomerExcludingAssessedTax as total revenue; flag NI > revenue as impossible",
+        "insurers": "treat generic net_margin cautiously; note gross revenue concept inflates denominator",
+        "action": "lower quality confidence or set quality_score=null when industry concept mismatch detected; add missing_reason=industry_specific_financials_required"
+      },
+      "affected_components_json": [
+        "features/quality.py",
+        "features/valuation.py",
+        "features/risk.py"
+      ],
+      "expected_effect": "Suppress false quality signals in CFG, BAC, AIG, AFL until bank/insurance-specific features are implemented.",
+      "backtest_result_json": null,
+      "backtest_notes": null,
+      "status": "applied",
+      "review_notes": null,
+      "approved_by": "jp_goncalves",
+      "applied_by": "jp_goncalves",
+      "applied_at": "2026-05-01T23:38:32.379488",
+      "created_at": "2026-05-01T22:36:32.181793",
+      "updated_at": "2026-05-01T23:38:32.379488"
+    },
+    {
+      "experiment_id": "3fa9a31cc3704b85",
+      "based_on_run_ids": [
+        "04f667da0b68492c"
+      ],
+      "hypothesis": "Foreign private issuers using 20-F/6-K and non-USD reporting currencies can produce misleading USD valuation ratios unless currency and reporting units are normalized.",
+      "proposed_change_json": {
+        "detect_foreign_private_issuer": true,
+        "detect_reporting_currency": true,
+        "action_non_usd_no_fx": "set cheap_score=null, valuation_missing_reason=foreign_currency_not_normalized",
+        "catalyst_6k": "include in catalyst evidence, mark as foreign_issuer_disclosure not business_catalyst"
+      },
+      "affected_components_json": [
+        "features/valuation.py",
+        "features/catalyst.py",
+        "features/risk.py"
+      ],
+      "expected_effect": "Suppress false cheap signals like BIDU until foreign currency normalization exists. 6-K filings scored but flagged as foreign disclosure.",
+      "backtest_result_json": null,
+      "backtest_notes": null,
+      "status": "applied",
+      "review_notes": "Applied: foreign filer guard in features/filer_utils.py + features/valuation.py. Detects 20-F/6-K/40-F filers; nulls P/S/P/E/P/B when reporting currency is non-USD. 6-K recorded as disclosure_evidence in catalyst metadata \u2014 not auto-scored. USD-reporting foreign filers (e.g. Israeli tech) proceed normally.",
+      "approved_by": "jp_goncalves",
+      "applied_by": "jp_goncalves",
+      "applied_at": "2026-05-01T23:16:36.993515",
+      "created_at": "2026-05-01T22:36:32.175735",
+      "updated_at": "2026-05-01T23:16:36.993515"
+    },
+    {
+      "experiment_id": "ef3fcd8180574d8f",
+      "based_on_run_ids": [
+        "04f667da0b68492c"
+      ],
+      "hypothesis": "Increase stale_data penalty in risk_score when fundamentals > 90 days old",
+      "proposed_change_json": {
+        "stale_data_threshold_days": 90,
+        "stale_data_penalty": 15
+      },
+      "affected_components_json": [
+        "features/risk.py"
+      ],
+      "expected_effect": "Higher risk penalty for stale-data candidates, fewer bad_data false positives",
+      "backtest_result_json": null,
+      "backtest_notes": null,
+      "status": "rejected",
+      "review_notes": "Rejected for now: too blunt. First bad-data reviews point to XBRL concept selection, foreign filer currency mismatch, and industry-specific financial statement logic, not generic stale fundamentals.",
+      "approved_by": null,
+      "applied_by": null,
+      "applied_at": null,
+      "created_at": "2026-05-01T22:36:31.928065",
+      "updated_at": "2026-05-01T22:36:32.172273"
+    }
+  ]
+}

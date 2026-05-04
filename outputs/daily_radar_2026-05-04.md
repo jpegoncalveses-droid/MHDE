@@ -1,7 +1,7 @@
 # MHDE Daily Radar — 2026-05-04
 
-**Run ID:** `e48ba8344e224dc8`  
-**Generated:** 2026-05-04 08:13 UTC
+**Run ID:** `b6e2b208981248d4`  
+**Generated:** 2026-05-04 08:33 UTC
 
 ---
 
@@ -11,7 +11,7 @@
 - Tickers scored: 520
 - Candidates (A/B/C): 0 / 0 / 10
 - Rejected: 20
-- Sources succeeded: 0
+- Sources succeeded: 8
 - Alerts sent: 0
 
 ## C-Tier Candidates
@@ -47,6 +47,15 @@
 
 ## Source Status
 
+- ✓ **sec_edgar**: ok (1921 records)
+- ✓ **polygon**: ok (1240 records)
+- ✓ **stooq**: ok (517 records)
+- ✓ **yahoo_historical**: ok (44 records)
+- ✓ **fred**: ok (70 records)
+- ✓ **finra**: ok (0 records)
+- ✓ **cftc**: ok (24 records)
+- ✓ **events**: experimental (19 records)
+- ✓ **gdelt**: experimental (0 records)
 
 ## Known Limitations
 

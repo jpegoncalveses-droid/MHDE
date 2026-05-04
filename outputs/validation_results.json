@@ -1,0 +1,64 @@
+[
+  {
+    "source": "cftc",
+    "use_case": "index_positioning",
+    "tickers_tested": [
+      "es_sp500",
+      "nq_nasdaq100",
+      "rty_russell2000",
+      "ust_10y"
+    ],
+    "access_result": "ok",
+    "access_error": null,
+    "required_fields_present": true,
+    "missing_fields": [],
+    "historical_depth": "5w",
+    "freshness": "weekly_current",
+    "parsing_difficulty": "easy",
+    "rate_limit_notes": "No auth required. CFTC Socrata API. No published rate limit; 0.5s courtesy delay.",
+    "fallback_suggestion": "Direct CFTC CSV file download as alternative ingestion path.",
+    "final_status": "Useful but optional",
+    "notes": "Coverage: 3/3 core markets found. Index/commodity-futures-only; weekly cadence with ~3-day lag. Not per-stock data.",
+    "scores": {
+      "access": 4,
+      "completeness": 4,
+      "freshness": 3,
+      "reliability": 4,
+      "parsing_ease": 5,
+      "cost_efficiency": 5,
+      "strategic_value": 2,
+      "total": 27
+    },
+    "raw_sample_path": "samples/cftc_index_positioning.json"
+  },
+  {
+    "source": "cftc",
+    "use_case": "commodity_macro_positioning",
+    "tickers_tested": [
+      "wti_crude",
+      "gold"
+    ],
+    "access_result": "ok",
+    "access_error": null,
+    "required_fields_present": true,
+    "missing_fields": [],
+    "historical_depth": "2w",
+    "freshness": "weekly_current",
+    "parsing_difficulty": "easy",
+    "rate_limit_notes": "No auth required. CFTC Socrata API. No published rate limit; 0.5s courtesy delay.",
+    "fallback_suggestion": "Direct CFTC CSV file download as alternative ingestion path.",
+    "final_status": "Useful but optional",
+    "notes": "Coverage: 2/2 core markets found. Index/commodity-futures-only; weekly cadence with ~3-day lag. Not per-stock data.",
+    "scores": {
+      "access": 4,
+      "completeness": 4,
+      "freshness": 3,
+      "reliability": 4,
+      "parsing_ease": 5,
+      "cost_efficiency": 5,
+      "strategic_value": 2,
+      "total": 27
+    },
+    "raw_sample_path": "samples/cftc_commodity_macro_positioning.json"
+  }
+]

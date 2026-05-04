@@ -1,0 +1,2880 @@
+{
+  "run_id": "38ae929592c74dd8",
+  "run_date": "2026-05-01",
+  "generated_at": "2026-05-01T23:56:14.974421",
+  "meta": {
+    "run_id": "38ae929592c74dd8",
+    "run_date": "2026-05-01",
+    "total_scored": 100,
+    "score_min": 0.0,
+    "score_max": 47.35459896658277,
+    "tier_a": 0,
+    "tier_b": 0,
+    "tier_c": 4,
+    "tier_incomplete": 16,
+    "tier_reject": 80,
+    "cross_reference_table": [
+      {
+        "ticker": "BKR",
+        "sections_appeared_in": "C-tier, Catalyst (top)",
+        "section_count": 2,
+        "tier": "C",
+        "total_score": 47.4,
+        "cheap_score": 33.8,
+        "quality_score": 77.5,
+        "catalyst_score": 50.0,
+        "review_priority": "high"
+      },
+      {
+        "ticker": "AIG",
+        "sections_appeared_in": "C-tier, CheapQuality/NoCatalyst",
+        "section_count": 2,
+        "tier": "C",
+        "total_score": 46.4,
+        "cheap_score": 54.6,
+        "quality_score": 67.5,
+        "catalyst_score": 30.0,
+        "review_priority": "high"
+      },
+      {
+        "ticker": "APO",
+        "sections_appeared_in": "C-tier",
+        "section_count": 1,
+        "tier": "C",
+        "total_score": 45.3,
+        "cheap_score": 44.1,
+        "quality_score": 76.7,
+        "catalyst_score": 30.0,
+        "review_priority": "high"
+      },
+      {
+        "ticker": "AFL",
+        "sections_appeared_in": "C-tier",
+        "section_count": 1,
+        "tier": "C",
+        "total_score": 45.1,
+        "cheap_score": 43.7,
+        "quality_score": 76.3,
+        "catalyst_score": 30.0,
+        "review_priority": "high"
+      },
+      {
+        "ticker": "ACGL",
+        "sections_appeared_in": "Reject (top), Cheap (top), CheapQuality/NoCatalyst",
+        "section_count": 3,
+        "tier": "Reject",
+        "total_score": 44.1,
+        "cheap_score": 75.0,
+        "quality_score": 76.3,
+        "catalyst_score": 30.0,
+        "review_priority": "high"
+      },
+      {
+        "ticker": "ALL",
+        "sections_appeared_in": "Reject (top), Cheap (top), Catalyst (top)",
+        "section_count": 3,
+        "tier": "Reject",
+        "total_score": 42.6,
+        "cheap_score": 56.7,
+        "quality_score": 72.5,
+        "catalyst_score": 50.0,
+        "review_priority": "high"
+      },
+      {
+        "ticker": "CI",
+        "sections_appeared_in": "Reject (top), Cheap (top), Catalyst (top)",
+        "section_count": 3,
+        "tier": "Reject",
+        "total_score": 42.0,
+        "cheap_score": 56.7,
+        "quality_score": 70.0,
+        "catalyst_score": 50.0,
+        "review_priority": "high"
+      },
+      {
+        "ticker": "BAC",
+        "sections_appeared_in": "Reject (top), Cheap (top), Quality (top), CheapQuality/NoCatalyst",
+        "section_count": 4,
+        "tier": "Reject",
+        "total_score": 41.9,
+        "cheap_score": 63.3,
+        "quality_score": 81.7,
+        "catalyst_score": 30.0,
+        "review_priority": "high"
+      },
+      {
+        "ticker": "CFG",
+        "sections_appeared_in": "Reject (top), Cheap (top), Quality (top), CheapQuality/NoCatalyst",
+        "section_count": 4,
+        "tier": "Reject",
+        "total_score": 41.9,
+        "cheap_score": 63.3,
+        "quality_score": 81.7,
+        "catalyst_score": 30.0,
+        "review_priority": "high"
+      },
+      {
+        "ticker": "BIIB",
+        "sections_appeared_in": "Reject (top), Catalyst (top)",
+        "section_count": 2,
+        "tier": "Reject",
+        "total_score": 44.5,
+        "cheap_score": 27.0,
+        "quality_score": 76.7,
+        "catalyst_score": 50.0,
+        "review_priority": "medium"
+      },
+      {
+        "ticker": "AXP",
+        "sections_appeared_in": "Reject (top), Catalyst (top)",
+        "section_count": 2,
+        "tier": "Reject",
+        "total_score": 43.8,
+        "cheap_score": 24.5,
+        "quality_score": 76.7,
+        "catalyst_score": 50.0,
+        "review_priority": "medium"
+      },
+      {
+        "ticker": "AMZN",
+        "sections_appeared_in": "Reject (top), Catalyst (top)",
+        "section_count": 2,
+        "tier": "Reject",
+        "total_score": 43.0,
+        "cheap_score": 14.6,
+        "quality_score": 77.5,
+        "catalyst_score": 50.0,
+        "review_priority": "medium"
+      },
+      {
+        "ticker": "ACN",
+        "sections_appeared_in": "Reject (top), Catalyst (top)",
+        "section_count": 2,
+        "tier": "Reject",
+        "total_score": 42.1,
+        "cheap_score": 50.0,
+        "quality_score": 78.3,
+        "catalyst_score": 50.0,
+        "review_priority": "medium"
+      },
+      {
+        "ticker": "CHTR",
+        "sections_appeared_in": "Cheap (top), Catalyst (top)",
+        "section_count": 2,
+        "tier": "Reject",
+        "total_score": 41.6,
+        "cheap_score": 75.0,
+        "quality_score": 62.5,
+        "catalyst_score": 50.0,
+        "review_priority": "medium"
+      },
+      {
+        "ticker": "AMRZ",
+        "sections_appeared_in": "Cheap (top), CheapQuality/NoCatalyst",
+        "section_count": 2,
+        "tier": "Reject",
+        "total_score": 38.9,
+        "cheap_score": 56.7,
+        "quality_score": 77.5,
+        "catalyst_score": 30.0,
+        "review_priority": "medium"
+      },
+      {
+        "ticker": "BSX",
+        "sections_appeared_in": "Quality (top), CheapQuality/NoCatalyst",
+        "section_count": 2,
+        "tier": "Reject",
+        "total_score": 35.4,
+        "cheap_score": 40.0,
+        "quality_score": 83.8,
+        "catalyst_score": 30.0,
+        "review_priority": "medium"
+      },
+      {
+        "ticker": "ALC",
+        "sections_appeared_in": "Cheap (top), CheapQuality/NoCatalyst",
+        "section_count": 2,
+        "tier": "Reject",
+        "total_score": 31.4,
+        "cheap_score": 56.7,
+        "quality_score": 77.5,
+        "catalyst_score": 0.0,
+        "review_priority": "medium"
+      },
+      {
+        "ticker": "ADM",
+        "sections_appeared_in": "Cheap (top), CheapQuality/NoCatalyst",
+        "section_count": 2,
+        "tier": "Reject",
+        "total_score": 30.9,
+        "cheap_score": 68.3,
+        "quality_score": 61.7,
+        "catalyst_score": 0.0,
+        "review_priority": "medium"
+      },
+      {
+        "ticker": "BK",
+        "sections_appeared_in": "Reject (top)",
+        "section_count": 1,
+        "tier": "Reject",
+        "total_score": 44.8,
+        "cheap_score": 43.3,
+        "quality_score": 76.3,
+        "catalyst_score": 30.0,
+        "review_priority": "low"
+      },
+      {
+        "ticker": "BAM",
+        "sections_appeared_in": "Catalyst (top)",
+        "section_count": 1,
+        "tier": "Reject",
+        "total_score": 41.8,
+        "cheap_score": 43.3,
+        "quality_score": 80.0,
+        "catalyst_score": 55.0,
+        "review_priority": "low"
+      },
+      {
+        "ticker": "APP",
+        "sections_appeared_in": "Quality (top)",
+        "section_count": 1,
+        "tier": "Reject",
+        "total_score": 40.5,
+        "cheap_score": 22.2,
+        "quality_score": 83.8,
+        "catalyst_score": 30.0,
+        "review_priority": "low"
+      },
+      {
+        "ticker": "APD",
+        "sections_appeared_in": "Quality (top)",
+        "section_count": 1,
+        "tier": "Reject",
+        "total_score": 38.4,
+        "cheap_score": 33.3,
+        "quality_score": 83.8,
+        "catalyst_score": 50.0,
+        "review_priority": "low"
+      },
+      {
+        "ticker": "AVGO",
+        "sections_appeared_in": "Quality (top)",
+        "section_count": 1,
+        "tier": "Reject",
+        "total_score": 38.3,
+        "cheap_score": 11.4,
+        "quality_score": 83.8,
+        "catalyst_score": 30.0,
+        "review_priority": "low"
+      },
+      {
+        "ticker": "AMP",
+        "sections_appeared_in": "CheapQuality/NoCatalyst",
+        "section_count": 1,
+        "tier": "Reject",
+        "total_score": 38.2,
+        "cheap_score": 55.0,
+        "quality_score": 76.7,
+        "catalyst_score": 30.0,
+        "review_priority": "low"
+      },
+      {
+        "ticker": "CL",
+        "sections_appeared_in": "Catalyst (top)",
+        "section_count": 1,
+        "tier": "Reject",
+        "total_score": 34.2,
+        "cheap_score": 27.5,
+        "quality_score": 68.8,
+        "catalyst_score": 55.0,
+        "review_priority": "low"
+      },
+      {
+        "ticker": "BX",
+        "sections_appeared_in": "Quality (top)",
+        "section_count": 1,
+        "tier": "Reject",
+        "total_score": 33.4,
+        "cheap_score": 35.0,
+        "quality_score": 81.7,
+        "catalyst_score": 30.0,
+        "review_priority": "low"
+      },
+      {
+        "ticker": "AMGN",
+        "sections_appeared_in": "Quality (top)",
+        "section_count": 1,
+        "tier": "Reject",
+        "total_score": 32.9,
+        "cheap_score": 31.7,
+        "quality_score": 83.8,
+        "catalyst_score": 30.0,
+        "review_priority": "low"
+      },
+      {
+        "ticker": "C",
+        "sections_appeared_in": "Cheap (top)",
+        "section_count": 1,
+        "tier": "Reject",
+        "total_score": 30.8,
+        "cheap_score": 70.0,
+        "quality_score": 45.0,
+        "catalyst_score": 30.0,
+        "review_priority": "low"
+      },
+      {
+        "ticker": "B",
+        "sections_appeared_in": "CheapQuality/NoCatalyst",
+        "section_count": 1,
+        "tier": "Reject",
+        "total_score": 29.5,
+        "cheap_score": 56.7,
+        "quality_score": 70.0,
+        "catalyst_score": 0.0,
+        "review_priority": "low"
+      },
+      {
+        "ticker": "CBOE",
+        "sections_appeared_in": "Quality (top)",
+        "section_count": 1,
+        "tier": "Reject",
+        "total_score": 29.2,
+        "cheap_score": 25.0,
+        "quality_score": 81.7,
+        "catalyst_score": 25.0,
+        "review_priority": "low"
+      },
+      {
+        "ticker": "AMD",
+        "sections_appeared_in": "Quality (top)",
+        "section_count": 1,
+        "tier": "Reject",
+        "total_score": 20.7,
+        "cheap_score": 17.5,
+        "quality_score": 81.7,
+        "catalyst_score": 0.0,
+        "review_priority": "low"
+      }
+    ],
+    "data_quality_warnings": [
+      "16 candidates have low/no confidence.",
+      "69 candidates have NULL momentum_score.",
+      "100 candidates have NULL sentiment_score.",
+      "21 candidates have NULL quality_score.",
+      "19 candidates have NULL cheap_score.",
+      "Score date range: 2026-05-01 to 2026-05-01."
+    ],
+    "scoring_diagnostics": {
+      "total_scored": 100,
+      "tier_a": 0,
+      "tier_b": 0,
+      "tier_c": 4,
+      "tier_incomplete": 16,
+      "tier_reject": 80,
+      "low_confidence_count": 16,
+      "low_confidence_pct": 16.0,
+      "null_rates": {
+        "cheap": 19.0,
+        "quality": 21.0,
+        "catalyst": 0.0,
+        "momentum": 69.0,
+        "sentiment": 100.0
+      },
+      "price_sources": {
+        "polygon": 31,
+        "stooq": 83
+      },
+      "score_distribution": {
+        "0": 16,
+        "4": 2,
+        "5": 1,
+        "6": 1,
+        "7": 1,
+        "8": 1,
+        "10": 2,
+        "15": 1,
+        "19": 1,
+        "20": 5,
+        "21": 1,
+        "22": 1,
+        "23": 2,
+        "24": 2,
+        "25": 1,
+        "27": 1,
+        "29": 1,
+        "30": 6,
+        "31": 5,
+        "32": 2,
+        "33": 8,
+        "34": 1,
+        "35": 4,
+        "36": 2,
+        "37": 1,
+        "38": 7,
+        "39": 2,
+        "40": 3,
+        "41": 3,
+        "42": 6,
+        "43": 2,
+        "44": 3,
+        "45": 3,
+        "46": 1,
+        "47": 1
+      }
+    }
+  },
+  "warnings": [],
+  "sections": {
+    "c_tier": [
+      {
+        "ticker": "BKR",
+        "company_name": "Baker Hughes Co",
+        "tier": "C",
+        "total_score": 47.4,
+        "cheap_score": 33.8,
+        "quality_score": 77.5,
+        "catalyst_score": 50.0,
+        "momentum_score": 53.3,
+        "sentiment_score": null,
+        "risk_penalty": 0.0,
+        "confidence": "high",
+        "why_ranked": "Quality: score=78. Catalyst: score=50",
+        "why_rejected": "",
+        "thesis": "Baker Hughes Co (BKR) \u2014 Score: 47 Quality: score 78/100 \u2014 solid business fundamentals. Valuation: score 34/100 \u2014 no clear cheapness signal. Catalyst: score 50/100 \u2014 limited catalyst activity (recent filing). This is a research candidate, not a buy/sell recommendation. Not validated for decision use.",
+        "why_now": "Why now: recent filing activity only.",
+        "cheap_evidence": [
+          "Valuation score: 34/100"
+        ],
+        "quality_evidence": [
+          "Quality score: 78/100"
+        ],
+        "catalyst_evidence": [
+          "Catalyst score: 50/100"
+        ],
+        "risks": [
+          "Risk penalty: 0/100"
+        ],
+        "missing_evidence": [],
+        "missing_data": [
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 69.33,
+          "price_date": "2026-05-01",
+          "market_cap_b": 53.59,
+          "ps_ratio": null,
+          "pe_ratio": 23.27,
+          "pb_ratio": 2.77
+        }
+      },
+      {
+        "ticker": "AIG",
+        "company_name": "AMERICAN INTERNATIONAL GROUP, INC.",
+        "tier": "C",
+        "total_score": 46.4,
+        "cheap_score": 54.6,
+        "quality_score": 67.5,
+        "catalyst_score": 30.0,
+        "momentum_score": 56.5,
+        "sentiment_score": null,
+        "risk_penalty": 0.0,
+        "confidence": "high",
+        "why_ranked": "Quality: score=68",
+        "why_rejected": "",
+        "thesis": "AMERICAN INTERNATIONAL GROUP, INC. (AIG) \u2014 Score: 46 Quality: score 68/100 \u2014 moderate fundamentals. Valuation: score 55/100 \u2014 moderate valuation signal. Catalyst: score 30/100 \u2014 limited catalyst activity (recent filing). This is a research candidate, not a buy/sell recommendation. Not validated for decision use.",
+        "why_now": "Why now: recent filing activity only.",
+        "cheap_evidence": [
+          "Valuation score: 55/100"
+        ],
+        "quality_evidence": [
+          "Quality score: 68/100"
+        ],
+        "catalyst_evidence": [
+          "Catalyst score: 30/100"
+        ],
+        "risks": [
+          "Risk penalty: 0/100"
+        ],
+        "missing_evidence": [],
+        "missing_data": [
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 74.8,
+          "price_date": "2026-04-30",
+          "market_cap_b": 42.66,
+          "ps_ratio": 1.59,
+          "pe_ratio": 13.78,
+          "pb_ratio": 1.04
+        }
+      },
+      {
+        "ticker": "APO",
+        "company_name": "Apollo Global Management, Inc.",
+        "tier": "C",
+        "total_score": 45.3,
+        "cheap_score": 44.1,
+        "quality_score": 76.7,
+        "catalyst_score": 30.0,
+        "momentum_score": 53.7,
+        "sentiment_score": null,
+        "risk_penalty": 0.0,
+        "confidence": "high",
+        "why_ranked": "Quality: score=77",
+        "why_rejected": "",
+        "thesis": "Apollo Global Management, Inc. (APO) \u2014 Score: 45 Quality: score 77/100 \u2014 solid business fundamentals. Valuation: score 44/100 \u2014 moderate valuation signal. Catalyst: score 30/100 \u2014 limited catalyst activity (recent filing). This is a research candidate, not a buy/sell recommendation. Not validated for decision use.",
+        "why_now": "Why now: recent filing activity only.",
+        "cheap_evidence": [
+          "Valuation score: 44/100"
+        ],
+        "quality_evidence": [
+          "Quality score: 77/100"
+        ],
+        "catalyst_evidence": [
+          "Catalyst score: 30/100"
+        ],
+        "risks": [
+          "Risk penalty: 0/100"
+        ],
+        "missing_evidence": [],
+        "missing_data": [
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 131.43,
+          "price_date": "2026-05-01",
+          "market_cap_b": 78.02,
+          "ps_ratio": 2.43,
+          "pe_ratio": 23.72,
+          "pb_ratio": 3.34
+        }
+      },
+      {
+        "ticker": "AFL",
+        "company_name": "AFLAC INC",
+        "tier": "C",
+        "total_score": 45.1,
+        "cheap_score": 43.7,
+        "quality_score": 76.3,
+        "catalyst_score": 30.0,
+        "momentum_score": 54.1,
+        "sentiment_score": null,
+        "risk_penalty": 0.0,
+        "confidence": "high",
+        "why_ranked": "Quality: score=76",
+        "why_rejected": "",
+        "thesis": "AFLAC INC (AFL) \u2014 Score: 45 Quality: score 76/100 \u2014 solid business fundamentals. Valuation: score 44/100 \u2014 moderate valuation signal. Catalyst: score 30/100 \u2014 limited catalyst activity (recent filing). This is a research candidate, not a buy/sell recommendation. Not validated for decision use.",
+        "why_now": "Why now: recent filing activity only.",
+        "cheap_evidence": [
+          "Valuation score: 44/100"
+        ],
+        "quality_evidence": [
+          "Quality score: 76/100"
+        ],
+        "catalyst_evidence": [
+          "Catalyst score: 30/100"
+        ],
+        "risks": [
+          "Risk penalty: 0/100"
+        ],
+        "missing_evidence": [],
+        "missing_data": [
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 113.67,
+          "price_date": "2026-04-30",
+          "market_cap_b": 60.8,
+          "ps_ratio": 3.54,
+          "pe_ratio": 16.67,
+          "pb_ratio": 2.06
+        }
+      }
+    ],
+    "top_reject": [
+      {
+        "ticker": "BK",
+        "company_name": "Bank of New York Mellon Corp",
+        "tier": "Reject",
+        "total_score": 44.8,
+        "cheap_score": 43.3,
+        "quality_score": 76.3,
+        "catalyst_score": 30.0,
+        "momentum_score": 52.2,
+        "sentiment_score": null,
+        "risk_penalty": 0.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (45 < 45). Missing data: sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 134.79,
+          "price_date": "2026-05-01",
+          "market_cap_b": 96.61,
+          "ps_ratio": 4.81,
+          "pe_ratio": 18.21,
+          "pb_ratio": 2.18
+        }
+      },
+      {
+        "ticker": "BIIB",
+        "company_name": "BIOGEN INC.",
+        "tier": "Reject",
+        "total_score": 44.5,
+        "cheap_score": 27.0,
+        "quality_score": 76.7,
+        "catalyst_score": 50.0,
+        "momentum_score": 47.2,
+        "sentiment_score": null,
+        "risk_penalty": 0.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (44 < 45). Missing data: sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 186.38,
+          "price_date": "2026-05-01",
+          "market_cap_b": 27.66,
+          "ps_ratio": 11.16,
+          "pe_ratio": 86.69,
+          "pb_ratio": 1.87
+        }
+      },
+      {
+        "ticker": "ACGL",
+        "company_name": "ARCH CAPITAL GROUP LTD.",
+        "tier": "Reject",
+        "total_score": 44.1,
+        "cheap_score": 75.0,
+        "quality_score": 76.3,
+        "catalyst_score": 30.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 25.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (44 < 45). Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 94.49,
+          "price_date": "2026-05-01",
+          "market_cap_b": 35.52,
+          "ps_ratio": 1.78,
+          "pe_ratio": 8.15,
+          "pb_ratio": 1.47
+        }
+      },
+      {
+        "ticker": "AXP",
+        "company_name": "AMERICAN EXPRESS CO",
+        "tier": "Reject",
+        "total_score": 43.8,
+        "cheap_score": 24.5,
+        "quality_score": 76.7,
+        "catalyst_score": 50.0,
+        "momentum_score": 48.1,
+        "sentiment_score": null,
+        "risk_penalty": 0.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (44 < 45). Missing data: sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 320.86,
+          "price_date": "2026-05-01",
+          "market_cap_b": 220.11,
+          "ps_ratio": 7.91,
+          "pe_ratio": 74.97,
+          "pb_ratio": 6.47
+        }
+      },
+      {
+        "ticker": "AMZN",
+        "company_name": "AMAZON COM INC",
+        "tier": "Reject",
+        "total_score": 43.0,
+        "cheap_score": 14.6,
+        "quality_score": 77.5,
+        "catalyst_score": 50.0,
+        "momentum_score": 67.1,
+        "sentiment_score": null,
+        "risk_penalty": 0.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (43 < 45). Missing data: sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 265.06,
+          "price_date": "2026-04-30",
+          "market_cap_b": 2882.26,
+          "ps_ratio": 15.88,
+          "pe_ratio": 95.35,
+          "pb_ratio": 6.52
+        }
+      },
+      {
+        "ticker": "ALL",
+        "company_name": "ALLSTATE CORP",
+        "tier": "Reject",
+        "total_score": 42.6,
+        "cheap_score": 56.7,
+        "quality_score": 72.5,
+        "catalyst_score": 50.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 25.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (43 < 45). Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 217.54,
+          "price_date": "2026-05-01",
+          "market_cap_b": 57.13,
+          "ps_ratio": 3.37,
+          "pe_ratio": 23.52,
+          "pb_ratio": 1.81
+        }
+      },
+      {
+        "ticker": "ACN",
+        "company_name": "Accenture plc",
+        "tier": "Reject",
+        "total_score": 42.1,
+        "cheap_score": 50.0,
+        "quality_score": 78.3,
+        "catalyst_score": 50.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 25.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (42 < 45). Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 179.48,
+          "price_date": "2026-05-01",
+          "market_cap_b": 112.1,
+          "ps_ratio": 3.05,
+          "pe_ratio": 27.74,
+          "pb_ratio": 3.59
+        }
+      },
+      {
+        "ticker": "CI",
+        "company_name": "Cigna Group",
+        "tier": "Reject",
+        "total_score": 42.0,
+        "cheap_score": 56.7,
+        "quality_score": 70.0,
+        "catalyst_score": 50.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 25.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (42 < 45). Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 282.93,
+          "price_date": "2026-05-01",
+          "market_cap_b": 74.7,
+          "ps_ratio": 1.09,
+          "pe_ratio": 45.2,
+          "pb_ratio": 1.77
+        }
+      },
+      {
+        "ticker": "BAC",
+        "company_name": "BANK OF AMERICA CORP /DE/",
+        "tier": "Reject",
+        "total_score": 41.9,
+        "cheap_score": 63.3,
+        "quality_score": 81.7,
+        "catalyst_score": 30.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 25.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (42 < 45). Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 53.28,
+          "price_date": "2026-05-01",
+          "market_cap_b": 409.28,
+          "ps_ratio": 3.62,
+          "pe_ratio": 13.99,
+          "pb_ratio": 1.35
+        }
+      },
+      {
+        "ticker": "CFG",
+        "company_name": "CITIZENS FINANCIAL GROUP INC/RI",
+        "tier": "Reject",
+        "total_score": 41.9,
+        "cheap_score": 63.3,
+        "quality_score": 81.7,
+        "catalyst_score": 30.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 25.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (42 < 45). Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 64.56,
+          "price_date": "2026-05-01",
+          "market_cap_b": 28.21,
+          "ps_ratio": 3.42,
+          "pe_ratio": 16.73,
+          "pb_ratio": 1.07
+        }
+      }
+    ],
+    "top_cheap": [
+      {
+        "ticker": "ACGL",
+        "company_name": "ARCH CAPITAL GROUP LTD.",
+        "tier": "Reject",
+        "total_score": 44.1,
+        "cheap_score": 75.0,
+        "quality_score": 76.3,
+        "catalyst_score": 30.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 25.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (44 < 45). Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 94.49,
+          "price_date": "2026-05-01",
+          "market_cap_b": 35.52,
+          "ps_ratio": 1.78,
+          "pe_ratio": 8.15,
+          "pb_ratio": 1.47
+        }
+      },
+      {
+        "ticker": "CHTR",
+        "company_name": "CHARTER COMMUNICATIONS, INC. /MO/",
+        "tier": "Reject",
+        "total_score": 41.6,
+        "cheap_score": 75.0,
+        "quality_score": 62.5,
+        "catalyst_score": 50.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 45.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (42 < 45). Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 173.02,
+          "price_date": "2026-05-01",
+          "market_cap_b": 0.04,
+          "ps_ratio": null,
+          "pe_ratio": 18.87,
+          "pb_ratio": null
+        }
+      },
+      {
+        "ticker": "C",
+        "company_name": "CITIGROUP INC",
+        "tier": "Reject",
+        "total_score": 30.8,
+        "cheap_score": 70.0,
+        "quality_score": 45.0,
+        "catalyst_score": 30.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 45.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (31 < 45). Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 127.51,
+          "price_date": "2026-05-01",
+          "market_cap_b": 238.84,
+          "ps_ratio": 2.8,
+          "pe_ratio": 18.24,
+          "pb_ratio": 1.13
+        }
+      },
+      {
+        "ticker": "ADM",
+        "company_name": "Archer-Daniels-Midland Co",
+        "tier": "Reject",
+        "total_score": 30.9,
+        "cheap_score": 68.3,
+        "quality_score": 61.7,
+        "catalyst_score": 0.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 25.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (31 < 45). No catalyst signals. Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 74.37,
+          "price_date": "2026-05-01",
+          "market_cap_b": 36.0,
+          "ps_ratio": 0.45,
+          "pe_ratio": 33.35,
+          "pb_ratio": 0.69
+        }
+      },
+      {
+        "ticker": "BAC",
+        "company_name": "BANK OF AMERICA CORP /DE/",
+        "tier": "Reject",
+        "total_score": 41.9,
+        "cheap_score": 63.3,
+        "quality_score": 81.7,
+        "catalyst_score": 30.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 25.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (42 < 45). Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 53.28,
+          "price_date": "2026-05-01",
+          "market_cap_b": 409.28,
+          "ps_ratio": 3.62,
+          "pe_ratio": 13.99,
+          "pb_ratio": 1.35
+        }
+      },
+      {
+        "ticker": "CFG",
+        "company_name": "CITIZENS FINANCIAL GROUP INC/RI",
+        "tier": "Reject",
+        "total_score": 41.9,
+        "cheap_score": 63.3,
+        "quality_score": 81.7,
+        "catalyst_score": 30.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 25.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (42 < 45). Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 64.56,
+          "price_date": "2026-05-01",
+          "market_cap_b": 28.21,
+          "ps_ratio": 3.42,
+          "pe_ratio": 16.73,
+          "pb_ratio": 1.07
+        }
+      },
+      {
+        "ticker": "ALL",
+        "company_name": "ALLSTATE CORP",
+        "tier": "Reject",
+        "total_score": 42.6,
+        "cheap_score": 56.7,
+        "quality_score": 72.5,
+        "catalyst_score": 50.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 25.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (43 < 45). Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 217.54,
+          "price_date": "2026-05-01",
+          "market_cap_b": 57.13,
+          "ps_ratio": 3.37,
+          "pe_ratio": 23.52,
+          "pb_ratio": 1.81
+        }
+      },
+      {
+        "ticker": "CI",
+        "company_name": "Cigna Group",
+        "tier": "Reject",
+        "total_score": 42.0,
+        "cheap_score": 56.7,
+        "quality_score": 70.0,
+        "catalyst_score": 50.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 25.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (42 < 45). Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 282.93,
+          "price_date": "2026-05-01",
+          "market_cap_b": 74.7,
+          "ps_ratio": 1.09,
+          "pe_ratio": 45.2,
+          "pb_ratio": 1.77
+        }
+      },
+      {
+        "ticker": "AMRZ",
+        "company_name": "Amrize Ltd",
+        "tier": "Reject",
+        "total_score": 38.9,
+        "cheap_score": 56.7,
+        "quality_score": 77.5,
+        "catalyst_score": 30.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 25.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (39 < 45). Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 53.23,
+          "price_date": "2026-05-01",
+          "market_cap_b": 29.47,
+          "ps_ratio": 2.49,
+          "pe_ratio": 24.87,
+          "pb_ratio": 2.22
+        }
+      },
+      {
+        "ticker": "ALC",
+        "company_name": "ALCON INC",
+        "tier": "Reject",
+        "total_score": 31.4,
+        "cheap_score": 56.7,
+        "quality_score": 77.5,
+        "catalyst_score": 0.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 25.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (31 < 45). No catalyst signals. Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 74.61,
+          "price_date": "2026-05-01",
+          "market_cap_b": 22.69,
+          "ps_ratio": 3.16,
+          "pe_ratio": 10.26,
+          "pb_ratio": 2.25
+        }
+      }
+    ],
+    "top_quality": [
+      {
+        "ticker": "APP",
+        "company_name": "AppLovin Corp",
+        "tier": "Reject",
+        "total_score": 40.5,
+        "cheap_score": 22.2,
+        "quality_score": 83.8,
+        "catalyst_score": 30.0,
+        "momentum_score": 54.3,
+        "sentiment_score": null,
+        "risk_penalty": 0.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (41 < 45). Missing data: sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 459.89,
+          "price_date": "2026-05-01",
+          "market_cap_b": 157.27,
+          "ps_ratio": 28.69,
+          "pe_ratio": 47.17,
+          "pb_ratio": null
+        }
+      },
+      {
+        "ticker": "APD",
+        "company_name": "Air Products & Chemicals, Inc.",
+        "tier": "Reject",
+        "total_score": 38.4,
+        "cheap_score": 33.3,
+        "quality_score": 83.8,
+        "catalyst_score": 50.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 25.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (38 < 45). Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 299.49,
+          "price_date": "2026-05-01",
+          "market_cap_b": 66.76,
+          "ps_ratio": 10.64,
+          "pe_ratio": 48.07,
+          "pb_ratio": 4.27
+        }
+      },
+      {
+        "ticker": "AVGO",
+        "company_name": "Broadcom Inc.",
+        "tier": "Reject",
+        "total_score": 38.3,
+        "cheap_score": 11.4,
+        "quality_score": 83.8,
+        "catalyst_score": 30.0,
+        "momentum_score": 64.4,
+        "sentiment_score": null,
+        "risk_penalty": 0.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (38 < 45). Missing data: sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 417.43,
+          "price_date": "2026-04-30",
+          "market_cap_b": 2040.4,
+          "ps_ratio": 97.87,
+          "pe_ratio": null,
+          "pb_ratio": null
+        }
+      },
+      {
+        "ticker": "BSX",
+        "company_name": "BOSTON SCIENTIFIC CORP",
+        "tier": "Reject",
+        "total_score": 35.4,
+        "cheap_score": 40.0,
+        "quality_score": 83.8,
+        "catalyst_score": 30.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 25.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (35 < 45). Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 57.21,
+          "price_date": "2026-05-01",
+          "market_cap_b": 85.5,
+          "ps_ratio": 12.76,
+          "pe_ratio": 29.49,
+          "pb_ratio": 3.53
+        }
+      },
+      {
+        "ticker": "AMGN",
+        "company_name": "AMGEN INC",
+        "tier": "Reject",
+        "total_score": 32.9,
+        "cheap_score": 31.7,
+        "quality_score": 83.8,
+        "catalyst_score": 30.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 25.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (33 < 45). Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 326.92,
+          "price_date": "2026-05-01",
+          "market_cap_b": 177.19,
+          "ps_ratio": 14.26,
+          "pe_ratio": 22.97,
+          "pb_ratio": 20.47
+        }
+      },
+      {
+        "ticker": "BAC",
+        "company_name": "BANK OF AMERICA CORP /DE/",
+        "tier": "Reject",
+        "total_score": 41.9,
+        "cheap_score": 63.3,
+        "quality_score": 81.7,
+        "catalyst_score": 30.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 25.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (42 < 45). Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 53.28,
+          "price_date": "2026-05-01",
+          "market_cap_b": 409.28,
+          "ps_ratio": 3.62,
+          "pe_ratio": 13.99,
+          "pb_ratio": 1.35
+        }
+      },
+      {
+        "ticker": "CFG",
+        "company_name": "CITIZENS FINANCIAL GROUP INC/RI",
+        "tier": "Reject",
+        "total_score": 41.9,
+        "cheap_score": 63.3,
+        "quality_score": 81.7,
+        "catalyst_score": 30.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 25.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (42 < 45). Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 64.56,
+          "price_date": "2026-05-01",
+          "market_cap_b": 28.21,
+          "ps_ratio": 3.42,
+          "pe_ratio": 16.73,
+          "pb_ratio": 1.07
+        }
+      },
+      {
+        "ticker": "BX",
+        "company_name": "Blackstone Inc.",
+        "tier": "Reject",
+        "total_score": 33.4,
+        "cheap_score": 35.0,
+        "quality_score": 81.7,
+        "catalyst_score": 30.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 25.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (33 < 45). Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 127.54,
+          "price_date": "2026-05-01",
+          "market_cap_b": 99.51,
+          "ps_ratio": 6.89,
+          "pe_ratio": 32.96,
+          "pb_ratio": 11.48
+        }
+      },
+      {
+        "ticker": "CBOE",
+        "company_name": "Cboe Global Markets, Inc.",
+        "tier": "Reject",
+        "total_score": 29.2,
+        "cheap_score": 25.0,
+        "quality_score": 81.7,
+        "catalyst_score": 25.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 25.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (29 < 45). Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 323.78,
+          "price_date": "2026-05-01",
+          "market_cap_b": 34.03,
+          "ps_ratio": 15.27,
+          "pe_ratio": 31.07,
+          "pb_ratio": 6.62
+        }
+      },
+      {
+        "ticker": "AMD",
+        "company_name": "ADVANCED MICRO DEVICES INC",
+        "tier": "Reject",
+        "total_score": 20.7,
+        "cheap_score": 17.5,
+        "quality_score": 81.7,
+        "catalyst_score": 0.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 25.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (21 < 45). No catalyst signals. Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 359.06,
+          "price_date": "2026-05-01",
+          "market_cap_b": 587.43,
+          "ps_ratio": null,
+          "pe_ratio": 135.5,
+          "pb_ratio": 9.32
+        }
+      }
+    ],
+    "top_catalyst": [
+      {
+        "ticker": "BAM",
+        "company_name": "Brookfield Asset Management Ltd.",
+        "tier": "Reject",
+        "total_score": 41.8,
+        "cheap_score": 43.3,
+        "quality_score": 80.0,
+        "catalyst_score": 55.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 25.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (42 < 45). Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 48.38,
+          "price_date": "2026-05-01",
+          "market_cap_b": 19.18,
+          "ps_ratio": 3.98,
+          "pe_ratio": 42.81,
+          "pb_ratio": 2.27
+        }
+      },
+      {
+        "ticker": "CL",
+        "company_name": "COLGATE PALMOLIVE CO",
+        "tier": "Reject",
+        "total_score": 34.2,
+        "cheap_score": 27.5,
+        "quality_score": 68.8,
+        "catalyst_score": 55.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 25.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (34 < 45). Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 87.28,
+          "price_date": "2026-05-01",
+          "market_cap_b": 70.79,
+          "ps_ratio": 17.69,
+          "pe_ratio": 33.19,
+          "pb_ratio": null
+        }
+      },
+      {
+        "ticker": "BKR",
+        "company_name": "Baker Hughes Co",
+        "tier": "C",
+        "total_score": 47.4,
+        "cheap_score": 33.8,
+        "quality_score": 77.5,
+        "catalyst_score": 50.0,
+        "momentum_score": 53.3,
+        "sentiment_score": null,
+        "risk_penalty": 0.0,
+        "confidence": "high",
+        "why_ranked": "Quality: score=78. Catalyst: score=50",
+        "why_rejected": "",
+        "thesis": "Baker Hughes Co (BKR) \u2014 Score: 47 Quality: score 78/100 \u2014 solid business fundamentals. Valuation: score 34/100 \u2014 no clear cheapness signal. Catalyst: score 50/100 \u2014 limited catalyst activity (recent filing). This is a research candidate, not a buy/sell recommendation. Not validated for decision use.",
+        "why_now": "Why now: recent filing activity only.",
+        "cheap_evidence": [
+          "Valuation score: 34/100"
+        ],
+        "quality_evidence": [
+          "Quality score: 78/100"
+        ],
+        "catalyst_evidence": [
+          "Catalyst score: 50/100"
+        ],
+        "risks": [
+          "Risk penalty: 0/100"
+        ],
+        "missing_evidence": [],
+        "missing_data": [
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 69.33,
+          "price_date": "2026-05-01",
+          "market_cap_b": 53.59,
+          "ps_ratio": null,
+          "pe_ratio": 23.27,
+          "pb_ratio": 2.77
+        }
+      },
+      {
+        "ticker": "BIIB",
+        "company_name": "BIOGEN INC.",
+        "tier": "Reject",
+        "total_score": 44.5,
+        "cheap_score": 27.0,
+        "quality_score": 76.7,
+        "catalyst_score": 50.0,
+        "momentum_score": 47.2,
+        "sentiment_score": null,
+        "risk_penalty": 0.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (44 < 45). Missing data: sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 186.38,
+          "price_date": "2026-05-01",
+          "market_cap_b": 27.66,
+          "ps_ratio": 11.16,
+          "pe_ratio": 86.69,
+          "pb_ratio": 1.87
+        }
+      },
+      {
+        "ticker": "AXP",
+        "company_name": "AMERICAN EXPRESS CO",
+        "tier": "Reject",
+        "total_score": 43.8,
+        "cheap_score": 24.5,
+        "quality_score": 76.7,
+        "catalyst_score": 50.0,
+        "momentum_score": 48.1,
+        "sentiment_score": null,
+        "risk_penalty": 0.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (44 < 45). Missing data: sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 320.86,
+          "price_date": "2026-05-01",
+          "market_cap_b": 220.11,
+          "ps_ratio": 7.91,
+          "pe_ratio": 74.97,
+          "pb_ratio": 6.47
+        }
+      },
+      {
+        "ticker": "AMZN",
+        "company_name": "AMAZON COM INC",
+        "tier": "Reject",
+        "total_score": 43.0,
+        "cheap_score": 14.6,
+        "quality_score": 77.5,
+        "catalyst_score": 50.0,
+        "momentum_score": 67.1,
+        "sentiment_score": null,
+        "risk_penalty": 0.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (43 < 45). Missing data: sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 265.06,
+          "price_date": "2026-04-30",
+          "market_cap_b": 2882.26,
+          "ps_ratio": 15.88,
+          "pe_ratio": 95.35,
+          "pb_ratio": 6.52
+        }
+      },
+      {
+        "ticker": "ALL",
+        "company_name": "ALLSTATE CORP",
+        "tier": "Reject",
+        "total_score": 42.6,
+        "cheap_score": 56.7,
+        "quality_score": 72.5,
+        "catalyst_score": 50.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 25.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (43 < 45). Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 217.54,
+          "price_date": "2026-05-01",
+          "market_cap_b": 57.13,
+          "ps_ratio": 3.37,
+          "pe_ratio": 23.52,
+          "pb_ratio": 1.81
+        }
+      },
+      {
+        "ticker": "ACN",
+        "company_name": "Accenture plc",
+        "tier": "Reject",
+        "total_score": 42.1,
+        "cheap_score": 50.0,
+        "quality_score": 78.3,
+        "catalyst_score": 50.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 25.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (42 < 45). Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 179.48,
+          "price_date": "2026-05-01",
+          "market_cap_b": 112.1,
+          "ps_ratio": 3.05,
+          "pe_ratio": 27.74,
+          "pb_ratio": 3.59
+        }
+      },
+      {
+        "ticker": "CI",
+        "company_name": "Cigna Group",
+        "tier": "Reject",
+        "total_score": 42.0,
+        "cheap_score": 56.7,
+        "quality_score": 70.0,
+        "catalyst_score": 50.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 25.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (42 < 45). Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 282.93,
+          "price_date": "2026-05-01",
+          "market_cap_b": 74.7,
+          "ps_ratio": 1.09,
+          "pe_ratio": 45.2,
+          "pb_ratio": 1.77
+        }
+      },
+      {
+        "ticker": "CHTR",
+        "company_name": "CHARTER COMMUNICATIONS, INC. /MO/",
+        "tier": "Reject",
+        "total_score": 41.6,
+        "cheap_score": 75.0,
+        "quality_score": 62.5,
+        "catalyst_score": 50.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 45.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (42 < 45). Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 173.02,
+          "price_date": "2026-05-01",
+          "market_cap_b": 0.04,
+          "ps_ratio": null,
+          "pe_ratio": 18.87,
+          "pb_ratio": null
+        }
+      }
+    ],
+    "cheap_quality_weak_catalyst": [
+      {
+        "ticker": "ACGL",
+        "company_name": "ARCH CAPITAL GROUP LTD.",
+        "tier": "Reject",
+        "total_score": 44.1,
+        "cheap_score": 75.0,
+        "quality_score": 76.3,
+        "catalyst_score": 30.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 25.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (44 < 45). Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 94.49,
+          "price_date": "2026-05-01",
+          "market_cap_b": 35.52,
+          "ps_ratio": 1.78,
+          "pe_ratio": 8.15,
+          "pb_ratio": 1.47
+        }
+      },
+      {
+        "ticker": "CFG",
+        "company_name": "CITIZENS FINANCIAL GROUP INC/RI",
+        "tier": "Reject",
+        "total_score": 41.9,
+        "cheap_score": 63.3,
+        "quality_score": 81.7,
+        "catalyst_score": 30.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 25.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (42 < 45). Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 64.56,
+          "price_date": "2026-05-01",
+          "market_cap_b": 28.21,
+          "ps_ratio": 3.42,
+          "pe_ratio": 16.73,
+          "pb_ratio": 1.07
+        }
+      },
+      {
+        "ticker": "BAC",
+        "company_name": "BANK OF AMERICA CORP /DE/",
+        "tier": "Reject",
+        "total_score": 41.9,
+        "cheap_score": 63.3,
+        "quality_score": 81.7,
+        "catalyst_score": 30.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 25.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (42 < 45). Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 53.28,
+          "price_date": "2026-05-01",
+          "market_cap_b": 409.28,
+          "ps_ratio": 3.62,
+          "pe_ratio": 13.99,
+          "pb_ratio": 1.35
+        }
+      },
+      {
+        "ticker": "AMRZ",
+        "company_name": "Amrize Ltd",
+        "tier": "Reject",
+        "total_score": 38.9,
+        "cheap_score": 56.7,
+        "quality_score": 77.5,
+        "catalyst_score": 30.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 25.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (39 < 45). Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 53.23,
+          "price_date": "2026-05-01",
+          "market_cap_b": 29.47,
+          "ps_ratio": 2.49,
+          "pe_ratio": 24.87,
+          "pb_ratio": 2.22
+        }
+      },
+      {
+        "ticker": "ALC",
+        "company_name": "ALCON INC",
+        "tier": "Reject",
+        "total_score": 31.4,
+        "cheap_score": 56.7,
+        "quality_score": 77.5,
+        "catalyst_score": 0.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 25.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (31 < 45). No catalyst signals. Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 74.61,
+          "price_date": "2026-05-01",
+          "market_cap_b": 22.69,
+          "ps_ratio": 3.16,
+          "pe_ratio": 10.26,
+          "pb_ratio": 2.25
+        }
+      },
+      {
+        "ticker": "AMP",
+        "company_name": "AMERIPRISE FINANCIAL INC",
+        "tier": "Reject",
+        "total_score": 38.2,
+        "cheap_score": 55.0,
+        "quality_score": 76.7,
+        "catalyst_score": 30.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 25.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (38 < 45). Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 469.68,
+          "price_date": "2026-05-01",
+          "market_cap_b": 46.12,
+          "ps_ratio": 2.44,
+          "pe_ratio": 12.95,
+          "pb_ratio": 7.04
+        }
+      },
+      {
+        "ticker": "ADM",
+        "company_name": "Archer-Daniels-Midland Co",
+        "tier": "Reject",
+        "total_score": 30.9,
+        "cheap_score": 68.3,
+        "quality_score": 61.7,
+        "catalyst_score": 0.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 25.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (31 < 45). No catalyst signals. Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 74.37,
+          "price_date": "2026-05-01",
+          "market_cap_b": 36.0,
+          "ps_ratio": 0.45,
+          "pe_ratio": 33.35,
+          "pb_ratio": 0.69
+        }
+      },
+      {
+        "ticker": "B",
+        "company_name": "BARRICK MINING CORP",
+        "tier": "Reject",
+        "total_score": 29.5,
+        "cheap_score": 56.7,
+        "quality_score": 70.0,
+        "catalyst_score": 0.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 25.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (30 < 45). No catalyst signals. Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 38.82,
+          "price_date": "2026-05-01",
+          "market_cap_b": 38.7,
+          "ps_ratio": 3.54,
+          "pe_ratio": 11.84,
+          "pb_ratio": 2.03
+        }
+      },
+      {
+        "ticker": "BSX",
+        "company_name": "BOSTON SCIENTIFIC CORP",
+        "tier": "Reject",
+        "total_score": 35.4,
+        "cheap_score": 40.0,
+        "quality_score": 83.8,
+        "catalyst_score": 30.0,
+        "momentum_score": null,
+        "sentiment_score": null,
+        "risk_penalty": 25.0,
+        "confidence": "high",
+        "why_ranked": "",
+        "why_rejected": "Total score too low (35 < 45). Missing data: momentum, sentiment",
+        "thesis": null,
+        "why_now": null,
+        "cheap_evidence": [],
+        "quality_evidence": [],
+        "catalyst_evidence": [],
+        "risks": [],
+        "missing_evidence": [],
+        "missing_data": [
+          "momentum",
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 57.21,
+          "price_date": "2026-05-01",
+          "market_cap_b": 85.5,
+          "ps_ratio": 12.76,
+          "pe_ratio": 29.49,
+          "pb_ratio": 3.53
+        }
+      },
+      {
+        "ticker": "AIG",
+        "company_name": "AMERICAN INTERNATIONAL GROUP, INC.",
+        "tier": "C",
+        "total_score": 46.4,
+        "cheap_score": 54.6,
+        "quality_score": 67.5,
+        "catalyst_score": 30.0,
+        "momentum_score": 56.5,
+        "sentiment_score": null,
+        "risk_penalty": 0.0,
+        "confidence": "high",
+        "why_ranked": "Quality: score=68",
+        "why_rejected": "",
+        "thesis": "AMERICAN INTERNATIONAL GROUP, INC. (AIG) \u2014 Score: 46 Quality: score 68/100 \u2014 moderate fundamentals. Valuation: score 55/100 \u2014 moderate valuation signal. Catalyst: score 30/100 \u2014 limited catalyst activity (recent filing). This is a research candidate, not a buy/sell recommendation. Not validated for decision use.",
+        "why_now": "Why now: recent filing activity only.",
+        "cheap_evidence": [
+          "Valuation score: 55/100"
+        ],
+        "quality_evidence": [
+          "Quality score: 68/100"
+        ],
+        "catalyst_evidence": [
+          "Catalyst score: 30/100"
+        ],
+        "risks": [
+          "Risk penalty: 0/100"
+        ],
+        "missing_evidence": [],
+        "missing_data": [
+          "sentiment"
+        ],
+        "review": {
+          "review_status": "pending",
+          "usefulness_score": null,
+          "thesis_quality_score": null,
+          "evidence_quality_score": null,
+          "false_positive_reason": null,
+          "missed_risk": null,
+          "missing_evidence": null,
+          "review_notes": null
+        },
+        "valuation_metrics": {
+          "price": 74.8,
+          "price_date": "2026-04-30",
+          "market_cap_b": 42.66,
+          "ps_ratio": 1.59,
+          "pe_ratio": 13.78,
+          "pb_ratio": 1.04
+        }
+      }
+    ]
+  },
+  "review_instructions": {
+    "purpose": "Fill in the 'review' block for each candidate you investigate. Import completed reviews with: python main.py review import <path>",
+    "review_status_options": [
+      "pending",
+      "useful",
+      "weak",
+      "false_positive",
+      "needs_more_evidence",
+      "invalid_due_to_data_issue",
+      "archived"
+    ],
+    "score_range": "1 (lowest) to 5 (highest), or null if not assessed",
+    "false_positive_reason_options": [
+      "bad_data",
+      "stale_data",
+      "cheap_for_good_reason",
+      "weak_catalyst",
+      "poor_quality_business",
+      "macro_headwind",
+      "llm_overstated_case",
+      "missing_peer_context",
+      "temporary_noise",
+      "not_actionable",
+      "overfit_score",
+      "insufficient_liquidity",
+      "missing_risk_factor",
+      "source_failure",
+      "other"
+    ]
+  }
+}

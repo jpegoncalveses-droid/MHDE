@@ -1,0 +1,40 @@
+[
+  {
+    "source": "nasdaq_earnings",
+    "use_case": "earnings_calendar",
+    "tickers_tested": [
+      "AAPL",
+      "NVDA",
+      "TSLA",
+      "JPM",
+      "UBER",
+      "RKLB",
+      "IWM",
+      "XLE"
+    ],
+    "access_result": "ok",
+    "access_error": null,
+    "required_fields_present": false,
+    "missing_fields": [
+      "no_data"
+    ],
+    "historical_depth": "N/A",
+    "freshness": "1d",
+    "parsing_difficulty": "easy",
+    "rate_limit_notes": "Unofficial API. No auth but may block scrapers.",
+    "fallback_suggestion": "Earnings Whispers API or Yahoo Finance earnings calendar.",
+    "final_status": "Useful but optional",
+    "notes": "PLANNING ONLY \u2014 do not use as truth source. 0/8 tickers found.",
+    "scores": {
+      "access": 3,
+      "completeness": 1,
+      "freshness": 4,
+      "reliability": 3,
+      "parsing_ease": 4,
+      "cost_efficiency": 5,
+      "strategic_value": 3,
+      "total": 23
+    },
+    "raw_sample_path": null
+  }
+]

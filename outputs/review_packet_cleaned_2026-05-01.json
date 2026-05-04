@@ -1,0 +1,3473 @@
+{
+  "run_id": "38ae929592c74dd8",
+  "generated_at": "2026-05-01",
+  "guards_applied": [
+    "valuation_denominator_sanity",
+    "foreign_filer_currency_guard",
+    "industry_concept_guards",
+    "growth_period_alignment_guard"
+  ],
+  "sections": {
+    "c_tier": [
+      {
+        "ticker": "BKR",
+        "company_name": "Baker Hughes Co",
+        "industry": "bank",
+        "scores": {
+          "cheap": 33.84462434313308,
+          "quality": 77.5,
+          "catalyst": 50.0,
+          "total": 47.35459896658277,
+          "tier": "C"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": {
+              "missing_reason": "bank_revenue_concept_missing"
+            }
+          },
+          "pe_ratio": {
+            "value": 23.2651,
+            "score": 55.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 2.7748,
+            "score": 45.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": null
+          },
+          "revenue_growth_yoy": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": null
+          },
+          "catalyst_score": {
+            "value": 2.0,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=2)",
+                "10-Q/10-K filed recently"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "AIG",
+        "company_name": "AMERICAN INTERNATIONAL GROUP, INC.",
+        "industry": "insurer",
+        "scores": {
+          "cheap": 54.588948787061994,
+          "quality": 67.5,
+          "catalyst": 30.0,
+          "total": 46.40054324845599,
+          "tier": "C"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 1.5934,
+            "score": 70.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 13.7753,
+            "score": 75.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 1.037,
+            "score": 65.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": 0.81,
+            "score": 55.0,
+            "confidence": "low",
+            "metadata": {
+              "quality_warning": "insurance_specific_quality_required"
+            }
+          },
+          "revenue_growth_yoy": {
+            "value": 0.0,
+            "score": 60.0,
+            "confidence": "medium",
+            "metadata": {
+              "period_alignment_status": "aligned",
+              "period_type": "annual",
+              "detection_method": "form",
+              "current_period_end": "2025-12-31",
+              "prior_period_end": "2025-12-31",
+              "gap_days": 0,
+              "current_form": "10-K",
+              "prior_form": "10-K"
+            }
+          },
+          "catalyst_score": {
+            "value": 1.0,
+            "score": 30.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=8)"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "APO",
+        "company_name": "Apollo Global Management, Inc.",
+        "industry": "insurer",
+        "scores": {
+          "cheap": 44.05798523169122,
+          "quality": 76.66666666666667,
+          "catalyst": 30.0,
+          "total": 45.257305839974876,
+          "tier": "C"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 2.4345,
+            "score": 70.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 23.7238,
+            "score": 55.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 3.3428,
+            "score": 45.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": 10.9,
+            "score": 75.0,
+            "confidence": "low",
+            "metadata": {
+              "quality_warning": "insurance_specific_quality_required"
+            }
+          },
+          "revenue_growth_yoy": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": {
+              "missing_reason": "period_mismatch",
+              "period_alignment_status": "mismatched",
+              "period_type": null,
+              "detection_method": "form",
+              "current_period_end": "2025-12-31",
+              "prior_period_end": "2025-09-30",
+              "gap_days": 92,
+              "current_form": "10-K",
+              "prior_form": "10-Q"
+            }
+          },
+          "catalyst_score": {
+            "value": 1.0,
+            "score": 30.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=3)"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "AFL",
+        "company_name": "AFLAC INC",
+        "industry": "insurer",
+        "scores": {
+          "cheap": 43.68379148508213,
+          "quality": 76.25,
+          "catalyst": 30.0,
+          "total": 45.08080479475768,
+          "tier": "C"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 3.5423,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 16.6672,
+            "score": 75.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 2.0617,
+            "score": 45.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": 21.24,
+            "score": 90.0,
+            "confidence": "low",
+            "metadata": {
+              "quality_warning": "insurance_specific_quality_required"
+            }
+          },
+          "revenue_growth_yoy": {
+            "value": 0.0,
+            "score": 60.0,
+            "confidence": "medium",
+            "metadata": {
+              "period_alignment_status": "aligned",
+              "period_type": "annual",
+              "detection_method": "form",
+              "current_period_end": "2025-12-31",
+              "prior_period_end": "2025-12-31",
+              "gap_days": 0,
+              "current_form": "10-K",
+              "prior_form": "10-K"
+            }
+          },
+          "catalyst_score": {
+            "value": 1.0,
+            "score": 30.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=4)"
+              ]
+            }
+          }
+        }
+      }
+    ],
+    "top_reject": [
+      {
+        "ticker": "BK",
+        "company_name": "Bank of New York Mellon Corp",
+        "industry": "bank",
+        "scores": {
+          "cheap": 43.283309941293524,
+          "quality": 76.25,
+          "catalyst": 30.0,
+          "total": 44.76399879846369,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 4.8111,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 18.2149,
+            "score": 75.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 2.1801,
+            "score": 45.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": 27.63,
+            "score": 90.0,
+            "confidence": "low",
+            "metadata": {
+              "quality_warning": "bank_specific_quality_required"
+            }
+          },
+          "revenue_growth_yoy": {
+            "value": 7.85,
+            "score": 60.0,
+            "confidence": "low",
+            "metadata": {
+              "period_alignment_status": "aligned",
+              "period_type": "annual",
+              "detection_method": "form",
+              "current_period_end": "2025-12-31",
+              "prior_period_end": "2024-12-31",
+              "gap_days": 365,
+              "current_form": "10-K",
+              "prior_form": "10-K"
+            }
+          },
+          "catalyst_score": {
+            "value": 1.0,
+            "score": 30.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=4)"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "BIIB",
+        "company_name": "BIOGEN INC.",
+        "industry": null,
+        "scores": {
+          "cheap": 26.97927473939035,
+          "quality": 76.66666666666667,
+          "catalyst": 50.0,
+          "total": 44.47707525858375,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 11.1629,
+            "score": 20.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 86.6907,
+            "score": 15.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 1.869,
+            "score": 65.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": 12.89,
+            "score": 75.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "revenue_growth_yoy": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": {
+              "missing_reason": "period_mismatch",
+              "period_alignment_status": "mismatched",
+              "period_type": null,
+              "detection_method": "form",
+              "current_period_end": "2026-03-31",
+              "prior_period_end": "2025-12-31",
+              "gap_days": 90,
+              "current_form": "10-Q",
+              "prior_form": "10-K"
+            }
+          },
+          "catalyst_score": {
+            "value": 2.0,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=4)",
+                "10-Q/10-K filed recently"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "ACGL",
+        "company_name": "ARCH CAPITAL GROUP LTD.",
+        "industry": "insurer",
+        "scores": {
+          "cheap": 75.0,
+          "quality": 76.25,
+          "catalyst": 30.0,
+          "total": 44.0625,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 1.7823,
+            "score": 70.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 8.1457,
+            "score": 90.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 1.4674,
+            "score": 65.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": 22.07,
+            "score": 90.0,
+            "confidence": "low",
+            "metadata": {
+              "quality_warning": "insurance_specific_quality_required"
+            }
+          },
+          "revenue_growth_yoy": {
+            "value": 0.0,
+            "score": 60.0,
+            "confidence": "medium",
+            "metadata": {
+              "period_alignment_status": "aligned",
+              "period_type": "annual",
+              "detection_method": "form",
+              "current_period_end": "2025-12-31",
+              "prior_period_end": "2025-12-31",
+              "gap_days": 0,
+              "current_form": "10-K",
+              "prior_form": "10-K"
+            }
+          },
+          "catalyst_score": {
+            "value": 1.0,
+            "score": 30.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=8)"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "AXP",
+        "company_name": "AMERICAN EXPRESS CO",
+        "industry": "bank",
+        "scores": {
+          "cheap": 24.540933694181327,
+          "quality": 76.66666666666667,
+          "catalyst": 50.0,
+          "total": 43.843923353981495,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 7.9122,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 74.9673,
+            "score": 15.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 6.4748,
+            "score": 20.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": 15.71,
+            "score": 75.0,
+            "confidence": "low",
+            "metadata": {
+              "quality_warning": "bank_specific_quality_required"
+            }
+          },
+          "revenue_growth_yoy": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": {
+              "missing_reason": "period_mismatch",
+              "period_alignment_status": "mismatched",
+              "period_type": null,
+              "detection_method": "form",
+              "current_period_end": "2026-03-31",
+              "prior_period_end": "2025-12-31",
+              "gap_days": 90,
+              "current_form": "10-Q",
+              "prior_form": "10-K"
+            }
+          },
+          "catalyst_score": {
+            "value": 2.0,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=4)",
+                "10-Q/10-K filed recently"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "AMZN",
+        "company_name": "AMAZON COM INC",
+        "industry": null,
+        "scores": {
+          "cheap": 14.555097122827515,
+          "quality": 77.5,
+          "catalyst": 50.0,
+          "total": 42.955909664503025,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 15.8786,
+            "score": 20.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 95.3453,
+            "score": 15.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 6.5222,
+            "score": 20.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": null
+          },
+          "revenue_growth_yoy": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": null
+          },
+          "catalyst_score": {
+            "value": 2.0,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=18)",
+                "10-Q/10-K filed recently"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "ALL",
+        "company_name": "ALLSTATE CORP",
+        "industry": "insurer",
+        "scores": {
+          "cheap": 56.666666666666664,
+          "quality": 72.5,
+          "catalyst": 50.0,
+          "total": 42.625,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 3.3721,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 23.5178,
+            "score": 55.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 1.8074,
+            "score": 65.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": 14.5,
+            "score": 75.0,
+            "confidence": "low",
+            "metadata": {
+              "quality_warning": "insurance_specific_quality_required"
+            }
+          },
+          "revenue_growth_yoy": {
+            "value": 0.0,
+            "score": 60.0,
+            "confidence": "medium",
+            "metadata": {
+              "period_alignment_status": "aligned",
+              "period_type": "quarterly",
+              "detection_method": "form",
+              "current_period_end": "2026-03-31",
+              "prior_period_end": "2026-03-31",
+              "gap_days": 0,
+              "current_form": "10-Q",
+              "prior_form": "10-Q"
+            }
+          },
+          "catalyst_score": {
+            "value": 2.0,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=8)",
+                "10-Q/10-K filed recently"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "ACN",
+        "company_name": "Accenture plc",
+        "industry": null,
+        "scores": {
+          "cheap": 50.0,
+          "quality": 78.33333333333333,
+          "catalyst": 50.0,
+          "total": 42.08333333333333,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 3.0473,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 27.7403,
+            "score": 55.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 3.5917,
+            "score": 45.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": 10.97,
+            "score": 75.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "revenue_growth_yoy": {
+            "value": 103.87,
+            "score": 90.0,
+            "confidence": "medium",
+            "metadata": {
+              "period_alignment_status": "aligned",
+              "period_type": "quarterly",
+              "detection_method": "form",
+              "current_period_end": "2026-02-28",
+              "prior_period_end": "2026-02-28",
+              "gap_days": 0,
+              "current_form": "10-Q",
+              "prior_form": "10-Q"
+            }
+          },
+          "catalyst_score": {
+            "value": 2.0,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=4)",
+                "10-Q/10-K filed recently"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "CI",
+        "company_name": "Cigna Group",
+        "industry": "insurer",
+        "scores": {
+          "cheap": 56.666666666666664,
+          "quality": 70.0,
+          "catalyst": 50.0,
+          "total": 42.0,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 1.0906,
+            "score": 70.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 45.1965,
+            "score": 35.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 1.7697,
+            "score": 65.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": 0.3,
+            "score": 55.0,
+            "confidence": "low",
+            "metadata": {
+              "quality_warning": "insurance_specific_quality_required"
+            }
+          },
+          "revenue_growth_yoy": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": {
+              "missing_reason": "period_mismatch",
+              "period_alignment_status": "mismatched",
+              "period_type": null,
+              "detection_method": "form",
+              "current_period_end": "2026-03-31",
+              "prior_period_end": "2025-12-31",
+              "gap_days": 90,
+              "current_form": "10-Q",
+              "prior_form": "10-K"
+            }
+          },
+          "catalyst_score": {
+            "value": 2.0,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=4)",
+                "10-Q/10-K filed recently"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "BAC",
+        "company_name": "BANK OF AMERICA CORP /DE/",
+        "industry": "bank",
+        "scores": {
+          "cheap": 63.333333333333336,
+          "quality": 81.66666666666667,
+          "catalyst": 30.0,
+          "total": 41.91666666666667,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 3.6188,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 13.9856,
+            "score": 75.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 1.3497,
+            "score": 65.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": 26.98,
+            "score": 90.0,
+            "confidence": "low",
+            "metadata": {
+              "quality_warning": "bank_specific_quality_required"
+            }
+          },
+          "revenue_growth_yoy": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": {
+              "missing_reason": "period_mismatch",
+              "period_alignment_status": "mismatched",
+              "period_type": null,
+              "detection_method": "form",
+              "current_period_end": "2025-12-31",
+              "prior_period_end": "2025-09-30",
+              "gap_days": 92,
+              "current_form": "10-K",
+              "prior_form": "10-Q"
+            }
+          },
+          "catalyst_score": {
+            "value": 1.0,
+            "score": 30.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=2)"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "CFG",
+        "company_name": "CITIZENS FINANCIAL GROUP INC/RI",
+        "industry": "bank",
+        "scores": {
+          "cheap": 63.333333333333336,
+          "quality": 81.66666666666667,
+          "catalyst": 30.0,
+          "total": 41.91666666666667,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 3.4201,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 16.7254,
+            "score": 75.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 1.0718,
+            "score": 65.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": 22.2,
+            "score": 90.0,
+            "confidence": "low",
+            "metadata": {
+              "quality_warning": "bank_specific_quality_required"
+            }
+          },
+          "revenue_growth_yoy": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": {
+              "missing_reason": "period_mismatch",
+              "period_alignment_status": "mismatched",
+              "period_type": null,
+              "detection_method": "form",
+              "current_period_end": "2025-12-31",
+              "prior_period_end": "2025-09-30",
+              "gap_days": 92,
+              "current_form": "10-K",
+              "prior_form": "10-Q"
+            }
+          },
+          "catalyst_score": {
+            "value": 1.0,
+            "score": 30.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=4)"
+              ]
+            }
+          }
+        }
+      }
+    ],
+    "top_cheap": [
+      {
+        "ticker": "ACGL",
+        "company_name": "ARCH CAPITAL GROUP LTD.",
+        "industry": "insurer",
+        "scores": {
+          "cheap": 75.0,
+          "quality": 76.25,
+          "catalyst": 30.0,
+          "total": 44.0625,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 1.7823,
+            "score": 70.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 8.1457,
+            "score": 90.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 1.4674,
+            "score": 65.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": 22.07,
+            "score": 90.0,
+            "confidence": "low",
+            "metadata": {
+              "quality_warning": "insurance_specific_quality_required"
+            }
+          },
+          "revenue_growth_yoy": {
+            "value": 0.0,
+            "score": 60.0,
+            "confidence": "medium",
+            "metadata": {
+              "period_alignment_status": "aligned",
+              "period_type": "annual",
+              "detection_method": "form",
+              "current_period_end": "2025-12-31",
+              "prior_period_end": "2025-12-31",
+              "gap_days": 0,
+              "current_form": "10-K",
+              "prior_form": "10-K"
+            }
+          },
+          "catalyst_score": {
+            "value": 1.0,
+            "score": 30.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=8)"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "CHTR",
+        "company_name": "CHARTER COMMUNICATIONS, INC. /MO/",
+        "industry": null,
+        "scores": {
+          "cheap": 75.0,
+          "quality": 62.5,
+          "catalyst": 50.0,
+          "total": 41.625,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": {
+              "missing_reason": "valuation_denominator_invalid"
+            }
+          },
+          "pe_ratio": {
+            "value": 18.868,
+            "score": 75.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": {
+              "missing_reason": "valuation_denominator_invalid"
+            }
+          },
+          "net_margin": {
+            "value": 8.55,
+            "score": 55.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "revenue_growth_yoy": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": {
+              "missing_reason": "period_mismatch",
+              "period_alignment_status": "mismatched",
+              "period_type": null,
+              "detection_method": "form",
+              "current_period_end": "2026-03-31",
+              "prior_period_end": "2025-12-31",
+              "gap_days": 90,
+              "current_form": "10-Q",
+              "prior_form": "10-K"
+            }
+          },
+          "catalyst_score": {
+            "value": 2.0,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=2)",
+                "10-Q/10-K filed recently"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "C",
+        "company_name": "CITIGROUP INC",
+        "industry": "insurer",
+        "scores": {
+          "cheap": 70.0,
+          "quality": 45.0,
+          "catalyst": 30.0,
+          "total": 30.75,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 2.8025,
+            "score": 70.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 18.2418,
+            "score": 75.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 1.1251,
+            "score": 65.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": -96.15,
+            "score": 20.0,
+            "confidence": "low",
+            "metadata": {
+              "quality_warning": "insurance_specific_quality_required"
+            }
+          },
+          "revenue_growth_yoy": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": {
+              "missing_reason": "period_mismatch",
+              "period_alignment_status": "mismatched",
+              "period_type": null,
+              "detection_method": "form",
+              "current_period_end": "2025-12-31",
+              "prior_period_end": "2025-09-30",
+              "gap_days": 92,
+              "current_form": "10-K",
+              "prior_form": "10-Q"
+            }
+          },
+          "catalyst_score": {
+            "value": 1.0,
+            "score": 30.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=4)"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "ADM",
+        "company_name": "Archer-Daniels-Midland Co",
+        "industry": null,
+        "scores": {
+          "cheap": 68.33333333333333,
+          "quality": 61.666666666666664,
+          "catalyst": 0.0,
+          "total": 30.916666666666664,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 0.4484,
+            "score": 90.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 33.3498,
+            "score": 35.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 0.6871,
+            "score": 80.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": 1.34,
+            "score": 55.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "revenue_growth_yoy": {
+            "value": 0.0,
+            "score": 60.0,
+            "confidence": "medium",
+            "metadata": {
+              "period_alignment_status": "aligned",
+              "period_type": "annual",
+              "detection_method": "form",
+              "current_period_end": "2025-12-31",
+              "prior_period_end": "2025-12-31",
+              "gap_days": 0,
+              "current_form": "10-K",
+              "prior_form": "10-K"
+            }
+          },
+          "catalyst_score": {
+            "value": 0.0,
+            "score": 0.0,
+            "confidence": "low",
+            "metadata": {
+              "signals": []
+            }
+          }
+        }
+      },
+      {
+        "ticker": "BAC",
+        "company_name": "BANK OF AMERICA CORP /DE/",
+        "industry": "bank",
+        "scores": {
+          "cheap": 63.333333333333336,
+          "quality": 81.66666666666667,
+          "catalyst": 30.0,
+          "total": 41.91666666666667,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 3.6188,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 13.9856,
+            "score": 75.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 1.3497,
+            "score": 65.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": 26.98,
+            "score": 90.0,
+            "confidence": "low",
+            "metadata": {
+              "quality_warning": "bank_specific_quality_required"
+            }
+          },
+          "revenue_growth_yoy": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": {
+              "missing_reason": "period_mismatch",
+              "period_alignment_status": "mismatched",
+              "period_type": null,
+              "detection_method": "form",
+              "current_period_end": "2025-12-31",
+              "prior_period_end": "2025-09-30",
+              "gap_days": 92,
+              "current_form": "10-K",
+              "prior_form": "10-Q"
+            }
+          },
+          "catalyst_score": {
+            "value": 1.0,
+            "score": 30.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=2)"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "CFG",
+        "company_name": "CITIZENS FINANCIAL GROUP INC/RI",
+        "industry": "bank",
+        "scores": {
+          "cheap": 63.333333333333336,
+          "quality": 81.66666666666667,
+          "catalyst": 30.0,
+          "total": 41.91666666666667,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 3.4201,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 16.7254,
+            "score": 75.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 1.0718,
+            "score": 65.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": 22.2,
+            "score": 90.0,
+            "confidence": "low",
+            "metadata": {
+              "quality_warning": "bank_specific_quality_required"
+            }
+          },
+          "revenue_growth_yoy": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": {
+              "missing_reason": "period_mismatch",
+              "period_alignment_status": "mismatched",
+              "period_type": null,
+              "detection_method": "form",
+              "current_period_end": "2025-12-31",
+              "prior_period_end": "2025-09-30",
+              "gap_days": 92,
+              "current_form": "10-K",
+              "prior_form": "10-Q"
+            }
+          },
+          "catalyst_score": {
+            "value": 1.0,
+            "score": 30.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=4)"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "ALL",
+        "company_name": "ALLSTATE CORP",
+        "industry": "insurer",
+        "scores": {
+          "cheap": 56.666666666666664,
+          "quality": 72.5,
+          "catalyst": 50.0,
+          "total": 42.625,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 3.3721,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 23.5178,
+            "score": 55.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 1.8074,
+            "score": 65.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": 14.5,
+            "score": 75.0,
+            "confidence": "low",
+            "metadata": {
+              "quality_warning": "insurance_specific_quality_required"
+            }
+          },
+          "revenue_growth_yoy": {
+            "value": 0.0,
+            "score": 60.0,
+            "confidence": "medium",
+            "metadata": {
+              "period_alignment_status": "aligned",
+              "period_type": "quarterly",
+              "detection_method": "form",
+              "current_period_end": "2026-03-31",
+              "prior_period_end": "2026-03-31",
+              "gap_days": 0,
+              "current_form": "10-Q",
+              "prior_form": "10-Q"
+            }
+          },
+          "catalyst_score": {
+            "value": 2.0,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=8)",
+                "10-Q/10-K filed recently"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "CI",
+        "company_name": "Cigna Group",
+        "industry": "insurer",
+        "scores": {
+          "cheap": 56.666666666666664,
+          "quality": 70.0,
+          "catalyst": 50.0,
+          "total": 42.0,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 1.0906,
+            "score": 70.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 45.1965,
+            "score": 35.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 1.7697,
+            "score": 65.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": 0.3,
+            "score": 55.0,
+            "confidence": "low",
+            "metadata": {
+              "quality_warning": "insurance_specific_quality_required"
+            }
+          },
+          "revenue_growth_yoy": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": {
+              "missing_reason": "period_mismatch",
+              "period_alignment_status": "mismatched",
+              "period_type": null,
+              "detection_method": "form",
+              "current_period_end": "2026-03-31",
+              "prior_period_end": "2025-12-31",
+              "gap_days": 90,
+              "current_form": "10-Q",
+              "prior_form": "10-K"
+            }
+          },
+          "catalyst_score": {
+            "value": 2.0,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=4)",
+                "10-Q/10-K filed recently"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "AMRZ",
+        "company_name": "Amrize Ltd",
+        "industry": null,
+        "scores": {
+          "cheap": 56.666666666666664,
+          "quality": 77.5,
+          "catalyst": 30.0,
+          "total": 38.875,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 2.4941,
+            "score": 70.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 24.8738,
+            "score": 55.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 2.2227,
+            "score": 45.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": null
+          },
+          "revenue_growth_yoy": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": null
+          },
+          "catalyst_score": {
+            "value": 1.0,
+            "score": 30.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=9)"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "ALC",
+        "company_name": "ALCON INC",
+        "industry": null,
+        "scores": {
+          "cheap": 56.666666666666664,
+          "quality": 77.5,
+          "catalyst": 0.0,
+          "total": 31.375,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 3.1603,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 10.262,
+            "score": 75.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 2.2523,
+            "score": 45.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": null
+          },
+          "revenue_growth_yoy": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": null
+          },
+          "catalyst_score": {
+            "value": 0.0,
+            "score": 0.0,
+            "confidence": "low",
+            "metadata": {
+              "signals": [],
+              "disclosure_evidence": [
+                "6-K filed in last 30d (count=4) \u2014 foreign issuer disclosure, not auto-scored"
+              ]
+            }
+          }
+        }
+      }
+    ],
+    "top_quality": [
+      {
+        "ticker": "APP",
+        "company_name": "AppLovin Corp",
+        "industry": null,
+        "scores": {
+          "cheap": 22.2069336613114,
+          "quality": 83.75,
+          "catalyst": 30.0,
+          "total": 40.53089383184898,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 28.6949,
+            "score": 20.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 47.1682,
+            "score": 35.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": {
+              "missing_reason": "valuation_denominator_invalid"
+            }
+          },
+          "net_margin": {
+            "value": 60.83,
+            "score": 90.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "revenue_growth_yoy": {
+            "value": 69.99,
+            "score": 90.0,
+            "confidence": "medium",
+            "metadata": {
+              "period_alignment_status": "aligned",
+              "period_type": "annual",
+              "detection_method": "form",
+              "current_period_end": "2025-12-31",
+              "prior_period_end": "2024-12-31",
+              "gap_days": 365,
+              "current_form": "10-K",
+              "prior_form": "10-K"
+            }
+          },
+          "catalyst_score": {
+            "value": 1.0,
+            "score": 30.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=2)"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "APD",
+        "company_name": "Air Products & Chemicals, Inc.",
+        "industry": null,
+        "scores": {
+          "cheap": 33.333333333333336,
+          "quality": 83.75,
+          "catalyst": 50.0,
+          "total": 38.4375,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 10.6395,
+            "score": 20.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 48.0714,
+            "score": 35.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 4.2655,
+            "score": 45.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": 22.13,
+            "score": 90.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "revenue_growth_yoy": {
+            "value": 97.82,
+            "score": 90.0,
+            "confidence": "medium",
+            "metadata": {
+              "period_alignment_status": "aligned",
+              "period_type": "quarterly",
+              "detection_method": "form",
+              "current_period_end": "2026-03-31",
+              "prior_period_end": "2026-03-31",
+              "gap_days": 0,
+              "current_form": "10-Q",
+              "prior_form": "10-Q"
+            }
+          },
+          "catalyst_score": {
+            "value": 2.0,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=3)",
+                "10-Q/10-K filed recently"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "AVGO",
+        "company_name": "Broadcom Inc.",
+        "industry": null,
+        "scores": {
+          "cheap": 11.38361556916913,
+          "quality": 83.75,
+          "catalyst": 30.0,
+          "total": 38.29015185352985,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 97.8702,
+            "score": 20.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": {
+              "missing_reason": "valuation_denominator_invalid"
+            }
+          },
+          "pb_ratio": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": {
+              "missing_reason": "valuation_denominator_invalid"
+            }
+          },
+          "net_margin": {
+            "value": 28.28,
+            "score": 90.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "revenue_growth_yoy": {
+            "value": 282.95,
+            "score": 90.0,
+            "confidence": "medium",
+            "metadata": {
+              "period_alignment_status": "aligned",
+              "period_type": "annual",
+              "detection_method": "form",
+              "current_period_end": "2018-11-04",
+              "prior_period_end": "2018-11-04",
+              "gap_days": 0,
+              "current_form": "10-K",
+              "prior_form": "10-K"
+            }
+          },
+          "catalyst_score": {
+            "value": 1.0,
+            "score": 30.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=15)"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "BSX",
+        "company_name": "BOSTON SCIENTIFIC CORP",
+        "industry": null,
+        "scores": {
+          "cheap": 40.0,
+          "quality": 83.75,
+          "catalyst": 30.0,
+          "total": 35.4375,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 12.7612,
+            "score": 20.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 29.4897,
+            "score": 55.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 3.5283,
+            "score": 45.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": 43.25,
+            "score": 90.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "revenue_growth_yoy": {
+            "value": 202.35,
+            "score": 90.0,
+            "confidence": "medium",
+            "metadata": {
+              "period_alignment_status": "aligned",
+              "period_type": "quarterly",
+              "detection_method": "form",
+              "current_period_end": "2017-09-30",
+              "prior_period_end": "2017-09-30",
+              "gap_days": 0,
+              "current_form": "10-Q",
+              "prior_form": "10-Q"
+            }
+          },
+          "catalyst_score": {
+            "value": 1.0,
+            "score": 30.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=2)"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "AMGN",
+        "company_name": "AMGEN INC",
+        "industry": null,
+        "scores": {
+          "cheap": 31.666666666666668,
+          "quality": 83.75,
+          "catalyst": 30.0,
+          "total": 32.9375,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 14.2585,
+            "score": 20.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 22.974,
+            "score": 55.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 20.4655,
+            "score": 20.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": 62.05,
+            "score": 90.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "revenue_growth_yoy": {
+            "value": 90.42,
+            "score": 90.0,
+            "confidence": "medium",
+            "metadata": {
+              "period_alignment_status": "aligned",
+              "period_type": "quarterly",
+              "detection_method": "form",
+              "current_period_end": "2021-06-30",
+              "prior_period_end": "2021-06-30",
+              "gap_days": 0,
+              "current_form": "10-Q",
+              "prior_form": "10-Q"
+            }
+          },
+          "catalyst_score": {
+            "value": 1.0,
+            "score": 30.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=6)"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "BAC",
+        "company_name": "BANK OF AMERICA CORP /DE/",
+        "industry": "bank",
+        "scores": {
+          "cheap": 63.333333333333336,
+          "quality": 81.66666666666667,
+          "catalyst": 30.0,
+          "total": 41.91666666666667,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 3.6188,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 13.9856,
+            "score": 75.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 1.3497,
+            "score": 65.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": 26.98,
+            "score": 90.0,
+            "confidence": "low",
+            "metadata": {
+              "quality_warning": "bank_specific_quality_required"
+            }
+          },
+          "revenue_growth_yoy": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": {
+              "missing_reason": "period_mismatch",
+              "period_alignment_status": "mismatched",
+              "period_type": null,
+              "detection_method": "form",
+              "current_period_end": "2025-12-31",
+              "prior_period_end": "2025-09-30",
+              "gap_days": 92,
+              "current_form": "10-K",
+              "prior_form": "10-Q"
+            }
+          },
+          "catalyst_score": {
+            "value": 1.0,
+            "score": 30.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=2)"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "CFG",
+        "company_name": "CITIZENS FINANCIAL GROUP INC/RI",
+        "industry": "bank",
+        "scores": {
+          "cheap": 63.333333333333336,
+          "quality": 81.66666666666667,
+          "catalyst": 30.0,
+          "total": 41.91666666666667,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 3.4201,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 16.7254,
+            "score": 75.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 1.0718,
+            "score": 65.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": 22.2,
+            "score": 90.0,
+            "confidence": "low",
+            "metadata": {
+              "quality_warning": "bank_specific_quality_required"
+            }
+          },
+          "revenue_growth_yoy": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": {
+              "missing_reason": "period_mismatch",
+              "period_alignment_status": "mismatched",
+              "period_type": null,
+              "detection_method": "form",
+              "current_period_end": "2025-12-31",
+              "prior_period_end": "2025-09-30",
+              "gap_days": 92,
+              "current_form": "10-K",
+              "prior_form": "10-Q"
+            }
+          },
+          "catalyst_score": {
+            "value": 1.0,
+            "score": 30.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=4)"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "BX",
+        "company_name": "Blackstone Inc.",
+        "industry": null,
+        "scores": {
+          "cheap": 35.0,
+          "quality": 81.66666666666667,
+          "catalyst": 30.0,
+          "total": 33.41666666666667,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 6.8863,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 32.9561,
+            "score": 35.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 11.4833,
+            "score": 20.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": 20.89,
+            "score": 90.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "revenue_growth_yoy": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": {
+              "missing_reason": "period_mismatch",
+              "period_alignment_status": "mismatched",
+              "period_type": null,
+              "detection_method": "form",
+              "current_period_end": "2025-12-31",
+              "prior_period_end": "2025-09-30",
+              "gap_days": 92,
+              "current_form": "10-K",
+              "prior_form": "10-Q"
+            }
+          },
+          "catalyst_score": {
+            "value": 1.0,
+            "score": 30.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=2)"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "CBOE",
+        "company_name": "Cboe Global Markets, Inc.",
+        "industry": null,
+        "scores": {
+          "cheap": 25.0,
+          "quality": 81.66666666666667,
+          "catalyst": 25.0,
+          "total": 29.16666666666667,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 15.2659,
+            "score": 20.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 31.0729,
+            "score": 35.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 6.6227,
+            "score": 20.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": 49.35,
+            "score": 90.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "revenue_growth_yoy": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": {
+              "missing_reason": "period_mismatch",
+              "period_alignment_status": "mismatched",
+              "period_type": null,
+              "detection_method": "form",
+              "current_period_end": "2017-12-31",
+              "prior_period_end": "2017-09-30",
+              "gap_days": 92,
+              "current_form": "10-K",
+              "prior_form": "10-Q"
+            }
+          },
+          "catalyst_score": {
+            "value": 1.0,
+            "score": 25.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "Earnings in next 14d"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "AMD",
+        "company_name": "ADVANCED MICRO DEVICES INC",
+        "industry": "bank",
+        "scores": {
+          "cheap": 17.5,
+          "quality": 81.66666666666667,
+          "catalyst": 0.0,
+          "total": 20.666666666666668,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": {
+              "missing_reason": "valuation_denominator_invalid"
+            }
+          },
+          "pe_ratio": {
+            "value": 135.4962,
+            "score": 15.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 9.3244,
+            "score": 20.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": {
+              "missing_reason": "financial_concept_mismatch"
+            }
+          },
+          "revenue_growth_yoy": {
+            "value": 147.03,
+            "score": 90.0,
+            "confidence": "low",
+            "metadata": {
+              "period_alignment_status": "aligned",
+              "period_type": "quarterly",
+              "detection_method": "form",
+              "current_period_end": "2017-09-30",
+              "prior_period_end": "2017-09-30",
+              "gap_days": 0,
+              "current_form": "10-Q",
+              "prior_form": "10-Q"
+            }
+          },
+          "catalyst_score": {
+            "value": 0.0,
+            "score": 0.0,
+            "confidence": "low",
+            "metadata": {
+              "signals": []
+            }
+          }
+        }
+      }
+    ],
+    "top_catalyst": [
+      {
+        "ticker": "BAM",
+        "company_name": "Brookfield Asset Management Ltd.",
+        "industry": "bank",
+        "scores": {
+          "cheap": 43.333333333333336,
+          "quality": 80.0,
+          "catalyst": 55.0,
+          "total": 41.75,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 3.9823,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 42.8142,
+            "score": 35.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 2.2672,
+            "score": 45.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": 49.78,
+            "score": 90.0,
+            "confidence": "low",
+            "metadata": {
+              "quality_warning": "bank_specific_quality_required"
+            }
+          },
+          "revenue_growth_yoy": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": {
+              "missing_reason": "period_mismatch",
+              "period_alignment_status": "mismatched",
+              "period_type": null,
+              "detection_method": "form",
+              "current_period_end": "2025-12-31",
+              "prior_period_end": "2025-09-30",
+              "gap_days": 92,
+              "current_form": "10-K",
+              "prior_form": "10-Q"
+            }
+          },
+          "catalyst_score": {
+            "value": 2.0,
+            "score": 55.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=12)",
+                "Earnings in next 14d"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "CL",
+        "company_name": "COLGATE PALMOLIVE CO",
+        "industry": null,
+        "scores": {
+          "cheap": 27.5,
+          "quality": 68.75,
+          "catalyst": 55.0,
+          "total": 34.1875,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 17.6894,
+            "score": 20.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 33.1863,
+            "score": 35.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": {
+              "missing_reason": "valuation_denominator_invalid"
+            }
+          },
+          "net_margin": {
+            "value": 53.27,
+            "score": 90.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "revenue_growth_yoy": {
+            "value": -74.1,
+            "score": 30.0,
+            "confidence": "medium",
+            "metadata": {
+              "period_alignment_status": "aligned",
+              "period_type": "quarterly",
+              "detection_method": "gap",
+              "current_period_end": "2018-03-31",
+              "prior_period_end": "2017-12-31",
+              "gap_days": 90,
+              "current_form": "10-Q",
+              "prior_form": "10-K/A"
+            }
+          },
+          "catalyst_score": {
+            "value": 2.0,
+            "score": 55.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=2)",
+                "Earnings in next 14d"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "BKR",
+        "company_name": "Baker Hughes Co",
+        "industry": "bank",
+        "scores": {
+          "cheap": 33.84462434313308,
+          "quality": 77.5,
+          "catalyst": 50.0,
+          "total": 47.35459896658277,
+          "tier": "C"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": {
+              "missing_reason": "bank_revenue_concept_missing"
+            }
+          },
+          "pe_ratio": {
+            "value": 23.2651,
+            "score": 55.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 2.7748,
+            "score": 45.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": null
+          },
+          "revenue_growth_yoy": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": null
+          },
+          "catalyst_score": {
+            "value": 2.0,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=2)",
+                "10-Q/10-K filed recently"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "BIIB",
+        "company_name": "BIOGEN INC.",
+        "industry": null,
+        "scores": {
+          "cheap": 26.97927473939035,
+          "quality": 76.66666666666667,
+          "catalyst": 50.0,
+          "total": 44.47707525858375,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 11.1629,
+            "score": 20.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 86.6907,
+            "score": 15.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 1.869,
+            "score": 65.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": 12.89,
+            "score": 75.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "revenue_growth_yoy": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": {
+              "missing_reason": "period_mismatch",
+              "period_alignment_status": "mismatched",
+              "period_type": null,
+              "detection_method": "form",
+              "current_period_end": "2026-03-31",
+              "prior_period_end": "2025-12-31",
+              "gap_days": 90,
+              "current_form": "10-Q",
+              "prior_form": "10-K"
+            }
+          },
+          "catalyst_score": {
+            "value": 2.0,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=4)",
+                "10-Q/10-K filed recently"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "AXP",
+        "company_name": "AMERICAN EXPRESS CO",
+        "industry": "bank",
+        "scores": {
+          "cheap": 24.540933694181327,
+          "quality": 76.66666666666667,
+          "catalyst": 50.0,
+          "total": 43.843923353981495,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 7.9122,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 74.9673,
+            "score": 15.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 6.4748,
+            "score": 20.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": 15.71,
+            "score": 75.0,
+            "confidence": "low",
+            "metadata": {
+              "quality_warning": "bank_specific_quality_required"
+            }
+          },
+          "revenue_growth_yoy": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": {
+              "missing_reason": "period_mismatch",
+              "period_alignment_status": "mismatched",
+              "period_type": null,
+              "detection_method": "form",
+              "current_period_end": "2026-03-31",
+              "prior_period_end": "2025-12-31",
+              "gap_days": 90,
+              "current_form": "10-Q",
+              "prior_form": "10-K"
+            }
+          },
+          "catalyst_score": {
+            "value": 2.0,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=4)",
+                "10-Q/10-K filed recently"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "AMZN",
+        "company_name": "AMAZON COM INC",
+        "industry": null,
+        "scores": {
+          "cheap": 14.555097122827515,
+          "quality": 77.5,
+          "catalyst": 50.0,
+          "total": 42.955909664503025,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 15.8786,
+            "score": 20.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 95.3453,
+            "score": 15.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 6.5222,
+            "score": 20.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": null
+          },
+          "revenue_growth_yoy": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": null
+          },
+          "catalyst_score": {
+            "value": 2.0,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=18)",
+                "10-Q/10-K filed recently"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "ALL",
+        "company_name": "ALLSTATE CORP",
+        "industry": "insurer",
+        "scores": {
+          "cheap": 56.666666666666664,
+          "quality": 72.5,
+          "catalyst": 50.0,
+          "total": 42.625,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 3.3721,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 23.5178,
+            "score": 55.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 1.8074,
+            "score": 65.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": 14.5,
+            "score": 75.0,
+            "confidence": "low",
+            "metadata": {
+              "quality_warning": "insurance_specific_quality_required"
+            }
+          },
+          "revenue_growth_yoy": {
+            "value": 0.0,
+            "score": 60.0,
+            "confidence": "medium",
+            "metadata": {
+              "period_alignment_status": "aligned",
+              "period_type": "quarterly",
+              "detection_method": "form",
+              "current_period_end": "2026-03-31",
+              "prior_period_end": "2026-03-31",
+              "gap_days": 0,
+              "current_form": "10-Q",
+              "prior_form": "10-Q"
+            }
+          },
+          "catalyst_score": {
+            "value": 2.0,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=8)",
+                "10-Q/10-K filed recently"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "ACN",
+        "company_name": "Accenture plc",
+        "industry": null,
+        "scores": {
+          "cheap": 50.0,
+          "quality": 78.33333333333333,
+          "catalyst": 50.0,
+          "total": 42.08333333333333,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 3.0473,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 27.7403,
+            "score": 55.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 3.5917,
+            "score": 45.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": 10.97,
+            "score": 75.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "revenue_growth_yoy": {
+            "value": 103.87,
+            "score": 90.0,
+            "confidence": "medium",
+            "metadata": {
+              "period_alignment_status": "aligned",
+              "period_type": "quarterly",
+              "detection_method": "form",
+              "current_period_end": "2026-02-28",
+              "prior_period_end": "2026-02-28",
+              "gap_days": 0,
+              "current_form": "10-Q",
+              "prior_form": "10-Q"
+            }
+          },
+          "catalyst_score": {
+            "value": 2.0,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=4)",
+                "10-Q/10-K filed recently"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "CI",
+        "company_name": "Cigna Group",
+        "industry": "insurer",
+        "scores": {
+          "cheap": 56.666666666666664,
+          "quality": 70.0,
+          "catalyst": 50.0,
+          "total": 42.0,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 1.0906,
+            "score": 70.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 45.1965,
+            "score": 35.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 1.7697,
+            "score": 65.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": 0.3,
+            "score": 55.0,
+            "confidence": "low",
+            "metadata": {
+              "quality_warning": "insurance_specific_quality_required"
+            }
+          },
+          "revenue_growth_yoy": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": {
+              "missing_reason": "period_mismatch",
+              "period_alignment_status": "mismatched",
+              "period_type": null,
+              "detection_method": "form",
+              "current_period_end": "2026-03-31",
+              "prior_period_end": "2025-12-31",
+              "gap_days": 90,
+              "current_form": "10-Q",
+              "prior_form": "10-K"
+            }
+          },
+          "catalyst_score": {
+            "value": 2.0,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=4)",
+                "10-Q/10-K filed recently"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "CHTR",
+        "company_name": "CHARTER COMMUNICATIONS, INC. /MO/",
+        "industry": null,
+        "scores": {
+          "cheap": 75.0,
+          "quality": 62.5,
+          "catalyst": 50.0,
+          "total": 41.625,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": {
+              "missing_reason": "valuation_denominator_invalid"
+            }
+          },
+          "pe_ratio": {
+            "value": 18.868,
+            "score": 75.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": {
+              "missing_reason": "valuation_denominator_invalid"
+            }
+          },
+          "net_margin": {
+            "value": 8.55,
+            "score": 55.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "revenue_growth_yoy": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": {
+              "missing_reason": "period_mismatch",
+              "period_alignment_status": "mismatched",
+              "period_type": null,
+              "detection_method": "form",
+              "current_period_end": "2026-03-31",
+              "prior_period_end": "2025-12-31",
+              "gap_days": 90,
+              "current_form": "10-Q",
+              "prior_form": "10-K"
+            }
+          },
+          "catalyst_score": {
+            "value": 2.0,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=2)",
+                "10-Q/10-K filed recently"
+              ]
+            }
+          }
+        }
+      }
+    ],
+    "cheap_q_weak_cat": [
+      {
+        "ticker": "AIG",
+        "company_name": "AMERICAN INTERNATIONAL GROUP, INC.",
+        "industry": "insurer",
+        "scores": {
+          "cheap": 54.588948787061994,
+          "quality": 67.5,
+          "catalyst": 30.0,
+          "total": 46.40054324845599,
+          "tier": "C"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 1.5934,
+            "score": 70.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 13.7753,
+            "score": 75.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 1.037,
+            "score": 65.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": 0.81,
+            "score": 55.0,
+            "confidence": "low",
+            "metadata": {
+              "quality_warning": "insurance_specific_quality_required"
+            }
+          },
+          "revenue_growth_yoy": {
+            "value": 0.0,
+            "score": 60.0,
+            "confidence": "medium",
+            "metadata": {
+              "period_alignment_status": "aligned",
+              "period_type": "annual",
+              "detection_method": "form",
+              "current_period_end": "2025-12-31",
+              "prior_period_end": "2025-12-31",
+              "gap_days": 0,
+              "current_form": "10-K",
+              "prior_form": "10-K"
+            }
+          },
+          "catalyst_score": {
+            "value": 1.0,
+            "score": 30.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=8)"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "ACGL",
+        "company_name": "ARCH CAPITAL GROUP LTD.",
+        "industry": "insurer",
+        "scores": {
+          "cheap": 75.0,
+          "quality": 76.25,
+          "catalyst": 30.0,
+          "total": 44.0625,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 1.7823,
+            "score": 70.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 8.1457,
+            "score": 90.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 1.4674,
+            "score": 65.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": 22.07,
+            "score": 90.0,
+            "confidence": "low",
+            "metadata": {
+              "quality_warning": "insurance_specific_quality_required"
+            }
+          },
+          "revenue_growth_yoy": {
+            "value": 0.0,
+            "score": 60.0,
+            "confidence": "medium",
+            "metadata": {
+              "period_alignment_status": "aligned",
+              "period_type": "annual",
+              "detection_method": "form",
+              "current_period_end": "2025-12-31",
+              "prior_period_end": "2025-12-31",
+              "gap_days": 0,
+              "current_form": "10-K",
+              "prior_form": "10-K"
+            }
+          },
+          "catalyst_score": {
+            "value": 1.0,
+            "score": 30.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=8)"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "BAC",
+        "company_name": "BANK OF AMERICA CORP /DE/",
+        "industry": "bank",
+        "scores": {
+          "cheap": 63.333333333333336,
+          "quality": 81.66666666666667,
+          "catalyst": 30.0,
+          "total": 41.91666666666667,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 3.6188,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 13.9856,
+            "score": 75.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 1.3497,
+            "score": 65.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": 26.98,
+            "score": 90.0,
+            "confidence": "low",
+            "metadata": {
+              "quality_warning": "bank_specific_quality_required"
+            }
+          },
+          "revenue_growth_yoy": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": {
+              "missing_reason": "period_mismatch",
+              "period_alignment_status": "mismatched",
+              "period_type": null,
+              "detection_method": "form",
+              "current_period_end": "2025-12-31",
+              "prior_period_end": "2025-09-30",
+              "gap_days": 92,
+              "current_form": "10-K",
+              "prior_form": "10-Q"
+            }
+          },
+          "catalyst_score": {
+            "value": 1.0,
+            "score": 30.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=2)"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "CFG",
+        "company_name": "CITIZENS FINANCIAL GROUP INC/RI",
+        "industry": "bank",
+        "scores": {
+          "cheap": 63.333333333333336,
+          "quality": 81.66666666666667,
+          "catalyst": 30.0,
+          "total": 41.91666666666667,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 3.4201,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 16.7254,
+            "score": 75.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 1.0718,
+            "score": 65.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": 22.2,
+            "score": 90.0,
+            "confidence": "low",
+            "metadata": {
+              "quality_warning": "bank_specific_quality_required"
+            }
+          },
+          "revenue_growth_yoy": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": {
+              "missing_reason": "period_mismatch",
+              "period_alignment_status": "mismatched",
+              "period_type": null,
+              "detection_method": "form",
+              "current_period_end": "2025-12-31",
+              "prior_period_end": "2025-09-30",
+              "gap_days": 92,
+              "current_form": "10-K",
+              "prior_form": "10-Q"
+            }
+          },
+          "catalyst_score": {
+            "value": 1.0,
+            "score": 30.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=4)"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "AMRZ",
+        "company_name": "Amrize Ltd",
+        "industry": null,
+        "scores": {
+          "cheap": 56.666666666666664,
+          "quality": 77.5,
+          "catalyst": 30.0,
+          "total": 38.875,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 2.4941,
+            "score": 70.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 24.8738,
+            "score": 55.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 2.2227,
+            "score": 45.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": null
+          },
+          "revenue_growth_yoy": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": null
+          },
+          "catalyst_score": {
+            "value": 1.0,
+            "score": 30.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=9)"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "AMP",
+        "company_name": "AMERIPRISE FINANCIAL INC",
+        "industry": "insurer",
+        "scores": {
+          "cheap": 55.0,
+          "quality": 76.66666666666667,
+          "catalyst": 30.0,
+          "total": 38.16666666666667,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 2.4389,
+            "score": 70.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 12.9458,
+            "score": 75.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 7.0426,
+            "score": 20.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": 18.84,
+            "score": 75.0,
+            "confidence": "low",
+            "metadata": {
+              "quality_warning": "insurance_specific_quality_required"
+            }
+          },
+          "revenue_growth_yoy": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": {
+              "missing_reason": "period_mismatch",
+              "period_alignment_status": "mismatched",
+              "period_type": null,
+              "detection_method": "gap",
+              "current_period_end": "2025-12-31",
+              "prior_period_end": "2025-12-31",
+              "gap_days": 0,
+              "current_form": "10-K",
+              "prior_form": "10-K/A"
+            }
+          },
+          "catalyst_score": {
+            "value": 1.0,
+            "score": 30.0,
+            "confidence": "medium",
+            "metadata": {
+              "signals": [
+                "8-K filed in last 30d (count=6)"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "ALC",
+        "company_name": "ALCON INC",
+        "industry": null,
+        "scores": {
+          "cheap": 56.666666666666664,
+          "quality": 77.5,
+          "catalyst": 0.0,
+          "total": 31.375,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 3.1603,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 10.262,
+            "score": 75.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 2.2523,
+            "score": 45.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": null
+          },
+          "revenue_growth_yoy": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": null
+          },
+          "catalyst_score": {
+            "value": 0.0,
+            "score": 0.0,
+            "confidence": "low",
+            "metadata": {
+              "signals": [],
+              "disclosure_evidence": [
+                "6-K filed in last 30d (count=4) \u2014 foreign issuer disclosure, not auto-scored"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ticker": "ADM",
+        "company_name": "Archer-Daniels-Midland Co",
+        "industry": null,
+        "scores": {
+          "cheap": 68.33333333333333,
+          "quality": 61.666666666666664,
+          "catalyst": 0.0,
+          "total": 30.916666666666664,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 0.4484,
+            "score": 90.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 33.3498,
+            "score": 35.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 0.6871,
+            "score": 80.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": 1.34,
+            "score": 55.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "revenue_growth_yoy": {
+            "value": 0.0,
+            "score": 60.0,
+            "confidence": "medium",
+            "metadata": {
+              "period_alignment_status": "aligned",
+              "period_type": "annual",
+              "detection_method": "form",
+              "current_period_end": "2025-12-31",
+              "prior_period_end": "2025-12-31",
+              "gap_days": 0,
+              "current_form": "10-K",
+              "prior_form": "10-K"
+            }
+          },
+          "catalyst_score": {
+            "value": 0.0,
+            "score": 0.0,
+            "confidence": "low",
+            "metadata": {
+              "signals": []
+            }
+          }
+        }
+      },
+      {
+        "ticker": "B",
+        "company_name": "BARRICK MINING CORP",
+        "industry": null,
+        "scores": {
+          "cheap": 56.666666666666664,
+          "quality": 70.0,
+          "catalyst": 0.0,
+          "total": 29.5,
+          "tier": "Reject"
+        },
+        "key_features": {
+          "ps_proxy": {
+            "value": 3.543,
+            "score": 50.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pe_ratio": {
+            "value": 11.8354,
+            "score": 75.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "pb_ratio": {
+            "value": 2.0301,
+            "score": 45.0,
+            "confidence": "medium",
+            "metadata": null
+          },
+          "net_margin": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": null
+          },
+          "revenue_growth_yoy": {
+            "value": null,
+            "score": null,
+            "confidence": "low",
+            "metadata": null
+          },
+          "catalyst_score": {
+            "value": 0.0,
+            "score": 0.0,
+            "confidence": "low",
+            "metadata": {
+              "signals": [],
+              "disclosure_evidence": [
+                "6-K filed in last 30d (count=2) \u2014 foreign issuer disclosure, not auto-scored"
+              ]
+            }
+          }
+        }
+      }
+    ]
+  },
+  "before_after": [
+    {
+      "ticker": "AIG",
+      "prev_score": 46.40054324845599,
+      "prev_tier": "C",
+      "curr_score": 46.40054324845599,
+      "curr_tier": "C",
+      "delta": 0.0,
+      "guard_applied": "Insurer XBRL detected \u2192 net_margin confidence=low, quality_warning added",
+      "remaining_issue": "Generic margin unreliable for insurers; review combined ratio instead"
+    },
+    {
+      "ticker": "AFL",
+      "prev_score": 45.08080479475768,
+      "prev_tier": "C",
+      "curr_score": 45.08080479475768,
+      "curr_tier": "C",
+      "delta": 0.0,
+      "guard_applied": "Insurer XBRL detected \u2192 net_margin confidence=low, quality_warning added",
+      "remaining_issue": "Generic margin unreliable; AFLACspecific loss ratio not ingested"
+    },
+    {
+      "ticker": "ACGL",
+      "prev_score": 44.0625,
+      "prev_tier": "Reject",
+      "curr_score": 44.0625,
+      "curr_tier": "Reject",
+      "delta": 0.0,
+      "guard_applied": "Insurer XBRL detected \u2192 net_margin confidence=low, quality_warning added",
+      "remaining_issue": "P/E=8.2 looks attractive; insurer-specific metrics absent"
+    },
+    {
+      "ticker": "BAC",
+      "prev_score": 42.4375,
+      "prev_tier": "Reject",
+      "curr_score": 41.91666666666667,
+      "curr_tier": "Reject",
+      "delta": -0.52,
+      "guard_applied": "Bank detected \u2192 revenue_growth nulled (10-K vs 10-Q period mismatch)",
+      "remaining_issue": "Quality score still elevated by net_margin; bank-specific metrics absent"
+    },
+    {
+      "ticker": "CFG",
+      "prev_score": 42.4375,
+      "prev_tier": "Reject",
+      "curr_score": 41.91666666666667,
+      "curr_tier": "Reject",
+      "delta": -0.52,
+      "guard_applied": "Bank detected \u2192 revenue_growth nulled (10-K vs 10-Q period mismatch)",
+      "remaining_issue": "Quality score still elevated; fee-income correctly excluded from P/S"
+    },
+    {
+      "ticker": "CHTR",
+      "prev_score": 42.916666666666664,
+      "prev_tier": "Reject",
+      "curr_score": 41.625,
+      "curr_tier": "Reject",
+      "delta": -1.29,
+      "guard_applied": "Shares < 1M \u2192 P/S null; period_mismatch \u2192 revenue_growth null",
+      "remaining_issue": "Negative equity flag likely; P/E=18.9 only valid ratio; needs human check"
+    },
+    {
+      "ticker": "BIDU",
+      "prev_score": 23.93347094166429,
+      "prev_tier": "Reject",
+      "curr_score": 23.93347094166429,
+      "curr_tier": "Reject",
+      "delta": 0.0,
+      "guard_applied": "20-F filer + CNY reporting \u2192 P/S/P/E/P/B all null",
+      "remaining_issue": "All valuation ratios null; only price_vs_52w_high and NI positive signal"
+    }
+  ]
+}

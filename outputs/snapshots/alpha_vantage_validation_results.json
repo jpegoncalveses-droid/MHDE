@@ -1,0 +1,72 @@
+[
+  {
+    "source": "alpha_vantage",
+    "use_case": "transcripts",
+    "tickers_tested": [
+      "AAPL",
+      "NVDA",
+      "TSLA",
+      "JPM",
+      "UBER",
+      "RKLB"
+    ],
+    "access_result": "ok",
+    "access_error": null,
+    "required_fields_present": true,
+    "missing_fields": [],
+    "historical_depth": "2y",
+    "freshness": "1w",
+    "parsing_difficulty": "easy",
+    "rate_limit_notes": "Free: 25 req/day or 5/min. Premium needed for production.",
+    "fallback_suggestion": "Earnings Whispers or Motley Fool for transcripts; Consensus from Bloomberg for estimates.",
+    "final_status": "Useful but optional",
+    "notes": "3 tickers with data. ETFs excluded from transcripts/estimates.",
+    "scores": {
+      "access": 3,
+      "completeness": 3,
+      "freshness": 3,
+      "reliability": 3,
+      "parsing_ease": 4,
+      "cost_efficiency": 3,
+      "strategic_value": 4,
+      "total": 23
+    },
+    "raw_sample_path": "samples/alpha_vantage_transcripts.json"
+  },
+  {
+    "source": "alpha_vantage",
+    "use_case": "estimates",
+    "tickers_tested": [
+      "AAPL",
+      "NVDA",
+      "TSLA",
+      "JPM",
+      "UBER",
+      "RKLB",
+      "IWM",
+      "XLE"
+    ],
+    "access_result": "ok",
+    "access_error": null,
+    "required_fields_present": true,
+    "missing_fields": [],
+    "historical_depth": "31y",
+    "freshness": "1d",
+    "parsing_difficulty": "easy",
+    "rate_limit_notes": "Free: 25 req/day or 5/min. Premium needed for production.",
+    "fallback_suggestion": "Earnings Whispers or Motley Fool for transcripts; Consensus from Bloomberg for estimates.",
+    "final_status": "Useful but optional",
+    "notes": "6 tickers with data. ETFs excluded from transcripts/estimates.",
+    "scores": {
+      "access": 3,
+      "completeness": 3,
+      "freshness": 3,
+      "reliability": 3,
+      "parsing_ease": 4,
+      "cost_efficiency": 3,
+      "strategic_value": 3,
+      "total": 22
+    },
+    "raw_sample_path": "samples/alpha_vantage_estimates.json"
+  }
+]
