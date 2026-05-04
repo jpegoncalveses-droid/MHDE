@@ -557,6 +557,42 @@ def data_priority_refresh_queue_cmd(db_path, output, max_tickers, enriched_csv):
         click.echo(f"  Priority {p}: {by_priority[p]} tickers")
 
 
+@data.command("sector-diagnostics")
+@click.option("--db-path", default="data/mhde.duckdb", show_default=True)
+@click.option(
+    "--enriched-csv",
+    default="data/processed/prediction_vs_actual_enriched_rows.csv",
+    show_default=True,
+)
+def data_sector_diagnostics_cmd(db_path, enriched_csv):
+    """Show sector cluster diagnostics for missed sector cluster move events."""
+    import csv as _csv
+    import os as _os
+    import duckdb as _duckdb
+    from health.sector_diagnostics import generate_sector_diagnostics
+
+    if not _os.path.exists(enriched_csv):
+        click.echo(f"No enriched CSV: {enriched_csv}")
+        click.echo("Run: python main.py missed refresh-learning")
+        return
+    with open(enriched_csv, newline="") as f:
+        enriched_rows = list(_csv.DictReader(f))
+    conn = _duckdb.connect(db_path, read_only=True)
+    diags = generate_sector_diagnostics(conn, enriched_rows)
+    conn.close()
+    if not diags:
+        click.echo("No sector_cluster_move rows found in enriched CSV.")
+        return
+    click.echo(f"Sector Cluster Diagnostics — {len(diags)} rows")
+    click.echo(f"{'Ticker':<8} {'Event Date':<12} {'Sector':<26} {'ETF':<6} {'ETF Prices':<11} Subcause")
+    click.echo("-" * 80)
+    for d in diags:
+        click.echo(
+            f"{d.ticker:<8} {d.event_date:<12} {(d.sector or '—'):<26} "
+            f"{(d.etf_ticker or '—'):<6} {d.etf_price_count:<11} {d.subcause}"
+        )
+
+
 @cli.group()
 def review():
     """Candidate review commands: build review packets, import completed reviews."""
