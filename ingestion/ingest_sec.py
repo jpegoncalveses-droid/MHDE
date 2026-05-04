@@ -14,6 +14,7 @@ logger = logging.getLogger("mhde.ingestion.sec_edgar")
 _BASE = "https://data.sec.gov"
 _USER_AGENT = "MHDE-Engine contact@example.com"
 _RATE_DELAY = 0.12
+_FINANCIAL_FORMS = ("10-K", "10-Q", "20-F", "40-F", "10-KT", "10-QT")
 
 # Only the concepts MHDE scoring actually uses.
 _WANTED_CONCEPTS = frozenset([
@@ -271,6 +272,38 @@ class SECIngestor(BaseIngestor):
                 "SEC: %d requests returned 404 (CIK not found or no EDGAR filing)",
                 self._not_found_count,
             )
+
+        # Sync companies.last_financial_filing_date from filings table
+        forms_sql = ", ".join(f"'{f}'" for f in _FINANCIAL_FORMS)
+        conn.execute(f"""
+            UPDATE companies
+            SET last_financial_filing_date = (
+                SELECT MAX(filing_date)
+                FROM filings f
+                WHERE f.ticker = companies.ticker
+                  AND f.form_type IN ({forms_sql})
+                  AND f.filing_date IS NOT NULL
+            )
+            WHERE EXISTS (
+                SELECT 1 FROM filings f
+                WHERE f.ticker = companies.ticker
+                  AND f.form_type IN ({forms_sql})
+                  AND f.filing_date IS NOT NULL
+            )
+              AND (
+                last_financial_filing_date IS NULL
+                OR last_financial_filing_date < (
+                    SELECT MAX(filing_date) FROM filings f
+                    WHERE f.ticker = companies.ticker
+                      AND f.form_type IN ({forms_sql})
+                      AND f.filing_date IS NOT NULL
+                )
+              )
+        """)
+        updated_dates = conn.execute(
+            "SELECT COUNT(*) FROM companies WHERE last_financial_filing_date IS NOT NULL"
+        ).fetchone()[0]
+        self.logger.info("SEC: last_financial_filing_date set for %d companies", updated_dates)
 
         self.log_run(conn, run_id, "filings+fundamentals", "ok",
                      attempted, inserted, failed, started_at=started)
