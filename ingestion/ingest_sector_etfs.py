@@ -54,7 +54,11 @@ def _fetch_etf_return(ticker: str, date: str, api_key: str) -> Optional[float]:
         return None
 
 
-def get_sector_returns(date: str, api_key: Optional[str]) -> dict[str, float]:
+def get_sector_returns(
+    date: str,
+    api_key: Optional[str],
+    delay: float = 0.5,
+) -> dict[str, float]:
     """Return {etf_ticker: 1d_return} for all sector ETFs. Empty dict if no key."""
     if not api_key:
         logger.warning("POLYGON_API_KEY not set — sector ETF returns unavailable for %s", date)
@@ -64,16 +68,21 @@ def get_sector_returns(date: str, api_key: Optional[str]) -> dict[str, float]:
         ret = _fetch_etf_return(etf, date, api_key)
         if ret is not None:
             results[etf] = ret
-        time.sleep(0.12)
+        time.sleep(delay)
     return results
 
 
-def ingest_sector_etfs_to_db(db_path: str, date: str, api_key: Optional[str]) -> int:
+def ingest_sector_etfs_to_db(
+    db_path: str,
+    date: str,
+    api_key: Optional[str],
+    delay: float = 0.5,
+) -> int:
     """Fetch sector ETF returns and upsert into prices_daily. Returns row count written."""
     import uuid as _uuid
     import duckdb
 
-    returns = get_sector_returns(date, api_key)
+    returns = get_sector_returns(date, api_key, delay=delay)
     if not returns:
         return 0
     conn = duckdb.connect(db_path)

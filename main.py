@@ -598,7 +598,9 @@ def data_sector_diagnostics_cmd(db_path, enriched_csv):
 @click.option("--date", "trade_date", default=None, help="Trade date YYYY-MM-DD (default: today).")
 @click.option("--lookback-days", default=1, type=int, show_default=True,
               help="Number of recent trading days to fetch (1 = today only).")
-def data_ingest_sector_etfs_cmd(db_path, trade_date, lookback_days):
+@click.option("--delay", default=0.5, type=float, show_default=True,
+              help="Seconds between Polygon API calls per ETF (increase for free-tier rate limits).")
+def data_ingest_sector_etfs_cmd(db_path, trade_date, lookback_days, delay):
     """Fetch sector ETF 1-day returns from Polygon and store in prices_daily."""
     import datetime
     import os as _os
@@ -625,7 +627,7 @@ def data_ingest_sector_etfs_cmd(db_path, trade_date, lookback_days):
     click.echo(f"Fetching {len(SECTOR_ETFS)} sector ETFs for {len(dates)} date(s): {', '.join(dates)}")
     total = 0
     for dt in dates:
-        n = ingest_sector_etfs_to_db(db_path, dt, api_key)
+        n = ingest_sector_etfs_to_db(db_path, dt, api_key, delay=delay)
         click.echo(f"  {dt}: {n} ETF rows written")
         total += n
     click.echo(f"Done. Total rows written: {total}")
