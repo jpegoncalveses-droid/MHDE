@@ -984,7 +984,8 @@ def _lifecycle_block(lc: "object | None", catalyst_type: str = "") -> str:
             "Episode start",
             f'{_esc(str(lc.episode_start_date))} <span class="muted">({_px(lc.episode_start_price)} — pre-event accumulation)</span>',
         )
-    if lc.signal_date:
+    # Only show signal_date if it's before the event (pre-event radar detection)
+    if lc.signal_date and lc.event_date and lc.signal_date < lc.event_date:
         ot_rows += _prow("Signal date", _dated(lc.signal_date, lc.signal_price))
     ot_rows += _prow("Validation target", f"+{lc.validation_threshold * 100:.0f}% in {lc.expected_window_days}d")
 
@@ -1012,12 +1013,14 @@ def _lifecycle_block(lc: "object | None", catalyst_type: str = "") -> str:
     timeline_items: list[tuple] = []
     if lc.episode_start_date and lc.event_date and lc.episode_start_date < lc.event_date:
         timeline_items.append((lc.episode_start_date, "Episode start", lc.episode_start_price, None))
-    if lc.signal_date:
+    # Signal only in timeline if before event (post-event queue entries not meaningful anchors)
+    if lc.signal_date and lc.event_date and lc.signal_date < lc.event_date:
         timeline_items.append((lc.signal_date, "Signal", lc.signal_price, None))
     if lc.event_date:
         timeline_items.append((lc.event_date, "Event anchor", lc.event_price, 0.0))
     if lc.latest_price_date:
         timeline_items.append((lc.latest_price_date, "Latest", lc.latest_price, lc.return_since_event))
+    timeline_items.sort(key=lambda x: x[0])  # chronological order
     for d, label, price, ret in timeline_items:
         ret_cell = _pr(ret) if ret is not None else "—"
         timeline_rows += (
