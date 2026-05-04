@@ -1,7 +1,7 @@
 # MHDE Daily Radar — 2026-05-04
 
-**Run ID:** `4184e163d5534a3c`  
-**Generated:** 2026-05-04 07:58 UTC
+**Run ID:** `e48ba8344e224dc8`  
+**Generated:** 2026-05-04 08:13 UTC
 
 ---
 
