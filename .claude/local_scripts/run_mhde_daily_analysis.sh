@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Full MHDE daily analysis pipeline.
-# Runs: daily-radar → prediction-vs-actual → enrich-root-causes → daily-catalyst-queue → (optional) email
+# Runs: daily-radar → prediction-vs-actual → enrich-root-causes → priority-refresh-queue → daily-catalyst-queue → (optional) email
 set -euo pipefail
 
 MHDE_DIR="/home/jpcg/MHDE"
@@ -42,8 +42,14 @@ log "=== Step c: enrich-root-causes ==="
     --output-dir data/processed \
     2>&1 | tee -a "$LOG_FILE"
 
-# ── Step d: daily-catalyst-queue ─────────────────────────────────────────────
-log "=== Step d: daily-catalyst-queue ==="
+# ── Step d: priority-refresh-queue ───────────────────────────────────────────
+log "=== Step d: priority-refresh-queue ==="
+"$PYTHON" main.py priority-refresh-queue \
+    --enriched-csv data/processed/prediction_vs_actual_enriched_rows.csv \
+    2>&1 | tee -a "$LOG_FILE"
+
+# ── Step e: daily-catalyst-queue ─────────────────────────────────────────────
+log "=== Step e: daily-catalyst-queue ==="
 "$PYTHON" main.py missed daily-catalyst-queue \
     --n "${DAILY_QUEUE_N:-50}" \
     --score-min "${DAILY_QUEUE_SCORE_MIN:-40}" \
@@ -58,9 +64,9 @@ log "=== Step d: daily-catalyst-queue ==="
     --html \
     2>&1 | tee -a "$LOG_FILE"
 
-# ── Step e: optional email (non-fatal) ───────────────────────────────────────
+# ── Step f: optional email (non-fatal) ───────────────────────────────────────
 if [ "${MHDE_SEND_EMAIL:-false}" = "true" ] && [ -n "${SMTP_HOST:-}" ]; then
-    log "=== Step e: sending email digest ==="
+    log "=== Step f: sending email digest ==="
     "$PYTHON" main.py missed daily-catalyst-queue \
         --n "${DAILY_QUEUE_N:-50}" \
         --score-min "${DAILY_QUEUE_SCORE_MIN:-40}" \
