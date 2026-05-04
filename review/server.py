@@ -2430,6 +2430,7 @@ def _ops_page(history_root: str, output_dir: str) -> str:
         "data/mhde.duckdb",
     ]
     _db_found = next((p for p in _db_candidates if os.path.exists(p)), None)
+    _freshness_date_map: dict[str, dict] = {}  # ticker → {last_price_date, last_filing_date}
     if _db_found:
         try:
             import duckdb as _duckdb
@@ -2437,6 +2438,14 @@ def _ops_page(history_root: str, output_dir: str) -> str:
             _conn = _duckdb.connect(_db_found, read_only=True)
             _results = compute_freshness(_conn)
             _conn.close()
+            _freshness_date_map = {
+                r.ticker: {
+                    "price_age_days": r.price_age_days,
+                    "has_prices": r.has_prices,
+                    "has_fundamentals": r.has_fundamentals,
+                }
+                for r in _results
+            }
             _s = freshness_summary(_results)
             _total = _s["total"] or 1
             coverage_html += (
@@ -2493,6 +2502,32 @@ def _ops_page(history_root: str, output_dir: str) -> str:
             key=lambda t: int(_priority_rows.get(t, {}).get("priority", 99)),
         )[:20]
         if _target_tickers:
+            # Fetch last_price_date and last_filing_date directly from DB for accurate display
+            _db_dates: dict[str, dict] = {}
+            if _db_found:
+                try:
+                    import duckdb as _duckdb2
+                    _dc = _duckdb2.connect(_db_found, read_only=True)
+                    _tlist = ",".join(f"'{_t}'" for _t in _target_tickers)
+                    _date_rows = _dc.execute(f"""
+                        SELECT c.ticker,
+                               p.last_price_date,
+                               c.last_financial_filing_date
+                        FROM companies c
+                        LEFT JOIN (
+                            SELECT ticker, MAX(trade_date) AS last_price_date
+                            FROM prices_daily GROUP BY ticker
+                        ) p ON p.ticker = c.ticker
+                        WHERE c.ticker IN ({_tlist})
+                    """).fetchall()
+                    _dc.close()
+                    for _dticker, _dlp, _dlf in _date_rows:
+                        _db_dates[_dticker] = {
+                            "last_price_date": str(_dlp) if _dlp else "—",
+                            "last_filing_date": str(_dlf) if _dlf else "—",
+                        }
+                except Exception:
+                    pass
             refresh_targets_html += (
                 "<table>"
                 "<tr><th>Ticker</th><th>P</th><th>Root Cause</th>"
@@ -2503,9 +2538,10 @@ def _ops_page(history_root: str, output_dir: str) -> str:
                 _er = _enriched_rows[_t]
                 _pr = _priority_rows.get(_t, {})
                 _rc = _er.get("enriched_root_cause", "")
-                _prio = _pr.get("priority", "?")
-                _lp = _pr.get("last_price_date", "") or _er.get("last_price_date", "") or "—"
-                _lf = _pr.get("last_filing_date", "") or "—"
+                _prio = _pr.get("priority", "—")
+                _dates = _db_dates.get(_t, {})
+                _lp = _dates.get("last_price_date") or _pr.get("last_price_date", "") or "—"
+                _lf = _dates.get("last_filing_date") or _pr.get("last_filing_date", "") or "—"
                 _ticker_link = f'<a href="/ticker/{_esc(_t)}">{_esc(_t)}</a>'
                 refresh_targets_html += (
                     f"<tr><td>{_ticker_link}</td>"
