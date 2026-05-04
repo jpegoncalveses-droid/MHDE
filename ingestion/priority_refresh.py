@@ -13,6 +13,7 @@ def build_priority_queue(
     price_only_tickers: Optional[set[str]] = None,
     price_only_p1_tickers: Optional[set[str]] = None,
     price_only_p2_tickers: Optional[set[str]] = None,
+    polygon_missing_tickers: Optional[set[str]] = None,
 ) -> list[dict]:
     """Return tickers that need data refresh, sorted by urgency (1 = most urgent).
 
@@ -21,13 +22,15 @@ def build_priority_queue(
       1 -- price_only_scored_miss true_miss tickers
       2 -- stale prices (> 10 days old)
       2 -- price_only_scored_miss near_threshold / scored_missed tickers
+      2 -- polygon_fundamentals_missing_miss (has filing+prices, no market_cap)
       3 -- no fundamentals (last_financial_filing_date IS NULL)
-      4 -- no market_cap
-    Tickers with complete data are excluded unless they are price_only_scored.
+      4 -- no market_cap (generic)
+    Tickers with complete data are excluded unless flagged via a miss set.
 
     price_only_p1_tickers: true_miss tickers (→ P1)
     price_only_p2_tickers: near_threshold / scored_missed tickers (→ P2)
     price_only_tickers: legacy — treated as P1 (backward compat)
+    polygon_missing_tickers: tickers with polygon_fundamentals_missing root cause (→ P2)
     """
     if as_of_date is None:
         as_of_date = str(datetime.date.today())
@@ -52,6 +55,7 @@ def build_priority_queue(
 
     p1_set = (price_only_p1_tickers or set()) | (price_only_tickers or set())
     p2_set = price_only_p2_tickers or set()
+    poly_set = polygon_missing_tickers or set()
 
     queue: list[dict] = []
     for ticker, last_filing, market_cap, sector, last_price_date, price_age in rows:
@@ -78,6 +82,10 @@ def build_priority_queue(
             priority = min(priority, 1)
         elif ticker in p2_set:
             reasons.append("price_only_scored_miss")
+            priority = min(priority, 2)
+
+        if ticker in poly_set:
+            reasons.append("polygon_fundamentals_missing_miss")
             priority = min(priority, 2)
 
         if reasons:

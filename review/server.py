@@ -1833,6 +1833,54 @@ def _learning_page(output_dir: str) -> str:
                 f'on price momentum only. Confidence is limited for these tickers.</div>'
             )
 
+    # Top Fix Queues — actionable buckets from enriched root causes
+    fix_queues_html = ""
+    if enriched_path.exists():
+        _scored_clfs = {"true_miss", "near_threshold", "scored_missed"}
+        _fix_buckets = {
+            "ifrs_mapping_gap": {
+                "label": "IFRS Mapping Gaps",
+                "cmd": "USD-reporting filers: ifrs-full aliases added. Non-USD needs FX normalisation.",
+            },
+            "polygon_fundamentals_missing": {
+                "label": "Polygon Fundamentals Missing",
+                "cmd": "python main.py data enrich-ticker-details",
+            },
+            "sector_cluster_move": {
+                "label": "Sector Cluster Moves",
+                "cmd": "Wire ingestion/ingest_sector_etfs.py into orchestrator (requires Polygon key)",
+            },
+        }
+        fix_rows = []
+        for rc, meta in _fix_buckets.items():
+            bucket_rows = [r for r in enriched_raw
+                           if r.get("enriched_root_cause") == rc
+                           and r.get("classification") in _scored_clfs]
+            bucket_dedup = _dedup_pva_rows(bucket_rows)
+            tickers_in_bucket = sorted(set(r["ticker"] for r in bucket_dedup))[:8]
+            count = len(bucket_dedup)
+            ticker_links = ", ".join(
+                f'<a href="/ticker/{_esc(t)}">{_esc(t)}</a>'
+                for t in tickers_in_bucket
+            )
+            if tickers_in_bucket and count > 8:
+                ticker_links += f" <span class='muted'>+{count - 8} more</span>"
+            fix_rows.append(
+                f"<tr><td><strong>{_esc(meta['label'])}</strong></td>"
+                f"<td>{count}</td>"
+                f"<td>{ticker_links if tickers_in_bucket else '<em class=\"muted\">none</em>'}</td>"
+                f"<td><code>{_esc(meta['cmd'])}</code></td></tr>"
+            )
+        if fix_rows:
+            fix_queues_html = (
+                '<h2>Top Fix Queues</h2>'
+                '<p class="muted">Actionable buckets — scored events (true_miss / near_threshold / scored_missed) only.</p>'
+                '<table>'
+                '<tr><th>Bucket</th><th>Events</th><th>Top Tickers</th><th>Fix / Command</th></tr>'
+                + "".join(fix_rows)
+                + '</table>'
+            )
+
     artifact_links = " &bull; ".join(
         f'<a href="/learning/{_esc(atype)}">{_esc(label)}</a>'
         for atype, label in [
@@ -1873,6 +1921,8 @@ def _learning_page(output_dir: str) -> str:
 </table>
 
 {subcause_html}
+
+{fix_queues_html}
 
 <h2>Artifacts</h2>
 <p class="muted">{artifact_links}</p>

@@ -109,9 +109,9 @@ _SUGGESTED_FIXES: dict[str, str] = {
     "sector_specific_model_gap":
         "Implement sector-adjusted scoring model for Financials/RE/Utilities (book value, FFO, rate sensitivity).",
     "polygon_fundamentals_missing":
-        "Run Polygon ticker details enrichment: python main.py data enrich-ticker-details.",
+        "Run Polygon ticker details enrichment: python main.py data enrich-ticker-details. These tickers have prices and filing dates but no market_cap — added to priority queue at P2 as polygon_fundamentals_missing_miss.",
     "ifrs_mapping_gap":
-        "Add IFRS-to-US-GAAP field mapping in features/valuation.py for non-standard metric names.",
+        "USD-reporting IFRS filers (GFS, UMC): ifrs-full/Revenues and EPS aliases added to features/valuation.py. Non-USD filers (CVE=CAD, NOK=EUR): require FX normalisation before valuation ratios are usable. US-GAAP filers in this bucket were transiently Incomplete — no code fix needed.",
     "price_only_scored":
         "last_financial_filing_date is now present for all affected tickers. Real gap: fundamental ratio features (P/E, revenue growth, margins) are not being computed from fundamentals_raw by the features pipeline. Fix: wire ratio computation in features/valuation.py and re-run scoring.",
     "no_evidence_no_filing":

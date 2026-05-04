@@ -2298,3 +2298,46 @@ def test_ops_refresh_targets_no_crash_without_enriched_csv(tmp_path):
     with app.test_client() as c:
         r = c.get("/ops")
     assert r.status_code == 200
+
+
+# ── Learning page Top Fix Queues ───────────────────────────────────────────────
+
+def test_learning_shows_top_fix_queues_section(tmp_path):
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir, exist_ok=True)
+    _write_pva(output_dir, [_pva_row(ticker="AAAB")])
+    _write_enriched(output_dir, [
+        _enriched_row(ticker="GFS", enriched_root_cause="ifrs_mapping_gap", classification="true_miss"),
+        _enriched_row(ticker="DDOG", enriched_root_cause="polygon_fundamentals_missing", classification="true_miss"),
+        _enriched_row(ticker="INTC", enriched_root_cause="sector_cluster_move", classification="near_threshold"),
+    ])
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/learning")
+    assert r.status_code == 200
+    html = r.data.decode()
+    assert "fix queue" in html.lower() or "top fix" in html.lower()
+
+
+def test_learning_fix_queues_show_bucket_tickers(tmp_path):
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir, exist_ok=True)
+    _write_pva(output_dir, [_pva_row(ticker="GFS")])
+    _write_enriched(output_dir, [
+        _enriched_row(ticker="GFS", enriched_root_cause="polygon_fundamentals_missing", classification="true_miss"),
+    ])
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/learning")
+    html = r.data.decode()
+    assert "GFS" in html
+
+
+def test_learning_fix_queues_no_crash_without_enriched(tmp_path):
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir, exist_ok=True)
+    _write_pva(output_dir, [_pva_row(ticker="AAAB")])
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/learning")
+    assert r.status_code == 200

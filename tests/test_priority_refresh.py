@@ -163,3 +163,46 @@ def test_no_scoring_changes_in_queue_builder():
     src = inspect.getsource(_mod)
     for bad in ("tier", "llm", "openai", "anthropic", "feature_flag"):
         assert bad not in src.lower(), f"prohibited term '{bad}' found in priority_refresh.py"
+
+
+def test_polygon_fundamentals_missing_enters_queue_at_p2():
+    conn = _make_conn([{
+        "ticker": "DDOG", "price_date": "2026-05-03",
+        "filing_date": "2026-02-18",
+    }])
+    queue = build_priority_queue(
+        conn, as_of_date="2026-05-04",
+        polygon_missing_tickers={"DDOG"},
+    )
+    assert len(queue) == 1
+    assert queue[0]["ticker"] == "DDOG"
+    assert queue[0]["priority"] == 2
+    assert "polygon_fundamentals_missing_miss" in queue[0]["reason"]
+
+
+def test_polygon_missing_with_no_market_cap_takes_higher_priority():
+    conn = _make_conn([{
+        "ticker": "RDDT", "price_date": "2026-05-03",
+        "filing_date": "2026-05-01",
+    }])
+    queue = build_priority_queue(
+        conn, as_of_date="2026-05-04",
+        polygon_missing_tickers={"RDDT"},
+    )
+    assert queue[0]["priority"] == 2
+    assert "no_market_cap" in queue[0]["reason"]
+    assert "polygon_fundamentals_missing_miss" in queue[0]["reason"]
+
+
+def test_polygon_missing_complete_ticker_still_enters_queue():
+    conn = _make_conn([{
+        "ticker": "NET", "price_date": "2026-05-03",
+        "filing_date": "2026-02-26", "market_cap": 1e11,
+    }])
+    queue = build_priority_queue(
+        conn, as_of_date="2026-05-04",
+        polygon_missing_tickers={"NET"},
+    )
+    assert len(queue) == 1
+    assert queue[0]["priority"] == 2
+    assert "polygon_fundamentals_missing_miss" in queue[0]["reason"]

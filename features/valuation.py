@@ -20,6 +20,16 @@ _REVENUE_CONCEPTS = [
     "us-gaap/SalesRevenueServicesNet",
 ]
 
+# IFRS revenue alias — USD-reporting IFRS filers only (GFS, UMC).
+# Used with _latest_usd_unit() to avoid CAD/EUR/TWD contamination.
+_IFRS_REVENUE_CONCEPTS = ["ifrs-full/Revenues"]
+
+# IFRS EPS aliases — USD-unit only, for P/E on USD-reporting IFRS filers.
+_IFRS_EPS_CONCEPTS = [
+    "ifrs-full/EarningsPerShareDiluted",
+    "ifrs-full/EarningsPerShareBasic",
+]
+
 # Shares concept priority: diluted weighted avg > basic weighted avg > outstanding issued
 _SHARES_CONCEPTS = [
     "us-gaap/WeightedAverageNumberOfDilutedSharesOutstanding",
@@ -64,6 +74,31 @@ def _latest(conn: duckdb.DuckDBPyConnection, ticker: str, concepts: list[str]) -
     if row:
         return row[0]
     return None
+
+
+def _latest_usd_unit(conn: duckdb.DuckDBPyConnection, ticker: str, concepts: list[str]) -> float | None:
+    """Like _latest() but restricted to USD-denominated units.
+
+    Safe for IFRS filers that report in multiple currencies (CAD, EUR, TWD + USD).
+    Matches unit='USD' (monetary) and unit LIKE 'USD/%' (per-share ratios like 'USD/shares').
+    """
+    if not concepts:
+        return None
+    placeholders = ",".join(["?"] * len(concepts))
+    row = conn.execute(
+        f"""
+        SELECT value FROM fundamentals_raw
+        WHERE ticker = ? AND concept IN ({placeholders})
+          AND value IS NOT NULL
+          AND (unit = 'USD' OR unit LIKE 'USD/%')
+        ORDER BY
+            CASE concept {' '.join(f"WHEN ? THEN {i}" for i, _ in enumerate(concepts))} END,
+            as_of_date DESC
+        LIMIT 1
+        """,
+        [ticker] + concepts + concepts,
+    ).fetchone()
+    return row[0] if row else None
 
 
 def _ps_score(ps: float) -> float:
@@ -171,7 +206,8 @@ def compute_valuation(
 
     # ── Industry detection + shared fundamentals fetch ────────────────────────
     industry = detect_industry(conn, ticker)
-    revenue = _latest(conn, ticker, _REVENUE_CONCEPTS)
+    revenue = (_latest(conn, ticker, _REVENUE_CONCEPTS)
+               or _latest_usd_unit(conn, ticker, _IFRS_REVENUE_CONCEPTS))
     shares = _latest(conn, ticker, _SHARES_CONCEPTS)
     shares_valid = shares and shares >= _MIN_SHARES
 
@@ -239,7 +275,8 @@ def compute_valuation(
         """,
         [ticker],
     ).fetchone()
-    eps = eps_row[0] if eps_row else None
+    eps = (eps_row[0] if eps_row
+           else _latest_usd_unit(conn, ticker, _IFRS_EPS_CONCEPTS))
 
     if price and eps and eps > 0:
         pe = price / eps
