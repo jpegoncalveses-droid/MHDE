@@ -11,16 +11,23 @@ def build_priority_queue(
     as_of_date: Optional[str] = None,
     max_tickers: int = 100,
     price_only_tickers: Optional[set[str]] = None,
+    price_only_p1_tickers: Optional[set[str]] = None,
+    price_only_p2_tickers: Optional[set[str]] = None,
 ) -> list[dict]:
     """Return tickers that need data refresh, sorted by urgency (1 = most urgent).
 
     Priority levels:
       1 -- no prices ever
-      1 -- price_only_scored true_miss or near_threshold (elevated alongside no_prices)
+      1 -- price_only_scored_miss true_miss tickers
       2 -- stale prices (> 10 days old)
+      2 -- price_only_scored_miss near_threshold / scored_missed tickers
       3 -- no fundamentals (last_financial_filing_date IS NULL)
       4 -- no market_cap
     Tickers with complete data are excluded unless they are price_only_scored.
+
+    price_only_p1_tickers: true_miss tickers (→ P1)
+    price_only_p2_tickers: near_threshold / scored_missed tickers (→ P2)
+    price_only_tickers: legacy — treated as P1 (backward compat)
     """
     if as_of_date is None:
         as_of_date = str(datetime.date.today())
@@ -43,7 +50,8 @@ def build_priority_queue(
         ORDER BY c.ticker
     """, [as_of_date]).fetchall()
 
-    price_only_set = price_only_tickers or set()
+    p1_set = (price_only_p1_tickers or set()) | (price_only_tickers or set())
+    p2_set = price_only_p2_tickers or set()
 
     queue: list[dict] = []
     for ticker, last_filing, market_cap, sector, last_price_date, price_age in rows:
@@ -65,9 +73,12 @@ def build_priority_queue(
             reasons.append("no_market_cap")
             priority = min(priority, 4)
 
-        if ticker in price_only_set:
-            reasons.append("price_only_scored")
+        if ticker in p1_set:
+            reasons.append("price_only_scored_miss")
             priority = min(priority, 1)
+        elif ticker in p2_set:
+            reasons.append("price_only_scored_miss")
+            priority = min(priority, 2)
 
         if reasons:
             queue.append({

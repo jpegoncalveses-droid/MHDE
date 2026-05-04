@@ -2456,6 +2456,74 @@ def _ops_page(history_root: str, output_dir: str) -> str:
     else:
         coverage_html += "<p>No database found. Run: <code>main.py coverage-report</code></p>"
 
+    # Top data refresh targets (best-effort — never raises)
+    refresh_targets_html = "<h3>Top Data Refresh Targets</h3>"
+    _enriched_csv = os.path.join(output_dir, "prediction_vs_actual_enriched_rows.csv")
+    _priority_csv = os.path.join(output_dir, "priority_refresh_queue.csv")
+    try:
+        import csv as _csv_mod
+        _target_root_causes = {"price_only_scored", "sector_cluster_move"}
+        _target_clf = {"true_miss", "near_threshold"}
+        _enriched_rows: dict[str, dict] = {}
+        if os.path.exists(_enriched_csv):
+            with open(_enriched_csv, newline="", encoding="utf-8") as _ef:
+                for _erow in _csv_mod.DictReader(_ef):
+                    if (_erow.get("enriched_root_cause") in _target_root_causes
+                            and _erow.get("classification") in _target_clf):
+                        t = _erow.get("ticker", "")
+                        if t and t not in _enriched_rows:
+                            _enriched_rows[t] = _erow
+        _priority_rows: dict[str, dict] = {}
+        if os.path.exists(_priority_csv):
+            with open(_priority_csv, newline="", encoding="utf-8") as _pf:
+                for _prow in _csv_mod.DictReader(_pf):
+                    t = _prow.get("ticker", "")
+                    if t:
+                        _priority_rows[t] = _prow
+        _missing_data_map = {
+            "price_only_scored": "Fundamental ratio features not computed",
+            "sector_cluster_move": "Sector ETF ingestor not wired (Polygon key required)",
+        }
+        _refresh_source_map = {
+            "price_only_scored": "features/valuation.py (ratio computation)",
+            "sector_cluster_move": "ingestion/ingest_sector_etfs.py (wire into orchestrator)",
+        }
+        _target_tickers = sorted(
+            _enriched_rows.keys(),
+            key=lambda t: int(_priority_rows.get(t, {}).get("priority", 99)),
+        )[:20]
+        if _target_tickers:
+            refresh_targets_html += (
+                "<table>"
+                "<tr><th>Ticker</th><th>P</th><th>Root Cause</th>"
+                "<th>Missing Data</th><th>Refresh Source</th>"
+                "<th>Last Price</th><th>Last Filing</th></tr>"
+            )
+            for _t in _target_tickers:
+                _er = _enriched_rows[_t]
+                _pr = _priority_rows.get(_t, {})
+                _rc = _er.get("enriched_root_cause", "")
+                _prio = _pr.get("priority", "?")
+                _lp = _pr.get("last_price_date", "") or _er.get("last_price_date", "") or "—"
+                _lf = _pr.get("last_filing_date", "") or "—"
+                _ticker_link = f'<a href="/ticker/{_esc(_t)}">{_esc(_t)}</a>'
+                refresh_targets_html += (
+                    f"<tr><td>{_ticker_link}</td>"
+                    f"<td>{_esc(str(_prio))}</td>"
+                    f"<td>{_esc(_rc)}</td>"
+                    f"<td>{_esc(_missing_data_map.get(_rc, '—'))}</td>"
+                    f"<td>{_esc(_refresh_source_map.get(_rc, '—'))}</td>"
+                    f"<td>{_esc(_lp)}</td>"
+                    f"<td>{_esc(_lf)}</td></tr>"
+                )
+            refresh_targets_html += "</table>"
+        elif _enriched_csv and not os.path.exists(_enriched_csv):
+            refresh_targets_html += "<p>Run <code>main.py learn enrich-root-causes</code> to populate.</p>"
+        else:
+            refresh_targets_html += "<p>No price_only_scored or sector_cluster_move true_miss/near_threshold targets found.</p>"
+    except Exception as _rexc:
+        refresh_targets_html += f"<p>Refresh targets unavailable: {_esc(str(_rexc))}</p>"
+
     body = (
         '<h2>Ops</h2>'
         f'<p><strong>Latest run:</strong> {_esc(latest_run)}</p>'
@@ -2466,6 +2534,7 @@ def _ops_page(history_root: str, output_dir: str) -> str:
         + '</table>'
         + env_warn
         + coverage_html
+        + refresh_targets_html
         + '<h2>Systemd Timers</h2>'
         + timer_html
         + nav

@@ -330,24 +330,32 @@ def priority_refresh_queue_cmd(db_path, output, max_tickers, enriched_csv):
     import duckdb as _duckdb
     from ingestion.priority_refresh import build_priority_queue, save_priority_queue
 
-    price_only_tickers: set[str] = set()
+    price_only_p1: set[str] = set()
+    price_only_p2: set[str] = set()
     if os.path.exists(enriched_csv):
         with open(enriched_csv, newline="") as f:
             for row in _csv.DictReader(f):
-                if (row.get("enriched_root_cause") == "price_only_scored"
-                        and row.get("classification") in ("true_miss", "near_threshold")):
-                    price_only_tickers.add(row["ticker"])
+                if row.get("enriched_root_cause") == "price_only_scored":
+                    clf = row.get("classification", "")
+                    if clf == "true_miss":
+                        price_only_p1.add(row["ticker"])
+                    elif clf in ("near_threshold", "scored_missed"):
+                        price_only_p2.add(row["ticker"])
 
     conn = _duckdb.connect(db_path, read_only=True)
-    queue = build_priority_queue(conn, max_tickers=max_tickers, price_only_tickers=price_only_tickers)
+    queue = build_priority_queue(
+        conn, max_tickers=max_tickers,
+        price_only_p1_tickers=price_only_p1,
+        price_only_p2_tickers=price_only_p2,
+    )
     conn.close()
     save_priority_queue(queue, output)
     by_priority: dict[int, int] = {}
     for item in queue:
         by_priority.setdefault(item["priority"], 0)
         by_priority[item["priority"]] += 1
-    if price_only_tickers:
-        click.echo(f"  price_only_scored tickers flagged: {len(price_only_tickers)}")
+    if price_only_p1 or price_only_p2:
+        click.echo(f"  price_only_scored_miss P1: {len(price_only_p1)}  P2: {len(price_only_p2)}")
     click.echo(f"Priority queue: {len(queue)} tickers -> {output}")
     for p in sorted(by_priority):
         click.echo(f"  Priority {p}: {by_priority[p]} tickers")

@@ -100,3 +100,66 @@ def test_save_priority_queue_csv(tmp_path):
         rows = list(_csv.DictReader(f))
     assert len(rows) == 1
     assert rows[0]["ticker"] == "AAAB"
+
+
+def test_price_only_scored_miss_true_miss_is_p1():
+    conn = _make_conn([{
+        "ticker": "CTRA", "price_date": "2026-05-03",
+        "filing_date": "2025-12-31", "market_cap": 1e11,
+    }])
+    queue = build_priority_queue(
+        conn, as_of_date="2026-05-03",
+        price_only_p1_tickers={"CTRA"},
+    )
+    assert len(queue) == 1
+    assert queue[0]["ticker"] == "CTRA"
+    assert queue[0]["priority"] == 1
+    assert "price_only_scored_miss" in queue[0]["reason"]
+
+
+def test_price_only_scored_miss_near_threshold_is_p2():
+    conn = _make_conn([{
+        "ticker": "CTRA", "price_date": "2026-05-03",
+        "filing_date": "2025-12-31", "market_cap": 1e11,
+    }])
+    queue = build_priority_queue(
+        conn, as_of_date="2026-05-03",
+        price_only_p2_tickers={"CTRA"},
+    )
+    assert len(queue) == 1
+    assert queue[0]["priority"] == 2
+    assert "price_only_scored_miss" in queue[0]["reason"]
+
+
+def test_price_only_p1_beats_p2_for_same_ticker():
+    conn = _make_conn([{
+        "ticker": "CTRA", "price_date": "2026-05-03",
+        "filing_date": "2025-12-31", "market_cap": 1e11,
+    }])
+    queue = build_priority_queue(
+        conn, as_of_date="2026-05-03",
+        price_only_p1_tickers={"CTRA"},
+        price_only_p2_tickers={"CTRA"},
+    )
+    assert queue[0]["priority"] == 1
+
+
+def test_legacy_price_only_tickers_treated_as_p1():
+    conn = _make_conn([{
+        "ticker": "FULL", "price_date": "2026-05-03",
+        "filing_date": "2025-12-31", "market_cap": 1e11,
+    }])
+    queue = build_priority_queue(
+        conn, as_of_date="2026-05-03",
+        price_only_tickers={"FULL"},
+    )
+    assert queue[0]["priority"] == 1
+    assert "price_only_scored_miss" in queue[0]["reason"]
+
+
+def test_no_scoring_changes_in_queue_builder():
+    import inspect
+    import ingestion.priority_refresh as _mod
+    src = inspect.getsource(_mod)
+    for bad in ("tier", "llm", "openai", "anthropic", "feature_flag"):
+        assert bad not in src.lower(), f"prohibited term '{bad}' found in priority_refresh.py"

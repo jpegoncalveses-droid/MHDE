@@ -113,13 +113,13 @@ _SUGGESTED_FIXES: dict[str, str] = {
     "ifrs_mapping_gap":
         "Add IFRS-to-US-GAAP field mapping in features/valuation.py for non-standard metric names.",
     "price_only_scored":
-        "Ingest last_financial_filing_date and fundamental ratios (P/E, revenue, margins) via SEC EDGAR XBRL or financials pipeline.",
+        "last_financial_filing_date is now present for all affected tickers. Real gap: fundamental ratio features (P/E, revenue growth, margins) are not being computed from fundamentals_raw by the features pipeline. Fix: wire ratio computation in features/valuation.py and re-run scoring.",
     "no_evidence_no_filing":
         "Add EFTS fallback or press-release scraper to increase filing coverage.",
     "missing_earnings_context":
         "Add EPS estimates adapter; wire earnings-proximity feature to scoring.",
     "sector_cluster_move":
-        "Seed sector ETF tickers (XLF/XLK/XLE etc.) to enable sector-momentum feature.",
+        "Sector move detected via peer clustering only — no ETF data used. ingest_sector_etfs.py exists but is not wired into the orchestrator and requires a Polygon API key. Sector-relative features are not computed at scoring time. Fix: wire sector ETF ingestor and add sector-momentum feature to scoring.",
     "low_catalyst_score":
         "Investigate catalyst source coverage for this ticker and date.",
     "low_quality_score":

@@ -2274,3 +2274,27 @@ def test_moves_shows_deduped_count(tmp_path):
         r = c.get("/moves")
     html = r.data.decode()
     assert "dedup" in html.lower() or "duplicate" in html.lower() or "raw" in html.lower()
+
+
+# ── Task: ops refresh targets section ─────────────────────────────────────────
+
+def test_ops_shows_refresh_targets_section(tmp_path):
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir, exist_ok=True)
+    _write_enriched(output_dir, [
+        _enriched_row(ticker="CTRA", enriched_root_cause="price_only_scored", classification="true_miss"),
+        _enriched_row(ticker="INTC", enriched_root_cause="sector_cluster_move", classification="near_threshold"),
+    ])
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/ops")
+    assert r.status_code == 200
+    html = r.data.decode()
+    assert "refresh" in html.lower() or "targets" in html.lower()
+
+
+def test_ops_refresh_targets_no_crash_without_enriched_csv(tmp_path):
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/ops")
+    assert r.status_code == 200
