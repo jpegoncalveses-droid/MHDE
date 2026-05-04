@@ -1,7 +1,7 @@
 # MHDE Daily Radar — 2026-05-04
 
-**Run ID:** `b6e2b208981248d4`  
-**Generated:** 2026-05-04 08:33 UTC
+**Run ID:** `752bb691c89c49a4`  
+**Generated:** 2026-05-04 09:55 UTC
 
 ---
 
@@ -48,7 +48,7 @@
 ## Source Status
 
 - ✓ **sec_edgar**: ok (1921 records)
-- ✓ **polygon**: ok (1240 records)
+- ✓ **polygon**: ok (930 records)
 - ✓ **stooq**: ok (517 records)
 - ✓ **yahoo_historical**: ok (44 records)
 - ✓ **fred**: ok (70 records)

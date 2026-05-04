@@ -1,24 +1,7 @@
 ticker,priority,reason,last_price_date,last_filing_date,market_cap,sector
 BF.B,1,no_prices|no_market_cap,,2026-03-04,,Consumer Staples
 BRK.B,1,no_prices|no_market_cap,,2026-03-02,,Financials
-CRDO,1,price_only_scored_miss,2026-05-01,2026-03-03,33967221120.0,
-CRWD,1,price_only_scored_miss,2026-05-01,2026-03-05,114866133201.59999,Information Technology
-CVE,1,price_only_scored_miss,2026-05-01,2026-02-19,55127120663.57,
-FIX,1,price_only_scored_miss,2026-05-01,2026-04-23,65694832740.0,Industrials
-GD,1,price_only_scored_miss,2026-05-01,2026-04-29,93511594252.56,Industrials
-GFS,1,price_only_scored_miss,2026-05-01,2026-02-27,36082719614.049995,
-INTC,1,price_only_scored_miss,2026-05-01,2026-04-24,500391260000.0,Information Technology
-JBL,1,price_only_scored_miss,2026-05-01,2026-04-08,36239570597.98,Information Technology
-LITE,1,price_only_scored_miss,2026-05-01,2026-02-04,67825002000.0,Information Technology
-MCHP,1,price_only_scored_miss,2026-05-01,2026-02-05,50839408239.75,Information Technology
-MO,1,price_only_scored_miss,2026-05-01,2026-04-30,124820429041.34999,Consumer Staples
-MTZ,1,price_only_scored_miss,2026-05-01,2026-04-30,33333110370.000004,
-NBIS,1,price_only_scored_miss,2026-05-01,2026-04-30,39088591849.79,
-NOK,1,price_only_scored_miss,2026-05-01,2026-03-05,76371787956.8,
-NXPI,1,price_only_scored_miss,2026-05-01,2026-04-28,1271017057200.0,Information Technology
 OMC,1,no_prices|no_fundamentals|no_market_cap,,,,Communication Services
-ON,1,price_only_scored_miss,2026-05-01,2026-02-09,40876178969.53,Information Technology
-ORCL,1,price_only_scored_miss,2026-05-01,2026-03-11,494011250000.00006,Information Technology
 PFG,1,no_prices|no_fundamentals|no_market_cap,,,,Financials
 PHM,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Discretionary
 PKG,1,no_prices|no_fundamentals|no_market_cap,,,,Materials
@@ -29,21 +12,17 @@ POOL,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Discretionary
 PPG,1,no_prices|no_fundamentals|no_market_cap,,,,Materials
 PSKY,1,no_prices|no_fundamentals,,,12329208898.81,Communication Services
 PTC,1,no_prices|no_fundamentals,,,16246539717.48,Information Technology
-PWR,1,price_only_scored_miss,2026-05-01,2026-04-30,111373313142.56001,Industrials
 REG,1,no_prices|no_fundamentals|no_market_cap,,,,Real Estate
 RF,1,no_prices|no_fundamentals|no_market_cap,,,,Financials
 RKLB,1,no_prices|no_market_cap,,2026-02-26,,
 RL,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Discretionary
 RVTY,1,no_prices|no_fundamentals|no_market_cap,,,,Health Care
 SBAC,1,no_prices|no_fundamentals|no_market_cap,,,,Real Estate
-SBUX,1,price_only_scored_miss,2026-05-01,2026-04-28,120397710000.0,Consumer Discretionary
 SJM,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Staples
 SMCI,1,no_prices|no_fundamentals|no_market_cap,,,,Information Technology
 SNA,1,no_prices|no_fundamentals|no_market_cap,,,,Industrials
-SNDK,1,price_only_scored_miss,2026-05-01,2026-01-30,175676000000.0,Information Technology
 SOLV,1,no_prices|no_fundamentals|no_market_cap,,,,Health Care
 STE,1,no_prices|no_fundamentals|no_market_cap,,,,Health Care
-STX,1,price_only_scored_miss,2026-05-01,2026-04-29,163128958325.09998,Information Technology
 SW,1,no_prices|no_fundamentals|no_market_cap,,,,Materials
 SWK,1,no_prices|no_fundamentals|no_market_cap,,,,Industrials
 SWKS,1,no_prices|no_fundamentals|no_market_cap,,,,Information Technology
@@ -57,19 +36,16 @@ TSCO,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Discretionary
 TSLA,1,no_prices|no_market_cap,,2026-04-23,,Consumer Discretionary
 TSN,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Staples
 TTD,1,no_prices|no_fundamentals|no_market_cap,,,,Communication Services
-TXN,1,price_only_scored_miss,2026-05-01,2026-04-24,255754276126.81998,Information Technology
 TXT,1,no_prices|no_fundamentals,,,16490646955.52,Industrials
 TYL,1,no_prices|no_fundamentals,,,14147181152.5,Information Technology
 UBER,1,no_prices,,2026-02-13,153006283332.96002,Industrials
 UDR,1,no_prices|no_fundamentals|no_market_cap,,,,Real Estate
 UHS,1,no_prices|no_fundamentals|no_market_cap,,,,Health Care
 ULTA,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Discretionary
-UMC,1,price_only_scored_miss,2026-05-01,2026-04-30,164275440289.2,
 VLTO,1,no_prices|no_fundamentals|no_market_cap,,,,Industrials
 VRSK,1,no_prices|no_fundamentals|no_market_cap,,,,Industrials
 VRSN,1,no_prices|no_fundamentals|no_market_cap,,,,Information Technology
 VTRS,1,no_prices|no_fundamentals|no_market_cap,,,,Health Care
-WDC,1,price_only_scored_miss,2026-05-01,2026-05-01,148874400000.0,Information Technology
 WRB,1,no_prices|no_fundamentals|no_market_cap,,,,Financials
 WSM,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Discretionary
 WST,1,no_prices|no_fundamentals|no_market_cap,,,,Health Care
@@ -99,3 +75,27 @@ CVNA,4,no_market_cap,2026-05-01,2026-04-29,,Consumer Discretionary
 DASH,4,no_market_cap,2026-05-01,2026-02-18,,Consumer Discretionary
 DDOG,4,no_market_cap,2026-05-01,2026-02-18,,Information Technology
 DTEGY,4,no_market_cap,2026-05-01,2010-02-25,,
+EL,4,no_market_cap,2026-05-01,2026-05-01,,Consumer Staples
+EONGY,4,no_market_cap,2026-05-01,2007-03-07,,
+ERIC,4,no_market_cap,2026-05-01,2026-03-12,,
+ERIE,4,no_market_cap,2026-05-01,2026-04-23,,Financials
+FMX,4,no_market_cap,2026-05-01,2026-04-24,,
+GWLIF,4,no_market_cap,2026-05-01,2003-07-02,,
+HOOD,4,no_market_cap,2026-05-01,2026-04-29,,Financials
+HRL,4,no_market_cap,2026-05-01,2026-02-26,,Consumer Staples
+IBN,4,no_market_cap,2026-05-01,2025-07-25,,
+IFNNY,4,no_market_cap,2026-05-01,2009-12-08,,
+LEN,4,no_market_cap,2026-05-01,2026-04-09,,Consumer Discretionary
+MDLN,4,no_market_cap,2026-05-01,2026-02-25,,
+META,4,no_market_cap,2026-05-01,2026-04-30,,Communication Services
+MFC,4,no_market_cap,2026-05-01,2026-02-11,,
+MKC,4,no_market_cap,2026-05-01,2026-03-31,,Consumer Staples
+MSTR,4,no_market_cap,2026-05-01,2026-02-19,,
+NET,4,no_market_cap,2026-05-01,2026-02-26,,
+NU,4,no_market_cap,2026-05-01,2026-04-08,,
+NVO,4,no_market_cap,2026-05-01,2026-02-04,,
+NWG,4,no_market_cap,2026-05-01,2026-02-17,,
+RDDT,4,no_market_cap,2026-05-01,2026-05-01,,
+RKT,4,no_market_cap,2026-05-01,2026-03-02,,
+RTNTF,4,no_market_cap,2026-05-01,2026-02-19,,
+SCMWY,4,no_market_cap,2026-05-01,2007-04-23,,
