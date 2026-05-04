@@ -1,0 +1,112 @@
+clusters:
+  semiconductors:
+    label: "Semiconductors / AI Hardware"
+    tickers: [AMD, AVGO, NVDA, INTC, MU, QCOM, TXN, ADI, MCHP, NXPI, ON, MPWR, SWKS, FSLR]
+
+  eda_design:
+    label: "EDA / Chip Design Software"
+    tickers: [CDNS, SNPS, ANSS]
+
+  enterprise_software:
+    label: "Enterprise Software"
+    tickers: [CRM, ORCL, ADBE, INTU, WDAY, NOW, ADSK, PLTR, DDOG, PTC, TYL]
+
+  cybersecurity:
+    label: "Cybersecurity"
+    tickers: [CRWD, FTNT, PANW, GEN, ZS]
+
+  networking_datacom:
+    label: "Networking / Datacom"
+    tickers: [CSCO, ANET, CIEN, FFIV, LITE, MSI, COHR]
+
+  cloud_hyperscale:
+    label: "Cloud / Hyperscale"
+    tickers: [AMZN, MSFT, GOOG, META, ORCL, CRM]
+
+  storage_datacenter:
+    label: "Storage / Data Center"
+    tickers: [DELL, HPE, NTAP, STX, WDC, SMCI]
+
+  crypto_beta:
+    label: "Crypto Beta"
+    tickers: [COIN, HOOD, MSTR, SQ, MARA]
+
+  diversified_banks:
+    label: "Diversified Banks"
+    tickers: [JPM, BAC, C, WFC, USB, PNC, TFC]
+
+  insurance:
+    label: "Insurance / Underwriting"
+    tickers: [AIG, ALL, CB, PGR, TRV, HIG, MET, PRU, ACGL, AFL]
+
+  asset_management:
+    label: "Asset Management / Alt Managers"
+    tickers: [BLK, BX, KKR, APO, ARES, AMP, BEN, IVZ, TROW]
+
+  payments:
+    label: "Payments / Fintech"
+    tickers: [V, MA, PYPL, SQ, FIS, FISV, GPN, CPAY]
+
+  pharma:
+    label: "Pharmaceuticals"
+    tickers: [LLY, MRK, PFE, JNJ, BMY, ABBV, AMGN, GILD, REGN, VRTX, ZTS]
+
+  biotech:
+    label: "Biotech"
+    tickers: [ABBV, AMGN, BIIB, GILD, INCY, MRNA, REGN, VRTX]
+
+  medtech:
+    label: "MedTech / Devices"
+    tickers: [ABT, BSX, SYK, MDT, ISRG, EW, BDX, DXCM, ZBH, GEHC]
+
+  oil_gas_ep:
+    label: "Oil & Gas E&P"
+    tickers: [COP, EOG, OXY, DVN, FANG, APA, CTRA, EQT, EXE]
+
+  energy_midstream:
+    label: "Energy Midstream / Services"
+    tickers: [KMI, WMB, OKE, TRGP, SLB, HAL, BKR]
+
+  industrial_machinery:
+    label: "Industrial Machinery"
+    tickers: [CAT, DE, EMR, ETN, PH, IR, ROK, DOV, ITW]
+
+  building_hvac:
+    label: "Building Products / HVAC"
+    tickers: [CARR, JCI, TT, LII, AOS, MAS, BLDR, ALLE]
+
+  aerospace_defense:
+    label: "Aerospace & Defense"
+    tickers: [BA, LMT, RTX, GD, NOC, GE, HWM, TDG, LHX, AXON]
+
+  electrification_infra:
+    label: "Electrification / Infrastructure"
+    tickers: [ETN, VRT, GNRC, EMR, AME, HUBB, ROK]
+
+  consumer_internet:
+    label: "Consumer Internet / Ad Tech"
+    tickers: [GOOG, META, SNAP, PINS, TTD, APP]
+
+  ev_auto:
+    label: "EV / Auto OEM"
+    tickers: [TSLA, GM, F, RIVN, ON, APTV]
+
+  restaurants_qsr:
+    label: "Restaurants / QSR"
+    tickers: [MCD, SBUX, CMG, DPZ, DRI, YUM]
+
+  homebuilders:
+    label: "Homebuilders"
+    tickers: [DHI, LEN, NVR, PHM, TOL, KBH]
+
+  electric_utilities:
+    label: "Electric Utilities"
+    tickers: [NEE, DUK, SO, AEP, EXC, CEG, VST, PEG, EIX, ES]
+
+  travel_leisure:
+    label: "Travel / Leisure"
+    tickers: [BKNG, ABNB, MAR, HLT, EXPE, RCL, CCL, NCLH]
+
+  retail:
+    label: "Consumer Retail"
+    tickers: [WMT, COST, TGT, HD, LOW, DG, DLTR, AMZN]

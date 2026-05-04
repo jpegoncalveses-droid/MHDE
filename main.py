@@ -584,13 +584,73 @@ def data_sector_diagnostics_cmd(db_path, enriched_csv):
         click.echo("No sector_cluster_move rows found in enriched CSV.")
         return
     click.echo(f"Sector Cluster Diagnostics — {len(diags)} rows")
-    click.echo(f"{'Ticker':<8} {'Event Date':<12} {'Sector':<26} {'ETF':<6} {'ETF Prices':<11} Subcause")
-    click.echo("-" * 80)
+    click.echo(f"{'Ticker':<8} {'Date':<12} {'Sector':<22} {'ETF':<6} {'TkrRet':>8} {'ETFRet':>8} {'Rel':>8} {'Peers':>5} Subcause")
+    click.echo("-" * 105)
     for d in diags:
+        def _pct(v):
+            return f"{v*100:+.2f}%" if v is not None else "—"
         click.echo(
-            f"{d.ticker:<8} {d.event_date:<12} {(d.sector or '—'):<26} "
-            f"{(d.etf_ticker or '—'):<6} {d.etf_price_count:<11} {d.subcause}"
+            f"{d.ticker:<8} {d.event_date:<12} {(d.sector or '—'):<22} "
+            f"{(d.etf_ticker or '—'):<6} {_pct(d.ticker_return):>8} {_pct(d.etf_return):>8} "
+            f"{_pct(d.relative_return):>8} {str(d.peer_cluster_count or '—'):>5} {d.subcause}"
         )
+
+
+@data.command("peer-cluster-diagnostics")
+@click.option("--db-path", default="data/mhde.duckdb", show_default=True)
+@click.option(
+    "--enriched-csv",
+    default="data/processed/prediction_vs_actual_enriched_rows.csv",
+    show_default=True,
+)
+def data_peer_cluster_diagnostics_cmd(db_path, enriched_csv):
+    """Show peer/theme cluster attribution for sector_cluster_move events."""
+    import csv as _csv
+    import os as _os
+    import duckdb as _duckdb
+    from health.peer_cluster_attribution import generate_peer_cluster_diagnostics
+
+    if not _os.path.exists(enriched_csv):
+        click.echo(f"No enriched CSV: {enriched_csv}")
+        click.echo("Run: python main.py missed refresh-learning")
+        return
+    with open(enriched_csv, newline="") as f:
+        enriched_rows = list(_csv.DictReader(f))
+    conn = _duckdb.connect(db_path, read_only=True)
+    diags = generate_peer_cluster_diagnostics(conn, enriched_rows)
+    conn.close()
+    if not diags:
+        click.echo("No sector_cluster_move rows found in enriched CSV.")
+        return
+
+    def _pct(v):
+        return f"{v*100:+.2f}%" if v is not None else "—"
+
+    click.echo(f"Peer Cluster Diagnostics — {len(diags)} rows\n")
+    click.echo(
+        f"{'Ticker':<8} {'Date':<12} {'Win':>3} "
+        f"{'TkrRet':>8} {'ETFRet':>8} {'vsETF':>8} "
+        f"{'Cluster':<22} {'ClstRet':>8} {'vsClst':>8} "
+        f"{'Peers':>5} Attribution"
+    )
+    click.echo("-" * 120)
+    for d in diags:
+        cluster_name = d.best_cluster.cluster_label[:20] if d.best_cluster else "—"
+        cluster_ret = _pct(d.best_cluster.cluster_median_return) if d.best_cluster else "—"
+        vs_cluster = _pct(d.best_cluster.ticker_vs_cluster) if d.best_cluster else "—"
+        peers = str(d.best_cluster.peers_with_prices) if d.best_cluster else "—"
+        click.echo(
+            f"{d.ticker:<8} {d.event_date:<12} {str(d.window_days or ''):>3} "
+            f"{_pct(d.ticker_return):>8} {_pct(d.etf_return):>8} {_pct(d.ticker_vs_etf):>8} "
+            f"{cluster_name:<22} {cluster_ret:>8} {vs_cluster:>8} "
+            f"{peers:>5} {d.attribution}"
+        )
+
+    from collections import Counter
+    attr_counts = Counter(d.attribution for d in diags)
+    click.echo(f"\nAttribution summary:")
+    for attr, cnt in attr_counts.most_common():
+        click.echo(f"  {attr}: {cnt}")
 
 
 @data.command("ingest-sector-etfs")

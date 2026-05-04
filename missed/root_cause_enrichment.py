@@ -119,7 +119,7 @@ _SUGGESTED_FIXES: dict[str, str] = {
     "missing_earnings_context":
         "Add EPS estimates adapter; wire earnings-proximity feature to scoring.",
     "sector_cluster_move":
-        "Sector move detected via peer clustering only — no ETF data used. ingest_sector_etfs.py exists but is not wired into the orchestrator and requires a Polygon API key. Sector-relative features are not computed at scoring time. Fix: wire sector ETF ingestor and add sector-momentum feature to scoring.",
+        "Sector move detected via peer clustering. Sector ETF returns are now used for attribution context. Run: python main.py data sector-diagnostics for detailed subcause breakdown.",
     "low_catalyst_score":
         "Investigate catalyst source coverage for this ticker and date.",
     "low_quality_score":
@@ -462,6 +462,7 @@ def _assign_root_cause(
     companies_data: dict[str, dict[str, Any]],
     sector_map: dict[str, str] | None = None,
     etf_coverage: dict[str, int] | None = None,
+    conn=None,
     today: date,
 ) -> tuple[str, dict[str, str]]:
     """First-match root-cause assignment; returns (label, diag_fields)."""
@@ -496,9 +497,28 @@ def _assign_root_cause(
     if event_date is not None and (ticker, str(event_date), window) in sector_clusters:
         diag = dict(_INCOMPLETE_DIAG_EMPTY)
         if sector_map is not None and etf_coverage is not None:
-            from health.sector_diagnostics import classify_sector_cluster_row
+            from health.sector_diagnostics import classify_sector_cluster_row, compute_etf_window_return, SECTOR_TO_ETF
+            sector = sector_map.get(ticker)
+            etf_return = None
+            ticker_return = None
+            raw_return = row.get("return_value")
+            try:
+                ticker_return = float(raw_return) / 100.0 if raw_return is not None else None
+            except (ValueError, TypeError):
+                ticker_return = None
+            if sector and conn is not None:
+                etf = SECTOR_TO_ETF.get(sector)
+                if etf and etf_coverage.get(etf, 0) > 0 and window is not None:
+                    try:
+                        etf_return = compute_etf_window_return(
+                            conn, etf, str(event_date), int(window)
+                        )
+                    except Exception:
+                        pass
             diag["sector_cluster_subcause"] = classify_sector_cluster_row(
-                ticker, sector_map.get(ticker), etf_coverage
+                ticker, sector, etf_coverage,
+                etf_return=etf_return,
+                ticker_return=ticker_return,
             )
         return "sector_cluster_move", diag
 
@@ -578,6 +598,7 @@ def enrich_rows(rows: list[dict], conn: duckdb.DuckDBPyConnection) -> list[dict]
             companies_data=companies_data,
             sector_map=sector_map,
             etf_coverage=etf_coverage,
+            conn=conn,
             today=today,
         )
         enrichment = _build_enrichment(label, diag)

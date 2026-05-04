@@ -110,6 +110,11 @@ def test_ingest_writes_to_db(tmp_path):
     with patch(
         "ingestion.ingest_earnings_estimates._fetch_alpha_vantage_earnings",
         return_value=mock_raw,
+    ), patch(
+        "ingestion._av_daily_counter.is_cap_reached",
+        return_value=False,
+    ), patch(
+        "ingestion._av_daily_counter.record_call",
     ):
         count = ingest_earnings_for_ticker("AAAB", api_key="fake-key", db_path=db_path)
 

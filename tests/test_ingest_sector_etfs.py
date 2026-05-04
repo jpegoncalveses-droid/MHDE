@@ -60,16 +60,17 @@ def test_ingest_sector_etfs_to_db(tmp_path):
     conn = duckdb.connect(db_path)
     conn.execute("""
         CREATE TABLE prices_daily (
-            ticker VARCHAR,
-            trade_date DATE,
+            id VARCHAR PRIMARY KEY,
+            ticker VARCHAR NOT NULL,
+            trade_date DATE NOT NULL,
             open DOUBLE,
             high DOUBLE,
             low DOUBLE,
-            close DOUBLE,
-            volume DOUBLE,
+            close DOUBLE NOT NULL,
+            volume BIGINT,
             adjusted_close DOUBLE,
-            source VARCHAR,
-            PRIMARY KEY (ticker, trade_date)
+            source VARCHAR DEFAULT 'polygon',
+            UNIQUE (ticker, trade_date)
         )
     """)
     conn.close()

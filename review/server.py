@@ -2098,19 +2098,77 @@ def _learning_page(output_dir: str, history_root: str = "", db_path: str = "") -
             _diags = generate_sector_diagnostics(_conn_sd, enriched)
             _conn_sd.close()
             if _diags:
+                def _fmt_pct(v):
+                    return f"{v*100:+.2f}%" if v is not None else "—"
                 _diag_rows_html = "".join(
                     f"<tr><td>{_esc(d.ticker)}</td><td>{_esc(d.event_date)}</td>"
                     f"<td>{_esc(d.sector or '—')}</td><td>{_esc(d.etf_ticker or '—')}</td>"
-                    f"<td>{d.etf_price_count}</td><td><code>{_esc(d.subcause)}</code></td></tr>"
+                    f"<td>{_fmt_pct(d.ticker_return)}</td>"
+                    f"<td>{_fmt_pct(d.etf_return)}</td>"
+                    f"<td>{_fmt_pct(d.relative_return)}</td>"
+                    f"<td>{d.peer_cluster_count or '—'}</td>"
+                    f"<td><code>{_esc(d.subcause)}</code></td>"
+                    f"<td>{_esc(d.suggested_fix)}</td></tr>"
                     for d in _diags
                 )
                 sector_diag_html = (
                     "<h2>Sector Cluster Diagnostics</h2>"
-                    '<p class="muted">Why each sector_cluster_move missed: '
-                    "ETF coverage and wiring status.</p>"
+                    '<p class="muted">Sector ETF attribution for each sector_cluster_move event.</p>'
                     "<table><tr><th>Ticker</th><th>Event Date</th><th>Sector</th>"
-                    "<th>ETF</th><th>ETF Prices</th><th>Subcause</th></tr>"
+                    "<th>ETF</th><th>Ticker Ret</th><th>ETF Ret</th><th>Relative</th>"
+                    "<th>Peers</th><th>Subcause</th><th>Suggested Fix</th></tr>"
                     + _diag_rows_html
+                    + "</table>"
+                )
+        except Exception:
+            pass
+
+    # Peer Cluster Attribution — best-effort, never raises
+    peer_cluster_html = ""
+    if enriched_path.exists() and db_path:
+        try:
+            import duckdb as _duckdb_pc
+            from health.peer_cluster_attribution import generate_peer_cluster_diagnostics
+            _conn_pc = _duckdb_pc.connect(db_path, read_only=True)
+            _pc_diags = generate_peer_cluster_diagnostics(_conn_pc, enriched)
+            _conn_pc.close()
+            if _pc_diags:
+                def _pct_pc(v):
+                    return f"{v*100:+.2f}%" if v is not None else "—"
+                _pc_rows_html = ""
+                for _pd in _pc_diags:
+                    _cl = _pd.best_cluster
+                    _cl_name = _esc(_cl.cluster_label[:25]) if _cl else "—"
+                    _cl_ret = _pct_pc(_cl.cluster_median_return) if _cl else "—"
+                    _vs_cl = _pct_pc(_cl.ticker_vs_cluster) if _cl else "—"
+                    _peers = str(_cl.peers_with_prices) if _cl else "—"
+                    _pc_rows_html += (
+                        f"<tr><td>{_esc(_pd.ticker)}</td>"
+                        f"<td>{_esc(_pd.event_date)}</td>"
+                        f"<td>{_pd.window_days or '—'}</td>"
+                        f"<td>{_pct_pc(_pd.ticker_return)}</td>"
+                        f"<td>{_pct_pc(_pd.etf_return)}</td>"
+                        f"<td>{_pct_pc(_pd.ticker_vs_etf)}</td>"
+                        f"<td>{_cl_name}</td>"
+                        f"<td>{_cl_ret}</td>"
+                        f"<td>{_vs_cl}</td>"
+                        f"<td>{_peers}</td>"
+                        f"<td><code>{_esc(_pd.attribution)}</code></td></tr>"
+                    )
+                from collections import Counter as _PCCounter
+                _pc_attr_counts = _PCCounter(_pd.attribution for _pd in _pc_diags)
+                _pc_summary = " &bull; ".join(
+                    f"{a}: <strong>{c}</strong>"
+                    for a, c in _pc_attr_counts.most_common()
+                )
+                peer_cluster_html = (
+                    "<h2>Peer Cluster Attribution</h2>"
+                    f'<p class="muted">Subsector/theme comparison for sector_cluster_move events. {_pc_summary}</p>'
+                    "<table><tr><th>Ticker</th><th>Date</th><th>Win</th>"
+                    "<th>Ticker Ret</th><th>ETF Ret</th><th>vs ETF</th>"
+                    "<th>Cluster</th><th>Cluster Ret</th><th>vs Cluster</th>"
+                    "<th>Peers</th><th>Attribution</th></tr>"
+                    + _pc_rows_html
                     + "</table>"
                 )
         except Exception:
@@ -2202,6 +2260,8 @@ def _learning_page(output_dir: str, history_root: str = "", db_path: str = "") -
 {fix_queues_html}
 
 {sector_diag_html}
+
+{peer_cluster_html}
 
 {lifecycle_summary_html}
 
@@ -2870,11 +2930,11 @@ def _ops_page(history_root: str, output_dir: str) -> str:
                         _priority_rows[t] = _prow
         _missing_data_map = {
             "price_only_scored": "Fundamental ratio features not computed",
-            "sector_cluster_move": "Sector ETF ingestor not wired (Polygon key required)",
+            "sector_cluster_move": "Sector ETF attribution active — run sector-diagnostics for subcause detail",
         }
         _refresh_source_map = {
             "price_only_scored": "features/valuation.py (ratio computation)",
-            "sector_cluster_move": "ingestion/ingest_sector_etfs.py (wire into orchestrator)",
+            "sector_cluster_move": "python main.py data sector-diagnostics",
         }
         _target_tickers = sorted(
             _enriched_rows.keys(),
