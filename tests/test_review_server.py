@@ -2718,4 +2718,42 @@ def test_learning_stale_no_crash_without_db(tmp_path):
     with app.test_client() as c:
         r = c.get("/learning")
     assert r.status_code == 200
+
+
+# ── Task 4: sector cluster diagnostics section ─────────────────────────────
+
+def test_learning_page_renders_without_crash_no_enriched_data(tmp_path):
+    """Learning page must not crash even when no enriched CSV exists."""
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/learning")
+    assert r.status_code == 200
+
+
+def test_learning_page_sector_diag_no_crash_with_enriched_csv(tmp_path):
+    """Learning page must not crash with enriched CSV containing sector_cluster_move rows."""
+    out = str(tmp_path / "output")
+    os.makedirs(out, exist_ok=True)
+    rows_csv = os.path.join(out, "prediction_vs_actual_rows.csv")
+    with open(rows_csv, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["event_date", "ticker", "classification",
+                                           "return_value", "window_days"])
+        w.writeheader()
+        w.writerow({"event_date": "2026-05-01", "ticker": "AAPL",
+                    "classification": "true_miss", "return_value": "0.15", "window_days": "5"})
+    enriched_csv = os.path.join(out, "prediction_vs_actual_enriched_rows.csv")
+    with open(enriched_csv, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["event_date", "ticker", "classification",
+                                           "enriched_root_cause", "root_cause_group",
+                                           "return_value", "window_days"])
+        w.writeheader()
+        w.writerow({"event_date": "2026-05-01", "ticker": "AAPL",
+                    "classification": "true_miss", "enriched_root_cause": "sector_cluster_move",
+                    "root_cause_group": "feature_gap", "return_value": "0.15", "window_days": "5"})
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/learning")
+    assert r.status_code == 200
+    html = r.data.decode()
+    assert "learning" in html.lower()
     assert "Learning" in r.data.decode()

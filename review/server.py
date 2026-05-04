@@ -2088,6 +2088,34 @@ def _learning_page(output_dir: str, history_root: str = "", db_path: str = "") -
                 + '</table>'
             )
 
+    # Sector Cluster Diagnostics — best-effort, never raises
+    sector_diag_html = ""
+    if enriched_path.exists() and db_path:
+        try:
+            import duckdb as _duckdb
+            from health.sector_diagnostics import generate_sector_diagnostics
+            _conn_sd = _duckdb.connect(db_path, read_only=True)
+            _diags = generate_sector_diagnostics(_conn_sd, enriched)
+            _conn_sd.close()
+            if _diags:
+                _diag_rows_html = "".join(
+                    f"<tr><td>{_esc(d.ticker)}</td><td>{_esc(d.event_date)}</td>"
+                    f"<td>{_esc(d.sector or '—')}</td><td>{_esc(d.etf_ticker or '—')}</td>"
+                    f"<td>{d.etf_price_count}</td><td><code>{_esc(d.subcause)}</code></td></tr>"
+                    for d in _diags
+                )
+                sector_diag_html = (
+                    "<h2>Sector Cluster Diagnostics</h2>"
+                    '<p class="muted">Why each sector_cluster_move missed: '
+                    "ETF coverage and wiring status.</p>"
+                    "<table><tr><th>Ticker</th><th>Event Date</th><th>Sector</th>"
+                    "<th>ETF</th><th>ETF Prices</th><th>Subcause</th></tr>"
+                    + _diag_rows_html
+                    + "</table>"
+                )
+        except Exception:
+            pass
+
     artifact_links = " &bull; ".join(
         f'<a href="/learning/{_esc(atype)}">{_esc(label)}</a>'
         for atype, label in [
@@ -2172,6 +2200,8 @@ def _learning_page(output_dir: str, history_root: str = "", db_path: str = "") -
 {subcause_html}
 
 {fix_queues_html}
+
+{sector_diag_html}
 
 {lifecycle_summary_html}
 
