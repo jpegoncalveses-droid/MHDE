@@ -646,11 +646,12 @@ def _batch_lookup_price_context(
             if event_date_str:
                 try:
                     evt = _dt.date.fromisoformat(event_date_str)
-                    before = [(s, d) for s, d in by_seq.items() if d["date"] <= evt]
-                    if before:
-                        best_seq = min(before, key=lambda x: x[0])[0]
-                        event_price = by_seq[best_seq]["price"]
+                    anchor = _anchor_price(by_seq, evt)
+                    if anchor:
+                        event_price, event_anchor_date, anchor_label = anchor
                         ctx["event_price"] = event_price
+                        ctx["event_anchor_date"] = str(event_anchor_date)
+                        ctx["event_anchor_label"] = anchor_label
                         ctx["return_since_event"] = _ret(latest_price, event_price)
                 except (ValueError, TypeError):
                     pass
@@ -662,7 +663,27 @@ def _batch_lookup_price_context(
         return {}
 
 
-def _lookup_price_context(ticker: str, db_path: str, event_date: str = "") -> dict:
+def _anchor_price(by_seq: dict, target_date: "object") -> "tuple[float, object, str] | None":
+    """Return (price, anchor_date, anchor_label) for the first trading day on or after target_date.
+
+    anchor_label is 'event date' when the exact date trades, 'next trading day' otherwise.
+    Returns None when no trading day >= target_date exists in by_seq.
+    """
+    on_or_after = [(s, d) for s, d in by_seq.items() if d["date"] >= target_date]
+    if not on_or_after:
+        return None
+    best_seq = max(on_or_after, key=lambda x: x[0])[0]  # max seq = earliest date on/after
+    anchor_date = by_seq[best_seq]["date"]
+    label = "event date" if anchor_date == target_date else "next trading day"
+    return by_seq[best_seq]["price"], anchor_date, label
+
+
+def _lookup_price_context(
+    ticker: str,
+    db_path: str,
+    event_date: str = "",
+    signal_date: str = "",
+) -> dict:
     """Query prices_daily for price context. Returns {} on any error or missing data."""
     if not db_path or not os.path.exists(db_path):
         return {}
@@ -747,13 +768,24 @@ def _lookup_price_context(ticker: str, db_path: str, event_date: str = "") -> di
         if event_date:
             try:
                 evt = _dt.date.fromisoformat(event_date)
-                # Most recent trading day on or before event_date
-                before = [(s, d) for s, d in by_seq.items() if d["date"] <= evt]
-                if before:
-                    best_seq = min(before, key=lambda x: x[0])[0]
-                    event_price = by_seq[best_seq]["price"]
+                result = _anchor_price(by_seq, evt)
+                if result:
+                    event_price, event_anchor_date, anchor_label = result
                     ctx["event_price"] = event_price
+                    ctx["event_anchor_date"] = str(event_anchor_date)
+                    ctx["event_anchor_label"] = anchor_label
                     ctx["return_since_event"] = _ret(latest_price, event_price)
+            except (ValueError, TypeError):
+                pass
+
+        if signal_date:
+            try:
+                sig = _dt.date.fromisoformat(signal_date)
+                sig_result = _anchor_price(by_seq, sig)
+                if sig_result:
+                    signal_price, _, _ = sig_result
+                    ctx["signal_price"] = signal_price
+                    ctx["return_since_signal"] = _ret(latest_price, signal_price)
             except (ValueError, TypeError):
                 pass
 
@@ -835,10 +867,23 @@ def _price_block(ctx: dict) -> str:
     if ctx.get("return_since_event") is not None:
         ep = ctx.get("event_price")
         ep_str = f" from ${ep:.2f}" if ep else ""
+        anchor_note = ""
+        if ctx.get("event_anchor_label") == "next trading day":
+            anchor_note = ' <span class="muted">(next trading day)</span>'
         rows_html += _prow(
-            "Move since event",
+            "Since event",
             _ret_html(ctx["return_since_event"])
-            + f' <span class="muted">{_esc(ep_str)}</span>',
+            + f' <span class="muted">{_esc(ep_str)}</span>'
+            + anchor_note,
+        )
+
+    if ctx.get("return_since_signal") is not None:
+        sp = ctx.get("signal_price")
+        sp_str = f" from ${sp:.2f}" if sp else ""
+        rows_html += _prow(
+            "Since signal",
+            _ret_html(ctx["return_since_signal"])
+            + f' <span class="muted">{_esc(sp_str)}</span>',
         )
 
     rows_html += (
@@ -2031,8 +2076,30 @@ def _today_page(history_root: str, output_dir: str) -> str:
     return _render("Today — MHDE", body)
 
 
+def _compute_signal_dates(history_root: str, tickers: "set[str]") -> "dict[str, str]":
+    """Return {ticker: earliest_run_date} by scanning all queue history (oldest first)."""
+    signal_dates: dict[str, str] = {}
+    try:
+        for d in sorted(_dated_dirs(history_root)):  # ascending = oldest first
+            csv_path = os.path.join(history_root, d, "daily_catalyst_queue.csv")
+            try:
+                with open(csv_path, newline="") as f:
+                    for row in _csv.DictReader(f):
+                        t = row.get("ticker", "")
+                        if t in tickers and t not in signal_dates:
+                            signal_dates[t] = d
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return signal_dates
+
+
 def _candidates_price_snapshot(
-    entries: list[dict], db_path: str, output_dir: str = ""
+    entries: list[dict],
+    db_path: str,
+    output_dir: str = "",
+    signal_date_map: "dict[str, str] | None" = None,
 ) -> str:
     """Compact price-context table for all promoted candidates."""
     promoted = [e for e in entries if _is_promoted(e)]
@@ -2052,7 +2119,10 @@ def _candidates_price_snapshot(
     for e in promoted:
         ticker = e.get("ticker", "")
         event_date = e.get("event_date", "")
-        ctx = _lookup_price_context(ticker, db_path, event_date) if db_path else {}
+        sig_date = (signal_date_map or {}).get(ticker, "")
+        ctx = _lookup_price_context(
+            ticker, db_path, event_date=event_date, signal_date=sig_date
+        ) if db_path else {}
         label, label_css = _price_status_label(ctx)
 
         close = ctx.get("latest_close")
@@ -2063,6 +2133,7 @@ def _candidates_price_snapshot(
         vol_ratio = ctx.get("volume_vs_20d_avg")
         vol_str = f'{vol_ratio:.1f}x' if vol_ratio is not None else "—"
         since_html = _r(ctx.get("return_since_event")) if "return_since_event" in ctx else "—"
+        since_sig_html = _r(ctx.get("return_since_signal")) if "return_since_signal" in ctx else "—"
 
         trd_rec = tradability_data.get(ticker, {})
         trd_status = trd_rec.get("tradability_status") or "unknown"
@@ -2081,6 +2152,7 @@ def _candidates_price_snapshot(
             f'<td>{_r(ctx.get("return_5d"))}</td>'
             f'<td>{vol_str}</td>'
             f'<td>{since_html}</td>'
+            f'<td>{since_sig_html}</td>'
             f'<td><span class="{label_css}">{_esc(label)}</span></td>'
             f'<td>{trd_cell}</td>'
             f'</tr>'
@@ -2093,8 +2165,8 @@ def _candidates_price_snapshot(
         '<h3>Price Snapshot — Promoted Candidates</h3>'
         '<div style="overflow-x:auto"><table>'
         '<tr><th>Ticker</th><th>Close</th><th>Date</th>'
-        '<th>1d</th><th>5d</th><th>Vol/avg</th>'
-        '<th>Since event</th><th>Signal</th><th>Tradable?</th></tr>'
+        '<th>1d return</th><th>5d</th><th>Vol/avg</th>'
+        '<th>Since event</th><th>Since signal</th><th>Signal</th><th>Tradable?</th></tr>'
         + trs
         + '</table></div>'
     )
@@ -2150,7 +2222,11 @@ def _candidates_page(
 
     latest = dates[0]
     entries = _read_csv_entries(history_root, latest)
-    price_snapshot = _candidates_price_snapshot(entries, db_path, output_dir)
+    promoted_tickers = {e["ticker"] for e in entries if _is_promoted(e)}
+    signal_dates = _compute_signal_dates(history_root, promoted_tickers) if promoted_tickers else {}
+    price_snapshot = _candidates_price_snapshot(
+        entries, db_path, output_dir, signal_date_map=signal_dates
+    )
 
     html, code = _run_detail(history_root, latest)
     html = html.replace(
@@ -2810,8 +2886,24 @@ def _ticker_page(
     reason = _not_candidate_reason(company, score_row, in_queue)
 
     # ── Price context ──────────────────────────────────────────────────────────
-    latest_event_date = missed_events[0]["event_date"] if missed_events else ""
-    price_ctx = _lookup_price_context(ticker, db_path, event_date=latest_event_date)
+    # Prefer catalyst event_date from queue entry (filing date); fall back to missed_events.
+    # Never use the previous trading day's date as the event anchor.
+    if queue_entries:
+        latest_event_date = queue_entries[0].get("event_date", "")
+        # Signal date = earliest run_date when this ticker appeared in the queue
+        run_dates = sorted(e.get("_run_date", "") for e in queue_entries if e.get("_run_date"))
+        signal_date = run_dates[0] if run_dates else ""
+    elif missed_events:
+        latest_event_date = missed_events[0]["event_date"]
+        signal_date = ""
+    else:
+        latest_event_date = ""
+        signal_date = ""
+    price_ctx = _lookup_price_context(
+        ticker, db_path,
+        event_date=latest_event_date,
+        signal_date=signal_date,
+    )
 
     # ── Build HTML ─────────────────────────────────────────────────────────────
     def _row(label: str, val: str) -> str:

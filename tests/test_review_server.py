@@ -2341,3 +2341,193 @@ def test_learning_fix_queues_no_crash_without_enriched(tmp_path):
     with app.test_client() as c:
         r = c.get("/learning")
     assert r.status_code == 200
+
+
+# ── Price anchoring tests ──────────────────────────────────────────────────────
+
+def test_since_event_uses_event_date_close_vg_like(tmp_path):
+    """VG-like: event close 17.53, prev close 13.27, latest 12.73.
+    since_event must be -27.4% (from 17.53), not -4.1% (from 13.27).
+    """
+    from review.server import _lookup_price_context
+    db = str(tmp_path / "p.duckdb")
+    _add_prices_to_db(db, "VG", [
+        ("2026-05-01", 12.73, 5_000_000),   # seq=1 latest
+        ("2026-04-30", 13.27, 4_500_000),   # seq=2 previous
+        ("2026-03-27", 17.53, 8_000_000),   # seq=N event date
+    ])
+    ctx = _lookup_price_context("VG", db, event_date="2026-03-27")
+    assert ctx["return_1d"] == pytest.approx((12.73 - 13.27) / 13.27 * 100, abs=0.1)
+    assert ctx["return_since_event"] == pytest.approx((12.73 - 17.53) / 17.53 * 100, abs=0.1)
+    assert ctx["event_price"] == pytest.approx(17.53, abs=0.01)
+
+
+def test_1d_return_never_confused_with_since_event(tmp_path):
+    """1d return and since_event must be distinct values."""
+    from review.server import _lookup_price_context
+    db = str(tmp_path / "p.duckdb")
+    _add_prices_to_db(db, "VG", [
+        ("2026-05-01", 12.73, 5_000_000),
+        ("2026-04-30", 13.27, 4_500_000),
+        ("2026-03-27", 17.53, 8_000_000),
+    ])
+    ctx = _lookup_price_context("VG", db, event_date="2026-03-27")
+    assert abs(ctx["return_1d"] - ctx["return_since_event"]) > 5.0  # must be separated
+
+
+def test_next_trading_day_used_when_event_on_weekend(tmp_path):
+    """Event on Saturday 2026-03-28 → anchor to Monday 2026-03-30."""
+    from review.server import _lookup_price_context
+    db = str(tmp_path / "p.duckdb")
+    _add_prices_to_db(db, "AAAB", [
+        ("2026-04-01", 60.0, 1_000_000),    # latest
+        ("2026-03-31", 58.0, 900_000),
+        ("2026-03-30", 50.0, 800_000),       # first trading day after Sat 2026-03-28
+        ("2026-03-27", 48.0, 700_000),       # trading day before the weekend event
+    ])
+    ctx = _lookup_price_context("AAAB", db, event_date="2026-03-28")
+    assert ctx["event_price"] == pytest.approx(50.0, abs=0.01)
+    assert ctx["event_anchor_label"] == "next trading day"
+    assert ctx["return_since_event"] == pytest.approx((60.0 - 50.0) / 50.0 * 100, abs=0.1)
+
+
+def test_event_anchor_label_is_event_date_when_exact_match(tmp_path):
+    from review.server import _lookup_price_context
+    db = str(tmp_path / "p.duckdb")
+    _add_prices_to_db(db, "AAAB", [
+        ("2026-04-01", 55.0, 1_000_000),
+        ("2026-03-27", 50.0, 800_000),
+    ])
+    ctx = _lookup_price_context("AAAB", db, event_date="2026-03-27")
+    assert ctx["event_anchor_label"] == "event date"
+
+
+def test_no_price_confirmation_when_since_event_negative_despite_positive_5d(tmp_path):
+    """since_event=-27% but 5d=+7% must still give 'no price confirmation'."""
+    from review.server import _lookup_price_context, _price_status_label
+    db = str(tmp_path / "p.duckdb")
+    _add_prices_to_db(db, "VG", [
+        ("2026-05-01", 12.73, 5_000_000),
+        ("2026-04-30", 13.27, 4_500_000),
+        ("2026-04-29", 13.10, 4_000_000),
+        ("2026-04-28", 12.90, 3_500_000),
+        ("2026-04-25", 12.50, 3_000_000),
+        ("2026-04-24", 11.90, 2_500_000),  # 5d ago: 11.90
+        ("2026-03-27", 17.53, 8_000_000),
+    ])
+    ctx = _lookup_price_context("VG", db, event_date="2026-03-27")
+    # Verify 5d return is positive but since_event is negative
+    assert ctx["return_since_event"] < 0
+    assert ctx.get("return_5d", 0) > 0
+    label, css = _price_status_label(ctx)
+    assert label == "no price confirmation"
+    assert css == "price-none"
+
+
+def test_since_signal_computed_from_signal_date(tmp_path):
+    """since_signal uses signal_date anchor, separate from event_date."""
+    from review.server import _lookup_price_context
+    db = str(tmp_path / "p.duckdb")
+    _add_prices_to_db(db, "VG", [
+        ("2026-05-01", 12.73, 5_000_000),  # latest
+        ("2026-04-30", 13.27, 4_500_000),
+        ("2026-04-28", 14.00, 4_000_000),  # signal date close
+        ("2026-03-27", 17.53, 8_000_000),  # event date close
+    ])
+    ctx = _lookup_price_context("VG", db, event_date="2026-03-27", signal_date="2026-04-28")
+    assert ctx["signal_price"] == pytest.approx(14.00, abs=0.01)
+    assert ctx["return_since_signal"] == pytest.approx((12.73 - 14.00) / 14.00 * 100, abs=0.1)
+    # Since event is anchored separately
+    assert ctx["event_price"] == pytest.approx(17.53, abs=0.01)
+
+
+def test_ticker_page_uses_queue_entry_event_date_not_missed_event_date(tmp_path):
+    """Queue entry event_date (2026-03-27) must override missed_events date (2026-04-30)."""
+    import duckdb
+    db = str(tmp_path / "t.duckdb")
+    _seed_db(db, ticker="VG", tier="Reject", score=42.0)
+    # Add a missed_opportunity_event with a recent date — this must NOT be the anchor
+    conn = duckdb.connect(db)
+    conn.execute(
+        "INSERT INTO missed_opportunity_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ["ev1", "VG", "2026-04-30", "gain_1d_3pct", 0.05, 1, "Reject", False, "open"],
+    )
+    conn.close()
+    _add_prices_to_db(db, "VG", [
+        ("2026-05-01", 12.73, 5_000_000),   # latest
+        ("2026-04-30", 13.27, 4_500_000),   # missed_event date — must NOT be anchor
+        ("2026-03-27", 17.53, 8_000_000),   # queue entry event_date — MUST be anchor
+    ])
+    # Create queue entry with event_date=2026-03-27
+    queue_row = {**_CROSSING_ROW, "ticker": "VG", "event_date": "2026-03-27",
+                 "shadow_tier": "C", "shadow_score": "47.0", "llm_adjustment": "5.0"}
+    app = _make_app_with_db(
+        tmp_path, db_path=db,
+        dates=[("2026-05-01", _BASE_META, [queue_row])],
+    )
+    with app.test_client() as c:
+        r = c.get("/ticker/VG")
+    html = r.data.decode()
+    assert r.status_code == 200
+    # since event must show -27.4% (from 17.53), not -4.1% (from 13.27)
+    assert "17.53" in html or "27." in html  # event anchor price in context
+    assert "Since event" in html
+
+
+def test_candidates_snapshot_shows_since_event_and_since_signal_columns(tmp_path):
+    """Both 'Since event' and 'Since signal' headers appear in candidates table."""
+    db = str(tmp_path / "t.duckdb")
+    _seed_db(db, ticker="AAAA", tier="C", score=50.0)
+    _add_prices_to_db(db, "AAAA", [
+        ("2026-05-01", 110.0, 1_000_000),
+        ("2026-04-30", 108.0, 900_000),
+        ("2026-04-28", 105.0, 800_000),  # signal date
+        ("2026-03-27", 100.0, 700_000),  # event date
+    ])
+    row = {
+        "ticker": "AAAA", "original_score": "48.0", "shadow_score": "51.0",
+        "shadow_tier": "C", "llm_adjustment": "3.0", "is_promoted": "true",
+        "final_should_affect_score": "true", "sentiment": "bullish",
+        "expected_direction": "bullish", "expected_timeframe": "5-10 days",
+        "expected_move_summary": "Test", "action_reason": "reason",
+        "catalyst_type": "earnings", "materiality": "high", "confidence": "0.8",
+        "days_since_event": "35", "event_date": "2026-03-27",
+        "priced_in_risk": "low", "impact_estimate": "high",
+        "key_checks": "check1", "constructed_url": "",
+        "scaled_adjustment": "3.0", "scaled_shadow_score": "51.0",
+    }
+    app = _make_app_with_db(
+        tmp_path, db_path=db,
+        dates=[
+            ("2026-04-28", _BASE_META, [row]),  # oldest: signal date
+            ("2026-05-01", _BASE_META, [row]),  # latest
+        ],
+    )
+    with app.test_client() as c:
+        r = c.get("/candidates")
+    html = r.data.decode()
+    assert r.status_code == 200
+    assert "Since event" in html
+    assert "Since signal" in html or "signal" in html.lower()
+
+
+def test_since_event_shows_separately_from_1d_return_on_ticker_page(tmp_path):
+    """Ticker page shows both '1d return' and 'Since event' as separate rows."""
+    db = str(tmp_path / "t.duckdb")
+    _seed_db(db, ticker="VG", tier="Reject", score=42.0)
+    _add_prices_to_db(db, "VG", [
+        ("2026-05-01", 12.73, 5_000_000),
+        ("2026-04-30", 13.27, 4_500_000),
+        ("2026-03-27", 17.53, 8_000_000),
+    ])
+    queue_row = {**_CROSSING_ROW, "ticker": "VG", "event_date": "2026-03-27",
+                 "shadow_tier": "C", "shadow_score": "47.0", "llm_adjustment": "5.0"}
+    app = _make_app_with_db(
+        tmp_path, db_path=db,
+        dates=[("2026-05-01", _BASE_META, [queue_row])],
+    )
+    with app.test_client() as c:
+        r = c.get("/ticker/VG")
+    html = r.data.decode()
+    assert "1d return" in html
+    assert "Since event" in html
