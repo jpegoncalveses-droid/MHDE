@@ -29,6 +29,7 @@ _INCREMENTAL_BUFFER = 5
 _REQUEST_DELAY = 0.3
 _FRESHNESS_DAYS = 3
 _BOOTSTRAP_THRESHOLD = 65  # below this, always bootstrap (incremental on sparse history gives too few rows)
+_RETRY_DELAYS = (30, 60)  # seconds to wait on 429 before each retry
 
 
 class YahooHistoricalIngestor(BaseIngestor):
@@ -82,8 +83,14 @@ class YahooHistoricalIngestor(BaseIngestor):
 
             try:
                 r = requests.get(url, headers=_YF_HEADERS, timeout=20)
+                for backoff in _RETRY_DELAYS:
+                    if r.status_code != 429:
+                        break
+                    logger.warning("Yahoo hist 429 for %s — retrying in %ds", ticker, backoff)
+                    time.sleep(backoff)
+                    r = requests.get(url, headers=_YF_HEADERS, timeout=20)
                 if r.status_code != 200:
-                    logger.debug("Yahoo hist %s for %s", r.status_code, ticker)
+                    logger.warning("Yahoo hist %s for %s", r.status_code, ticker)
                 else:
                     rows = _parse_yf_response(r.json(), ticker, run_id, now)
                     if rows:
