@@ -1,0 +1,11 @@
+{
+  "sampled": 43,
+  "source_available": 41,
+  "classified": 43,
+  "valid_actionable": 0,
+  "tier_crossings": 0,
+  "run_time": "2026-05-04T21:44:20.152293+00:00",
+  "score_min": 40.0,
+  "score_max": 44.9,
+  "provider": "mock"
+}
