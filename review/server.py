@@ -901,6 +901,149 @@ def _price_block(ctx: dict) -> str:
     return f'<h3>Price Context</h3><table class="detail-table">{rows_html}</table>'
 
 
+# ── Candidate Lifecycle ────────────────────────────────────────────────────────
+
+def _compute_lifecycle_for_ticker(
+    ticker: str,
+    db_path: str,
+    event_date: str = "",
+    signal_date: str = "",
+) -> "object | None":
+    """Compute CandidateLifecycle safely. Returns None on any error."""
+    if not db_path or not os.path.exists(db_path) or not event_date:
+        return None
+    try:
+        import duckdb as _duckdb
+        from outcomes.candidate_lifecycle import compute_lifecycle
+        conn = _duckdb.connect(db_path, read_only=True)
+        lc = compute_lifecycle(conn, ticker, event_date=event_date, signal_date=signal_date)
+        conn.close()
+        return lc
+    except Exception:
+        return None
+
+
+def _lifecycle_block(lc: "object | None", catalyst_type: str = "") -> str:
+    """Render Original Thesis + Current Setup + Signal Timeline HTML block."""
+    if lc is None or lc.outcome_status == "insufficient_data":
+        return (
+            '<h3>Candidate Lifecycle</h3>'
+            '<p class="muted">Insufficient price data for lifecycle analysis.</p>'
+        )
+
+    _OUTCOME_STYLE = {
+        "validated": "color:#166534;font-weight:700",
+        "validated_then_faded": "color:#92400e;font-weight:700",
+        "failed": "color:#c62828;font-weight:700",
+        "expired": "color:#78350f;font-weight:700",
+        "pending": "color:#1e40af;font-weight:700",
+        "inconclusive": "color:#6b7280;font-weight:700",
+    }
+    _PHASE_STYLE = {
+        "post_event_fade": "color:#c62828",
+        "initial_event_reaction": "color:#1e40af;font-weight:700",
+        "continuation": "color:#166534",
+        "extended_move": "color:#166534;font-weight:700",
+        "recovery_attempt": "color:#92400e",
+        "no_price_confirmation": "color:#6b7280",
+    }
+    _ACTION_STYLE = {
+        "high_priority": "color:#1e40af;font-weight:700",
+        "watch": "color:#166534;font-weight:700",
+        "context": "color:#6b7280",
+        "investigate": "color:#92400e;font-weight:700",
+        "avoid": "color:#c62828;font-weight:700",
+        "expired": "color:#6b7280",
+    }
+
+    def _pr(v: "float | None") -> str:
+        if v is None:
+            return "—"
+        sign = "+" if v > 0 else ""
+        css = "price-confirm" if v > 0 else ("price-extended" if v < 0 else "")
+        return f'<span class="{css}">{sign}{v * 100:.1f}%</span>'
+
+    def _px(v: "float | None") -> str:
+        return f"${v:.2f}" if v is not None else "—"
+
+    def _prow(label: str, val: str) -> str:
+        return f'<tr><td class="tlabel">{_esc(label)}</td><td>{val}</td></tr>'
+
+    def _dated(d: "object | None", price: "float | None") -> str:
+        if d is None:
+            return "—"
+        return f'{_esc(str(d))} <span class="muted">({_px(price)})</span>'
+
+    # ── Original Thesis ─────────────────────────────────────────────────────
+    ot_rows = ""
+    if catalyst_type:
+        ot_rows += _prow("Catalyst", _esc(catalyst_type))
+    ot_rows += _prow("Event date", _dated(lc.event_date, lc.event_price))
+    if lc.episode_start_date and lc.event_date and lc.episode_start_date < lc.event_date:
+        ot_rows += _prow(
+            "Episode start",
+            f'{_esc(str(lc.episode_start_date))} <span class="muted">({_px(lc.episode_start_price)} — pre-event accumulation)</span>',
+        )
+    if lc.signal_date:
+        ot_rows += _prow("Signal date", _dated(lc.signal_date, lc.signal_price))
+    ot_rows += _prow("Validation target", f"+{lc.validation_threshold * 100:.0f}% in {lc.expected_window_days}d")
+
+    # ── Current Setup ───────────────────────────────────────────────────────
+    outcome_style = _OUTCOME_STYLE.get(lc.outcome_status, "font-weight:700")
+    phase_style = _PHASE_STYLE.get(lc.current_phase, "")
+    action_style = _ACTION_STYLE.get(lc.current_actionability, "")
+
+    cs_rows = (
+        _prow("Outcome", f'<span style="{outcome_style}">{_esc(lc.outcome_status)}</span>')
+        + _prow("Phase", f'<span style="{phase_style}">{_esc(lc.current_phase)}</span>')
+        + _prow("Actionability", f'<span style="{action_style}">{_esc(lc.current_actionability)}</span>')
+        + _prow("Since event", _pr(lc.return_since_event))
+        + _prow("Max runup", _pr(lc.max_runup_since_event))
+        + _prow("Max drawdown", _pr(lc.max_drawdown_since_event))
+    )
+    if lc.return_from_peak is not None and lc.return_from_peak < -0.01:
+        cs_rows += _prow("From peak", _pr(lc.return_from_peak))
+    if lc.return_since_episode_start is not None:
+        cs_rows += _prow("Since episode start", _pr(lc.return_since_episode_start))
+    cs_rows += _prow("Analysis", _esc(lc.explanation))
+
+    # ── Signal Timeline ─────────────────────────────────────────────────────
+    timeline_rows = ""
+    timeline_items: list[tuple] = []
+    if lc.episode_start_date and lc.event_date and lc.episode_start_date < lc.event_date:
+        timeline_items.append((lc.episode_start_date, "Episode start", lc.episode_start_price, None))
+    if lc.signal_date:
+        timeline_items.append((lc.signal_date, "Signal", lc.signal_price, None))
+    if lc.event_date:
+        timeline_items.append((lc.event_date, "Event anchor", lc.event_price, 0.0))
+    if lc.latest_price_date:
+        timeline_items.append((lc.latest_price_date, "Latest", lc.latest_price, lc.return_since_event))
+    for d, label, price, ret in timeline_items:
+        ret_cell = _pr(ret) if ret is not None else "—"
+        timeline_rows += (
+            f'<tr><td class="muted">{_esc(str(d))}</td>'
+            f'<td>{_esc(label)}</td>'
+            f'<td>{_px(price)}</td>'
+            f'<td>{ret_cell}</td></tr>'
+        )
+    timeline_html = (
+        '<h4 style="margin-top:1rem">Signal Timeline</h4>'
+        '<table class="detail-table">'
+        '<tr><th>Date</th><th>Label</th><th>Price</th><th>vs Event</th></tr>'
+        + timeline_rows
+        + '</table>'
+    ) if timeline_rows else ""
+
+    return (
+        '<h3>Candidate Lifecycle</h3>'
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem">'
+        f'<div><h4>Original Thesis</h4><table class="detail-table">{ot_rows}</table></div>'
+        f'<div><h4>Current Setup</h4><table class="detail-table">{cs_rows}</table></div>'
+        '</div>'
+        + timeline_html
+    )
+
+
 # ── Tradability ────────────────────────────────────────────────────────────────
 
 _TRADABILITY_STATUSES = ("unknown", "tradable", "not_tradable")
@@ -1800,7 +1943,7 @@ def _run_detail(history_root: str, date_str: str) -> tuple[str, int]:
     return _render(f"{date_str} — MHDE Catalyst Review", body), 200
 
 
-def _learning_page(output_dir: str) -> str:
+def _learning_page(output_dir: str, history_root: str = "", db_path: str = "") -> str:
     import csv as _csv
     from collections import Counter as _Counter
     from pathlib import Path
@@ -1936,6 +2079,46 @@ def _learning_page(output_dir: str) -> str:
         ]
     )
 
+    # Lifecycle outcome summary — best-effort from promoted candidates in latest run
+    lifecycle_summary_html = ""
+    if history_root and db_path and os.path.exists(db_path):
+        try:
+            from outcomes.candidate_lifecycle import compute_lifecycle
+            import duckdb as _duckdb
+            from collections import Counter as _LCounter
+            dates_lc = _dated_dirs(history_root)
+            if dates_lc:
+                csv_lc = os.path.join(history_root, dates_lc[0], "daily_catalyst_queue.csv")
+                promoted_entries: list[dict] = []
+                if os.path.exists(csv_lc):
+                    with open(csv_lc, newline="") as _f:
+                        for _r in _csv.DictReader(_f):
+                            if _is_promoted(_r):
+                                promoted_entries.append(_r)
+                if promoted_entries:
+                    _conn_lc = _duckdb.connect(db_path, read_only=True)
+                    outcome_counts: _LCounter = _LCounter()
+                    for _e in promoted_entries[:30]:
+                        _tk = _e.get("ticker", "")
+                        _ev = _e.get("event_date", "")
+                        if _tk and _ev:
+                            _lc = compute_lifecycle(_conn_lc, _tk, event_date=_ev)
+                            outcome_counts[_lc.outcome_status] += 1
+                    _conn_lc.close()
+                    lc_rows = "".join(
+                        f"<tr><td>{_esc(k)}</td><td>{v}</td></tr>"
+                        for k, v in sorted(outcome_counts.items(), key=lambda x: -x[1])
+                    )
+                    lifecycle_summary_html = (
+                        f'<h2>Candidate Lifecycle Outcomes</h2>'
+                        f'<p class="muted">Based on {len(promoted_entries)} promoted candidates from latest run ({dates_lc[0]}).</p>'
+                        f'<table><tr><th>Outcome</th><th>Count</th></tr>'
+                        + lc_rows
+                        + '</table>'
+                    )
+        except Exception:
+            pass
+
     body = f"""
 <h2>Prediction vs Actual — Learning Summary</h2>
 <p class="muted">Report date: {_esc(report_date)} &mdash;
@@ -1968,6 +2151,8 @@ def _learning_page(output_dir: str) -> str:
 {subcause_html}
 
 {fix_queues_html}
+
+{lifecycle_summary_html}
 
 <h2>Artifacts</h2>
 <p class="muted">{artifact_links}</p>
@@ -2143,6 +2328,22 @@ def _candidates_price_snapshot(
         elif trd_status == "tradable":
             trd_cell = '<span class="price-confirm">✓</span>'
 
+        # Lifecycle outcome badge (best-effort)
+        lc = _compute_lifecycle_for_ticker(ticker, db_path, event_date=event_date, signal_date=sig_date)
+        _OUTCOME_CSS = {
+            "validated": "price-confirm",
+            "validated_then_faded": "price-extended",
+            "failed": "price-extended",
+            "pending": "muted",
+            "inconclusive": "muted",
+            "expired": "muted",
+        }
+        if lc and lc.outcome_status != "insufficient_data":
+            oc = _OUTCOME_CSS.get(lc.outcome_status, "muted")
+            outcome_cell = f'<span class="{oc}">{_esc(lc.outcome_status)}</span>'
+        else:
+            outcome_cell = '<span class="muted">—</span>'
+
         trs += (
             f'<tr>'
             f'<td><a href="/ticker/{_esc(ticker)}">{_esc(ticker)}</a></td>'
@@ -2154,6 +2355,7 @@ def _candidates_price_snapshot(
             f'<td>{since_html}</td>'
             f'<td>{since_sig_html}</td>'
             f'<td><span class="{label_css}">{_esc(label)}</span></td>'
+            f'<td>{outcome_cell}</td>'
             f'<td>{trd_cell}</td>'
             f'</tr>'
         )
@@ -2166,7 +2368,7 @@ def _candidates_price_snapshot(
         '<div style="overflow-x:auto"><table>'
         '<tr><th>Ticker</th><th>Close</th><th>Date</th>'
         '<th>1d return</th><th>5d</th><th>Vol/avg</th>'
-        '<th>Since event</th><th>Since signal</th><th>Signal</th><th>Tradable?</th></tr>'
+        '<th>Since event</th><th>Since signal</th><th>Signal</th><th>Outcome</th><th>Tradable?</th></tr>'
         + trs
         + '</table></div>'
     )
@@ -2905,6 +3107,14 @@ def _ticker_page(
         signal_date=signal_date,
     )
 
+    # Lifecycle — best-effort, uses latest_event_date and signal_date already derived above
+    catalyst_type_for_lc = queue_entries[0].get("catalyst_type", "") if queue_entries else ""
+    lc = _compute_lifecycle_for_ticker(
+        ticker, db_path,
+        event_date=latest_event_date,
+        signal_date=signal_date,
+    )
+
     # ── Build HTML ─────────────────────────────────────────────────────────────
     def _row(label: str, val: str) -> str:
         return f'<tr><td class="tlabel">{_esc(label)}</td><td>{val}</td></tr>'
@@ -3085,6 +3295,7 @@ def _ticker_page(
         + uni_block
         + dr_block
         + _price_block(price_ctx)
+        + _lifecycle_block(lc, catalyst_type=catalyst_type_for_lc)
         + score_block
         + cand_block
         + _tradability_block(ticker, output_dir)
@@ -3209,7 +3420,7 @@ def create_app(
     @app.route("/learning")
     @_require_auth
     def learning_page():
-        return _learning_page(output_dir)
+        return _learning_page(output_dir, history_root=history_root, db_path=_db_path)
 
     @app.route("/learning/<atype>")
     @_require_auth

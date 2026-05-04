@@ -2531,3 +2531,85 @@ def test_since_event_shows_separately_from_1d_return_on_ticker_page(tmp_path):
     html = r.data.decode()
     assert "1d return" in html
     assert "Since event" in html
+
+
+# ── Candidate Lifecycle integration ───────────────────────────────────────────
+
+def test_ticker_page_shows_lifecycle_section(tmp_path):
+    """Ticker page renders Candidate Lifecycle block when prices + event_date present."""
+    db = str(tmp_path / "t.duckdb")
+    _seed_db(db, ticker="CTRA", tier="C", score=48.0)
+    _add_prices_to_db(db, "CTRA", [
+        ("2025-11-15", 27.86, 2_000_000),
+        ("2025-11-17", 30.00, 1_500_000),
+        ("2025-11-18", 36.04, 1_200_000),
+    ])
+    queue_row = {**_CROSSING_ROW, "ticker": "CTRA", "event_date": "2025-11-15",
+                 "shadow_tier": "C", "shadow_score": "48.0", "llm_adjustment": "5.0",
+                 "catalyst_type": "government_contract"}
+    app = _make_app_with_db(
+        tmp_path, db_path=db,
+        dates=[("2025-11-18", _BASE_META, [queue_row])],
+    )
+    with app.test_client() as c:
+        r = c.get("/ticker/CTRA")
+    html = r.data.decode()
+    assert r.status_code == 200
+    assert "Candidate Lifecycle" in html
+
+
+def test_ticker_page_lifecycle_shows_validated_for_29pct_gain(tmp_path):
+    """CTRA-like: +29% from event → lifecycle shows 'validated'."""
+    db = str(tmp_path / "t.duckdb")
+    _seed_db(db, ticker="CTRA2", tier="C", score=48.0)
+    _add_prices_to_db(db, "CTRA2", [
+        ("2025-11-15", 27.86, 2_000_000),
+        ("2025-11-17", 30.00, 1_500_000),
+        ("2025-11-18", 36.04, 1_200_000),
+    ])
+    queue_row = {**_CROSSING_ROW, "ticker": "CTRA2", "event_date": "2025-11-15",
+                 "shadow_tier": "C", "shadow_score": "48.0", "llm_adjustment": "5.0"}
+    app = _make_app_with_db(
+        tmp_path, db_path=db,
+        dates=[("2025-11-18", _BASE_META, [queue_row])],
+    )
+    with app.test_client() as c:
+        r = c.get("/ticker/CTRA2")
+    html = r.data.decode()
+    assert "validated" in html.lower()
+    assert "context" in html.lower()
+
+
+def test_ticker_page_lifecycle_no_crash_without_prices(tmp_path):
+    """Ticker page must not crash when no prices available — lifecycle degrades gracefully."""
+    db = str(tmp_path / "t.duckdb")
+    _seed_db(db, ticker="NOPR", tier="Reject", score=30.0)
+    queue_row = {**_CROSSING_ROW, "ticker": "NOPR", "event_date": "2026-01-10",
+                 "shadow_tier": "C", "shadow_score": "48.0", "llm_adjustment": "5.0"}
+    app = _make_app_with_db(
+        tmp_path, db_path=db,
+        dates=[("2026-01-15", _BASE_META, [queue_row])],
+    )
+    with app.test_client() as c:
+        r = c.get("/ticker/NOPR")
+    assert r.status_code == 200
+    assert "Candidate Lifecycle" in r.data.decode()
+
+
+def test_candidates_snapshot_shows_outcome_column(tmp_path):
+    """Candidates price snapshot table has an Outcome column header."""
+    db = str(tmp_path / "t.duckdb")
+    _seed_db(db, ticker="CTRA", tier="C", score=48.0)
+    _add_prices_to_db(db, "CTRA", [
+        ("2026-01-10", 100.0, 2_000_000),
+        ("2026-01-13", 112.0, 1_500_000),
+    ])
+    app = _make_app_with_db(
+        tmp_path, db_path=db,
+        dates=[("2026-01-13", _BASE_META, [_CROSSING_ROW])],
+    )
+    with app.test_client() as c:
+        r = c.get("/candidates")
+    html = r.data.decode()
+    assert r.status_code == 200
+    assert "Outcome" in html
