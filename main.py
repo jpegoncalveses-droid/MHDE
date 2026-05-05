@@ -1790,6 +1790,18 @@ def fx_hypothesis_tests():
         conn.close()
 
 
+@fx.command("retrain")
+def fx_retrain():
+    """Weekly retrain: recompute labels/features and retrain all models."""
+    from fx.ml.retrain import retrain_all
+
+    cfg, conn = _engine_setup()
+    try:
+        retrain_all(conn)
+    finally:
+        conn.close()
+
+
 @fx.command("predict")
 @click.option("--datetime", "dt", default=None, help="Bar datetime (YYYY-MM-DD HH:MM). Default: latest.")
 @click.option("--no-alert", is_flag=True, help="Skip Telegram alert.")

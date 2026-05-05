@@ -1,0 +1,12 @@
+[Unit]
+Description=MHDE FX hourly prediction
+After=network.target
+
+[Service]
+Type=oneshot
+User=jpcg
+WorkingDirectory=/home/jpcg/MHDE
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py fx predict --no-alert
+Environment=MHDE_DB_PATH=/home/jpcg/MHDE/data/mhde.duckdb
+StandardOutput=append:/home/jpcg/MHDE/data/logs/fx_predict.log
+StandardError=append:/home/jpcg/MHDE/data/logs/fx_predict.log

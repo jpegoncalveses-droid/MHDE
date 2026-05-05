@@ -1,0 +1,13 @@
+[Unit]
+Description=MHDE FX weekly retrain
+After=network.target
+
+[Service]
+Type=oneshot
+User=jpcg
+WorkingDirectory=/home/jpcg/MHDE
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py fx retrain
+Environment=MHDE_DB_PATH=/home/jpcg/MHDE/data/mhde.duckdb
+StandardOutput=append:/home/jpcg/MHDE/data/logs/fx_retrain.log
+StandardError=append:/home/jpcg/MHDE/data/logs/fx_retrain.log
+TimeoutStartSec=3600
