@@ -1777,6 +1777,19 @@ def fx_import_data():
         conn.close()
 
 
+@fx.command("hypothesis-tests")
+def fx_hypothesis_tests():
+    """Run signal validation hypothesis tests (checkpoint gate)."""
+    from fx.ml.hypothesis_tests import run_all_tests, print_test_results
+
+    cfg, conn = _engine_setup()
+    try:
+        summary = run_all_tests(conn)
+        print_test_results(summary)
+    finally:
+        conn.close()
+
+
 @fx.command("backfill-macro")
 def fx_backfill_macro():
     """Fetch macro indicators from FRED API."""
