@@ -1759,5 +1759,23 @@ def crypto_retrain():
         conn.close()
 
 
+@cli.group()
+def fx():
+    """GBP/EUR FX prediction engine commands."""
+
+
+@fx.command("import-data")
+def fx_import_data():
+    """Import GBP/EUR hourly bars from CSV into DuckDB."""
+    from fx.data.import_csv import import_hourly_csv
+
+    cfg, conn = _engine_setup()
+    try:
+        total = import_hourly_csv(conn)
+        click.echo(f"Import complete: {total:,} hourly bars")
+    finally:
+        conn.close()
+
+
 if __name__ == "__main__":
     cli()

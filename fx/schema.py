@@ -4,12 +4,12 @@ SCHEMA_FX_PRICES_HOURLY = """
 CREATE TABLE IF NOT EXISTS fx_prices_hourly (
     datetime_utc TIMESTAMP NOT NULL PRIMARY KEY,
     date DATE NOT NULL,
-    weekday INTEGER NOT NULL,
+    weekday VARCHAR NOT NULL,
     hour_utc INTEGER NOT NULL,
-    gbpeur_open DOUBLE NOT NULL,
-    gbpeur_high DOUBLE NOT NULL,
-    gbpeur_low DOUBLE NOT NULL,
-    gbpeur_close DOUBLE NOT NULL,
+    gbpeur_open DOUBLE,
+    gbpeur_high DOUBLE,
+    gbpeur_low DOUBLE,
+    gbpeur_close DOUBLE,
     tick_count INTEGER,
     data_quality VARCHAR DEFAULT 'good',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
