@@ -1790,6 +1790,44 @@ def fx_hypothesis_tests():
         conn.close()
 
 
+@fx.command("predict")
+@click.option("--datetime", "dt", default=None, help="Bar datetime (YYYY-MM-DD HH:MM). Default: latest.")
+@click.option("--no-alert", is_flag=True, help="Skip Telegram alert.")
+def fx_predict(dt, no_alert):
+    """Run FX prediction: score bar, generate signal, optionally alert."""
+    from datetime import datetime as dt_cls
+    from fx.ml.predict import score_bar, fill_outcomes
+    from fx.ml.signals import generate_signal, send_telegram_alert
+
+    cfg, conn = _engine_setup()
+    try:
+        bar_dt = dt_cls.fromisoformat(dt) if dt else None
+        result = score_bar(conn, bar_dt)
+
+        if not result["predictions"]:
+            click.echo("No predictions generated.")
+            return
+
+        click.echo(f"\nFX Predictions -- {result['datetime']}")
+        click.echo(f"GBP/EUR: {result['price']:.5f}")
+        click.echo(f"{'Direction':<12} {'Horizon':<8} {'Probability':<12}")
+        click.echo("-" * 35)
+        for key, pred in sorted(result["predictions"].items()):
+            click.echo(f"{pred['direction']:<12} {pred['horizon']:<8} {pred['probability']:.1%}")
+
+        signal = generate_signal(result["predictions"], result["datetime"], result["price"], conn)
+        if signal:
+            click.echo(f"\nSIGNAL: {signal['type']}")
+            if not no_alert:
+                send_telegram_alert(signal, conn)
+        else:
+            click.echo("\nSignal: WAIT (no action)")
+
+        fill_outcomes(conn)
+    finally:
+        conn.close()
+
+
 @fx.command("train")
 @click.option("--direction", default=None, help="Train single direction: up or down")
 @click.option("--horizon", default=None, help="Train single horizon: 24h or 48h")
