@@ -1611,5 +1611,153 @@ Full guide: deploy/dashboard/README.md
 """)
 
 
+# ── Crypto prediction engine ──────────────────────────────────────────────────
+
+@cli.group()
+def crypto():
+    """Crypto prediction engine commands."""
+
+
+@crypto.command("build-universe")
+def crypto_build_universe():
+    """Fetch top coins by Binance futures volume and populate crypto_universe."""
+    from crypto.ingestion.universe_builder import build_universe
+
+    cfg, conn = _engine_setup()
+    try:
+        symbols = build_universe(conn)
+        click.echo(f"Universe built: {len(symbols)} coins")
+        for s in symbols[:10]:
+            click.echo(f"  {s}")
+        if len(symbols) > 10:
+            click.echo(f"  ... and {len(symbols) - 10} more")
+    finally:
+        conn.close()
+
+
+@crypto.command("backfill-prices")
+def crypto_backfill_prices():
+    """Backfill 2+ years of daily OHLCV from Binance futures."""
+    from crypto.ingestion.backfill_ohlcv import backfill_ohlcv
+
+    cfg, conn = _engine_setup()
+    try:
+        total = backfill_ohlcv(conn)
+        click.echo(f"OHLCV backfill complete: {total:,} rows")
+    finally:
+        conn.close()
+
+
+@crypto.command("backfill-funding")
+def crypto_backfill_funding():
+    """Backfill funding rate history from Binance futures."""
+    from crypto.ingestion.backfill_funding import backfill_funding
+
+    cfg, conn = _engine_setup()
+    try:
+        total = backfill_funding(conn)
+        click.echo(f"Funding rate backfill complete: {total:,} rows")
+    finally:
+        conn.close()
+
+
+@crypto.command("backfill-oi")
+def crypto_backfill_oi():
+    """Backfill open interest history from Binance futures."""
+    from crypto.ingestion.backfill_oi import backfill_open_interest
+
+    cfg, conn = _engine_setup()
+    try:
+        total = backfill_open_interest(conn)
+        click.echo(f"OI backfill complete: {total:,} rows")
+    finally:
+        conn.close()
+
+
+@crypto.command("backfill-labels")
+def crypto_backfill_labels():
+    """Compute crypto ML labels for all historical symbol-dates."""
+    from crypto.ml.labels import compute_labels
+
+    cfg, conn = _engine_setup()
+    try:
+        total = compute_labels(conn)
+        click.echo(f"Labels computed: {total:,} rows")
+    finally:
+        conn.close()
+
+
+@crypto.command("backfill-features")
+def crypto_backfill_features():
+    """Compute crypto ML features for all historical symbol-dates."""
+    from crypto.ml.features import compute_features
+
+    cfg, conn = _engine_setup()
+    try:
+        total = compute_features(conn)
+        click.echo(f"Features computed: {total:,} rows")
+    finally:
+        conn.close()
+
+
+@crypto.command("hypothesis-tests")
+def crypto_hypothesis_tests():
+    """Run signal validation hypothesis tests (Step 0.5 checkpoint)."""
+    from crypto.ml.hypothesis_tests import run_all_tests, print_test_results
+
+    cfg, conn = _engine_setup()
+    try:
+        summary = run_all_tests(conn)
+        print_test_results(summary)
+    finally:
+        conn.close()
+
+
+@crypto.command("train")
+@click.option("--label", default="label_10d_10pct", help="Label column to train on.")
+@click.option("--horizon", default="10d", help="Prediction horizon.")
+@click.option("--threshold", default=0.10, type=float, help="Target threshold.")
+def crypto_train_cmd(label, horizon, threshold):
+    """Train crypto ML model with walk-forward CV."""
+    from crypto.ml.train import train_walk_forward
+    from crypto.ml.evaluate import print_walk_forward_results
+
+    cfg, conn = _engine_setup()
+    try:
+        results = train_walk_forward(conn, label_col=label, horizon=horizon, threshold=threshold)
+        print_walk_forward_results(results, label, horizon)
+    finally:
+        conn.close()
+
+
+@crypto.command("predict")
+@click.option("--date", default=None, help="Prediction date (YYYY-MM-DD). Default: latest.")
+@click.option("--skip-outcomes", is_flag=True, help="Skip filling historical outcomes.")
+def crypto_predict(date, skip_outcomes):
+    """Run crypto prediction pipeline: score universe, fill outcomes, print results."""
+    from datetime import date as date_cls
+    from pipelines.crypto_prediction_pipeline import run_crypto_prediction_pipeline
+
+    cfg, conn = _engine_setup()
+    try:
+        pred_date = date_cls.fromisoformat(date) if date else None
+        run_crypto_prediction_pipeline(conn, prediction_date=pred_date,
+                                       skip_features=True, skip_outcomes=skip_outcomes)
+    finally:
+        conn.close()
+
+
+@crypto.command("retrain")
+def crypto_retrain():
+    """Weekly retrain: recompute labels/features and retrain all horizons."""
+    from crypto.ml.retrain import retrain_all
+
+    cfg, conn = _engine_setup()
+    try:
+        retrain_all(conn)
+    finally:
+        conn.close()
+
+
 if __name__ == "__main__":
     cli()
