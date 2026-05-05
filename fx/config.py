@@ -22,7 +22,7 @@ ASIAN_SESSION = (23, 7)
 SOURCE_CSV = "/home/jpcg/ATSRP/research/gbpeur_personal_fx/data/gbpeur_1h.csv"
 
 FRED_SERIES = {
-    "boe_rate": "BOERUKM",
+    "boe_rate": "IUDSOIA",
     "ecb_rate": "ECBMLFR",
     "eurusd": "DEXUSEU",
     "gbpusd": "DEXUSUK",

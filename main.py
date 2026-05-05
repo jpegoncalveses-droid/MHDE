@@ -1777,5 +1777,18 @@ def fx_import_data():
         conn.close()
 
 
+@fx.command("backfill-macro")
+def fx_backfill_macro():
+    """Fetch macro indicators from FRED API."""
+    from fx.data.macro import backfill_macro
+
+    cfg, conn = _engine_setup()
+    try:
+        total = backfill_macro(conn)
+        click.echo(f"Macro backfill complete: {total:,} observations")
+    finally:
+        conn.close()
+
+
 if __name__ == "__main__":
     cli()
