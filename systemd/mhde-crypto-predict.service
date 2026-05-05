@@ -1,0 +1,12 @@
+[Unit]
+Description=MHDE crypto daily prediction
+After=network.target
+
+[Service]
+Type=oneshot
+User=jpcg
+WorkingDirectory=/home/jpcg/MHDE
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto predict
+Environment=MHDE_DB_PATH=/home/jpcg/MHDE/data/mhde.duckdb
+StandardOutput=append:/home/jpcg/MHDE/data/logs/crypto_predict.log
+StandardError=append:/home/jpcg/MHDE/data/logs/crypto_predict.log

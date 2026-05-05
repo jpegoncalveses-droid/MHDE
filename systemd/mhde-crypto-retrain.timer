@@ -1,0 +1,9 @@
+[Unit]
+Description=MHDE crypto weekly retrain timer
+
+[Timer]
+OnCalendar=Sun *-*-* 23:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
