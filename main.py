@@ -1790,6 +1790,30 @@ def fx_hypothesis_tests():
         conn.close()
 
 
+@fx.command("train")
+@click.option("--direction", default=None, help="Train single direction: up or down")
+@click.option("--horizon", default=None, help="Train single horizon: 24h or 48h")
+def fx_train(direction, horizon):
+    """Train FX directional models with walk-forward CV."""
+    from fx.ml.train import train_all_models, train_model, MODEL_CONFIGS
+    from fx.ml.evaluate import print_training_results
+
+    cfg, conn = _engine_setup()
+    try:
+        if direction and horizon:
+            matching = [c for c in MODEL_CONFIGS if c["direction"] == direction and c["horizon"] == horizon]
+            if matching:
+                results = {f"{direction}_{horizon}": train_model(conn, **matching[0])}
+            else:
+                click.echo(f"Unknown config: {direction}_{horizon}")
+                return
+        else:
+            results = train_all_models(conn)
+        print_training_results(results)
+    finally:
+        conn.close()
+
+
 @fx.command("backfill-features")
 def fx_backfill_features():
     """Compute FX ML features for all hourly bars."""
