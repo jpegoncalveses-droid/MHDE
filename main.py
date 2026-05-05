@@ -1790,6 +1790,19 @@ def fx_hypothesis_tests():
         conn.close()
 
 
+@fx.command("backfill-labels")
+def fx_backfill_labels():
+    """Compute FX ML labels for all hourly bars."""
+    from fx.ml.labels import compute_labels
+
+    cfg, conn = _engine_setup()
+    try:
+        total = compute_labels(conn)
+        click.echo(f"Labels computed: {total:,} rows")
+    finally:
+        conn.close()
+
+
 @fx.command("backfill-macro")
 def fx_backfill_macro():
     """Fetch macro indicators from FRED API."""
