@@ -1790,6 +1790,19 @@ def fx_hypothesis_tests():
         conn.close()
 
 
+@fx.command("backfill-features")
+def fx_backfill_features():
+    """Compute FX ML features for all hourly bars."""
+    from fx.ml.features import compute_features
+
+    cfg, conn = _engine_setup()
+    try:
+        total = compute_features(conn)
+        click.echo(f"Features computed: {total:,} rows")
+    finally:
+        conn.close()
+
+
 @fx.command("backfill-labels")
 def fx_backfill_labels():
     """Compute FX ML labels for all hourly bars."""
