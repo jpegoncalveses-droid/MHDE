@@ -1,0 +1,11 @@
+[Unit]
+Description=MHDE daily ML prediction run
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/jpcg/MHDE
+EnvironmentFile=/home/jpcg/MHDE/.env
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py ml predict
+StandardOutput=append:/home/jpcg/MHDE/data/logs/ml_predict.log
+StandardError=append:/home/jpcg/MHDE/data/logs/ml_predict.log

@@ -16,7 +16,7 @@ st.warning(
 
 db_path = os.environ.get("MHDE_DB_PATH", "data/mhde.duckdb")
 try:
-    conn = duckdb.connect(db_path, read_only=True)
+    conn = duckdb.connect(db_path)
     runs = get_backtest_runs(conn)
 
     if not runs:

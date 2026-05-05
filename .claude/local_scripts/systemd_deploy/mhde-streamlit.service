@@ -1,0 +1,19 @@
+[Unit]
+Description=MHDE Streamlit Dashboard
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/jpcg/MHDE
+Environment=MHDE_DB_PATH=/home/jpcg/MHDE/data/mhde.duckdb
+Environment=MHDE_DASHBOARD_AUTH_ENABLED=true
+Environment=MHDE_DASHBOARD_PASSWORD_HASH=6e0b389cdb8d5e6814a973646c6d3400813bce2e196c012f78fd7dabceec9dd1
+EnvironmentFile=/home/jpcg/MHDE/.env
+ExecStart=/home/jpcg/MHDE/venv/bin/python -m streamlit run dashboard/app.py --server.port 8501 --server.address 127.0.0.1 --server.headless true --server.enableCORS false --server.enableXsrfProtection false --browser.gatherUsageStats false
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

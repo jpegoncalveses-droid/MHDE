@@ -12,7 +12,7 @@ st.title("Scores & Features")
 
 db_path = os.environ.get("MHDE_DB_PATH", "data/mhde.duckdb")
 try:
-    conn = duckdb.connect(db_path, read_only=True)
+    conn = duckdb.connect(db_path)
     run_id = run_selector(conn)
 
     st.subheader("Feature Coverage")

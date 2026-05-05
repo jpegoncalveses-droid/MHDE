@@ -55,7 +55,7 @@ else:
     st.info("No review packets found. Generate one with: `python main.py review packet`")
 
 try:
-    conn_ro = duckdb.connect(db_path, read_only=True)
+    conn_ro = duckdb.connect(db_path)
 except Exception as e:
     st.error(f"Cannot connect to database: {e}")
     st.stop()
@@ -202,7 +202,7 @@ if submitted:
         st.error(f"Invalid review status: {review_status}")
     else:
         try:
-            conn_rw = duckdb.connect(db_path, read_only=False)
+            conn_rw = duckdb.connect(db_path)
             submit_review(
                 conn_rw,
                 run_id=review_run_id,

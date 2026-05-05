@@ -151,6 +151,85 @@ def _is_weak(row: dict) -> bool:
     )
 
 
+# ── Funnel tier classification ────────────────────────────────────────────────
+
+_FUNNEL_TIERS = [
+    ("high_priority", "High Priority",
+     "Active, bullish, medium/high signal strength, price confirmation or strong fresh catalyst"),
+    ("watch", "Watch",
+     "Plausible catalyst or setup, still inside trading window, confirmation missing"),
+    ("investigate", "Investigate",
+     "Interesting move/catalyst/anomaly, unclear direction, data incomplete but worth checking"),
+    ("context", "Context / Validated",
+     "Thesis worked already, not necessarily actionable now"),
+    ("failed", "Failed / Avoid",
+     "Lifecycle failed, useful for learning, keep visible but lower priority"),
+    ("raw", "Raw Discovery",
+     "Near-threshold candidates, fresh catalysts, top movers, stock-specific outperformance, data gaps"),
+]
+
+_FUNNEL_CARD_CSS = {
+    "high_priority": "pred-card-high",
+    "watch": "pred-card-watch",
+    "investigate": "pred-card-investigate",
+    "context": "pred-card-context",
+    "failed": "pred-card-low",
+    "raw": "pred-card-ignore",
+}
+
+_FUNNEL_BORDER_CSS = {
+    "high_priority": "var(--green)",
+    "watch": "var(--amber)",
+    "investigate": "var(--accent)",
+    "context": "var(--text3)",
+    "failed": "var(--red)",
+    "raw": "var(--border2)",
+}
+
+
+def _classify_funnel_tier(entry: dict, lifecycle=None) -> str:
+    """Classify a catalyst queue entry into one of 6 funnel tiers.
+
+    Uses lifecycle data when available (promoted entries with DB), otherwise
+    falls back to CSV-derived signal characteristics.
+    """
+    is_prom = _is_promoted(entry)
+
+    if not is_prom:
+        sentiment = (entry.get("sentiment") or "").lower()
+        try:
+            adj = float(entry.get("llm_adjustment", 0) or 0)
+        except (ValueError, TypeError):
+            adj = 0.0
+        if sentiment == "bearish" and adj < 0:
+            return "failed"
+        return "raw"
+
+    if lifecycle and lifecycle.outcome_status != "insufficient_data":
+        act = lifecycle.current_actionability
+        if act == "high_priority":
+            return "high_priority"
+        if act == "watch":
+            return "watch"
+        if act == "investigate":
+            return "investigate"
+        if act == "context":
+            return "context"
+        if act in ("avoid", "expired"):
+            return "failed"
+        return "watch"
+
+    label, _ = _compute_action_priority(entry)
+    _LABEL_MAP = {
+        "High Priority": "high_priority",
+        "Watch": "watch",
+        "Investigate": "investigate",
+        "Context": "context",
+        "Low Priority": "raw",
+    }
+    return _LABEL_MAP.get(label, "watch")
+
+
 # ── PWA assets ────────────────────────────────────────────────────────────────
 
 def _make_minimal_png(width: int, height: int, rgb: tuple) -> bytes:
@@ -450,6 +529,29 @@ hr{border:none;border-top:1px solid var(--border);margin:28px 0;}
 .badge-green{background:var(--green);color:#022c22;font-weight:600}
 .badge-amber{background:var(--amber);color:#1c1309;font-weight:600}
 .badge-red{background:var(--red);color:#1f0707;font-weight:600}
+.funnel-section{
+  margin:18px 0;padding:14px 16px;background:var(--surf);
+  border:1px solid var(--border);border-radius:6px;border-left:3px solid var(--border2);
+}
+.funnel-header{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;
+}
+.funnel-title{
+  font-family:var(--display);font-size:.82rem;font-weight:700;
+  text-transform:uppercase;letter-spacing:.1em;color:var(--text);
+}
+.funnel-count{
+  font-family:var(--mono);font-size:.78rem;font-weight:600;
+  background:var(--surf2);padding:2px 9px;border-radius:3px;color:var(--text2);
+}
+.funnel-desc{font-size:.76rem;color:var(--text3);margin-bottom:10px;}
+.funnel-empty{font-size:.82rem;color:var(--text3);padding:8px 0;font-style:italic;}
+.funnel-stat{
+  display:inline-flex;align-items:center;gap:6px;
+  padding:4px 12px;border-radius:4px;font-size:.72rem;
+  font-family:var(--mono);font-weight:600;background:var(--surf);border:1px solid var(--border);
+}
+.funnel-stat-grid{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0;}
 """
 
 _BASE_TMPL = """<!DOCTYPE html>
@@ -1144,6 +1246,7 @@ _DOCS_REGISTRY: dict[str, tuple[str, str]] = {
     "data-sources": ("Data Sources", "mhde_data_sources.md"),
     "scoring-governance": ("Scoring Governance", "mhde_scoring_governance.md"),
     "completion-status": ("Completion Status", "mhde_full_completion_status.md"),
+    "codebase-inventory": ("Codebase Inventory", "mhde_codebase_inventory.md"),
 }
 
 
@@ -2340,6 +2443,27 @@ def _today_page(history_root: str, output_dir: str) -> str:
         + _stat("Scored Missed", pva_counts.get("scored_missed", "—"))
     )
 
+    # Funnel summary (lightweight — no lifecycle computation, CSV-only classification)
+    funnel_counts: dict[str, int] = {tid: 0 for tid, _, _ in _FUNNEL_TIERS}
+    for e in entries:
+        tier = _classify_funnel_tier(e, lifecycle=None)
+        funnel_counts[tier] += 1
+
+    funnel_summary_parts = []
+    for tid, label, _ in _FUNNEL_TIERS:
+        count = funnel_counts[tid]
+        color = _FUNNEL_BORDER_CSS.get(tid, "var(--text3)")
+        funnel_summary_parts.append(
+            f'<span class="funnel-stat" style="border-left:3px solid {color}">'
+            f'{_esc(label)}: {count}</span>'
+        )
+    funnel_bar = (
+        '<h2>Funnel Summary</h2>'
+        f'<div class="funnel-stat-grid">{"".join(funnel_summary_parts)}</div>'
+        '<p class="muted">Counts are CSV-based estimates. '
+        '<a href="/candidates">Candidates</a> page uses lifecycle data for precise classification.</p>'
+    )
+
     top_rows = needs_review[:10]
 
     review_table = ""
@@ -2354,7 +2478,7 @@ def _today_page(history_root: str, output_dir: str) -> str:
         )
         review_table = (
             '<h2>Needs Review (top 10)</h2>'
-            '<p class="muted">Review forms are on the <a href="/candidates">Candidates</a> page — scroll to "Valid — No Tier Change".</p>'
+            '<p class="muted">Review forms are on the <a href="/candidates">Candidates</a> page.</p>'
             '<table>'
             '<tr><th>Ticker</th><th>Shadow Tier</th><th>Scaled Shadow Score</th></tr>'
             + tr_html
@@ -2365,6 +2489,7 @@ def _today_page(history_root: str, output_dir: str) -> str:
         f'<h2>Today — {_esc(latest)}</h2>'
         + _SEARCH_BOX
         + f'<div class="stat-grid">{stats}</div>'
+        + funnel_bar
         + pva_warn
         + review_table
         + nav
@@ -2535,35 +2660,164 @@ def _candidates_page(
 
     latest = dates[0]
     entries = _read_csv_entries(history_root, latest)
+    reviews = _read_reviews(history_root, latest)
+    meta = _read_metadata(history_root, latest)
+
     promoted_tickers = {e["ticker"] for e in entries if _is_promoted(e)}
     signal_dates = _compute_signal_dates(history_root, promoted_tickers) if promoted_tickers else {}
+
+    # Compute lifecycle for promoted entries (best-effort)
+    lifecycle_map: dict[str, object] = {}
+    for e in entries:
+        if not _is_promoted(e):
+            continue
+        ticker = e.get("ticker", "")
+        event_date = e.get("event_date", "")
+        sig_date = signal_dates.get(ticker, "")
+        lc = _compute_lifecycle_for_ticker(ticker, db_path, event_date=event_date, signal_date=sig_date)
+        if lc:
+            lifecycle_map[ticker] = lc
+
+    # Classify each entry into funnel tiers
+    funnel: dict[str, list[dict]] = {tid: [] for tid, _, _ in _FUNNEL_TIERS}
+    for e in entries:
+        ticker = e.get("ticker", "")
+        lc = lifecycle_map.get(ticker)
+        tier = _classify_funnel_tier(e, lc)
+        funnel[tier].append(e)
+
+    # Price snapshot for promoted entries
     price_snapshot = _candidates_price_snapshot(
         entries, db_path, output_dir, signal_date_map=signal_dates
     )
 
-    html, code = _run_detail(history_root, latest)
-    html = html.replace(
-        f"<title>{_esc(latest)} — MHDE Catalyst Review</title>",
-        f"<title>Candidates — {_esc(latest)}</title>",
-    )
-    # Inject search box + price snapshot right after the opening h2
-    html = html.replace(
-        f"<h2>Run: {_esc(latest)}</h2>",
-        f"<h2>Candidates — {_esc(latest)}</h2>" + _SEARCH_BOX + price_snapshot,
-        1,
-    )
+    # Funnel summary bar
+    summary_parts = []
+    for tid, label, _ in _FUNNEL_TIERS:
+        count = len(funnel[tid])
+        color = _FUNNEL_BORDER_CSS.get(tid, "var(--text3)")
+        summary_parts.append(
+            f'<span class="funnel-stat" style="border-left:3px solid {color}">'
+            f'{_esc(label)}: {count}</span>'
+        )
+    summary_bar = f'<div class="funnel-stat-grid">{"".join(summary_parts)}</div>'
 
-    # Inject data-readiness badges next to each promoted ticker
-    if freshness_map:
-        for ticker in {e["ticker"] for e in entries if _is_promoted(e)}:
-            badge = _freshness_badge(freshness_map, ticker)
-            if badge:
-                html = html.replace(
-                    f"<strong>{_esc(ticker)}</strong>",
-                    f"<strong>{_esc(ticker)}</strong>{badge}",
+    # Build review cell renderer (same as _run_detail uses)
+    def _review_cell(ticker: str) -> str:
+        rev = reviews.get(ticker)
+        d = rev.get("analyst_decision", "unknown") if rev else ""
+        notes = _esc(rev.get("analyst_notes", "")) if rev else ""
+        badge = ""
+        if d and d in _VALID_DECISIONS:
+            badge = f'<span class="badge badge-{_esc(d)}">{_esc(d)}</span> '
+            if notes:
+                badge += f'<span class="muted">{notes}</span><br>'
+        options = "".join(
+            f'<option value="{v}"{" selected" if d == v else ""}>{v}</option>'
+            for v in ("accept", "watch", "reject", "unknown", "broker_unavailable")
+        )
+        form = (
+            f'<form class="review-form" method="post" action="/runs/{_esc(latest)}/review">'
+            f'<input type="hidden" name="ticker" value="{_esc(ticker)}">'
+            f'<select name="analyst_decision">{options}</select> '
+            f'<input type="text" name="analyst_notes" placeholder="notes" value="{notes}" maxlength="200"> '
+            f'<button type="submit">Save</button>'
+            f'</form>'
+        )
+        return badge + form
+
+    # Render funnel sections
+    sections_html = ""
+    for tid, label, desc in _FUNNEL_TIERS:
+        tier_entries = funnel[tid]
+        border = _FUNNEL_BORDER_CSS.get(tid, "var(--border2)")
+        section = f'<div class="funnel-section" style="border-left-color:{border}">'
+        section += (
+            f'<div class="funnel-header">'
+            f'<span class="funnel-title">{_esc(label)}</span>'
+            f'<span class="funnel-count">{len(tier_entries)}</span>'
+            f'</div>'
+            f'<div class="funnel-desc">{_esc(desc)}</div>'
+        )
+
+        if not tier_entries:
+            if tid == "high_priority":
+                section += (
+                    '<div class="funnel-empty">'
+                    'No high-priority candidates right now. '
+                    'Check Watch and Investigate tiers below for emerging setups.'
+                    '</div>'
+                )
+            else:
+                section += '<div class="funnel-empty">None in this tier.</div>'
+        else:
+            promoted_in_tier = [e for e in tier_entries if _is_promoted(e)]
+            non_promoted_in_tier = [e for e in tier_entries if not _is_promoted(e)]
+
+            if promoted_in_tier:
+                cards = "".join(
+                    _prediction_card(e, _review_cell(e["ticker"]))
+                    for e in promoted_in_tier
+                )
+                section += cards
+
+            if non_promoted_in_tier:
+                rows_html = ""
+                for e in non_promoted_in_tier:
+                    ticker = e.get("ticker", "")
+                    badge = _freshness_badge(freshness_map or {}, ticker)
+                    try:
+                        orig = float(e.get("original_score", 0) or 0)
+                        shad = float(e.get("shadow_score", 0) or 0)
+                        adj = float(e.get("llm_adjustment", 0) or 0)
+                    except (ValueError, TypeError):
+                        orig, shad, adj = 0.0, 0.0, 0.0
+                    score = f"{orig:.1f} → {shad:.1f} (llm:{adj:+.1f})"
+                    catalyst = _esc(e.get("catalyst_type", ""))
+                    quote = _esc(str(e.get("evidence_quote", ""))[:80])
+                    sentiment = _esc(e.get("sentiment", ""))
+                    rows_html += (
+                        f'<tr>'
+                        f'<td><a href="/ticker/{_esc(ticker)}">{_esc(ticker)}</a>{badge}</td>'
+                        f'<td>{score}</td>'
+                        f'<td>{catalyst}</td>'
+                        f'<td>{sentiment}</td>'
+                        f'<td>{quote}</td>'
+                        f'</tr>'
+                    )
+                section += (
+                    '<details><summary>'
+                    f'{len(non_promoted_in_tier)} non-promoted entries</summary>'
+                    '<div style="overflow-x:auto"><table>'
+                    '<tr><th>Ticker</th><th>Score</th><th>Catalyst</th>'
+                    '<th>Sentiment</th><th>Evidence</th></tr>'
+                    + rows_html
+                    + '</table></div></details>'
                 )
 
-    return html, code
+        section += '</div>'
+        sections_html += section
+
+    meta_summary = ""
+    if meta:
+        meta_summary = (
+            f'<p class="muted" style="margin:4px 0">'
+            f'Sampled: {_esc(str(meta.get("sampled", "—")))} · '
+            f'Valid: {_esc(str(meta.get("valid_actionable", "—")))} · '
+            f'Provider: {_esc(str(meta.get("provider", "—")))}'
+            f'</p>'
+        )
+
+    body = (
+        f'<h2>Candidates — {_esc(latest)}</h2>'
+        + _SEARCH_BOX
+        + meta_summary
+        + summary_bar
+        + price_snapshot
+        + sections_html
+        + '<p><a href="/runs">← All runs</a> | <a href="/">Home</a></p>'
+    )
+    return _render(f"Candidates — {_esc(latest)}", body), 200
 
 
 _WINDOW_PRIORITY = {1: 0, 3: 1, 5: 2, 10: 3, 20: 4, 60: 5, 252: 6}

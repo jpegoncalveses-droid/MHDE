@@ -26,6 +26,12 @@ from health.operational import (
     check_universe_vs_config,
     check_xgboost_installed,
 )
+from health.ml_checks import (
+    check_last_prediction,
+    check_ml_tables_freshness,
+    check_rolling_precision,
+    check_trained_models,
+)
 from health.source_status import (
     check_llm_failures,
     check_notification_failures,
@@ -143,6 +149,12 @@ def run_all_checks(
     results.append(check_candidate_reviews(conn))
     results.append(check_backtest_coverage(conn))
     results.append(check_xgboost_installed())
+
+    # ML prediction engine
+    results.append(check_trained_models())
+    results.append(check_last_prediction(conn))
+    results.append(check_rolling_precision(conn))
+    results.extend(check_ml_tables_freshness(conn))
 
     _persist_checks(conn, run_id, results)
     return results

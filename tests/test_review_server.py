@@ -1251,8 +1251,8 @@ def test_prediction_cards_appear_on_candidates(tmp_path):
         r = c.get("/candidates")
     assert r.status_code == 200
     html = r.data.decode()
-    assert "Prediction Cards" in html
     assert "TPRD" in html
+    assert "pred-card" in html
 
 
 def test_prediction_card_shows_direction(tmp_path):
@@ -1362,14 +1362,14 @@ def test_prediction_card_not_investment_advice(tmp_path):
     assert "not investment advice" in html or "shadow-only" in html
 
 
-def test_rejected_entry_not_in_prediction_cards(tmp_path):
+def test_rejected_entry_not_shown_as_prediction_card(tmp_path):
     _write_day(str(tmp_path / "history"), "2026-05-01", _BASE_META, [_PRED_IGNORE_ROW])
     app = _make_app(tmp_path)
     with app.test_client() as c:
         r = c.get("/candidates")
     html = r.data.decode()
-    # TIGN has final_should_affect_score=False, so no prediction card
-    assert "TIGN" not in html or "Prediction Cards" not in html or html.count("TIGN") <= 1
+    # TIGN has final_should_affect_score=False — should not have a pred-card
+    assert "pred-ticker" not in html or "TIGN" not in html.split("pred-ticker")[1].split("</span>")[0]
 
 
 def test_not_yet_reason_helper():
@@ -1531,9 +1531,9 @@ def test_high_pir_shortens_active_to_mostly_expired():
     assert tw["signal_status"] == "Mostly expired"
 
 
-# ── Section renaming (scaled vs static-only) ──────────────────────────────────
+# ── Funnel layout (promoted candidates in funnel tiers) ───────────────────────
 
-def test_static_only_crossing_not_labeled_scaled(tmp_path):
+def test_promoted_candidate_appears_in_funnel(tmp_path):
     static_row = {
         **_CROSSING_ROW,
         "ticker": "STAT",
@@ -1544,18 +1544,18 @@ def test_static_only_crossing_not_labeled_scaled(tmp_path):
     with app.test_client() as c:
         r = c.get("/candidates")
     html = r.data.decode()
-    assert "Static-only Crossings" in html
+    assert "funnel-section" in html
     assert "STAT" in html
 
 
-def test_scaled_crossing_appears_in_scaled_section(tmp_path):
+def test_scaled_crossing_appears_in_funnel(tmp_path):
     scaled_row = {**_CROSSING_ROW, "ticker": "SCAL", "scaled_adjustment": "3.5"}
     _write_day(str(tmp_path / "history"), "2026-05-01", _BASE_META, [scaled_row])
     app = _make_app(tmp_path)
     with app.test_client() as c:
         r = c.get("/candidates")
     html = r.data.decode()
-    assert "Scaled Crossings" in html
+    assert "funnel-section" in html
     assert "SCAL" in html
 
 
@@ -2757,3 +2757,160 @@ def test_learning_page_sector_diag_no_crash_with_enriched_csv(tmp_path):
     html = r.data.decode()
     assert "learning" in html.lower()
     assert "Learning" in r.data.decode()
+
+
+# ── Funnel redesign tests ─────────────────────────────────────────────────────
+
+def test_candidates_funnel_shows_all_tiers(tmp_path):
+    """All 6 funnel tiers render even when some are empty."""
+    _write_day(str(tmp_path / "history"), "2026-05-01", _BASE_META, [_CROSSING_ROW])
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/candidates")
+    html = r.data.decode()
+    assert r.status_code == 200
+    assert "High Priority" in html
+    assert "Watch" in html
+    assert "Investigate" in html
+    assert "Context / Validated" in html
+    assert "Failed / Avoid" in html
+    assert "Raw Discovery" in html
+
+
+def test_candidates_empty_high_priority_shows_guidance(tmp_path):
+    """When high-priority is empty, show guidance pointing to Watch/Investigate."""
+    non_crossing = {
+        **_CROSSING_ROW,
+        "ticker": "WTCH",
+        "original_score": "42.0", "shadow_score": "44.0",
+        "tier_move": "", "original_tier": "Reject", "shadow_tier": "Reject",
+        "scaled_adjustment": "0",
+        "priced_in_risk": "medium", "days_since_event": "25",
+    }
+    _write_day(str(tmp_path / "history"), "2026-05-01", _BASE_META, [non_crossing])
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/candidates")
+    html = r.data.decode()
+    assert "No high-priority candidates right now" in html
+    assert "Watch" in html
+    assert "Investigate" in html
+
+
+def test_candidates_bearish_entries_in_failed_tier(tmp_path):
+    """Bearish downgrades go to Failed/Avoid tier."""
+    bearish_row = {
+        **_CROSSING_ROW,
+        "ticker": "BEAR",
+        "sentiment": "bearish",
+        "llm_adjustment": "-3.0",
+        "final_should_affect_score": "False",
+    }
+    _write_day(str(tmp_path / "history"), "2026-05-01", _BASE_META, [bearish_row])
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/candidates")
+    html = r.data.decode()
+    assert "BEAR" in html
+    assert "Failed / Avoid" in html
+
+
+def test_candidates_watch_visible_without_high_priority(tmp_path):
+    """Watch candidates render even when no high-priority entries exist."""
+    watch_row = {
+        **_CROSSING_ROW,
+        "ticker": "WATC",
+        "priced_in_risk": "medium", "days_since_event": "25",
+        "impact_estimate": "medium",
+        "scaled_adjustment": "1.0",
+    }
+    _write_day(str(tmp_path / "history"), "2026-05-01", _BASE_META, [watch_row])
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/candidates")
+    html = r.data.decode()
+    assert "WATC" in html
+    assert "pred-card" in html
+
+
+def test_candidates_weak_entries_in_raw_discovery(tmp_path):
+    """Weak evidence entries go to Raw Discovery tier."""
+    _write_day(str(tmp_path / "history"), "2026-05-01", _BASE_META, [_WEAK_ROW])
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/candidates")
+    html = r.data.decode()
+    assert "Raw Discovery" in html
+    assert "PCG" in html
+
+
+def test_candidates_funnel_summary_bar(tmp_path):
+    """Summary bar at top shows counts for each tier."""
+    _write_day(str(tmp_path / "history"), "2026-05-01", _BASE_META, [_CROSSING_ROW, _WEAK_ROW])
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/candidates")
+    html = r.data.decode()
+    assert "funnel-stat-grid" in html
+    assert "funnel-stat" in html
+
+
+def test_today_funnel_summary(tmp_path):
+    """Today page includes funnel summary counts."""
+    out = str(tmp_path / "output")
+    os.makedirs(out, exist_ok=True)
+    _write_day(str(tmp_path / "history"), "2026-05-01", _BASE_META, [_CROSSING_ROW, _WEAK_ROW])
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/today")
+    html = r.data.decode()
+    assert r.status_code == 200
+    assert "Funnel Summary" in html
+    assert "funnel-stat" in html
+
+
+def test_candidates_no_runs_still_renders(tmp_path):
+    """Candidates page renders gracefully with no run data."""
+    app = _make_app(tmp_path)
+    with app.test_client() as c:
+        r = c.get("/candidates")
+    assert r.status_code == 200
+    assert "No Runs Found" in r.data.decode()
+
+
+def test_classify_funnel_tier_promoted_high_priority():
+    """Promoted entry with strong signal classified as high_priority."""
+    from review.server import _classify_funnel_tier
+    entry = {
+        "final_should_affect_score": "True",
+        "tier_move": "Reject→C",
+        "expected_direction": "bullish",
+        "priced_in_risk": "low",
+        "impact_estimate": "high",
+        "days_since_event": "3",
+        "scaled_adjustment": "4.0",
+        "original_tier": "Reject",
+    }
+    assert _classify_funnel_tier(entry) == "high_priority"
+
+
+def test_classify_funnel_tier_non_promoted_bearish():
+    """Non-promoted bearish entry classified as failed."""
+    from review.server import _classify_funnel_tier
+    entry = {
+        "final_should_affect_score": "False",
+        "sentiment": "bearish",
+        "llm_adjustment": "-2.0",
+    }
+    assert _classify_funnel_tier(entry) == "failed"
+
+
+def test_classify_funnel_tier_non_promoted_weak():
+    """Non-promoted weak entry classified as raw."""
+    from review.server import _classify_funnel_tier
+    entry = {
+        "final_should_affect_score": "False",
+        "sentiment": "neutral",
+        "llm_adjustment": "0",
+    }
+    assert _classify_funnel_tier(entry) == "raw"

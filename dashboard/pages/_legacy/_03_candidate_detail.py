@@ -24,7 +24,7 @@ if not ticker:
 
 db_path = os.environ.get("MHDE_DB_PATH", "data/mhde.duckdb")
 try:
-    conn = duckdb.connect(db_path, read_only=True)
+    conn = duckdb.connect(db_path)
     if not run_id:
         run_id = get_latest_run_id(conn)
     detail = get_candidate_detail(conn, ticker, run_id)

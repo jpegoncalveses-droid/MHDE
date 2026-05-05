@@ -12,7 +12,7 @@ st.title("Alerts")
 
 db_path = os.environ.get("MHDE_DB_PATH", "data/mhde.duckdb")
 try:
-    conn = duckdb.connect(db_path, read_only=True)
+    conn = duckdb.connect(db_path)
 
     col1, col2, col3 = st.columns(3)
     sent = conn.execute("SELECT COUNT(*) FROM alerts WHERE status = 'sent'").fetchone()[0]

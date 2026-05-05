@@ -1,0 +1,12 @@
+[Unit]
+Description=MHDE weekly ML retrain
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/jpcg/MHDE
+EnvironmentFile=/home/jpcg/MHDE/.env
+ExecStart=/home/jpcg/MHDE/venv/bin/python -m ml.retrain
+StandardOutput=append:/home/jpcg/MHDE/data/logs/ml_retrain.log
+StandardError=append:/home/jpcg/MHDE/data/logs/ml_retrain.log
+TimeoutStartSec=600

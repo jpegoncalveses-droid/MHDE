@@ -1,0 +1,15 @@
+[Unit]
+Description=MHDE Streamlit relay — unix socket to Streamlit 127.0.0.1:8501
+After=network.target mhde-streamlit.service
+Wants=mhde-streamlit.service
+
+[Service]
+Type=simple
+ExecStart=/home/jpcg/MHDE/venv/bin/python /home/jpcg/MHDE/.claude/local_scripts/mhde_streamlit_relay.py
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

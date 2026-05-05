@@ -15,7 +15,7 @@ st.caption("Tracks what happened after MHDE surfaced each candidate. Not paper t
 
 db_path = os.environ.get("MHDE_DB_PATH", "data/mhde.duckdb")
 try:
-    conn = duckdb.connect(db_path, read_only=True)
+    conn = duckdb.connect(db_path)
     outcomes = get_outcomes(conn, limit=500)
 
     if not outcomes:

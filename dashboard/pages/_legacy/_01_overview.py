@@ -13,7 +13,7 @@ st.title("Overview")
 
 db_path = os.environ.get("MHDE_DB_PATH", "data/mhde.duckdb")
 try:
-    conn = duckdb.connect(db_path, read_only=True)
+    conn = duckdb.connect(db_path)
     stats = get_overview_stats(conn)
 
     c1, c2, c3, c4, c5, c6 = st.columns(6)

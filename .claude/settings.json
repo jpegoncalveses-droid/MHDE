@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/bin/python*)",
+      "Bash(venv/bin/python*)",
+      "Bash(python*)",
+      "Bash(cd *&& .venv/bin/python*)",
+      "Bash(cd *&& python*)",
+      "Bash(.venv/bin/pytest *)",
+      "Bash(systemctl --user status *)"
+    ]
+  }
+}

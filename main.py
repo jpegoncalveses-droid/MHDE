@@ -268,6 +268,77 @@ def xgboost_smoke():
         conn.close()
 
 
+@cli.group()
+def ml():
+    """ML prediction engine commands."""
+
+
+@ml.command("predict")
+@click.option("--date", default=None, help="Prediction date (YYYY-MM-DD). Default: latest.")
+@click.option("--skip-outcomes", is_flag=True, help="Skip filling historical outcomes.")
+def ml_predict(date, skip_outcomes):
+    """Run ML prediction pipeline: score universe, fill outcomes, print results."""
+    from datetime import date as date_cls
+    from pipelines.ml_prediction_pipeline import run_prediction_pipeline
+
+    cfg, conn = _engine_setup()
+    try:
+        pred_date = date_cls.fromisoformat(date) if date else None
+        run_prediction_pipeline(conn, prediction_date=pred_date,
+                                skip_features=True, skip_outcomes=skip_outcomes)
+    finally:
+        conn.close()
+
+
+@ml.command("backfill-labels")
+def ml_backfill_labels():
+    """Compute ML labels for all historical ticker-dates."""
+    import logging
+    from ml.labels import compute_labels
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    cfg, conn = _engine_setup()
+    try:
+        total = compute_labels(conn)
+        click.echo(f"Labels computed: {total:,} rows")
+    finally:
+        conn.close()
+
+
+@ml.command("backfill-features")
+def ml_backfill_features():
+    """Compute ML features for all historical ticker-dates."""
+    import logging
+    from ml.features import compute_features
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    cfg, conn = _engine_setup()
+    try:
+        total = compute_features(conn)
+        click.echo(f"Features computed: {total:,} rows")
+    finally:
+        conn.close()
+
+
+@ml.command("train")
+@click.option("--label", default="label_20d_5pct", help="Label column to train on.")
+@click.option("--horizon", default="20d", help="Prediction horizon.")
+@click.option("--threshold", default=0.05, type=float, help="Target threshold.")
+def ml_train_cmd(label, horizon, threshold):
+    """Train ML model with walk-forward CV."""
+    import logging
+    from ml.train import train_walk_forward
+    from ml.evaluate import print_walk_forward_results
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    cfg, conn = _engine_setup()
+    try:
+        results = train_walk_forward(conn, label_col=label, horizon=horizon, threshold=threshold)
+        print_walk_forward_results(results, label, horizon)
+    finally:
+        conn.close()
+
+
 @cli.command()
 def health():
     """Run health checks and show system status."""
