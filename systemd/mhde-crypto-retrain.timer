@@ -1,8 +1,8 @@
 [Unit]
-Description=MHDE crypto weekly retrain timer
+Description=MHDE crypto weekly retrain timer (Sun 20:00 UTC, before equity retrain at 21:30)
 
 [Timer]
-OnCalendar=Sun *-*-* 23:00:00
+OnCalendar=Sun *-*-* 20:00:00
 Persistent=true
 
 [Install]

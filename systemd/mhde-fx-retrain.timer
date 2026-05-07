@@ -1,8 +1,8 @@
 [Unit]
-Description=MHDE FX weekly retrain timer
+Description=MHDE FX weekly retrain timer (Sat 20:00 UTC, before any other writers)
 
 [Timer]
-OnCalendar=Sat *-*-* 22:00:00
+OnCalendar=Sat *-*-* 20:00:00
 Persistent=true
 
 [Install]
