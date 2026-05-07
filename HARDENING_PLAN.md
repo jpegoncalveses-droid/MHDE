@@ -450,7 +450,13 @@ Time estimate: 1 session.
 
 ───
 
-Session 7: Hardening & Validation
+Session 7: Hardening & Validation — EXECUTED 2026-05-07
+
+> **Status:** completed. The structural exit criteria (tests pass,
+> monitors functional, zero open KIs, docs match reality) are met.
+> The "7 consecutive days green" criteria require post-session
+> observation discipline. See `SESSION_LOG.md` for the full record
+> and the post-session homework list.
 
 Scope: Full audit using the new test suite. Fix anything failing. Document final state.
 

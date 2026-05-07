@@ -283,6 +283,17 @@ def _train_final_model(
     # Feature importance from final model
     importance = dict(zip(FEATURE_COLS, model.feature_importances_.tolist()))
 
+    # KI-003 promotion: deactivate any prior is_active row for the same
+    # (horizon, target_threshold) tuple before inserting the new one.
+    # crypto/ml/train.py and fx/ml/train.py do this; equity didn't,
+    # which is what caused KI-009's "old + new both active" state during
+    # the manual retrain on 2026-05-07.
+    conn.execute(
+        "UPDATE ml_model_runs SET is_active = false "
+        "WHERE horizon = ? AND target_threshold = ? AND is_active = true",
+        [horizon, threshold],
+    )
+
     # Store in ml_model_runs
     conn.execute("""
         INSERT INTO ml_model_runs (

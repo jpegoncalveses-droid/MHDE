@@ -298,6 +298,38 @@ Checks include (`health/`):
 
 ---
 
+## Monitors (Session 6)
+
+`monitoring/` is a second observability layer that runs more often
+than the daily health check and fires Telegram alerts on detected
+anomalies. Each monitor is a Python module returning a `MonitorResult`
+dataclass; one `cli.group monitor` in `main.py` dispatches subcommands
+to each runner; one systemd `.service`/`.timer` pair per monitor lives
+under `systemd/mhde-monitor-*`.
+
+| Monitor | Cadence | Module | Detects |
+|---|---|---|---|
+| `dashboard-consistency` | every 6h | `monitoring/dashboard_consistency.py` | dashboard query layer ↔ direct DB count drift |
+| `pipeline-execution` | hourly | `monitoring/pipeline_execution.py` | per-engine recency + row count vs 14d rolling avg |
+| `config-drift` | daily | `monitoring/config_drift.py` | repo systemd files ↔ deployed copies |
+| `model-performance` | daily | `monitoring/model_performance.py` | rolling 7d precision vs walk-forward baseline |
+| `data-quality` | daily | `monitoring/data_quality.py` | per-engine ticker / symbol / bar coverage vs 14d avg |
+| `smoke` | hourly | `monitoring/smoke_test.py` | DB opens, every active joblib loads, dashboard query returns |
+
+Telegram routing: `monitoring/alert.py:send_alert` bottoms out in
+`fx.bot.telegram_bot.send_message`. The `MONITORING_DRY_RUN=true`
+env var suppresses real sends — useful for local testing and
+manual one-off runs.
+
+How the monitors complement the health check: health-check is daily
+and answers *"is the system running at all"*. Monitors run more often
+and answer *"is the running system producing the right outputs"*.
+Smoke and pipeline-execution have caught real production issues that
+the daily health check would have surfaced 24h later
+(see `KNOWN_ISSUES.md` resolved-archive: KI-009, KI-010).
+
+---
+
 ## Cross-cutting infrastructure
 
 ### `pipelines/freshness.py`

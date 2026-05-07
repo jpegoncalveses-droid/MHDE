@@ -77,6 +77,23 @@ def _check_engine(conn, engine: str, table_pred: str, table_runs: str,
                 "reason": "baseline missing in *_model_runs",
             })
             continue
+        if baseline >= 0.95:
+            # FX train stores `precision_top10` (top-10 picks per fold)
+            # in `precision_at_threshold`, which is ~0.99 by construction
+            # and not comparable to a real rolling precision. Skip rather
+            # than fire false alerts. Tracking as KI-011 follow-up — fix
+            # the storage convention in fx/ml/train.py so this guard can
+            # be removed.
+            rows.append({
+                "model_id": model_id,
+                "horizon": horizon,
+                "n_filled": n_filled,
+                "rolling_precision": round(rolling, 3),
+                "baseline": round(baseline, 3),
+                "status": "skip",
+                "reason": "baseline >= 0.95 (sentinel/non-comparable; KI-011)",
+            })
+            continue
         ratio = rolling / baseline
         rows.append({
             "model_id": model_id,
