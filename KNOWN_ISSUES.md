@@ -10,30 +10,6 @@ point is to remember what bit us so it doesn't bite again.
 
 ## Open
 
-### KI-009 — Equity active-model joblibs missing from disk (production)
-
-**Status:** open as of 2026-05-07. **Caught by Session 6 smoke monitor.**
-**Symptom.** `ml_model_runs` has 3 rows with `is_active=TRUE` pointing at:
-- `models/saved/5d_label_5d_3pct_20260505_092040.joblib`
-- `models/saved/10d_label_10d_5pct_20260505_092031.joblib`
-- `models/saved/20d_label_20d_5pct_20260505_092022.joblib`
-
-`/home/jpcg/MHDE/models/saved/` currently contains only `crypto/` and
-`fx/` subdirectories — the 3 equity joblibs are gone. The next 21:00
-equity predict firing will raise `FileNotFoundError` when `predict.py`
-tries `joblib.load(model_path)`.
-**Likely root cause.** Some operation between caf77e4 (KI-004 fix,
-which un-tracked the joblibs but per `git rm --cached` semantics
-should have left them on disk) and Session 6 deleted the on-disk
-files. Git history cannot recover them since they were de-tracked.
-**Fix path.** Re-run `venv/bin/python main.py ml train` for each
-horizon, or wait for the weekly retrain (Sun 21:30). Then confirm
-`make test-regression` and `make test-unit` still pass.
-**Why it took the smoke monitor to surface this.** The Session 5
-`test_models_saved_path_exists` regression only checks the directory
-exists, not that the specific paths in `*_model_runs.is_active=true`
-resolve. Session 7 should harden that test.
-
 ### KI-003 — Promotion of trained models to `is_active=TRUE` is manual
 
 **Status:** open. No tracked incidents.
@@ -75,6 +51,66 @@ or (b) edit in-place via `cat > … << EOF` / `sed -i` (preserves inode).
 The reload-only path silently serves stale config.
 **Regression test (Session 5):** `curl https://mhde.duckdns.org/review/`
 returns 404, not 502.
+
+### KI-009 — Equity active-model joblibs missing from disk
+
+**Resolved:** 2026-05-07 (caught by Session 6 smoke monitor).
+**Symptom.** `ml_model_runs` had 3 rows with `is_active=TRUE` pointing
+at joblibs that no longer existed on disk. The May 6 21:00 equity
+predict firing wrote zero rows (FileNotFoundError); the May 7 firing
+would have done the same. Smoke monitor first dry-run produced:
+```
+[!!] MHDE monitor: smoke_test
+End-to-end smoke failed
+- equity model: path missing: models/saved/5d_label_5d_3pct_20260505_092040.joblib
+```
+**Likely root cause.** Some operation between caf77e4 (KI-004
+`git rm --cached`) and Session 6 deleted the on-disk files. Git
+history cannot recover them.
+**Fix.** Re-trained all three equity models manually:
+```
+venv/bin/python main.py ml train --label label_5d_3pct  --horizon 5d  --threshold 0.03
+venv/bin/python main.py ml train --label label_10d_5pct --horizon 10d --threshold 0.05
+venv/bin/python main.py ml train --label label_20d_5pct --horizon 20d --threshold 0.05
+```
+Each ~10s wall-clock. Walk-forward CV passed both criteria
+(Lift > 1.3 / AUC > 0.55) for all three. New `is_active=TRUE` rows
+written. Manually deactivated the 3 stale May-5 rows via UPDATE
+(KI-003: train doesn't auto-deactivate). `ml predict` then ran
+cleanly, producing predictions across 5d / 10d / 20d horizons.
+**Lesson.** Session 5's `test_models_saved_path_exists` regression
+only checks the directory exists, not that the specific paths in
+`*_model_runs.is_active=true` resolve. **Session 7 must harden this
+test** to walk every active model_path.
+**Regression test (planned for Session 7):**
+`tests/regression/test_schema_consistency.py::test_active_model_paths_resolve`.
+
+### KI-010 — May 5 produced 12 predictions instead of 40 (downstream of KI-106)
+
+**Resolved:** 2026-05-07 (no new fix; cause was KI-106 already fixed).
+**Symptom.** `ml_predictions` for `prediction_date=2026-05-05` had 12
+rows vs the 14-day rolling baseline of 40. Caught by Session 6
+`monitoring/pipeline_execution.py` first dry-run.
+**Root cause investigation.**
+- `prices_daily` for `trade_date=2026-05-05` had 47 tickers (vs ~522 baseline).
+- `ml_features` for `trade_date=2026-05-05` had 19 rows (vs ~312 baseline).
+- `data/logs/daily_analysis_2026-05-05.log` does **not** exist.
+- `journalctl --user -u mhde-daily-analysis --since "2026-05-05"` shows
+  the May 5 23:15 firing exited with code **216/GROUP** — the exact
+  symptom of **KI-106** (User=/Group= lines in a user-level unit).
+  KI-106 was fixed on 2026-05-06; **May 5 was the last bad firing**.
+- Therefore the May 5 ingestion path produced only partial data,
+  feature computation only saw 19 ticker-rows, and the 21:00 predict
+  could only score those.
+**No new code fix needed.** KI-106 was already fixed. The
+pipeline-execution monitor (alerting "ratio=0.30 below 50% threshold")
+would have caught the 12-vs-40 anomaly in real time had it been
+deployed.
+**Lesson.** Two-monitor coverage matters: KI-106 is structural
+(caught by `tests/regression/test_systemd_units.py::test_user_level_units_no_user_group`,
+and now also by `monitoring/config_drift`) while the *consequence*
+(degraded prediction count) needs the pipeline-execution monitor.
+One catches the cause, the other catches the effect.
 
 ### KI-008 — daily-analysis Step d invoked nonexistent `priority-refresh-queue` top-level command
 
