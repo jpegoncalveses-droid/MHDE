@@ -559,20 +559,36 @@ for the alert payload that was logged.
 
 ### Deploying the monitors
 
-The repo has the unit files; deploying installs them as user-level
-timers (parallel to `mhde-health-check`). Same pattern as
-`OPERATIONS.md > Deploying a new systemd unit`:
+Deployed 2026-05-07 at **system level** (`/etc/systemd/system/`),
+parallel to the per-engine predict services. System-level was
+chosen over user-level so the monitors run regardless of user
+session — same reliability tier as `mhde-fx-bot` and the predict
+services.
+
+The unit files have `User=jpcg` so they execute as the same user
+the predict services run as.
+
+To redeploy (e.g., after editing a unit file in `systemd/`):
 
 ```bash
 cd /home/jpcg/MHDE
-for u in systemd/mhde-monitor-*.service systemd/mhde-monitor-*.timer; do
-    cp "$u" ~/.config/systemd/user/
-done
-systemctl --user daemon-reload
-for t in mhde-monitor-{dashboard,pipeline,config-drift,model-perf,data-quality,smoke}.timer; do
-    systemctl --user enable --now "$t"
-done
-systemctl --user list-timers | grep mhde-monitor
+sudo cp systemd/mhde-monitor-*.service systemd/mhde-monitor-*.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now \
+    mhde-monitor-dashboard.timer \
+    mhde-monitor-pipeline.timer \
+    mhde-monitor-config-drift.timer \
+    mhde-monitor-model-perf.timer \
+    mhde-monitor-data-quality.timer \
+    mhde-monitor-smoke.timer
+systemctl list-timers --all | grep mhde-monitor
+```
+
+To trigger a one-off run (useful for verifying a fix):
+
+```bash
+sudo systemctl start mhde-monitor-smoke.service
+sudo journalctl -u mhde-monitor-smoke.service -n 30 --no-pager
 ```
 
 After enabling, watch `data/logs/monitor_*.log` for the first scheduled
