@@ -6,6 +6,90 @@ are at the top.
 
 ---
 
+## 2026-05-07 — Session 2: Test Infrastructure
+
+**Branch:** `session-2-test-infra` off `master @ fb744bf`.
+
+Framework only. No production-code tests written this session — that's
+Sessions 3-5.
+
+### What was completed
+
+All 9 tasks:
+
+1. Categorized the 71 active tests via AST import analysis
+   (`.claude/local_scripts/categorize_tests.py`): equity 60, integration
+   8, crypto 2, dashboard 1, fx 0.
+2. Created the 6 subdirs: `tests/equity/`, `tests/crypto/` (already
+   existed), `tests/fx/`, `tests/dashboard/`, `tests/integration/`,
+   `tests/regression/` — each with an `__init__.py`.
+3. Reorganized all 71 tests via `git mv` in batches (history
+   preserved). Ran offline test subset between batches; one test
+   (`test_daily_analysis_script.py`) needed a `..` → `../..` path fix
+   after moving into `tests/integration/`. All 540 offline tests still
+   pass post-reorg.
+4. Extended `tests/conftest.py` with 7 new fixtures: `temp_db`
+   (in-memory DuckDB pre-loaded with all 4 schema sources →
+   storage/migrations + ml/crypto/fx schema.py),
+   `synthetic_prices_equity` / `synthetic_prices_crypto` /
+   `synthetic_prices_fx` (deterministic random walks with engine-
+   appropriate vol and weekend handling), `synthetic_filings`,
+   `synthetic_fundamentals`, `mock_telegram` (intercepts
+   `requests.post` to Telegram and any `notifications.telegram` helpers).
+5. Added `tests/helpers.py` with `assert_db_state`,
+   `assert_pipeline_completed_cleanly`, and a stub
+   `assert_dashboard_renders` for Session 4.
+6. Wrote `tests/test_session2_infra_smoke.py` — 7 tests validating the
+   fixtures themselves. All pass in 0.5s.
+7. Added `Makefile` with `test`, `test-unit`, `test-integration`,
+   `test-regression`, `coverage`, `install-hooks`, `precommit`, `help`
+   targets. Network-touching tests skipped by default; override with
+   `make NET_SKIPS= test-unit`.
+8. Wrote `scripts/pre-commit.sh` — 3-stage hook (py_compile staged
+   .py, curated pytest smoke, forbidden-pattern lint). Wall-clock
+   runtime 1.8s. Symlinked into `.git/hooks/pre-commit` via
+   `make install-hooks`.
+9. Added `pytest-cov` to `requirements.txt` and installed in venv.
+   `make coverage` runs the unit subset with coverage and writes an
+   HTML report to `htmlcov/`. Coverage and `.coverage` files added to
+   `.gitignore`.
+
+### What was changed
+
+- Tests reorganized: 71 files moved (`git mv`).
+- New: `tests/equity/__init__.py`, `tests/fx/__init__.py`,
+  `tests/dashboard/__init__.py`, `tests/integration/__init__.py`,
+  `tests/regression/__init__.py`,
+  `tests/test_session2_infra_smoke.py`, `tests/helpers.py`,
+  `Makefile`, `scripts/pre-commit.sh`.
+- Modified: `tests/conftest.py` (extended), `requirements.txt`
+  (pytest-cov), `.gitignore` (coverage outputs).
+- Symlink installed: `.git/hooks/pre-commit` → `scripts/pre-commit.sh`.
+- Path fix in `tests/integration/test_daily_analysis_script.py`
+  (`../`→`../../` for the moved location).
+
+### Bugs caught and fixed during the session
+
+- One real path bug surfaced by the reorg:
+  `test_daily_analysis_script.py` used a `dirname(__file__)/..` path
+  that broke when the file moved one directory deeper. Caught
+  immediately by running pytest after the integration batch.
+
+### New known issues to track
+
+None. Existing KI-003 (manual model promotion) is the only open item.
+
+### Pending for the next session (Session 3)
+
+- Write actual unit tests using the new fixtures: features, labels,
+  predict, evaluate, signals — for each of the 3 engines. Target the
+  80%+ coverage threshold called out in the plan.
+- Decide whether `assert_dashboard_renders` should call the underlying
+  query functions in `dashboard/services/queries.py` (likely yes —
+  matches what the dashboard consumes without booting Streamlit).
+
+---
+
 ## 2026-05-07 — Pre-Session-2 follow-ups (KI-001, KI-004)
 
 **Branch:** `pre-session-2-fixes` off `master @ 1050eab`.
