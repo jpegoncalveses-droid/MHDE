@@ -41,7 +41,8 @@ activate the venv (per project policy).
 ### Equity ML
 
 ```bash
-# Score today (assumes daily-analysis already populated prices_daily)
+# Score today (assumes daily-analysis already populated prices_daily
+# AND ml backfill-features has run for the latest trade_date)
 venv/bin/python main.py ml predict
 # Force a date
 venv/bin/python main.py ml predict --date 2026-05-06
@@ -55,6 +56,54 @@ venv/bin/python main.py ml backfill-labels
 
 # Walk-forward retrain (writes a new ml_model_runs row)
 venv/bin/python main.py ml train --label label_10d_5pct --horizon 10d --threshold 0.05
+```
+
+#### Two feature systems — read this when the dashboard "shows stale ML predictions"
+
+The equity stack has **two parallel feature systems** that don't share
+state. ARCHITECTURE.md has the full table; the operational summary:
+
+| Table | Refreshed by | Runs at | Used by |
+|---|---|---|---|
+| `prices_daily` | `mhde-daily-analysis.service` (`daily-radar` stage `ingestion`) | Mon-Fri 23:15 | every downstream stage |
+| `features` (legacy) | `daily-radar` stage `features` (uses `features/feature_builder.py`) | Mon-Fri 23:15 (right after ingestion) | legacy `scoring/scorecard.py` |
+| `ml_features` | `main.py ml backfill-features` (uses `ml/features.py`) | inside `mhde-predict.service` ExecStart, daily 21:00 | the ML engine (`ml/predict.py`) |
+| `ml_predictions` | `main.py ml predict` (uses `ml/predict.py`) | `mhde-predict.service`, daily 21:00 (after `ml backfill-features`) | dashboard "ML predictions" tab |
+
+Schedule order each weekday:
+```
+21:00 — mhde-predict.service:
+            ml backfill-features (writes ml_features for new prices)
+            ml predict           (writes ml_predictions for the latest ml_features.trade_date)
+23:15 — mhde-daily-analysis.service:
+            daily-radar (ingest prices, write `features`/scores)
+            missed prediction-vs-actual / enrich-root-causes / priority-refresh-queue / catalyst-queue
+```
+
+**Implication.** The 21:00 predict run reads the previous evening's
+prices and writes ML predictions a day behind real-time. That's
+expected, not stale.
+
+**Debugging "dashboard shows stale ML predictions":**
+1. Check `MAX(prediction_date)` in `ml_predictions` — the dashboard
+   shows this as the dropdown's max.
+2. Check `MAX(trade_date)` in `ml_features` — predict picks this as
+   the prediction_date when none is given.
+3. If `ml_features` is older than expected: was `ml backfill-features`
+   run since the last price ingest? Was the latest `mhde-predict.service`
+   firing successful? `journalctl -u mhde-predict --since "1 day ago"`.
+4. If both are stale: was `mhde-daily-analysis.service` healthy? See
+   "Stale data" below.
+
+**Manual end-to-end refresh** (when you need fresh predictions outside
+the systemd schedule, e.g. after a retrain):
+```bash
+# Full ingest — slow because of SEC; skip with --skip-sec-fundamentals
+venv/bin/python main.py run daily-radar --skip-sec-fundamentals    # ~7 min
+
+# Then bring ml_features and ml_predictions up to date
+venv/bin/python main.py ml backfill-features                       # ~5 min
+venv/bin/python main.py ml predict --skip-outcomes                 # ~2s
 ```
 
 ### Crypto ML

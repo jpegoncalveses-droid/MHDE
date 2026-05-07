@@ -81,6 +81,22 @@ older than 2 trading days (`pipelines/freshness.py:check_equity_freshness`),
 predict logs `DATA STALE` and skips — no row is written to
 `ml_predictions`.
 
+**Two parallel feature systems** — this catches people:
+
+| Table | Built by | Built when | Used by |
+|---|---|---|---|
+| `features` | `features/feature_builder.py` | inside `daily-radar` Stage `features` | Legacy `scoring/scorecard.py` (still wired in but dormant in current workflow). Long-form, one row per (ticker, feature_name). |
+| `ml_features` | `ml/features.py:compute_features` | `main.py ml backfill-features` (called by `mhde-predict.service` ExecStart **before** `ml predict`) | The ML engine. Wide form, one row per (ticker, trade_date) with all 32 features as columns. |
+
+`mhde-daily-analysis.service` (Mon-Fri 23:15) refreshes `prices_daily`
+and the legacy `features` table. It does **not** refresh `ml_features`.
+`mhde-predict.service` (daily 21:00) chains `ml backfill-features` →
+`ml predict` so `ml_features` is brought up to date inside the predict
+service itself. Manual debugging of "why is the dashboard showing
+stale ML predictions" should look at the latest `MAX(trade_date)` in
+`ml_features`, not `prices_daily`. The two can drift if `ml backfill-features`
+hasn't run since the last price ingest.
+
 **Outcome filling.** `ml/predict.py:fill_outcomes` walks rows where
 `outcome_filled_at IS NULL` and the forward window has closed (using
 trading-day arithmetic, not calendar days). Updates `actual_max_return`,
