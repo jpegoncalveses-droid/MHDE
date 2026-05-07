@@ -90,6 +90,95 @@ None. Existing KI-003 (manual model promotion) is the only open item.
 
 ---
 
+## 2026-05-07 — Session 4: Integration Tests
+
+**Branch:** `session-4-integration-tests` off `master @ 985e243`.
+
+End-to-end pipeline tests with synthetic data plus failure-mode
+coverage. All major regression cases from `KNOWN_ISSUES.md` are now
+covered by at least one integration test.
+
+### What was completed
+
+All 8 tasks. Tests added by file:
+
+- `tests/integration/_helpers.py` — `train_tiny_model` (XGBoost +
+  Platt + medians bundle), `register_active_*_model` (3 engines),
+  `seed_active_company`, `seed_crypto_universe`, and price-insert
+  helpers. Reusable across all engine tests.
+- `tests/integration/test_equity_pipeline.py` — 3 tests. 50 tickers ×
+  220 days → labels → features → score → fill_outcomes. Covers KI-104
+  (trading-day window).
+- `tests/integration/test_crypto_pipeline.py` — 3 tests. 5 symbols ×
+  80 days. Covers KI-103 (horizon window match).
+- `tests/integration/test_fx_pipeline.py` — 4 tests (1 skipped on
+  weekend bar). 600 hourly bars × 4 active models. Covers KI-110
+  (position-aware alert suppression) end-to-end through the bot
+  helper, with `_open_conn` monkeypatched to return temp_db.
+- `tests/integration/test_cross_engine_consistency.py` — 6 tests:
+  shared prediction columns, distinct entity keys
+  (ticker / symbol / time-only), per-engine model_runs tables,
+  freshness coverage, health orchestrator parity.
+- `tests/integration/test_failure_modes.py` — 8 tests: stale-data skip
+  (equity / crypto), stale-but-continue (FX, ADR-010), empty-universe
+  graceful handling, no active models → empty predictions, **DuckDB
+  lock-retry (KI-111)** with monkeypatched `duckdb.connect` and
+  `time.sleep`, non-lock IOException propagation, missing model file
+  → FileNotFoundError raised.
+
+Plus the Session 4 deliverable from `tests/helpers.py`:
+
+- `assert_dashboard_renders` — replaced the Session 2 stub with a real
+  implementation that calls `dashboard/services/queries.py` directly
+  (one of 12 page-query functions) and validates row count + key set.
+  Sidesteps Streamlit's runtime entirely.
+
+### Design notes
+
+- **Tiny model factory.** Integration tests need a real joblib bundle
+  for `predict.py` to load. `train_tiny_model` fits an XGBClassifier
+  on noise with `positive_rate=0.85` so the model produces probabilities
+  above the LOW_THRESHOLD=0.50 filter — otherwise predict.py drops all
+  predictions before they reach the table.
+- **Precision metrics not asserted.** Synthetic random-walk data has
+  no predictive signal by construction; an integration test asserting
+  precision range against a noise-trained model is meaningless.
+  Tests assert structural completeness (predictions written, outcomes
+  filled, schema parity, dashboard query returns rows) instead.
+- **FX bot connection.** `fx/bot/telegram_bot.py:_open_conn` opens its
+  own connection from `storage.config`, not a passed-in conn. Tests
+  monkeypatch `_open_conn` to return a wrapper around `temp_db` whose
+  `close()` is a no-op (the fixture owns lifetime).
+
+### Bugs caught during this session
+
+None. All four engine pipelines produced expected output on first
+correct setup. One test failure was self-inflicted (used
+`'long_gbp'` as the position string when production code expects
+`'HOLDING_GBP'`); fixed in the test.
+
+### Verification
+
+- `make test-integration`-equivalent: 56 passed + 1 skipped in 66s.
+- `make test-unit` unaffected: still passes.
+- Integration tests cover regressions for: KI-103, KI-104, KI-110,
+  KI-111. Plus the new Session 3 fixes are exercised through pipeline
+  runs (KI-005, KI-006, KI-007).
+
+### Pending for the next session (Session 5)
+
+- Convert each entry in `KNOWN_ISSUES.md` resolved-section into a
+  dedicated regression test that the suite runs going forward. Many
+  are already implicitly covered; Session 5 makes that coverage
+  explicit by name and adds the structural regression tests called
+  out in the plan (schema migration, CLI registry, service files,
+  timer schedules, legacy isolation).
+- Fix the `datetime.utcnow()` deprecation warnings (Python 3.12+).
+  Mostly cosmetic; ~10 call sites across pipelines/daily_radar,
+  conftest, and a few others.
+
+---
+
 ## 2026-05-07 — Session 3: Unit Tests
 
 **Branch:** `session-3-unit-tests` off `master @ d69837f`.
