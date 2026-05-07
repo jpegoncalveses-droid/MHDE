@@ -10,35 +10,6 @@ point is to remember what bit us so it doesn't bite again.
 
 ## Open
 
-### KI-001 — `/review/` returns 502 instead of 404 *(low priority)*
-
-**Status:** open as of 2026-05-07.
-**Source:** Session 0 (`SESSION_LOG.md`).
-**Symptom.** `https://mhde.duckdns.org/review/` returns HTTP 502.
-**Root cause.** Session 0 disabled `mhde-review-server.service` and
-removed the `location /review/` block + `upstream mhde_review` from
-nginx. Requests to `/review/` now match the catch-all `location /`
-which proxies to the Streamlit unix socket; Streamlit / its relay
-returns 502 for the unknown path.
-**Fix path.** Add `location /review/ { return 404; }` inside the
-`mhde.duckdns.org` server block in `/home/jpcg/homeboard/nginx/nginx.conf`,
-then `sudo docker exec homeboard-nginx-1 nginx -s reload`.
-**Why low priority.** Architecturally the review server is gone — no
-data leak, no auth bypass. The 502 is purely cosmetic.
-
-### KI-002 — Plan-vs-codebase drift in `HARDENING_PLAN.md`
-
-**Status:** open at session start; resolved by `f59baf9` 2026-05-07.
-
-(Documented here for completeness; flipping to resolved.)
-
-**Symptom.** `HARDENING_PLAN.md` Session 0 description listed several
-directories (`features/`, `scoring/scorecard.py`, parts of `missed/`,
-`daily_radar`) as legacy, when reachability analysis showed they're
-all still wired into `mhde-daily-analysis.service`.
-**Resolved.** `f59baf9` rewrote the Session 0 section to match
-codebase reality. See `DECISIONS.md` ADR-005.
-
 ### KI-003 — Promotion of trained models to `is_active=TRUE` is manual
 
 **Status:** open. No tracked incidents.
@@ -53,23 +24,72 @@ walk-forward validation passes thresholds, or (b) explicit `*_promote
 <model_id>` CLI step in the retrain ExecStart chain. Decide in a
 future session.
 
-### KI-004 — `models/saved/` is not gitignored
-
-**Status:** open.
-**Symptom.** Trained joblib artifacts under `models/saved/{,crypto/,fx/}`
-are tracked in git. The 3 equity .joblib files are committed; new
-crypto/fx .joblib files were caught and de-staged in Session 0 but
-will reappear on the next staging.
-**Why this matters.** Each joblib is ~500 KB-650 KB. After a few
-months of retraining, the repo grows unboundedly with binary diffs.
-Also: model weights aren't really source code.
-**Fix path.** Add `models/saved/**/*.joblib` to `.gitignore`. Decide
-separately whether to push current artifacts to S3 / git LFS or just
-let the retrain rebuild them.
-
 ---
 
 ## Resolved (with regression-test pointers)
+
+### KI-001 — `/review/` returned 502 instead of 404
+
+**Resolved:** 2026-05-07 (pre-Session-2 follow-up).
+**Symptom.** `https://mhde.duckdns.org/review/` returned HTTP 502.
+**Root cause.** Session 0 disabled `mhde-review-server.service` and
+removed the `location /review/` block + `upstream mhde_review` from
+nginx. Requests to `/review/` then matched the catch-all `location /`
+which proxies to the Streamlit unix socket; Streamlit / its relay
+returned 502 for the unknown path.
+**Fix.** Added `location /review/ { return 404; }` to
+`/home/jpcg/homeboard/nginx/nginx.conf` inside the `mhde.duckdns.org`
+server block. **nginx `-s reload` alone was insufficient**: the host
+file is a single-file bind mount into the container, and atomic-rename
+editors (which the Claude Code Edit tool uses) change the host
+file's inode. Docker bind mounts on a single file point at the original
+inode, so nginx kept reading the old config. Full container restart
+(`docker compose restart nginx`) forced re-read of the new inode.
+**Lesson for future host-file edits feeding bind-mounted single
+files.** Either (a) `docker compose restart nginx` after every edit,
+or (b) edit in-place via `cat > … << EOF` / `sed -i` (preserves inode).
+The reload-only path silently serves stale config.
+**Regression test (Session 5):** `curl https://mhde.duckdns.org/review/`
+returns 404, not 502.
+
+### KI-002 — Plan-vs-codebase drift in `HARDENING_PLAN.md`
+
+**Resolved:** `f59baf9` 2026-05-07.
+**Symptom.** `HARDENING_PLAN.md` Session 0 description listed several
+directories (`features/`, `scoring/scorecard.py`, parts of `missed/`,
+`daily_radar`) as legacy, when reachability analysis showed they're
+all still wired into `mhde-daily-analysis.service`.
+**Fix.** `f59baf9` rewrote the Session 0 section to match
+codebase reality. See `DECISIONS.md` ADR-005.
+
+### KI-004 — `models/saved/` was not gitignored
+
+**Resolved:** 2026-05-07 (pre-Session-2 follow-up).
+**Symptom.** Trained joblib artifacts under `models/saved/{,crypto/,fx/}`
+were tracked in git. 3 equity .joblib files were committed; new
+crypto/fx .joblib files were caught and de-staged in Session 0 but
+would have reappeared on the next staging cycle.
+**Fix.** Added the following patterns to `.gitignore` under a new
+"Trained model artifacts" section:
+```
+models/saved/**/*.joblib
+models/saved/**/*.pkl
+models/saved/**/*.bin
+models/saved/**/*.model
+```
+Removed the 3 tracked equity joblibs from the index with
+`git rm --cached` (files preserved on disk). Verified with `git
+ls-files models/saved/` — empty, all 9 model binaries on disk are
+now ignored.
+**Decision (no separate ADR needed).** Models will be rebuilt by the
+weekly retrain timers. No external storage (S3 / git LFS) for now —
+loss of artifacts at most costs one retrain cycle.
+**Regression test (Session 5):** assert `git ls-files models/saved/`
+is empty and that a `.joblib` file dropped under `models/saved/` is
+ignored by git status.
+
+The plan's Session 5 will turn each of the entries below into a test
+that fails without the fix and passes with it.
 
 The plan's Session 5 will turn each of these into a test that fails
 without the fix and passes with it.
