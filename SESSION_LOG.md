@@ -90,6 +90,74 @@ None. Existing KI-003 (manual model promotion) is the only open item.
 
 ---
 
+## 2026-05-07 — Pre-Session-7 follow-ups (KI-009 retrain, KI-010 forensics)
+
+**Branch:** `pre-session-7-fixes` off `master @ 969fdd6`.
+
+Three operational follow-ups before Session 7:
+
+### 1. KI-009 fixed — equity models retrained
+
+Ran walk-forward training for all three horizons:
+```
+venv/bin/python main.py ml train --label label_5d_3pct  --horizon 5d  --threshold 0.03
+venv/bin/python main.py ml train --label label_10d_5pct --horizon 10d --threshold 0.05
+venv/bin/python main.py ml train --label label_20d_5pct --horizon 20d --threshold 0.05
+```
+
+Results — all PASSED walk-forward success criteria (Lift > 1.3, AUC > 0.55):
+
+| Horizon | Avg precision | Avg AUC | Avg lift | Joblib |
+|---|---|---|---|---|
+| 5d  | 61.4% | 0.671 | 1.91x | `models/saved/5d_label_5d_3pct_20260507_180903.joblib` |
+| 10d | 63.7% | 0.691 | 2.10x | `models/saved/10d_label_10d_5pct_20260507_180922.joblib` |
+| 20d | 72.6% | 0.666 | 1.59x | `models/saved/20d_label_20d_5pct_20260507_180936.joblib` |
+
+Wall-clock ~10s per training. Top features (gain-based): `atr_pct_20d`,
+`realized_vol_60d`, `yield_curve_10y_2y`, `price_vs_200d_ma`, `vix_level`.
+
+Then manually deactivated the 3 stale May-5 rows via UPDATE
+(KI-003: train doesn't auto-deactivate). Final `is_active=TRUE` set
+contains exactly the 3 new models pointing at present joblibs.
+
+`ml predict --skip-outcomes` ran cleanly: 7 predictions on 20d horizon
+(+ 5d / 10d). Engine confirmed working.
+
+### 2. KI-010 — May 5 anomaly investigated, root cause is KI-106
+
+The "12 vs 40 prediction" anomaly from May 5 had nothing to do with
+the ML engine itself. It was a downstream consequence of **KI-106**
+(User=/Group= lines on the user-level mhde-daily-analysis.service)
+that hadn't been fixed at the time:
+
+- May 5 23:15 firing: `journalctl` shows exit code 216/GROUP.
+- No `data/logs/daily_analysis_2026-05-05.log` exists (script never ran).
+- `prices_daily` for May 5 had 47 of ~522 expected tickers; `ml_features`
+  had 19 of ~312 expected rows.
+- May 5 21:00 predict scored against the partial feature universe → 12
+  predictions instead of 40.
+
+KI-106 was fixed on 2026-05-06; May 5 was the last bad night. No new
+code fix needed; documented as the cascade record (KI-010).
+
+### 3. Session 7 hardening note
+
+`tests/regression/test_schema_consistency.py::test_models_saved_path_exists`
+is too lax — it only asserts the directory exists, not that
+`*_model_runs.is_active=true` rows have resolvable joblib paths.
+Session 7 should add `test_active_model_paths_resolve` that walks
+every is_active row across all 3 engines and asserts
+`Path(model_path).exists()` AND `joblib.load(model_path)` doesn't raise.
+
+### Verification
+
+- `make test-unit`: passes.
+- `make test-regression`: passes.
+- `monitoring/smoke_test.py` dry-run: now reports OK on the
+  model-loadability check.
+
+---
+
 ## 2026-05-07 — Session 6: Monitoring & Verification
 
 **Branch:** `session-6-monitoring` off `master @ 0808b47`.
