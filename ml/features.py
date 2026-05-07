@@ -344,6 +344,11 @@ def compute_features(conn: duckdb.DuckDBPyConnection, batch_size: int = 30) -> i
     sector_map = dict(zip(universe["ticker"], universe["sector"]))
     logger.info("Computing features for %d tickers", len(tickers))
 
+    if not tickers:
+        # No universe → nothing to do. Avoids ParserException on
+        # `WHERE ticker IN ()` downstream.
+        return 0
+
     # Load reference data (shared across all tickers)
     logger.info("  Loading reference data (SPY, sector ETFs, VIX, yield curve)...")
     ref_prices = _load_reference_prices(conn)

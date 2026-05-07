@@ -238,7 +238,7 @@ def synthetic_prices_fx() -> Callable[..., list[dict]]:
                     "gbpeur_open": o, "gbpeur_high": h,
                     "gbpeur_low": lo, "gbpeur_close": c,
                     "tick_count": rng.randint(50, 500),
-                    "data_quality": "good",
+                    "data_quality": "OK",   # production writes 'OK' not the schema default 'good'
                 })
                 price = c
                 produced += 1

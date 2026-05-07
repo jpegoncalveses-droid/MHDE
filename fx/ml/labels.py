@@ -57,8 +57,9 @@ def compute_labels(conn: duckdb.DuckDBPyConnection) -> int:
         fwd_max_down_48h[i] = (c - np.min(l48)) / PIP_SIZE
         fwd_close_48h[i] = (closes[i + 48] - c) / PIP_SIZE
 
-    # Also compute for i in range(n-48, n-24) — 24h only
-    for i in range(n - 48, n - 24):
+    # Also compute for i in range(n-48, n-24) — 24h only.
+    # Clamp to non-negative to avoid IndexError when n < 48.
+    for i in range(max(0, n - 48), max(0, n - 24)):
         c = closes[i]
         h24 = highs[i + 1:i + 25]
         l24 = lows[i + 1:i + 25]

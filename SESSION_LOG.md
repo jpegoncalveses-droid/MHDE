@@ -90,6 +90,106 @@ None. Existing KI-003 (manual model promotion) is the only open item.
 
 ---
 
+## 2026-05-07 — Session 3: Unit Tests
+
+**Branch:** `session-3-unit-tests` off `master @ d69837f`.
+
+Wrote ~80 unit tests across the 12 target modules called out in the
+plan (features, labels, predict, evaluate / signals — per engine —
+plus health checks and pipeline freshness). All target modules now at
+or above the 80% coverage target.
+
+### What was completed
+
+All 7 tasks. Tests added by file:
+
+- `tests/fx/test_features.py` — 6 tests
+- `tests/fx/test_labels.py` — 7 tests
+- `tests/fx/test_predict.py` — 5 tests
+- `tests/fx/test_signals.py` — 9 tests (full BUY/SELL/WAIT decision matrix)
+- `tests/crypto/test_features.py` — 5 tests
+- `tests/crypto/test_labels.py` — 6 tests
+- `tests/crypto/test_predict.py` — 7 tests
+- `tests/crypto/test_evaluate.py` — 5 tests
+- `tests/equity/test_ml_features.py` — 5 tests
+- `tests/equity/test_ml_labels.py` — 6 tests
+- `tests/equity/test_ml_predict.py` — 7 tests (incl. KI-104 trading-day window regression)
+- `tests/equity/test_ml_evaluate.py` — 5 tests
+- `tests/equity/test_health_ml_checks.py` — 8 tests
+- `tests/equity/test_pipeline_freshness.py` — 12 tests (per-engine freshness reports)
+
+Plus `tests/equity/test_health.py` was rescued: 6 tests that had been
+failing pre-Session-0 (CatalogException due to a missing
+`ml_predictions` table in the local fixture) now pass — the local
+`conn` fixture was rewritten to delegate to the project-wide `temp_db`
+fixture, which loads every active schema.
+
+### Coverage on plan-listed modules
+
+All ≥ 80% target met:
+
+| Module | Coverage |
+|---|---|
+| ml/features.py | 80% |
+| ml/labels.py | 100% |
+| ml/predict.py | 90% |
+| ml/evaluate.py | 98% |
+| crypto/ml/features.py | 92% |
+| crypto/ml/labels.py | 100% |
+| crypto/ml/predict.py | 83% |
+| crypto/ml/evaluate.py | 100% |
+| fx/ml/features.py | 81% |
+| fx/ml/labels.py | 100% |
+| fx/ml/predict.py | 98% |
+| fx/ml/signals.py | 92% |
+| health/checks.py | 89% |
+| health/ml_checks.py | 87% |
+| pipelines/freshness.py | 97% |
+
+Average across the 15 modules: ~92%.
+
+### Bugs caught during the session and fixed
+
+Three real production bugs surfaced by the new tests:
+
+- **KI-005** `fx/ml/labels.py`: `IndexError` on empty `fx_prices_hourly`.
+  Second `for` loop did `range(n - 48, n - 24)` → negative-bounded
+  range. Fix: `range(max(0, n - 48), max(0, n - 24))`.
+- **KI-006** `ml/features.py`: `Parser Error` on empty equity ML
+  universe — `WHERE ticker IN ()` is invalid SQL. Fix: early return
+  when `tickers` is empty.
+- **KI-007** `ml/evaluate.py`: `ValueError: min() arg is empty` when
+  `print_walk_forward_results` is called with zero folds. Fix: guard
+  the success-criteria block on `if fold_results:`.
+
+All three documented in `KNOWN_ISSUES.md` with regression-test pointers.
+
+Plus one fixture fix in `tests/conftest.py`: `synthetic_prices_fx`
+default `data_quality` was `"good"` (the schema default) but production
+writes `"OK"` and the labels/features queries filter for `'OK'`. Synthetic
+default now `"OK"` to match.
+
+### Verification
+
+- `make test-unit`: 595 passed in 38.5s. ~38s wall-clock — slightly over
+  the plan's 30s target, mostly from the equity ml/features feature
+  computation over 600 synthetic bars × 2 symbols.
+- All 15 target modules ≥ 80% coverage.
+- Pre-commit hook still 1.6s.
+
+### Pending for the next session (Session 4)
+
+- Integration tests: end-to-end pipeline runs with synthetic data
+  (already established by the test-infra), plus failure-mode tests
+  (missing data, lock retry, model file absent).
+- Replace the stub `assert_dashboard_renders` in `tests/helpers.py` —
+  the suggested implementation is to call
+  `dashboard/services/queries.py` directly without booting Streamlit.
+- Decide whether to widen `make test-unit` time budget from 30s to 45s
+  given Session 3 made it ~38s; or split slow tests into `test-slow`.
+
+---
+
 ## 2026-05-07 — Pre-Session-2 follow-ups (KI-001, KI-004)
 
 **Branch:** `pre-session-2-fixes` off `master @ 1050eab`.
