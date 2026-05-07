@@ -6,6 +6,89 @@ are at the top.
 
 ---
 
+## 2026-05-07 — Session 1: Documentation as Source of Truth
+
+**Branch:** `session-1-documentation` off `master @ f59baf9`.
+
+### What was completed
+
+All 9 tasks from the Session 1 task list:
+
+1. Mapped every database table from `ml/schema.py`, `crypto/schema.py`,
+   `fx/schema.py`, `storage/schema.sql`, and `storage/migrations.py`,
+   plus enumerated the 52 tables in the live DB to confirm complete
+   coverage.
+2. Wrote `DATABASE_SCHEMA.md` — purpose + columns + reader/writer
+   modules per table, grouped by engine. Cross-cutting notes on time
+   conventions, outcome filling, active-model resolution, single-row
+   tables.
+3. Traced each engine's pipeline end-to-end by reading
+   `pipelines/{ml,crypto,fx}_prediction_pipeline.py` and
+   `pipelines/freshness.py`. Captured the chained ExecStart structure,
+   freshness policies, fill_outcomes behavior.
+4. Wrote `ARCHITECTURE.md` — system overview with ASCII data flow,
+   per-engine sections (equity ML, crypto ML, FX ML), the
+   daily-analysis path, dashboard, health check, cross-cutting infra,
+   and the ATSRP external dependency. Plus a "what's not in production"
+   pointer at `legacy/`.
+5. Wrote `OPERATIONS.md` — runbook layer: daily smoke checks, manual
+   pipeline invocations per engine, recovery procedures (DuckDB lock,
+   stale data, missing model file, Telegram, dashboard 502, nginx),
+   deploy procedures, dashboard auth rotation, prediction history
+   queries, source-specific ingestion debugging, escalation matrix.
+6. Wrote `KNOWN_ISSUES.md` — bug tracker with naming convention
+   (KI-0XX open, KI-1XX resolved). 4 open issues (the /review/ 502,
+   plan-vs-codebase drift now resolved, manual model promotion, and
+   `models/saved/` not gitignored) plus 17 resolved entries with
+   Session 5 regression-test pointers.
+7. Expanded `DECISIONS.md` from 5 to 12 ADRs. Added ADR-006 (XGBoost
+   choice), ADR-007 (walk-forward CV), ADR-008 (DuckDB single-file),
+   ADR-009 (service chaining in ExecStart), ADR-010 (freshness guards),
+   ADR-011 (position-aware FX alerts), ADR-012 (per-engine
+   `schema.py`). Verified each claim against active code before
+   recording.
+8. Updated `CLAUDE.md` read-first list to point at the new docs in the
+   right reading order. Appended this Session 1 entry to
+   `SESSION_LOG.md`.
+9. Verified Session 1 exit criteria — every database table documented,
+   every systemd unit referenced via `INFRASTRUCTURE.md` from
+   `ARCHITECTURE.md` and `OPERATIONS.md`, every major decision has an
+   ADR, the new docs are internally cross-linked.
+
+### What was changed
+
+- New: `DATABASE_SCHEMA.md`, `ARCHITECTURE.md`, `OPERATIONS.md`,
+  `KNOWN_ISSUES.md`.
+- `DECISIONS.md`: appended 7 new ADRs.
+- `CLAUDE.md`: read-first list expanded from 5 entries to 8, ordered
+  by what's needed first.
+- `SESSION_LOG.md`: this entry.
+
+No code changes. Session 1 was a pure documentation pass.
+
+### Bugs caught and fixed during the session
+
+- One spec drift caught while writing `DATABASE_SCHEMA.md`: the dead
+  `outcomes/labels.py` file was supposedly resolved in Session 0, but
+  the per-table reader/writer audit confirmed `outcomes/__init__.py`
+  no longer references it. Accurate.
+
+### New known issues to track
+
+None new. All issues recorded as KI entries already existed.
+
+### Pending for the next session (Session 2)
+
+- Build pytest scaffolding: `tests/conftest.py` fixtures for in-memory
+  DuckDB with all schemas applied, synthetic data generators per
+  engine, mock Telegram. CI runner. Coverage reporting.
+- Decide on `models/saved/` gitignore policy (KI-004) before the next
+  retrain otherwise the binaries will grow the repo.
+- Decide on auto-promotion for `*_train_cmd` (KI-003) so the weekly
+  retrain actually changes the live model.
+
+---
+
 ## 2026-05-07 — Session 0: Legacy code cleanup
 
 **Branch:** `session-0-legacy-cleanup` off `master @ 7b46c50`.
