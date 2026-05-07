@@ -52,6 +52,25 @@ The reload-only path silently serves stale config.
 **Regression test (Session 5):** `curl https://mhde.duckdns.org/review/`
 returns 404, not 502.
 
+### KI-008 — daily-analysis Step d invoked nonexistent `priority-refresh-queue` top-level command
+
+**Resolved:** 2026-05-07 (Session 5, found by `tests/regression/test_cli_registry.py::test_systemd_main_commands_invokable`).
+**Symptom.** `run_mhde_daily_analysis.sh` Step d ran
+`main.py priority-refresh-queue --enriched-csv …` but the CLI is
+actually registered as `main.py data priority-refresh-queue` (under
+the `data` group, see `main.py:581`). The wrapper's
+`tee` pipe swallowed the click exit code so `set -e` couldn't catch
+it; the step was silently failing every Mon-Fri 23:15.
+**Fix.** `.claude/local_scripts/run_mhde_daily_analysis.sh` Step d now
+invokes `main.py data priority-refresh-queue …`.
+**Lesson.** `set -euo pipefail` does not propagate failure through
+`tee`. Either drop the tee for guarded commands, set `set -o pipefail`
+explicitly (already on with `set -e`), or add explicit error checks
+after each step.
+**Regression test:** `tests/regression/test_cli_registry.py::test_systemd_main_commands_invokable`
+asserts every `main.py X Y` invoked from systemd / wrappers responds
+to `--help`.
+
 ### KI-005 — `fx/ml/labels.py` IndexError on empty `fx_prices_hourly`
 
 **Resolved:** 2026-05-07 (Session 3, found by `tests/fx/test_labels.py::test_compute_labels_empty_db`).
