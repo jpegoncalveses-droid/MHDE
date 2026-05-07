@@ -267,26 +267,35 @@ def fill_outcomes(conn: duckdb.DuckDBPyConnection):
                 p2.prediction_date,
                 p2.model_id,
                 p2.horizon,
-                (MAX(pd.adjusted_close) / entry.adjusted_close) - 1 AS max_ret,
-                (MIN(pd.adjusted_close) / entry.adjusted_close) - 1 AS max_dd
+                (MAX(pr.adjusted_close) / entry.adjusted_close) - 1 AS max_ret,
+                (MIN(pr.adjusted_close) / entry.adjusted_close) - 1 AS max_dd
             FROM ml_predictions p2
-            JOIN prices_daily entry
-                ON entry.ticker = p2.ticker AND entry.trade_date = p2.prediction_date
-            JOIN prices_daily pd
-                ON pd.ticker = p2.ticker
-                AND pd.trade_date > p2.prediction_date
-                AND pd.trade_date <= p2.prediction_date + CASE
-                    WHEN p2.horizon = '5d' THEN INTERVAL '10 days'
-                    WHEN p2.horizon = '10d' THEN INTERVAL '16 days'
-                    ELSE INTERVAL '30 days'
+            JOIN (
+                SELECT ticker, trade_date, adjusted_close,
+                       ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY trade_date) AS rn
+                FROM prices_daily WHERE adjusted_close > 0
+            ) entry ON entry.ticker = p2.ticker AND entry.trade_date = p2.prediction_date
+            JOIN (
+                SELECT ticker, trade_date, adjusted_close,
+                       ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY trade_date) AS rn
+                FROM prices_daily WHERE adjusted_close > 0
+            ) pr ON pr.ticker = p2.ticker
+                AND pr.rn > entry.rn
+                AND pr.rn <= entry.rn + CASE p2.horizon
+                    WHEN '5d' THEN 5
+                    WHEN '10d' THEN 10
+                    WHEN '20d' THEN 20
+                    ELSE 20
                 END
             WHERE p2.outcome_filled_at IS NULL
-              AND p2.prediction_date <= CURRENT_DATE - CASE
-                    WHEN p2.horizon = '5d' THEN INTERVAL '8 days'
-                    WHEN p2.horizon = '10d' THEN INTERVAL '15 days'
-                    ELSE INTERVAL '28 days'
+            GROUP BY p2.ticker, p2.prediction_date, p2.model_id, p2.horizon,
+                     entry.adjusted_close, entry.rn
+            HAVING COUNT(pr.rn) = CASE p2.horizon
+                    WHEN '5d' THEN 5
+                    WHEN '10d' THEN 10
+                    WHEN '20d' THEN 20
+                    ELSE 20
                 END
-            GROUP BY p2.ticker, p2.prediction_date, p2.model_id, p2.horizon, entry.adjusted_close
         ) sub
         WHERE p.ticker = sub.ticker
           AND p.prediction_date = sub.prediction_date

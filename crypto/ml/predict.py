@@ -175,18 +175,18 @@ def fill_outcomes(conn: duckdb.DuckDBPyConnection):
             JOIN crypto_prices_daily pr ON pred.symbol = pr.symbol
                 AND pr.trade_date > pred.prediction_date
                 AND pr.trade_date <= pred.prediction_date + CASE pred.horizon
-                    WHEN '1d' THEN INTERVAL '3 days'
-                    WHEN '3d' THEN INTERVAL '5 days'
-                    WHEN '5d' THEN INTERVAL '10 days'
-                    WHEN '10d' THEN INTERVAL '16 days'
+                    WHEN '1d' THEN INTERVAL '1 day'
+                    WHEN '3d' THEN INTERVAL '3 days'
+                    WHEN '5d' THEN INTERVAL '5 days'
+                    WHEN '10d' THEN INTERVAL '10 days'
                     ELSE INTERVAL '20 days'
                 END
             WHERE pred.outcome_filled_at IS NULL
               AND pred.prediction_date + CASE pred.horizon
-                    WHEN '1d' THEN INTERVAL '3 days'
-                    WHEN '3d' THEN INTERVAL '5 days'
-                    WHEN '5d' THEN INTERVAL '10 days'
-                    WHEN '10d' THEN INTERVAL '16 days'
+                    WHEN '1d' THEN INTERVAL '1 day'
+                    WHEN '3d' THEN INTERVAL '3 days'
+                    WHEN '5d' THEN INTERVAL '5 days'
+                    WHEN '10d' THEN INTERVAL '10 days'
                     ELSE INTERVAL '20 days'
                 END <= CURRENT_DATE
             GROUP BY pred.symbol, pred.prediction_date, pred.model_id, pred.horizon, entry.close
