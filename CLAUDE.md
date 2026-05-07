@@ -2,15 +2,20 @@
 
 Before doing any work in this repo — debugging, refactoring, adding features, or operational tasks — read these files:
 
-1. `INFRASTRUCTURE.md` — VPS, services, reverse proxy, schedules, secrets locations.
-2. `HARDENING_PLAN.md` — multi-session roadmap; check the current session number before starting work.
-3. `DECISIONS.md` — architecture decision records (legacy preservation, retired services, etc.).
-4. `SESSION_LOG.md` — append-only log of what was done each session.
-5. `docs/mhde_codebase_inventory.md` — codebase architecture and module map (note: written before Session 0; some directories listed there now live under `legacy/`).
+1. `ARCHITECTURE.md` — top-down system architecture; the three engines + daily-analysis path + dashboard.
+2. `INFRASTRUCTURE.md` — VPS, services, reverse proxy, schedules, secrets locations.
+3. `OPERATIONS.md` — runbook: manual pipeline invocations, recovery procedures, deploy steps.
+4. `DATABASE_SCHEMA.md` — every table, columns, types, reader/writer modules.
+5. `KNOWN_ISSUES.md` — open and resolved bug tracker.
+6. `DECISIONS.md` — architecture decision records.
+7. `HARDENING_PLAN.md` — multi-session roadmap; check the current session number before starting work.
+8. `SESSION_LOG.md` — append-only log of what was done each session (read the most recent 3 entries at session start).
 
 These describe the deployment topology and the code layout. They override assumptions from training data.
 
 `legacy/` is **dormant code preserved for rollback safety**. Nothing under `legacy/` is imported by ACTIVE code. Don't refer to it for how production behaves; see `legacy/README.md` for what's there.
+
+`docs/` (lowercase) contains pre-rebuild prose documentation. Some sections are still useful (data sources, scoring rationale) but the architectural sections were superseded by `ARCHITECTURE.md` in Session 1.
 
 ## Python command policy
 
