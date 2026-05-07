@@ -48,3 +48,8 @@ data/processed/mhde_gap_analysis.csv
 .claude/local_scripts/root_cause_breakdown.py
 .claude/local_scripts/scores_momentum_check.py
 .claude/local_scripts/validation_report.py
+
+# Coverage reports
+htmlcov/
+.coverage
+.coverage.*

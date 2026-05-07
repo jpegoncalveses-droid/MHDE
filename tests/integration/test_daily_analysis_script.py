@@ -3,7 +3,7 @@ import os
 import subprocess
 
 SCRIPT = os.path.join(
-    os.path.dirname(__file__), "..", ".claude", "local_scripts", "run_mhde_daily_analysis.sh"
+    os.path.dirname(__file__), "..", "..", ".claude", "local_scripts", "run_mhde_daily_analysis.sh"
 )
 
 
