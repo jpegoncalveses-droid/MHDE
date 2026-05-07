@@ -90,6 +90,93 @@ None. Existing KI-003 (manual model promotion) is the only open item.
 
 ---
 
+## 2026-05-07 — Session 5: Regression Tests
+
+**Branch:** `session-5-regression-tests` off `master @ 8e45129`.
+
+20 dedicated regression tests across 5 files in `tests/regression/`,
+plus a coverage map in `tests/regression/__init__.py` linking each
+KI in `KNOWN_ISSUES.md` to the test that guards it. Found and fixed
+one new production bug (KI-008) in the daily-analysis wrapper.
+
+### What was completed
+
+All 7 tasks. Files added:
+
+- `tests/regression/__init__.py` — KI-→-test mapping table.
+- `tests/regression/test_systemd_units.py` (7 tests). Covers KI-101
+  (retrain timer staggering), KI-102 (equity predict ExecStart chain),
+  KI-106 (no User=/Group= in user-level units), KI-108 (crypto predict
+  6-step chain), KI-109 (health-check timer deployed), KI-112 (every
+  repo unit validates + matches deployed copy).
+- `tests/regression/test_dashboard_structure.py` (3 tests). Covers
+  KI-105 (no module-level DB connection — AST scan that walks only
+  Module.body, not function bodies, after a v1 false positive),
+  KI-113 (outcome columns present in all 3 schemas).
+- `tests/regression/test_legacy_isolation.py` (3 tests). Session 0
+  hold-the-line: no active code imports legacy/, legacy/ exists with
+  ~99 .py files, README explains the dormant status.
+- `tests/regression/test_schema_consistency.py` (4 tests). KI-001
+  (nginx /review/ 404 block in conf), KI-117 (models/saved/ exists),
+  schema migration: every CREATE TABLE has reader+writer in active
+  code (engine schemas + storage/schema.sql, with explicit DORMANT
+  exclusions for `scorecard_experiments` and `promotion_gate_results`).
+- `tests/regression/test_cli_registry.py` (3 tests). Every `main.py`
+  command invoked from systemd / shell wrappers responds to `--help`.
+  KI-004 trained-model artifacts gitignored.
+
+### Bug found and fixed during this session
+
+**KI-008** — `priority-refresh-queue` invoked at the wrong CLI level.
+
+The daily-analysis wrapper `run_mhde_daily_analysis.sh` ran
+`main.py priority-refresh-queue --enriched-csv ...` but the CLI is
+actually registered under the `data` group (`main.py data priority-refresh-queue`,
+defined at `main.py:581`). The wrapper's `tee`-pipe swallows the click
+exit code, so `set -e` couldn't trap it. **Step d has been silently
+failing every Mon-Fri 23:15** since the command was moved under
+`data`.
+
+Fix: changed the wrapper to invoke `main.py data priority-refresh-queue`.
+Recorded as KI-008 with the lesson "set -e doesn't propagate through
+tee — either drop the tee or add explicit error checks."
+
+The new test (`test_systemd_main_commands_invokable`) caught it
+immediately by parsing every `main.py X Y` invocation in systemd /
+shell wrappers and running `--help` on each.
+
+### Coverage map — every KI now has a regression test
+
+See `tests/regression/__init__.py` for the full table. Highlights:
+
+| Layer | Coverage |
+|---|---|
+| Sessions 3 / 4 unit + integration | KI-103, KI-104, KI-107, KI-110, KI-111 (already in place) |
+| Session 5 regression | KI-001, KI-004, KI-005, KI-006, KI-007, KI-008, KI-101, KI-102, KI-105, KI-106, KI-108, KI-109, KI-112, KI-113, KI-116, KI-117 |
+| No test (documentation drift, not code) | KI-002 |
+| Open (will get tests when fixed) | KI-003 |
+
+### Verification
+
+- `make test-regression`: 20 passed in 5.4s.
+- `make test-unit`: 595 passed in 36s (unchanged — regression target is
+  separate per plan).
+- `make test-integration`: 56 passed + 1 skipped in 66s (unchanged).
+
+### Pending for the next session (Session 6)
+
+- Build the 6 monitoring jobs: dashboard-vs-DB consistency, pipeline
+  execution, configuration drift, model performance, data quality,
+  end-to-end smoke. Each fires a Telegram alert on failure.
+- Decide whether to expand pre-commit-hook smoke to include
+  `make test-regression` (5.4s — fits the budget).
+- Investigate how long Step d of daily-analysis has been silently
+  failing in production (KI-008). If priority-refresh-queue.csv
+  hasn't been refreshed in months, the root-cause-enrichment chain
+  may have stale inputs.
+
+---
+
 ## 2026-05-07 — Session 4: Integration Tests
 
 **Branch:** `session-4-integration-tests` off `master @ 985e243`.

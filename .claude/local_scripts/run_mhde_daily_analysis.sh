@@ -44,7 +44,9 @@ log "=== Step c: enrich-root-causes ==="
 
 # ── Step d: priority-refresh-queue ───────────────────────────────────────────
 log "=== Step d: priority-refresh-queue ==="
-"$PYTHON" main.py priority-refresh-queue \
+# Note: this CLI is registered under the `data` group (see main.py
+# `data_priority_refresh_queue_cmd`), not at the top level. KI-008.
+"$PYTHON" main.py data priority-refresh-queue \
     --enriched-csv data/processed/prediction_vs_actual_enriched_rows.csv \
     2>&1 | tee -a "$LOG_FILE"
 
