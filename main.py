@@ -1777,6 +1777,24 @@ def fx_import_data():
         conn.close()
 
 
+@fx.command("refresh-prices")
+def fx_refresh_prices():
+    """Fetch latest hourly bar from Dukascopy and upsert into DuckDB."""
+    from fx.data.refresh import refresh_prices
+
+    cfg, conn = _engine_setup()
+    try:
+        result = refresh_prices(conn)
+        click.echo(
+            f"Refresh: fetch={result['fetch_status']} "
+            f"bar={result['fetched_hour']} inserted={result['rows_inserted']}"
+        )
+        if result["fetch_error"]:
+            click.echo(f"  note: {result['fetch_error']}")
+    finally:
+        conn.close()
+
+
 @fx.command("hypothesis-tests")
 def fx_hypothesis_tests():
     """Run signal validation hypothesis tests (checkpoint gate)."""
@@ -1810,9 +1828,18 @@ def fx_predict(dt, no_alert):
     from datetime import datetime as dt_cls
     from fx.ml.predict import score_bar, fill_outcomes
     from fx.ml.signals import generate_signal, send_telegram_alert
+    from pipelines.freshness import check_fx_freshness
 
     cfg, conn = _engine_setup()
     try:
+        freshness = check_fx_freshness(conn)
+        if not freshness.is_fresh:
+            click.echo(f"WARNING: FX data is stale ({freshness.message})")
+            import logging as _logging
+            _logging.getLogger("mhde.fx.predict").warning(
+                "DATA STALE: %s", freshness.message
+            )
+
         bar_dt = dt_cls.fromisoformat(dt) if dt else None
         result = score_bar(conn, bar_dt)
 
@@ -1890,6 +1917,49 @@ def fx_backfill_labels():
         conn.close()
 
 
+@fx.command("bot")
+def fx_bot():
+    """Run the FX Telegram bot (long-polling, blocks forever)."""
+    import logging as _logging
+    from fx.bot.telegram_bot import run_bot
+
+    _logging.basicConfig(
+        level=_logging.INFO,
+        format="%(asctime)s %(name)-30s %(levelname)-8s %(message)s",
+    )
+    run_bot()
+
+
+@fx.command("set-position")
+@click.option("--holding", required=True, type=click.Choice(["GBP", "EUR"]),
+              help="Currency you currently hold.")
+@click.option("--rate", required=True, type=float, help="GBP/EUR rate at conversion.")
+@click.option("--date", "entry_date", required=True,
+              help="Entry date (YYYY-MM-DD or ISO timestamp).")
+def fx_set_position(holding, rate, entry_date):
+    """Record current FX position (HOLDING_GBP or HOLDING_EUR)."""
+    from datetime import datetime as dt_cls
+    from fx.schema import create_all_tables
+
+    cfg, conn = _engine_setup()
+    try:
+        create_all_tables(conn)
+        try:
+            dt_obj = dt_cls.fromisoformat(entry_date)
+        except ValueError:
+            dt_obj = dt_cls.strptime(entry_date, "%Y-%m-%d")
+        position = f"HOLDING_{holding}"
+        conn.execute("DELETE FROM fx_position")
+        conn.execute(
+            "INSERT INTO fx_position (position, entry_rate, entry_date, updated_at) "
+            "VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+            [position, rate, dt_obj],
+        )
+        click.echo(f"Position set: {position} @ {rate} on {dt_obj.date()}")
+    finally:
+        conn.close()
+
+
 @fx.command("backfill-macro")
 def fx_backfill_macro():
     """Fetch macro indicators from FRED API."""
@@ -1901,6 +1971,20 @@ def fx_backfill_macro():
         click.echo(f"Macro backfill complete: {total:,} observations")
     finally:
         conn.close()
+
+
+@cli.group()
+def system():
+    """System-level commands (health checks, diagnostics)."""
+
+
+@system.command("health-check")
+def system_health_check():
+    """Run morning health check across all 3 engines and post Telegram summary."""
+    from pipelines.health_check import run_health_check
+
+    ok = run_health_check()
+    raise SystemExit(0 if ok else 1)
 
 
 if __name__ == "__main__":

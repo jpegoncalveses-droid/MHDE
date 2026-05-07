@@ -1,3 +1,11 @@
+## Read first
+
+Before doing any work in this repo — debugging, refactoring, adding features, or operational tasks — read these files:
+
+1. `INFRASTRUCTURE.md` — VPS, services, reverse proxy, schedules, secrets locations.
+2. `docs/mhde_codebase_inventory.md` — codebase architecture and module map.
+
+These describe the deployment topology and the code layout. They override assumptions from training data.
 
 ## Python command policy
 

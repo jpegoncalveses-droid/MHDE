@@ -17,8 +17,15 @@ def run_fx_prediction_pipeline(
 ) -> dict:
     from fx.ml.predict import score_bar, fill_outcomes
     from fx.ml.signals import generate_signal, send_telegram_alert
+    from pipelines.freshness import check_fx_freshness
 
     logger.info("Starting FX prediction pipeline")
+
+    freshness = check_fx_freshness(conn)
+    if not freshness.is_fresh:
+        logger.warning("DATA STALE: %s", freshness.message)
+    else:
+        logger.info("Freshness OK: %s", freshness.message)
 
     result = score_bar(conn, bar_datetime)
 

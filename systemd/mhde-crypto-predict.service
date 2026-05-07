@@ -6,7 +6,13 @@ After=network.target
 Type=oneshot
 User=jpcg
 WorkingDirectory=/home/jpcg/MHDE
-ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto predict
 Environment=MHDE_DB_PATH=/home/jpcg/MHDE/data/mhde.duckdb
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto backfill-prices
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto backfill-funding
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto backfill-oi
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto backfill-labels
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto backfill-features
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto predict
 StandardOutput=append:/home/jpcg/MHDE/data/logs/crypto_predict.log
 StandardError=append:/home/jpcg/MHDE/data/logs/crypto_predict.log
+TimeoutStartSec=1800

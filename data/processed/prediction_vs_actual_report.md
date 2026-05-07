@@ -1,6 +1,6 @@
 # Prediction vs Actual Spike Report
 
-Generated: 2026-05-04 | Lookback: 30d | Total events: 1518
+Generated: 2026-05-06 | Lookback: 30d | Total events: 1518
 
 > **Shadow-only: no production scores were changed.**
 
@@ -3112,10 +3112,10 @@ _(no events in this window)_
 |------------------|-------|
 | `data_gap` | 1482 |
 | `scoring_gap` | 9 |
-| `feature_gap` | 16 |
+| `feature_gap` | 19 |
 | `near_miss` | 4 |
 | `universe_gap` | 0 |
-| `unknown` | 7 |
+| `unknown` | 4 |
 
 | Root Cause | Count |
 |------------|-------|
@@ -3124,9 +3124,9 @@ _(no events in this window)_
 | `polygon_fundamentals_missing` | 15 |
 | `ifrs_mapping_gap` | 72 |
 | `no_evidence_no_filing` | 1 |
-| `missing_earnings_context` | 1 |
-| `sector_cluster_move` | 15 |
+| `missing_earnings_context` | 5 |
+| `sector_cluster_move` | 14 |
 | `low_catalyst_score` | 8 |
 | `near_threshold_scored` | 4 |
-| `unknown` | 7 |
+| `unknown` | 4 |
 

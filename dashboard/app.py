@@ -17,19 +17,47 @@ st.set_page_config(
 
 require_auth()
 
-tab_equities, tab_crypto, tab_fx = st.tabs(["Equities", "Crypto", "FX"])
-
 db_path = os.environ.get("MHDE_DB_PATH", "data/mhde.duckdb")
 
-try:
-    conn = duckdb.connect(db_path)
-except Exception as e:
-    st.error(f"Database error: {e}")
-    st.stop()
+
+def _open_conn():
+    """Fresh read-only DuckDB connection. Opened per section so each render
+    sees the latest committed state from the writer processes and never holds
+    a write lock that would block them."""
+    try:
+        return duckdb.connect(db_path, read_only=True)
+    except Exception as e:
+        st.error(f"Database error: {e}")
+        st.stop()
+
+
+# --- System Health: Data Freshness (all engines) ---
+from pipelines.freshness import check_all as _check_all_freshness
+
+conn = _open_conn()
+_freshness_reports = _check_all_freshness(conn)
+with st.expander(
+    "System Health — Data Freshness",
+    expanded=any(not r.is_fresh for r in _freshness_reports.values()),
+):
+    cols = st.columns(len(_freshness_reports))
+    for col, (engine, report) in zip(cols, _freshness_reports.items()):
+        with col:
+            icon = "🟢" if report.is_fresh else "🔴"
+            label = {"equity": "Equity", "crypto": "Crypto", "fx": "FX"}[engine]
+            latest_str = str(report.latest) if report.latest is not None else "—"
+            st.metric(f"{icon} {label}", latest_str, delta=f"age: {report.age_str}")
+            st.caption(f"Threshold: {report.threshold}")
+            if not report.is_fresh:
+                st.warning(report.message)
+conn.close()
+
+tab_equities, tab_crypto, tab_fx = st.tabs(["Equities", "Crypto", "FX"])
 
 # ===============================================================================
 # EQUITIES TAB
 # ===============================================================================
+conn = _open_conn()
 with tab_equities:
     st.title("ML Predictions")
 
@@ -265,9 +293,12 @@ with tab_equities:
                             hide_index=True,
                         )
 
+conn.close()
+
 # ===============================================================================
 # CRYPTO TAB
 # ===============================================================================
+conn = _open_conn()
 with tab_crypto:
     st.title("Crypto Predictions")
 
@@ -452,11 +483,49 @@ with tab_crypto:
                         hide_index=True,
                     )
 
+conn.close()
+
 # ===============================================================================
 #  TAB 3 — FX (GBP/EUR)
 # ===============================================================================
+conn = _open_conn()
 with tab_fx:
-    st.header("GBP/EUR FX Predictions")
+    header_col, refresh_col = st.columns([5, 1])
+    header_col.header("GBP/EUR FX Predictions")
+    if refresh_col.button("↻ Refresh", key="fx_refresh", use_container_width=True):
+        st.rerun()
+
+    try:
+        fx_data_as_of = conn.execute(
+            "SELECT MAX(datetime_utc) FROM fx_prices_hourly"
+        ).fetchone()[0]
+    except Exception:
+        fx_data_as_of = None
+    if fx_data_as_of is not None:
+        st.caption(f"Data as of bar: {fx_data_as_of} UTC")
+
+    # --- Current Position ---
+    try:
+        fx_position_row = conn.execute("""
+            SELECT position, entry_rate, entry_date, updated_at
+            FROM fx_position ORDER BY updated_at DESC LIMIT 1
+        """).fetchone()
+    except Exception:
+        fx_position_row = None
+
+    if fx_position_row is None:
+        st.info(
+            "No FX position recorded. Set with: "
+            "`python main.py fx set-position --holding EUR --rate 1.1602 --date 2026-04-30`"
+        )
+        fx_position = None
+    else:
+        fx_position, fx_entry_rate, fx_entry_date, fx_pos_updated = fx_position_row
+        currency = "EUR" if fx_position == "HOLDING_EUR" else "GBP"
+        pos_col1, pos_col2, pos_col3 = st.columns(3)
+        pos_col1.metric("Current Position", f"Holding {currency}")
+        pos_col2.metric("Entry Rate", f"{fx_entry_rate:.5f}")
+        pos_col3.metric("Entry Date", str(fx_entry_date)[:10])
 
     # --- Model Health ---
     try:
@@ -533,6 +602,25 @@ with tab_fx:
             st.markdown(f"### Signal: :{signal_color}[{fx_signal}]")
             if fx_price:
                 st.caption(f"GBP/EUR: {fx_price:.5f} | Bar: {fx_latest_dt}")
+
+            # --- Position-aware recommendation ---
+            if fx_position is not None and fx_signal != "WAIT":
+                if fx_position == "HOLDING_EUR" and fx_signal == "SELL_GBP":
+                    st.success(
+                        "**Hold position.** GBP/EUR expected to drop "
+                        "(favorable for your EUR position)."
+                    )
+                elif fx_position == "HOLDING_EUR" and fx_signal == "BUY_GBP":
+                    st.warning(
+                        "**Consider converting back to GBP.** GBP/EUR expected to rise "
+                        "(unfavorable for EUR position)."
+                    )
+                elif fx_position == "HOLDING_GBP" and fx_signal == "SELL_GBP":
+                    st.warning("**Consider converting to EUR now.**")
+                elif fx_position == "HOLDING_GBP" and fx_signal == "BUY_GBP":
+                    st.success(
+                        "**Hold position.** GBP/EUR expected to rise."
+                    )
 
             # Probabilities display
             col1, col2 = st.columns(2)

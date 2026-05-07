@@ -23,8 +23,15 @@ def run_crypto_prediction_pipeline(
     skip_outcomes: bool = False,
 ) -> dict:
     from crypto.ml.predict import score_universe, fill_outcomes, print_predictions
+    from pipelines.freshness import check_crypto_freshness
 
     logger.info("Starting crypto prediction pipeline")
+
+    freshness = check_crypto_freshness(conn)
+    if not freshness.is_fresh:
+        logger.warning("DATA STALE — skipping crypto prediction. %s", freshness.message)
+        return {"skipped": "stale_data", "freshness": freshness}
+    logger.info("Freshness OK: %s", freshness.message)
 
     if not skip_features and prediction_date is not None:
         _ensure_features(conn, prediction_date)

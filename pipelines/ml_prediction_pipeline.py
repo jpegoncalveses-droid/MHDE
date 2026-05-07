@@ -33,8 +33,15 @@ def run_prediction_pipeline(
         skip_outcomes: If True, skip filling historical outcomes
     """
     from ml.predict import score_universe, fill_outcomes, print_predictions
+    from pipelines.freshness import check_equity_freshness
 
     logger.info("Starting ML prediction pipeline")
+
+    freshness = check_equity_freshness(conn)
+    if not freshness.is_fresh:
+        logger.warning("DATA STALE — skipping equity prediction. %s", freshness.message)
+        return {"skipped": "stale_data", "freshness": freshness}
+    logger.info("Freshness OK: %s", freshness.message)
 
     # Stage 1: Ensure features exist for prediction_date
     if not skip_features and prediction_date is not None:
