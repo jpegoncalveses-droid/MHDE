@@ -3,9 +3,14 @@
 Before doing any work in this repo — debugging, refactoring, adding features, or operational tasks — read these files:
 
 1. `INFRASTRUCTURE.md` — VPS, services, reverse proxy, schedules, secrets locations.
-2. `docs/mhde_codebase_inventory.md` — codebase architecture and module map.
+2. `HARDENING_PLAN.md` — multi-session roadmap; check the current session number before starting work.
+3. `DECISIONS.md` — architecture decision records (legacy preservation, retired services, etc.).
+4. `SESSION_LOG.md` — append-only log of what was done each session.
+5. `docs/mhde_codebase_inventory.md` — codebase architecture and module map (note: written before Session 0; some directories listed there now live under `legacy/`).
 
 These describe the deployment topology and the code layout. They override assumptions from training data.
+
+`legacy/` is **dormant code preserved for rollback safety**. Nothing under `legacy/` is imported by ACTIVE code. Don't refer to it for how production behaves; see `legacy/README.md` for what's there.
 
 ## Python command policy
 
