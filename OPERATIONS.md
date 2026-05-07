@@ -484,6 +484,49 @@ fetcher is brittle — if it returns 0 bars, retry; if it consistently
 fails, the upstream is most likely 404'ing for a recent hour (data
 sometimes lags by 30-60 min).
 
+### TwelveData (FX) — parallel to Dukascopy during migration
+
+`fx/data/refresh_twelvedata.py` is the second FX fetcher running in
+parallel to Dukascopy during the data-source migration (DECISIONS.md
+ADR-013). Both run on the hourly `mhde-fx-predict.timer` firing.
+TwelveData writes to `fx_prices_hourly_twelvedata`; Dukascopy continues
+writing the production `fx_prices_hourly`. Predict / features / labels
+still read Dukascopy only — there is no behavior change for the engine
+yet.
+
+Setup:
+1. Get a free key at https://twelvedata.com (800 calls/day; we use 24).
+2. Add `TWELVEDATA_API_KEY=...` to `/home/jpcg/MHDE/.env` (mode 600, never committed).
+3. After deploying the updated `mhde-fx-predict.service`, watch the
+   first hourly firing in `data/logs/fx_predict.log` to confirm the
+   `Refresh (TwelveData): fetch=OK …` line appears.
+
+Manual run (one-off):
+```bash
+venv/bin/python main.py fx refresh-prices-twelvedata
+```
+
+Comparison + cutover gate (after 24 hours of parallel run):
+```bash
+venv/bin/python main.py fx compare-sources --hours 24 --threshold-pips 5
+# Exit 0  → all matched bars within 5 pips → eligible for Session 2 cutover
+# Exit 1  → at least one breach → investigate before cutover
+```
+
+The `compare-sources` report shows per-bar pip differences plus
+asymmetric coverage (bars present in only one source).
+
+Cutover (Session 2 of the migration, run separately):
+- Switch the predict / features / labels reads from `fx_prices_hourly`
+  to `fx_prices_hourly_twelvedata`.
+- Optionally drop the Dukascopy ExecStart from `mhde-fx-predict.service`.
+- Drop `fx_prices_hourly_twelvedata` table after 1 week of post-cutover
+  stability and rename the live table back to `fx_prices_hourly`.
+
+Rollback path during the migration window: revert the
+`fx refresh-prices-twelvedata` ExecStart line. The mirror table is
+read by nothing in production; leaving it populated is harmless.
+
 ### FRED (FX macro + equity macro)
 
 `fx/data/macro.py` and `ingestion/ingest_macro.py`. Needs `FRED_API_KEY`.

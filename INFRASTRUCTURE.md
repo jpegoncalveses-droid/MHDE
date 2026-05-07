@@ -139,6 +139,7 @@ All in `/home/jpcg/MHDE/data/logs/`. Files written by system-level services are 
 | `ALPHA_VANTAGE_API_KEY` | Equity prices |
 | `POLYGON_API_KEY` | Equity prices |
 | `FRED_API_KEY` | FX/macro (BoE rate, ECB rate, EUR/USD, GBP/USD) |
+| `TWELVEDATA_API_KEY` | FX hourly bars (parallel to Dukascopy during migration; eventual replacement). Free tier 800 calls/day; we use 24. See `OPERATIONS.md` "FX data source migration". |
 | `NVIDIA_API_KEY`, `MHDE_LLM_PROVIDER`, `MHDE_NVIDIA_MODEL` | LLM analysis |
 | `OPENAI_API_KEY` | LLM analysis (fallback) |
 | `REVIEW_UI_USERNAME`, `REVIEW_UI_PASSWORD` | Review server basic auth |
