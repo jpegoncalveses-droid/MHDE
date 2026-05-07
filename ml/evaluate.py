@@ -36,23 +36,24 @@ def print_walk_forward_results(results: list[dict], label_col: str, horizon: str
         print(f"  {'AVG':<4} | {'':23} | {avg_base*100:>4.1f}% | {avg_p20:>7.3f} | "
               f"{avg_prec*100:>6.1f}% | {avg_rec*100:>5.1f}% | {avg_lift:>5.2f} | {avg_auc:>5.3f} |")
 
-    # Success criteria check
-    print(f"\n  SUCCESS CRITERIA:")
-    print(f"    Lift > 1.3 consistently: ", end="")
-    lifts = [r["lift_over_base"] for r in fold_results]
-    if all(l > 1.3 for l in lifts):
-        print(f"PASS (min={min(lifts):.2f})")
-    elif np.mean(lifts) > 1.3:
-        print(f"PARTIAL (avg={np.mean(lifts):.2f}, min={min(lifts):.2f})")
-    else:
-        print(f"FAIL (avg={np.mean(lifts):.2f})")
+    # Success criteria check (skipped when no folds completed)
+    if fold_results:
+        print(f"\n  SUCCESS CRITERIA:")
+        print(f"    Lift > 1.3 consistently: ", end="")
+        lifts = [r["lift_over_base"] for r in fold_results]
+        if all(l > 1.3 for l in lifts):
+            print(f"PASS (min={min(lifts):.2f})")
+        elif np.mean(lifts) > 1.3:
+            print(f"PARTIAL (avg={np.mean(lifts):.2f}, min={min(lifts):.2f})")
+        else:
+            print(f"FAIL (avg={np.mean(lifts):.2f})")
 
-    print(f"    AUC > 0.55:              ", end="")
-    aucs = [r["auc_roc"] for r in fold_results]
-    if all(a > 0.55 for a in aucs):
-        print(f"PASS (min={min(aucs):.3f})")
-    else:
-        print(f"{'PASS' if np.mean(aucs) > 0.55 else 'FAIL'} (avg={np.mean(aucs):.3f})")
+        print(f"    AUC > 0.55:              ", end="")
+        aucs = [r["auc_roc"] for r in fold_results]
+        if all(a > 0.55 for a in aucs):
+            print(f"PASS (min={min(aucs):.3f})")
+        else:
+            print(f"{'PASS' if np.mean(aucs) > 0.55 else 'FAIL'} (avg={np.mean(aucs):.3f})")
 
     # Feature importance
     if final and "feature_importance" in final:

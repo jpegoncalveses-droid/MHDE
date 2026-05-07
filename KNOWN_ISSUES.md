@@ -52,6 +52,42 @@ The reload-only path silently serves stale config.
 **Regression test (Session 5):** `curl https://mhde.duckdns.org/review/`
 returns 404, not 502.
 
+### KI-005 — `fx/ml/labels.py` IndexError on empty `fx_prices_hourly`
+
+**Resolved:** 2026-05-07 (Session 3, found by `tests/fx/test_labels.py::test_compute_labels_empty_db`).
+**Symptom.** `compute_labels(conn)` raised `IndexError: index -48 is out
+of bounds for axis 0 with size 0` when the input table was empty. The
+second loop did `range(n - 48, n - 24)` which produces a negative-bounded
+range (e.g. `range(-48, -24)`) that iterates 24 times.
+**Fix.** `for i in range(max(0, n - 48), max(0, n - 24)):` — clamps both
+bounds to non-negative.
+**Why it mattered.** The freshness guard skips empty-DB cases at the
+pipeline level, but the underlying function still shouldn't crash on
+its own — and the unit-test fixture exposed it immediately.
+**Regression test:** `tests/fx/test_labels.py::test_compute_labels_empty_db`.
+
+### KI-006 — `ml/features.py` ParserException when ML universe is empty
+
+**Resolved:** 2026-05-07 (Session 3, found by `tests/equity/test_ml_features.py::test_compute_features_empty_universe`).
+**Symptom.** `compute_features(conn)` raised
+`Parser Error: syntax error at or near ")"` when the equity ML
+universe (companies with `market_cap >= 10B`, sector set, not ETF,
+active) was empty — `_load_fundamentals` built a `WHERE ticker IN ()`
+which is invalid SQL.
+**Fix.** Early return `0` from `compute_features` when the universe is
+empty, before any downstream queries.
+**Regression test:** `tests/equity/test_ml_features.py::test_compute_features_empty_universe`.
+
+### KI-007 — `ml/evaluate.py` ValueError on zero-fold walk-forward results
+
+**Resolved:** 2026-05-07 (Session 3, found by `tests/equity/test_ml_evaluate.py::test_print_no_folds`).
+**Symptom.** `print_walk_forward_results(results=[], ...)` raised
+`ValueError: min() iterable argument is empty` because the success-criteria
+block computed `min(lifts)` / `max(aucs)` over the empty list.
+**Fix.** Guarded the success-criteria block with `if fold_results:` so
+the report falls through cleanly when no folds completed.
+**Regression test:** `tests/equity/test_ml_evaluate.py::test_print_no_folds`.
+
 ### KI-002 — Plan-vs-codebase drift in `HARDENING_PLAN.md`
 
 **Resolved:** `f59baf9` 2026-05-07.
