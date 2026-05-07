@@ -1,0 +1,11 @@
+[Unit]
+Description=MHDE monitor: repo ↔ deployed systemd config drift
+After=network.target
+
+[Service]
+Type=oneshot
+User=jpcg
+WorkingDirectory=/home/jpcg/MHDE
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py monitor config-drift
+StandardOutput=append:/home/jpcg/MHDE/data/logs/monitor_config_drift.log
+StandardError=append:/home/jpcg/MHDE/data/logs/monitor_config_drift.log

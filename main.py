@@ -1987,5 +1987,51 @@ def system_health_check():
     raise SystemExit(0 if ok else 1)
 
 
+@cli.group()
+def monitor():
+    """Production monitors that fire Telegram alerts on detected anomalies.
+
+    See HARDENING_PLAN.md Session 6 and OPERATIONS.md "Monitors" for
+    schedules and intent. MONITORING_DRY_RUN=true suppresses real
+    Telegram sends.
+    """
+
+
+@monitor.command("dashboard-consistency")
+def monitor_dashboard_consistency():
+    from monitoring import dashboard_consistency
+    raise SystemExit(dashboard_consistency.main())
+
+
+@monitor.command("pipeline-execution")
+def monitor_pipeline_execution():
+    from monitoring import pipeline_execution
+    raise SystemExit(pipeline_execution.main())
+
+
+@monitor.command("config-drift")
+def monitor_config_drift():
+    from monitoring import config_drift
+    raise SystemExit(config_drift.main())
+
+
+@monitor.command("model-performance")
+def monitor_model_performance():
+    from monitoring import model_performance
+    raise SystemExit(model_performance.main())
+
+
+@monitor.command("data-quality")
+def monitor_data_quality():
+    from monitoring import data_quality
+    raise SystemExit(data_quality.main())
+
+
+@monitor.command("smoke")
+def monitor_smoke():
+    from monitoring import smoke_test
+    raise SystemExit(smoke_test.main())
+
+
 if __name__ == "__main__":
     cli()

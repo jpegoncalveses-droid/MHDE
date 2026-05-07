@@ -1,0 +1,12 @@
+[Unit]
+Description=MHDE monitor: dashboard ↔ DB consistency check
+After=network.target
+
+[Service]
+Type=oneshot
+User=jpcg
+WorkingDirectory=/home/jpcg/MHDE
+Environment=MHDE_DB_PATH=/home/jpcg/MHDE/data/mhde.duckdb
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py monitor dashboard-consistency
+StandardOutput=append:/home/jpcg/MHDE/data/logs/monitor_dashboard.log
+StandardError=append:/home/jpcg/MHDE/data/logs/monitor_dashboard.log

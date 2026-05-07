@@ -1,0 +1,11 @@
+[Unit]
+Description=MHDE monitor: pipeline execution hourly
+
+[Timer]
+# Hourly at :40 — staggered from FX predict (:05) so we don't compete for the lock
+OnCalendar=hourly
+OnCalendar=*-*-* *:40:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

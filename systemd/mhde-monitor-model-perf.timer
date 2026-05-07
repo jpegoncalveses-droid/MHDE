@@ -1,0 +1,9 @@
+[Unit]
+Description=MHDE monitor: model performance daily
+
+[Timer]
+OnCalendar=*-*-* 13:15:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

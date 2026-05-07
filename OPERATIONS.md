@@ -441,3 +441,118 @@ hard failure).
 | `mhde-fx-bot.service` keeps restarting | No | Check `journalctl --user -u mhde-fx-bot` for stack trace; likely token issue |
 | DuckDB file size grows >2 GB/week | Yes | If >5 GB total, check for runaway INSERTs (probably `llm_runs` or `features`) |
 | Dashboard shows different number than `SELECT` | No | Real bug — file in `KNOWN_ISSUES.md` |
+
+---
+
+## Monitors (Session 6)
+
+Six runtime monitors fire Telegram alerts on detected anomalies. Source
+under `monitoring/`, dispatched via `main.py monitor <name>`. Schedules
+are systemd-driven from `systemd/mhde-monitor-*.{service,timer}`.
+
+### Monitor catalog
+
+| Monitor | Schedule (UTC) | Module | What it checks |
+|---|---|---|---|
+| `dashboard-consistency` | every 6h at :30 | `monitoring/dashboard_consistency.py` | Dashboard query layer matches direct DB query (counts, latest-date rows). |
+| `pipeline-execution` | hourly at :40 | `monitoring/pipeline_execution.py` | Each engine has a fresh-enough latest write + row count ≥ 50% of 14-day rolling avg. |
+| `config-drift` | daily 12:15 | `monitoring/config_drift.py` | Repo `systemd/*` ↔ deployed copies under `/etc/systemd/system` and `~/.config/systemd/user`. |
+| `model-performance` | daily 13:15 | `monitoring/model_performance.py` | Rolling 7d precision per active model ≥ 0.8× walk-forward baseline. |
+| `data-quality` | daily 02:00 | `monitoring/data_quality.py` | Per engine: distinct ticker / symbol count on latest day ≥ 80% of 14-day avg. |
+| `smoke` | hourly at :50 | `monitoring/smoke_test.py` | DB opens, every active joblib loads, `dashboard.services.queries.get_overview_stats` returns. |
+
+Schedules are staggered to avoid the FX hourly :05 firing window and the
+nightly daily-analysis 23:15 lock window.
+
+### Manual invocation
+
+```bash
+# Always invoke via the monitor CLI group
+venv/bin/python main.py monitor smoke
+
+# Dry-run mode — compute the alert payload but never call Telegram
+MONITORING_DRY_RUN=true venv/bin/python main.py monitor smoke
+
+# All six in sequence (useful for end-to-end exercising on a fresh deploy)
+for m in dashboard-consistency pipeline-execution config-drift \
+         model-performance data-quality smoke; do
+    MONITORING_DRY_RUN=true venv/bin/python main.py monitor "$m"
+done
+```
+
+Exit code 0 = ok, 1 = warn or fail. The systemd unit interprets non-zero
+as "service failed" — check `journalctl --user -u mhde-monitor-X.service`
+for the alert payload that was logged.
+
+### Deploying the monitors
+
+The repo has the unit files; deploying installs them as user-level
+timers (parallel to `mhde-health-check`). Same pattern as
+`OPERATIONS.md > Deploying a new systemd unit`:
+
+```bash
+cd /home/jpcg/MHDE
+for u in systemd/mhde-monitor-*.service systemd/mhde-monitor-*.timer; do
+    cp "$u" ~/.config/systemd/user/
+done
+systemctl --user daemon-reload
+for t in mhde-monitor-{dashboard,pipeline,config-drift,model-perf,data-quality,smoke}.timer; do
+    systemctl --user enable --now "$t"
+done
+systemctl --user list-timers | grep mhde-monitor
+```
+
+After enabling, watch `data/logs/monitor_*.log` for the first scheduled
+firing and confirm the result is OK before relying on the alert
+discipline.
+
+### Tuning thresholds
+
+Constants live at the top of each `monitoring/*.py` file:
+
+| Constant | File | Default | Notes |
+|---|---|---|---|
+| `RECENCY_BUDGET` | `pipeline_execution.py` | 27h equity/crypto, 2h FX | Grace window after schedule before flagging |
+| `DEGRADATION_THRESHOLD` | `model_performance.py` | 0.80 | Raise to 0.85 to alert sooner; lower if false-positives are noisy |
+| `COVERAGE_FLOOR` | `data_quality.py` | 0.80 | Per-engine ratio cutoff vs 14d avg |
+
+### What an alert looks like
+
+Every alert has the form:
+
+```
+[!] MHDE monitor: <name>
+
+<title>
+
+<body — bullet list of specific failures>
+
+Metrics:
+  <key>: <value>
+  ...
+```
+
+Severity prefix: `[i]` info, `[!]` warn, `[!!]` critical.
+
+### Overlap with existing health check
+
+The existing `mhde-health-check.service` (`pipelines/health_check.py`)
+runs once daily and covers schema / DB reachability / SEC / freshness
+basics. The Session 6 monitors are intentionally orthogonal:
+
+- `health-check` = "is the system running at all"
+- monitors = "is the running system producing the right outputs"
+
+There is one overlap area worth being explicit about:
+`monitoring/smoke_test.py` checks active joblib loadability, which is
+adjacent to `health/ml_checks.py:check_trained_models`. The smoke
+check runs hourly while the health check runs daily — keep both. The
+hourly cadence on smoke means we catch a missing joblib within an hour
+of it disappearing (see KI-009 for an instance where this was already
+useful).
+
+### Suppressing alerts (planned outages, retraining)
+
+Set `MONITORING_DRY_RUN=true` in the systemd Environment temporarily,
+or `systemctl --user stop mhde-monitor-X.timer`. Re-enable after the
+window closes.
