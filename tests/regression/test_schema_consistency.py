@@ -43,6 +43,73 @@ def test_models_saved_path_exists():
     assert p.is_dir(), f"{p} missing — would break ml/train.py:26 et al"
 
 
+# KI-009: every is_active=TRUE row's model_path must resolve and load -----------
+
+
+def test_active_model_paths_resolve():
+    """For every `is_active=TRUE` row across the 3 engine `*_model_runs`
+    tables, the `model_path` must:
+      - resolve to a file on disk, and
+      - load successfully via `joblib.load`.
+
+    The Session 5 `test_models_saved_path_exists` only checked the
+    parent directory; it missed KI-009 because the directory existed
+    even when the joblibs were gone. This test walks each
+    `is_active=TRUE` row and validates the actual artifact.
+
+    Skipped on environments where the production DB is absent
+    (CI / fresh checkout).
+    """
+    import duckdb
+    import joblib
+    import pytest
+
+    db_path = REPO / "data" / "mhde.duckdb"
+    if not db_path.exists():
+        pytest.skip(f"production DB at {db_path} not available")
+
+    conn = duckdb.connect(str(db_path), read_only=True)
+    try:
+        problems: list[str] = []
+        for engine, table in (
+            ("equity", "ml_model_runs"),
+            ("crypto", "crypto_ml_model_runs"),
+            ("fx", "fx_ml_model_runs"),
+        ):
+            rows = conn.execute(
+                f"SELECT model_id, model_path FROM {table} WHERE is_active = true"
+            ).fetchall()
+            if not rows:
+                # No active models is acceptable for an engine that hasn't
+                # been trained yet — but is unusual on a real system.
+                continue
+            for model_id, model_path in rows:
+                full = (REPO / model_path).resolve() if not Path(model_path).is_absolute() \
+                       else Path(model_path)
+                if not full.exists():
+                    problems.append(f"{engine}/{model_id}: path missing → {full}")
+                    continue
+                try:
+                    bundle = joblib.load(full)
+                except Exception as exc:
+                    problems.append(
+                        f"{engine}/{model_id}: joblib.load failed → {exc}"
+                    )
+                    continue
+                # Sanity: bundle must have the keys predict.py reads.
+                missing_keys = {"model", "platt", "medians"} - set(bundle.keys())
+                if missing_keys:
+                    problems.append(
+                        f"{engine}/{model_id}: bundle missing keys {missing_keys}"
+                    )
+        assert not problems, (
+            "Active model paths failed to resolve / load. KI-009 lesson. "
+            f"\n  " + "\n  ".join(problems)
+        )
+    finally:
+        conn.close()
+
+
 # KI-001: nginx /review/ → 404 block in conf -----------------------------------
 
 

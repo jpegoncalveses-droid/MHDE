@@ -185,12 +185,36 @@ ls models/saved/ models/saved/crypto/ models/saved/fx/ 2>/dev/null
 ```
 
 **Recovery.**
-- If the joblib file genuinely went missing: rerun the corresponding
-  retrain (`ml train`, `crypto retrain`, or `fx retrain`) — that
-  writes a new joblib and a new `*_model_runs` row. Then update
-  `is_active=TRUE` on the new row (and `FALSE` on the old).
-- If a different `is_active=TRUE` exists pointing at a path that
-  doesn't exist, fix the row directly via SQL.
+- Re-train each affected horizon. As of Session 7 all three engines'
+  train commands auto-deactivate the prior `is_active=TRUE` row for
+  the same `(horizon, target_threshold/target_pips)` tuple before
+  inserting the new one — no manual UPDATE needed:
+
+  ```bash
+  # Equity (one per active horizon)
+  venv/bin/python main.py ml train --label label_5d_3pct  --horizon 5d  --threshold 0.03
+  venv/bin/python main.py ml train --label label_10d_5pct --horizon 10d --threshold 0.05
+  venv/bin/python main.py ml train --label label_20d_5pct --horizon 20d --threshold 0.05
+  # Crypto / FX use their own retrain commands which loop over horizons.
+  venv/bin/python main.py crypto retrain
+  venv/bin/python main.py fx retrain
+  ```
+
+  Each equity train is ~10s wall-clock; crypto/fx retrains chain over
+  multiple horizons and take longer.
+
+- After retraining, run the smoke monitor to confirm:
+
+  ```bash
+  MONITORING_DRY_RUN=true venv/bin/python main.py monitor smoke
+  # exit 0 = OK
+  ```
+
+- If for some reason a stale `is_active=TRUE` row survives (e.g., on
+  an older DB before Session 7), the regression test
+  `tests/regression/test_schema_consistency.py::test_active_model_paths_resolve`
+  will fail and tell you exactly which path doesn't resolve. Fix with
+  a manual `UPDATE *_model_runs SET is_active=false WHERE model_id = …`.
 
 ### Telegram alerts not arriving (FX bot side)
 
