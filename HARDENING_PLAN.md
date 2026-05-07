@@ -126,30 +126,47 @@ Append a new entry to SESSION_LOG.md with:
 
 ───
 
-Session 0: Legacy Code Cleanup
+Session 0: Legacy Code Cleanup — EXECUTED 2026-05-07
 
-Scope: Remove or isolate all code from the original MHDE engine that is no longer in use. The new ML system (equity/crypto/FX) is what stays.
+> **Status:** completed. Branch `session-0-legacy-cleanup` merged as
+> `1f9a11e`. The full record is in `SESSION_LOG.md`; the design decisions
+> are in `DECISIONS.md` (ADR-001 through ADR-005); a per-file inventory
+> with rationale is in `legacy/README.md`. The text below is the original
+> plan as written, with corrections applied so Sessions 1-7 reference
+> accurate ground truth.
 
-What's legacy in the current codebase:
+Scope: Remove or isolate every code path that is no longer reachable from a running pipeline, service, or dashboard tab. The three current ML engines (equity / crypto / FX) plus the daily-analysis path are what stays.
 
-• scoring/scorecard.py and tier logic (the old 0% hit-rate hand-tuned model)
-• features/ (the old feature builders feeding the broken scorecard)
-• learning/ (dormant feedback loop infrastructure, never wired in)
-• missed/daily_catalyst_queue.py (LLM catalyst queue, runs in mock mode only)
-• models/ original files (shadow_ranker.py, dataset_builder.py, etc. - dormant ML infrastructure that predates our rebuild)
-• backtest/ (stub backtest framework that was never used)
-• _legacy Streamlit pages (renamed but not deleted)
-• review/server.py (the old Flask review server, 3900 lines)
-• dashboard/ Streamlit pages that aren't ML predictions, crypto predictions, or FX predictions
-• daily_radar orchestration that does more than equity ingestion
-• The old FX engine at /home/jpcg/ATSRP/research/gbpeur_personal_fx/
+What's actually legacy in the codebase (as confirmed by reachability analysis from systemd ExecStart lines, the daily-analysis shell wrapper, and dashboard imports):
 
-Deliverables:
+• scoring/incomplete_diagnostics.py — dev tool, not invoked by any timer.
+  *(scoring/scorecard.py, scoring/ranker.py, scoring/explanations.py, scoring/tiers.py STAY: still imported by pipelines/daily_radar.py, which runs Mon-Fri 23:15 via mhde-daily-analysis.service.)*
+• learning/ — feedback loop, never wired in. Whole directory.
+• missed/{attribution,catalyst_report,detector,episode_tracker,investigator,labels,llm_policy,report,sector_attribution}.py — 9 dormant pieces.
+  *(missed/{catalyst_queue,catalyst_digest,prediction_report,root_cause_enrichment} and several helpers STAY: invoked daily by run_mhde_daily_analysis.sh with --no-mock --provider openai. The "mock mode only" claim was wrong.)*
+• models/ — shadow_ranker, dataset_builder, evaluation, promotion_gates, registry, shadow_dataset, xgboost_ranker. Whole directory minus models/saved/.
+  *(models/saved/ STAYS at the active path. Every engine reads it via hardcoded "models/saved" strings in ml/train.py, crypto/config.py, fx/config.py, health/ml_checks.py.)*
+• backtest/ — stub framework, never used. Whole directory.
+• dashboard/pages/_legacy/ — 19 Streamlit pages from the pre-rebuild dashboard.
+• review/server.py + review/{importer,packet_builder}.py — Flask catalyst review UI. Service (mhde-review-server) and nginx /review/ route both retired.
+• ml/retrain.py — superseded by ml/train.py:train_walk_forward.
+• pipelines/weekly_review.py and reports/weekly_review.py — companion to the dead `weekly_review` CLI.
+• outcomes/{candidate_lifecycle,labels}.py — only ever called by the legacy review server and a dead `outcomes/__init__.py` re-export (now removed).
+• storage/inventory.py — backs the `data inventory` CLI (no timer).
+• universe/ticker_details_enricher.py — backs `data enrich-ticker-details` (no timer).
+• governance/ — 7 files of dormant registry / feature-flag / governance scaffolding. Whole directory.
+• hypotheses/registry.py.
+• crypto/ml/hypothesis_tests.py and fx/ml/hypothesis_tests.py — dev research harnesses.
+• `daily_radar` orchestration is NOT legacy — it is the active equity ingest path (mhde-daily-analysis.service Mon-Fri 23:15). The earlier draft of this list was wrong on that.
+• `/home/jpcg/ATSRP/research/gbpeur_personal_fx/` is NOT a movable artifact — fx/data/refresh.py shells into ATSRP for Dukascopy bi5 hourly bars and notifications/telegram.py reads /home/jpcg/ATSRP/.env for TELEGRAM_BOT_TOKEN. ATSRP is an active dependency. (Plan's "Option B" was correct: leave it alone.)
 
-1. Inventory script: Walk every file in the repo. Classify each as: 
+Deliverables (as executed):
+
+1. Inventory script: Walk every file in the repo. Classify each as:
 ◦ ACTIVE: imported by current pipelines, services, or dashboard tabs
 ◦ LEGACY: dormant, no active references
 ◦ SHARED: utilities used by both (e.g., storage, common config)
+*(Implemented as `.claude/local_scripts/inventory_active_legacy.py` — AST-based reachability BFS from systemd ExecStart entry points.)*
 
 1. Confirm legacy is truly unused:
 ◦ For each LEGACY file, grep the entire codebase for imports
@@ -157,17 +174,19 @@ Deliverables:
 ◦ Check dashboard imports
 ◦ Check CLI commands in main.py
 ◦ Verify zero references from ACTIVE code
+*(All confirmed except: outcomes/__init__.py re-exported `compute_forward_returns` from outcomes/labels.py — re-export removed in commit a3ba5d1.)*
 
 1. Isolate legacy: Move LEGACY files to a legacy/ directory at repo root. Don't delete. Preserve git history.
 
 1. Update imports: If any ACTIVE code accidentally references something now in legacy/, refactor.
 
-1. Verify nothing broke:
-◦ Run all 3 prediction pipelines manually
-◦ Run health check
-◦ Verify dashboard loads all 3 tabs
-◦ Verify Telegram bot still responds
-◦ Confirm all systemd timers still fire correctly
+1. Verify nothing broke (executed as **safe checks only**, per JP's choice — no live pipeline runs, no test telegram messages, to avoid colliding with scheduled timers and the production DuckDB):
+◦ python -m py_compile over every active .py — clean.
+◦ Import-resolution smoke on 50 entry-point modules — 50/50 OK.
+◦ systemd-analyze verify on every unit in systemd/ — 13/13 OK.
+◦ Dashboard query smoke (test_dashboard_queries.py with auth disabled) — 10/10 queries pass.
+◦ pytest --collect-only — 743 tests collected, no errors. Offline subset (540 tests) — all pass. The 6 pre-existing test_health.py failures predate this session.
+◦ Live pipelines and Telegram bot will be observed at the next natural timer firings rather than triggered ad-hoc.
 
 1. Document the cleanup:
 ◦ Update INFRASTRUCTURE.md to remove references to legacy
@@ -175,23 +194,31 @@ Deliverables:
 ◦ Add a legacy/README.md explaining what's there and why
 ◦ Note in DECISIONS.md why legacy was preserved (rollback safety) vs deleted
 
-1. External legacy: Decide on /home/jpcg/ATSRP/research/gbpeur_personal_fx/: 
+1. External legacy: Decide on /home/jpcg/ATSRP/research/gbpeur_personal_fx/:
 ◦ Option A: Move to a legacy_external/ directory in MHDE for cleanup
-◦ Option B: Delete the systemd services for it (already done) and leave the code as historical reference
-◦ Recommend Option B since it's not in the MHDE repo
+◦ Option B: Leave it where it is — it's an active dependency of the FX engine, not a candidate for relocation. Selected.
 
-Exit criteria:
-• All ACTIVE code lives in: ml/, crypto/, fx/, dashboard/, pipelines/, storage/, ingestion/ (for equity), system/ (for health checks), main.py
-• Nothing in legacy/ is imported by ACTIVE code (verify with grep)
-• All 3 prediction pipelines run cleanly
-• Dashboard loads all 3 tabs successfully
-• All 6 systemd timers continue firing correctly
-• File count in active directories is significantly reduced (estimate 30-50% reduction)
+Exit criteria (as met):
+• ACTIVE code is now distributed across: ml/, crypto/, fx/, dashboard/, pipelines/, storage/, ingestion/, health/ (the plan's "system/" was a typo), adapters/, config/, deploy/, llm/, missed/ (active subset), notifications/, outcomes/ (active subset), reports/ (active subset), runner/, scoring/ (active subset), features/, hypotheses/ (active subset), universe/ (active subset), main.py.
+• Nothing in legacy/ is imported by ACTIVE code (verified with grep + 50/50 import smoke).
+• All 3 prediction pipelines verified at the static level (import + py_compile + systemd unit syntax). Live runs deferred to natural timer firings.
+• Dashboard query layer verified (10/10 queries pass against the production DB read-only). Full UI render unchecked.
+• Every systemd unit in `systemd/` validates clean under systemd-analyze. Active timers: mhde-{predict,retrain}, mhde-crypto-{predict,retrain}, mhde-fx-{predict,retrain}, mhde-fx-bot (always-on), plus user-level mhde-daily-analysis, mhde-health-check, mhde-streamlit, mhde-streamlit-relay. (The original "all 6 systemd timers" line under-counted.)
+• ~99 .py files of ~347 total moved to legacy/ (≈28%). Slightly under the 30-50% estimate in the original plan because several directories the plan assumed were legacy (features/, scoring/scorecard, the active subset of missed/, daily_radar, etc.) turned out to still be wired in.
 
 Cleanup deletion (deferred):
 After 2 weeks of stable operation post-Session 7, the legacy/ directory can be deleted entirely. This gives a safety window in case anything was missed.
 
-Time estimate: 1 session.
+Outputs of this session (commit `a3ba5d1`, merged as `1f9a11e`):
+• `legacy/` directory with 99 .py + 29 tests + README.md
+• `DECISIONS.md` — 5 ADRs (legacy preservation, review-server retirement, ATSRP-stays-external, dead-re-export removal, plan-corrected-by-codebase)
+• `SESSION_LOG.md` — append-only session record
+• `INFRASTRUCTURE.md` — first-time tracked, with review-server section retired
+• `CLAUDE.md` — read-first list expanded to include the new docs and a `legacy/` warning
+• `outcomes/__init__.py` — dead `compute_forward_returns` re-export removed
+• `/home/jpcg/homeboard/nginx/nginx.conf` — `/review/` route + upstream removed (out-of-repo coordinated change)
+
+Time estimate: 1 session. *(Actual: ~1 session including discovery of plan inaccuracies and recovery of `models/saved/` after it was nearly swept into legacy.)*
 
 ───
 
