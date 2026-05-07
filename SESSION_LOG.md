@@ -6,6 +6,56 @@ are at the top.
 
 ---
 
+## 2026-05-07 — Pre-Session-2 follow-ups (KI-001, KI-004)
+
+**Branch:** `pre-session-2-fixes` off `master @ 1050eab`.
+
+Two outstanding issues from earlier sessions resolved before starting
+Session 2 (test infrastructure).
+
+### KI-001 — `/review/` returns 502 → 404
+
+The nginx conf at `/home/jpcg/homeboard/nginx/nginx.conf` already had
+the `location /review/ { return 404; }` block from Session 0's
+follow-up edit, but `nginx -s reload` was leaving the response at 502.
+
+Diagnosis: the host file is a **single-file bind mount** into the
+nginx container. The Edit tool writes via atomic rename, which changes
+the host file's inode. Docker single-file bind mounts pin to the
+original inode and don't follow rename-replace, so nginx kept reading
+the old config inside the container even after a reload.
+
+Fix: `docker compose restart nginx` to force the container to re-mount
+and re-read the file. `/review/` now returns 404 cleanly.
+
+Lesson recorded in `KNOWN_ISSUES.md` KI-001: future host-file edits
+that feed bind-mounted single files need either a full container
+restart or an inode-preserving editor (`sed -i`, `cat > file << EOF`).
+Plain `nginx -s reload` will silently serve stale config.
+
+### KI-004 — `models/saved/**` gitignored
+
+Added four patterns to `.gitignore`:
+```
+models/saved/**/*.joblib
+models/saved/**/*.pkl
+models/saved/**/*.bin
+models/saved/**/*.model
+```
+
+Removed the 3 previously-tracked equity joblibs from the index with
+`git rm --cached` (files preserved on disk). All 9 model binaries (3
+equity + 2 crypto + 4 FX) on disk are now ignored. Verified by
+`git ls-files models/saved/` returning empty.
+
+### Pending for Session 2
+
+Test infrastructure: pytest fixtures (in-memory DuckDB with all
+schemas, synthetic data per engine, mock Telegram), helpers, Makefile
+targets, CI runner, coverage reporting.
+
+---
+
 ## 2026-05-07 — Session 1: Documentation as Source of Truth
 
 **Branch:** `session-1-documentation` off `master @ f59baf9`.
