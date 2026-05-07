@@ -96,19 +96,67 @@ def assert_pipeline_completed_cleanly(
     )
 
 
-def assert_dashboard_renders(page: str, expected_data: dict[str, Any]) -> None:
-    """Verify a dashboard page renders with the expected data.
+def assert_dashboard_renders(
+    conn: duckdb.DuckDBPyConnection,
+    page: str,
+    *,
+    expected_min_rows: int = 0,
+    expected_keys: list[str] | None = None,
+) -> Any:
+    """Call the dashboard's data-layer function for `page` and assert
+    the response is well-formed.
 
-    Stub for Session 4 (integration tests). Streamlit's render path needs
-    a runtime that pytest doesn't load by default; this helper is the
-    placeholder so test code can already be written against it.
+    `page` is one of the queries defined in `dashboard/services/queries.py`:
+        "overview", "candidates", "candidate_detail", "source_health",
+        "llm_runs", "outcomes", "health_checks", "backtest_runs",
+        "alerts", "hypotheses", "candidate_reviews",
+        "scorecard_experiments".
 
-    Suggested implementation when filled in: call
-    `dashboard.services.queries.<page_query>(conn)` and compare its
-    return value to `expected_data` field-by-field. That sidesteps
-    Streamlit and tests the data layer the dashboard actually consumes.
+    This sidesteps Streamlit's runtime (no `streamlit.runtime.scriptrunner`
+    needed for tests) and validates the data layer the dashboard
+    actually consumes.
+
+    Returns the query's raw output so tests can do further assertions.
+    Raises AssertionError on shape mismatch.
     """
-    raise NotImplementedError(
-        f"assert_dashboard_renders is a Session 4 deliverable. "
-        f"page={page!r}, expected_data keys={list(expected_data.keys())}"
-    )
+    from dashboard.services import queries as q
+
+    page_to_fn = {
+        "overview": q.get_overview_stats,
+        "candidates": q.get_candidates,
+        "candidate_detail": q.get_candidate_detail,
+        "source_health": q.get_source_health,
+        "llm_runs": q.get_llm_runs,
+        "outcomes": q.get_outcomes,
+        "health_checks": q.get_health_checks,
+        "backtest_runs": q.get_backtest_runs,
+        "alerts": q.get_alerts,
+        "hypotheses": q.get_hypotheses,
+        "candidate_reviews": q.get_candidate_reviews,
+        "scorecard_experiments": q.get_scorecard_experiments,
+    }
+    if page not in page_to_fn:
+        raise ValueError(
+            f"unknown dashboard page {page!r}; known: {sorted(page_to_fn)}"
+        )
+
+    result = page_to_fn[page](conn)
+
+    if isinstance(result, list):
+        assert len(result) >= expected_min_rows, (
+            f"page {page} returned {len(result)} rows, expected >= {expected_min_rows}"
+        )
+        if expected_keys and result:
+            row_keys = set(result[0].keys()) if isinstance(result[0], dict) else set()
+            missing = set(expected_keys) - row_keys
+            assert not missing, (
+                f"page {page} row missing expected keys: {sorted(missing)}"
+            )
+    elif isinstance(result, dict):
+        if expected_keys:
+            missing = set(expected_keys) - set(result.keys())
+            assert not missing, (
+                f"page {page} dict missing expected keys: {sorted(missing)}"
+            )
+
+    return result
