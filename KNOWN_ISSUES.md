@@ -10,6 +10,30 @@ point is to remember what bit us so it doesn't bite again.
 
 ## Open
 
+### KI-009 — Equity active-model joblibs missing from disk (production)
+
+**Status:** open as of 2026-05-07. **Caught by Session 6 smoke monitor.**
+**Symptom.** `ml_model_runs` has 3 rows with `is_active=TRUE` pointing at:
+- `models/saved/5d_label_5d_3pct_20260505_092040.joblib`
+- `models/saved/10d_label_10d_5pct_20260505_092031.joblib`
+- `models/saved/20d_label_20d_5pct_20260505_092022.joblib`
+
+`/home/jpcg/MHDE/models/saved/` currently contains only `crypto/` and
+`fx/` subdirectories — the 3 equity joblibs are gone. The next 21:00
+equity predict firing will raise `FileNotFoundError` when `predict.py`
+tries `joblib.load(model_path)`.
+**Likely root cause.** Some operation between caf77e4 (KI-004 fix,
+which un-tracked the joblibs but per `git rm --cached` semantics
+should have left them on disk) and Session 6 deleted the on-disk
+files. Git history cannot recover them since they were de-tracked.
+**Fix path.** Re-run `venv/bin/python main.py ml train` for each
+horizon, or wait for the weekly retrain (Sun 21:30). Then confirm
+`make test-regression` and `make test-unit` still pass.
+**Why it took the smoke monitor to surface this.** The Session 5
+`test_models_saved_path_exists` regression only checks the directory
+exists, not that the specific paths in `*_model_runs.is_active=true`
+resolve. Session 7 should harden that test.
+
 ### KI-003 — Promotion of trained models to `is_active=TRUE` is manual
 
 **Status:** open. No tracked incidents.

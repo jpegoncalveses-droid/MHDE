@@ -90,6 +90,117 @@ None. Existing KI-003 (manual model promotion) is the only open item.
 
 ---
 
+## 2026-05-07 — Session 6: Monitoring & Verification
+
+**Branch:** `session-6-monitoring` off `master @ 0808b47`.
+
+Six runtime monitors built, each as a Python module under `monitoring/`,
+wired to a `main.py monitor <name>` CLI subcommand and a paired
+`systemd/mhde-monitor-*.{service,timer}`. The smoke monitor caught a
+real production issue (KI-009) on its first dry-run.
+
+### What was completed
+
+All 12 tasks. New code:
+
+- `monitoring/__init__.py` + `monitoring/alert.py`: shared dispatcher
+  with `MonitorResult` dataclass, severity prefixing, and a
+  `MONITORING_DRY_RUN=true` env switch that suppresses real Telegram
+  sends. Bottoms out in `fx.bot.telegram_bot.send_message`.
+- `monitoring/dashboard_consistency.py` (6h): dashboard query layer
+  vs direct DB count parity.
+- `monitoring/pipeline_execution.py` (hourly): per-engine recency +
+  row-count vs 14d rolling avg. Floors: 50% warn, 20% fail.
+- `monitoring/config_drift.py` (daily): repo `systemd/*` ↔ deployed
+  copies in `/etc/systemd/system` + `~/.config/systemd/user`.
+- `monitoring/model_performance.py` (daily): rolling 7d precision per
+  active model vs walk-forward baseline. 0.8x threshold.
+- `monitoring/data_quality.py` (daily): per-engine ticker / symbol /
+  bar coverage on latest day vs 14d avg. 0.8x floor.
+- `monitoring/smoke_test.py` (hourly): DB opens, every active joblib
+  loads, dashboard query layer returns rows.
+
+CLI: new `cli.group monitor` with 6 subcommands in `main.py`.
+
+systemd: 12 unit files in `systemd/mhde-monitor-*.{service,timer}`.
+**Not auto-deployed.** Install instructions in OPERATIONS.md.
+Schedules staggered to avoid the FX :05 firing window:
+  dashboard 03/09/15/21:30 | pipeline :40 | config-drift 12:15 |
+  model-perf 13:15 | data-quality 02:00 | smoke :50.
+
+Tests: `tests/equity/test_monitoring.py` — 12 tests covering each
+monitor's pure-logic path with `temp_db` and `mock_telegram`.
+
+OPERATIONS.md: new "Monitors" section — catalog table, manual
+invocation, deploy steps, threshold tuning constants, alert format,
+overlap with existing health-check, alert-suppression playbook.
+
+### Bug found mid-session — KI-009
+
+**Equity active-model joblibs missing on disk.** The smoke test on
+its first dry-run reported:
+
+```
+[!!] MHDE monitor: smoke_test
+End-to-end smoke failed
+- equity model: path missing: models/saved/5d_label_5d_3pct_20260505_092040.joblib
+```
+
+`ml_model_runs` has 3 rows with `is_active=true` pointing at:
+- `models/saved/5d_label_5d_3pct_20260505_092040.joblib`
+- `models/saved/10d_label_10d_5pct_20260505_092031.joblib`
+- `models/saved/20d_label_20d_5pct_20260505_092022.joblib`
+
+`/home/jpcg/MHDE/models/saved/` currently contains only `crypto/` and
+`fx/` subdirectories — the 3 equity joblibs are gone. Likely cause is
+some operation between caf77e4 (KI-004 `git rm --cached`) and now
+that deleted the on-disk files. Git history cannot recover them since
+they were de-tracked.
+
+**Why Session 5's regression test missed it.** `test_models_saved_path_exists`
+only asserts the directory exists, not that specific paths in
+`*_model_runs.is_active=true` resolve. Recorded as KI-009; Session 7
+should harden the test.
+
+**Action required for production.** Re-run `venv/bin/python main.py
+ml train --label label_5d_3pct …` (and 10d / 20d) to regenerate, or
+wait for the weekly Sun 21:30 retrain.
+
+### Bugs found in monitor code (caught by tests, fixed)
+
+- `monitoring/dashboard_consistency.py`: invalid SQL
+  `SELECT COUNT(*) … ORDER BY as_of_date DESC LIMIT 200` — DuckDB
+  rejects ORDER BY without aggregation. Dropped the ORDER BY.
+- `monitoring/model_performance.py`: queried `target_threshold` for
+  all engines, but `fx_ml_model_runs` uses `target_pips`. Per-engine
+  column selection now.
+
+### Verification
+
+- All 6 monitors run cleanly under `MONITORING_DRY_RUN=true`. They
+  produced a mix of OK and real-alert results — alerts surfaced
+  KI-009 plus an FX freshness lag (latest bar 3h old vs 2h threshold)
+  and FX-baseline anomalies (training stored 1.0 / 0.99 sentinel
+  baselines, real rolling precision is below the 0.8× cutoff).
+- `make test-unit`: 607 passed in 37s (was 595 — +12 from monitor
+  tests).
+- `make test-regression`: 20 passed in 7s.
+
+### Pending for next session (Session 7)
+
+- **Resolve KI-009** by retraining or copying joblibs from a backup.
+  This is operational, not code.
+- Harden `test_models_saved_path_exists` to validate every
+  `is_active=true` row's `model_path` resolves.
+- Investigate the FX freshness lag (3h old) vs the 2h threshold —
+  scheduled hourly run may be drifting.
+- Investigate FX baseline = 1.0 sentinel in `fx_ml_model_runs.precision_at_threshold`.
+  Either fix the train code or change the monitor's "no real
+  baseline" guard.
+- Deploy the 6 monitors to production once Session 7 audit completes.
+
+---
+
 ## 2026-05-07 — Session 5: Regression Tests
 
 **Branch:** `session-5-regression-tests` off `master @ 8e45129`.

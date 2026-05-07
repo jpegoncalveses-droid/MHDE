@@ -1,0 +1,11 @@
+[Unit]
+Description=MHDE monitor: end-to-end smoke hourly
+
+[Timer]
+# Hourly at :50 — staggered from FX predict (:05) and pipeline monitor (:40).
+OnCalendar=hourly
+OnCalendar=*-*-* *:50:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

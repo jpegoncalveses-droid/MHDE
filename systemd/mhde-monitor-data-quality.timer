@@ -1,0 +1,11 @@
+[Unit]
+Description=MHDE monitor: data quality daily
+
+[Timer]
+# After daily-analysis (23:15 Mon-Fri) and crypto predict (00:30) and
+# enough hourly FX bars for a meaningful coverage check.
+OnCalendar=*-*-* 02:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
