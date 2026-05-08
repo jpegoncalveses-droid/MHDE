@@ -16,6 +16,28 @@ CREATE TABLE IF NOT EXISTS fx_prices_hourly (
 );
 """
 
+# Mirror of fx_prices_hourly used during the TwelveData migration
+# (Sessions 1-2). Same columns / PK; populated in parallel by
+# `fx/data/refresh_twelvedata.py`. Production readers (predict,
+# features, labels, freshness, dashboard) continue to read
+# fx_prices_hourly only. The mirror is dropped after Session 2 cutover.
+# See DECISIONS.md ADR-013 and OPERATIONS.md "FX data source migration".
+SCHEMA_FX_PRICES_HOURLY_TWELVEDATA = """
+CREATE TABLE IF NOT EXISTS fx_prices_hourly_twelvedata (
+    datetime_utc TIMESTAMP NOT NULL PRIMARY KEY,
+    date DATE NOT NULL,
+    weekday VARCHAR NOT NULL,
+    hour_utc INTEGER NOT NULL,
+    gbpeur_open DOUBLE,
+    gbpeur_high DOUBLE,
+    gbpeur_low DOUBLE,
+    gbpeur_close DOUBLE,
+    tick_count INTEGER,
+    data_quality VARCHAR DEFAULT 'good',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
 SCHEMA_FX_MACRO = """
 CREATE TABLE IF NOT EXISTS fx_macro (
     indicator VARCHAR NOT NULL,
@@ -177,6 +199,7 @@ CREATE TABLE IF NOT EXISTS fx_signals (
 
 ALL_SCHEMAS = [
     SCHEMA_FX_PRICES_HOURLY,
+    SCHEMA_FX_PRICES_HOURLY_TWELVEDATA,
     SCHEMA_FX_MACRO,
     SCHEMA_FX_ML_LABELS,
     SCHEMA_FX_ML_FEATURES,

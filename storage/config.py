@@ -34,6 +34,7 @@ def load_engine_config(config_dir: str | Path | None = None) -> dict[str, Any]:
     for key, env in [
         ("polygon_api_key", "POLYGON_API_KEY"),
         ("fred_api_key", "FRED_API_KEY"),
+        ("twelvedata_api_key", "TWELVEDATA_API_KEY"),
         ("openai_api_key", "OPENAI_API_KEY"),
         ("nvidia_api_key", "NVIDIA_API_KEY"),
         ("telegram_bot_token", "TELEGRAM_BOT_TOKEN"),

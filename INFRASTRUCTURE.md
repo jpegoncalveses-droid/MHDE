@@ -139,6 +139,7 @@ All in `/home/jpcg/MHDE/data/logs/`. Files written by system-level services are 
 | `ALPHA_VANTAGE_API_KEY` | Equity prices |
 | `POLYGON_API_KEY` | Equity prices |
 | `FRED_API_KEY` | FX/macro (BoE rate, ECB rate, EUR/USD, GBP/USD) |
+| `TWELVEDATA_API_KEY` | FX hourly bars (production fetcher post-2026-05-08 cutover). Free tier 800 calls/day; we use 24. See `OPERATIONS.md` "TwelveData (FX)". |
 | `NVIDIA_API_KEY`, `MHDE_LLM_PROVIDER`, `MHDE_NVIDIA_MODEL` | LLM analysis |
 | `OPENAI_API_KEY` | LLM analysis (fallback) |
 | `REVIEW_UI_USERNAME`, `REVIEW_UI_PASSWORD` | Review server basic auth |
@@ -163,7 +164,7 @@ All in `/home/jpcg/MHDE/data/logs/`. Files written by system-level services are 
 | Equity | Stooq | `ingestion/ingest_stooq*.py` |
 | Equity | SEC, FDA, CFTC, FINRA, GDELT, Earnings, StockTwits, Sector ETFs | `ingestion/ingest_*.py` |
 | Crypto | Binance (REST/historical) | `crypto/ingestion/` |
-| FX | Dukascopy bi5 (hourly bars) | `fx/data/refresh.py` (subprocess into `/home/jpcg/ATSRP`) |
+| FX | TwelveData REST (hourly bars) | `fx/data/refresh.py` → `fx/data/refresh_twelvedata.py` (post-2026-05-08 cutover; ADR-013) |
 | FX | FRED macro (BoE/ECB/EUR-USD/GBP-USD) | `fx/data/macro.py` |
 
 ---

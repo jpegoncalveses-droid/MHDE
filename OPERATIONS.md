@@ -484,6 +484,42 @@ fetcher is brittle — if it returns 0 bars, retry; if it consistently
 fails, the upstream is most likely 404'ing for a recent hour (data
 sometimes lags by 30-60 min).
 
+### TwelveData (FX) — production fetcher post-cutover
+
+`fx/data/refresh.py` is the production GBP/EUR 1h bar fetcher; it
+delegates to the TwelveData implementation in
+`fx/data/refresh_twelvedata.py`. Cutover landed 2026-05-08
+(DECISIONS.md ADR-013). Writes to `fx_prices_hourly`, the table all
+FX readers consume (predict / features / labels / freshness / dashboard).
+The pre-cutover Dukascopy/ATSRP-subprocess path is gone.
+
+Setup:
+1. Get a free key at https://twelvedata.com (800 calls/day; we use 24).
+2. Add `TWELVEDATA_API_KEY=...` to `/home/jpcg/MHDE/.env` (mode 600, never committed).
+3. Confirm `mhde-fx-predict.service` is the post-cutover unit: one
+   `fx refresh-prices` ExecStart, no parallel `…-twelvedata` line.
+   `journalctl -u mhde-fx-predict | grep TwelveData` after the next firing
+   should show `Inserted TwelveData bar into fx_prices_hourly for …`.
+
+Manual run (one-off):
+```bash
+venv/bin/python main.py fx refresh-prices
+```
+
+Cleanup pending (~2026-05-15, after 1-week stability buffer):
+- Drop `fx_prices_hourly_twelvedata` and
+  `fx_prices_hourly_twelvedata_backfill` tables.
+- Remove `fx refresh-prices-twelvedata` and `fx compare-sources` CLI
+  subcommands from `main.py`.
+- Delete `fx/data/compare_sources.py` and `tests/fx/test_compare_sources.py`.
+- Drop `SCHEMA_FX_PRICES_HOURLY_TWELVEDATA` from `fx/schema.py`.
+
+Rollback path during the buffer: `git revert` the cutover commit. The
+240 historical bars filled at cutover stay in `fx_prices_hourly`;
+subsequent firings would reattach to the old Dukascopy/ATSRP code path.
+ATSRP is still on disk for this purpose (also still serves Telegram
+credentials per ADR-003).
+
 ### FRED (FX macro + equity macro)
 
 `fx/data/macro.py` and `ingestion/ingest_macro.py`. Needs `FRED_API_KEY`.

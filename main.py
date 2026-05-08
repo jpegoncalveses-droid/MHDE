@@ -1795,6 +1795,56 @@ def fx_refresh_prices():
         conn.close()
 
 
+@fx.command("refresh-prices-twelvedata")
+def fx_refresh_prices_twelvedata():
+    """Fetch latest hourly bar from TwelveData (parallel migration fetcher).
+
+    Writes to fx_prices_hourly_twelvedata, NOT to fx_prices_hourly.
+    Production predict / features / labels keep reading the Dukascopy
+    table. See DECISIONS.md ADR-013.
+    """
+    from fx.data.refresh_twelvedata import refresh_prices
+
+    cfg, conn = _engine_setup()
+    try:
+        result = refresh_prices(conn)
+        click.echo(
+            f"Refresh (TwelveData): fetch={result['fetch_status']} "
+            f"bar={result['fetched_hour']} inserted={result['rows_inserted']}"
+        )
+        if result["fetch_error"]:
+            click.echo(f"  note: {result['fetch_error']}")
+        # Exit 1 only on hard errors so systemd unit doesn't fail on the
+        # expected NO_DATA / CLOSED cases.
+        if result["fetch_status"] == "ERROR":
+            raise SystemExit(1)
+    finally:
+        conn.close()
+
+
+@fx.command("compare-sources")
+@click.option("--hours", default=24, show_default=True,
+              help="Comparison window in hours (counted back from now).")
+@click.option("--threshold-pips", default=5.0, show_default=True, type=float,
+              help="Maximum acceptable pip diff on close before flagging.")
+def fx_compare_sources(hours, threshold_pips):
+    """Diff Dukascopy ↔ TwelveData FX bars over the recent window.
+
+    Exit 0 if every matched bar is within `--threshold-pips`. Exit 1
+    otherwise. Used as the gate for the Session 2 cutover.
+    """
+    from fx.data.compare_sources import compare_recent, format_report
+
+    cfg, conn = _engine_setup()
+    try:
+        result = compare_recent(conn, hours=hours, threshold_pips=threshold_pips)
+        click.echo(format_report(result))
+        if not result["all_within_threshold"]:
+            raise SystemExit(1)
+    finally:
+        conn.close()
+
+
 @fx.command("hypothesis-tests")
 def fx_hypothesis_tests():
     """Run signal validation hypothesis tests (checkpoint gate)."""

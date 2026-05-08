@@ -308,3 +308,106 @@ touching shared migrations. Trade-off: there's no single place to read
 future migration to add cross-engine relationships (e.g. shared model
 registry) would have to choose one of the four schema-loading paths to
 own the new table.
+
+---
+
+## ADR-013 — Migrate FX bars from Dukascopy (via ATSRP) to TwelveData
+
+**Date:** 2026-05-07 (Session 1) / 2026-05-08 (Session 2 cutover).
+**Status:** IMPLEMENTED. Production fx_prices_hourly is now fed by TwelveData.
+
+**Cutover (2026-05-08, same day as Session 2).** Gate executed against a
+30-day historical backfill instead of the originally-planned 24-hour
+parallel window:
+
+- **Coverage.** TwelveData covered 720/720 hourly bars over 30 days;
+  Dukascopy was missing 240 (33%). The coverage gain was the dominant
+  cutover driver, not the agreement metric.
+- **Agreement.** 472/480 matched bars within 5 pips. The 8 breaches all
+  sit in the 20:00-21:00 UTC NYSE-close window with consistent sign
+  (Dukascopy > TwelveData by 5-7 pips), consistent with the post-close
+  liquidity-venue rotation rather than random source disagreement.
+- **Weekend bars.** Verified to be real OTC quotes (avg 2.84 pips
+  close-open movement, 0/192 zero-range bars over 4 weekends). No
+  filtering needed for downstream features/labels.
+
+**What changed at cutover.**
+- `fx/data/refresh.py` rewritten as a thin wrapper that calls the
+  TwelveData implementation, writing to the production
+  `fx_prices_hourly` table. ATSRP subprocess dependency removed.
+- The 240 historical Dukascopy gaps in `fx_prices_hourly` were filled
+  from `fx_prices_hourly_twelvedata_backfill` (the 30-day snapshot).
+- `mhde-fx-predict.service` lost the parallel
+  `fx refresh-prices-twelvedata` ExecStart; the remaining
+  `fx refresh-prices` line now runs the TwelveData fetcher.
+- Reader paths (predict / features / labels / freshness / dashboard)
+  unchanged — they still read `fx_prices_hourly`. Only the writer flipped.
+
+**1-week stability buffer (cleanup deferred to ~2026-05-15).** Drop
+`fx_prices_hourly_twelvedata`, `fx_prices_hourly_twelvedata_backfill`,
+the `fx refresh-prices-twelvedata` and `fx compare-sources` CLI
+subcommands, and `fx/data/compare_sources.py`. Tests for those modules
+move out at the same time.
+
+**Original plan (preserved for context):**
+
+**Context.** The FX engine (GBP/EUR hourly) currently fetches bars
+from Dukascopy through a subprocess into `/home/jpcg/ATSRP/`
+(`fx/data/refresh.py`). Two long-standing operational issues:
+
+1. **Lag.** `fx_predict.log` regularly shows `ATSRP fetch:
+   status=NO_DATA, bar=… HTTP 404` for the most recent hour;
+   measured gap was 3+ hours on 2026-05-07 18:05. Pre-validation
+   showed TwelveData is ~11 minutes behind realtime.
+2. **External path dependency.** Dukascopy ingestion lives entirely
+   outside the MHDE repo (in ATSRP). It's hard to test, hard to
+   monitor, and ATSRP's `.venv` is a separate runtime
+   (`/home/jpcg/ATSRP/.venv/bin/python`). We retain ATSRP for the
+   Telegram credentials it stores (ADR-003) but want to remove it
+   from the data path.
+
+**Decision.** Migrate FX bar ingestion from Dukascopy to TwelveData
+in two sessions:
+
+- **Session 1 (this commit) — parallel run, no cutover.** Add
+  `fx/data/refresh_twelvedata.py` that mirrors the Dukascopy
+  `fx/data/refresh.py` interface but writes to a new mirror table
+  `fx_prices_hourly_twelvedata`. Wire it into the hourly systemd
+  unit (`mhde-fx-predict.service`) as an extra ExecStart line. The
+  production path is unchanged — predict / features / labels /
+  freshness all still read `fx_prices_hourly`.
+
+- **Session 2 — cutover (deferred).** Gated on the comparison
+  criterion: `main.py fx compare-sources --hours 24 --threshold-pips 5`
+  exits 0, meaning every matched hourly bar agreed within 5 pips on
+  close. Pre-validation already showed agreement within 1.5 pips on
+  the 2026-05-07 18:00 bar, so passing 24 bars by the same standard
+  is highly likely. After cutover: switch readers to TwelveData,
+  remove the Dukascopy ExecStart, drop the mirror table.
+
+**Why TwelveData.**
+- Free tier delivers 800 API calls/day; we use 24 (one per hour).
+- Simple REST API; no subprocess; in-process Python `requests`.
+- Pre-validation showed real-time-ish data and bar agreement with
+  Dukascopy within 1.5 pips on the 2026-05-07 18:00 sample.
+
+**Why mirror-table strategy** (vs. dual-write to `fx_prices_hourly`).
+Lowest risk: production readers see exactly the same data
+they always have during the migration window. Comparison is an
+independent SQL JOIN, not a constraint on the hot path. Drop is a
+single `DROP TABLE` post-cutover.
+
+**Rollback.** Revert the systemd ExecStart line and the mirror table
+keeps existing rows but stops growing. Production has been untouched
+by definition. No code path consumes the mirror table outside the
+compare-sources CLI.
+
+**Consequence.**
+- New env var `TWELVEDATA_API_KEY` (in `MHDE/.env`, surfaced via
+  `storage.config.load_engine_config` overlay).
+- New table `fx_prices_hourly_twelvedata`. Will be dropped after
+  Session 2 cutover stabilizes (1 week buffer).
+- `mhde-fx-predict.service` ExecStart grows by one line; the
+  KI-112 regression test (`test_repo_vs_deployed_unit_parity`) will
+  fail until the deployed unit is refreshed with `sudo cp …
+  /etc/systemd/system/` and `sudo systemctl daemon-reload`.
