@@ -420,3 +420,47 @@ def test_time_remaining_hours_filled():
     tr = time_remaining_hours(datetime(2026, 5, 7, 6, 0), now_utc=now,
                                 outcome_filled=True)
     assert tr is None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Pandas missing-value handling — NaT and NaN flow in from DuckDB
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_time_remaining_days_handles_pandas_NaT():
+    """Equity predictions with no matured row yet surface as pd.NaT, not
+    None. Must be treated as missing rather than raising TypeError."""
+    tr = time_remaining_days(pd.NaT, today=date(2026, 5, 7), outcome_filled=False)
+    assert tr is None
+
+
+def test_time_remaining_hours_handles_pandas_NaT():
+    tr = time_remaining_hours(pd.NaT, now_utc=datetime(2026, 5, 7, 12, 0),
+                                outcome_filled=False)
+    assert tr is None
+
+
+def test_time_remaining_days_handles_pandas_timestamp():
+    """DuckDB DATE → pandas.Timestamp; helper must accept it."""
+    today = date(2026, 5, 1)
+    tr = time_remaining_days(pd.Timestamp("2026-05-08"), today=today,
+                                outcome_filled=False)
+    assert tr is not None and tr.value == 7
+
+
+def test_time_remaining_hours_handles_pandas_timestamp():
+    now = datetime(2026, 5, 7, 12, 0)
+    tr = time_remaining_hours(pd.Timestamp("2026-05-08 12:00:00"), now_utc=now,
+                                outcome_filled=False)
+    assert tr is not None and tr.value == 24
+
+
+def test_pct_move_handles_NaN_inputs():
+    """If price_at_prediction is NaN (no entry row), don't blow up."""
+    nan = float("nan")
+    assert pct_move_equity_or_crypto(nan, nan, nan, outcome_filled=True) is None
+    assert pct_move_equity_or_crypto(None, nan, 100.0, outcome_filled=False) is None
+
+
+def test_format_pct_move_handles_NaN():
+    assert format_pct_move(float("nan")) == ""

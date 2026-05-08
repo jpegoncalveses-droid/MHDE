@@ -5,6 +5,8 @@
 - Format both as user-facing strings ("+1.8%", "3d", "Past due")
 
 Kept independent of any DB/Streamlit imports so they're trivial to test.
+Pandas NaT/NaN values flowing in from DuckDB DataFrames are treated as
+missing alongside None.
 """
 from __future__ import annotations
 
@@ -33,16 +35,14 @@ def pct_move_equity_or_crypto(
 
     Returns None when no calculation is possible (e.g. no current price yet).
     """
-    if outcome_filled and actual_max_return is not None and not _isnan(actual_max_return):
-        return actual_max_return * 100.0
+    if outcome_filled and not _is_missing(actual_max_return):
+        return float(actual_max_return) * 100.0
     if (
-        price_at_prediction is not None
-        and current_price is not None
-        and not _isnan(price_at_prediction)
-        and not _isnan(current_price)
-        and price_at_prediction > 0
+        not _is_missing(price_at_prediction)
+        and not _is_missing(current_price)
+        and float(price_at_prediction) > 0
     ):
-        return (current_price / price_at_prediction - 1.0) * 100.0
+        return (float(current_price) / float(price_at_prediction) - 1.0) * 100.0
     return None
 
 
@@ -64,27 +64,25 @@ def pct_move_fx(
     """
     if (
         outcome_filled
-        and actual_max_pips is not None and not _isnan(actual_max_pips)
-        and price_at_prediction is not None and not _isnan(price_at_prediction)
-        and price_at_prediction > 0
+        and not _is_missing(actual_max_pips)
+        and not _is_missing(price_at_prediction)
+        and float(price_at_prediction) > 0
     ):
         sign = -1.0 if direction == "down" else 1.0
-        return sign * (actual_max_pips * PIP_SIZE) / price_at_prediction * 100.0
+        return sign * (float(actual_max_pips) * PIP_SIZE) / float(price_at_prediction) * 100.0
     if (
-        price_at_prediction is not None
-        and current_price is not None
-        and not _isnan(price_at_prediction)
-        and not _isnan(current_price)
-        and price_at_prediction > 0
+        not _is_missing(price_at_prediction)
+        and not _is_missing(current_price)
+        and float(price_at_prediction) > 0
     ):
-        return (current_price / price_at_prediction - 1.0) * 100.0
+        return (float(current_price) / float(price_at_prediction) - 1.0) * 100.0
     return None
 
 
 def format_pct_move(value: Optional[float]) -> str:
-    if value is None or _isnan(value):
+    if _is_missing(value):
         return ""
-    return f"{value:+.2f}%"
+    return f"{float(value):+.2f}%"
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -106,8 +104,9 @@ def time_remaining_days(
     outcome_filled: bool = False,
 ) -> Optional[TimeRemaining]:
     """Equity / crypto. Returns None for filled rows or missing maturity."""
-    if outcome_filled or maturity is None:
+    if outcome_filled or _is_missing(maturity):
         return None
+    maturity = _to_date(maturity)
     today = today or date.today()
     delta = (maturity - today).days
     return TimeRemaining(value=delta, unit="d", past_due=delta < 0)
@@ -119,8 +118,9 @@ def time_remaining_hours(
     outcome_filled: bool = False,
 ) -> Optional[TimeRemaining]:
     """FX. Returns None for filled rows or missing maturity."""
-    if outcome_filled or maturity_dt is None:
+    if outcome_filled or _is_missing(maturity_dt):
         return None
+    maturity_dt = _to_datetime(maturity_dt)
     now = now_utc or datetime.now(timezone.utc).replace(tzinfo=None)
     # Truncate towards zero, but keep negative integer for past-due.
     seconds = (maturity_dt - now).total_seconds()
@@ -147,8 +147,36 @@ def format_time_remaining(tr: Optional[TimeRemaining]) -> str:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _isnan(value: float) -> bool:
+def _is_missing(value) -> bool:
+    """True for None, NaN, and pandas NaT.
+
+    NaN and NaT both have the property `value != value`, so we can detect
+    them without importing pandas. None is checked explicitly since None
+    is equal to itself.
+    """
+    if value is None:
+        return True
     try:
-        return math.isnan(float(value))
-    except (TypeError, ValueError):
+        return value != value
+    except Exception:
         return False
+
+
+def _to_date(value) -> date:
+    """Coerce a pandas.Timestamp / datetime / date to a plain date."""
+    if isinstance(value, datetime):
+        return value.date()
+    if hasattr(value, "to_pydatetime"):  # pandas.Timestamp
+        return value.to_pydatetime().date()
+    return value
+
+
+def _to_datetime(value) -> datetime:
+    """Coerce a pandas.Timestamp / datetime to a tz-naive datetime."""
+    if hasattr(value, "to_pydatetime"):  # pandas.Timestamp
+        dt = value.to_pydatetime()
+    else:
+        dt = value
+    if isinstance(dt, datetime) and dt.tzinfo is not None:
+        dt = dt.replace(tzinfo=None)
+    return dt
