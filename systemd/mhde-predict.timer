@@ -1,0 +1,9 @@
+[Unit]
+Description=MHDE equity daily prediction (runs 00:15 UTC, after daily-analysis at 23:15 has refreshed prices+features)
+
+[Timer]
+OnCalendar=*-*-* 00:15:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
