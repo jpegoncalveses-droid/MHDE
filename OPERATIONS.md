@@ -484,48 +484,41 @@ fetcher is brittle — if it returns 0 bars, retry; if it consistently
 fails, the upstream is most likely 404'ing for a recent hour (data
 sometimes lags by 30-60 min).
 
-### TwelveData (FX) — parallel to Dukascopy during migration
+### TwelveData (FX) — production fetcher post-cutover
 
-`fx/data/refresh_twelvedata.py` is the second FX fetcher running in
-parallel to Dukascopy during the data-source migration (DECISIONS.md
-ADR-013). Both run on the hourly `mhde-fx-predict.timer` firing.
-TwelveData writes to `fx_prices_hourly_twelvedata`; Dukascopy continues
-writing the production `fx_prices_hourly`. Predict / features / labels
-still read Dukascopy only — there is no behavior change for the engine
-yet.
+`fx/data/refresh.py` is the production GBP/EUR 1h bar fetcher; it
+delegates to the TwelveData implementation in
+`fx/data/refresh_twelvedata.py`. Cutover landed 2026-05-08
+(DECISIONS.md ADR-013). Writes to `fx_prices_hourly`, the table all
+FX readers consume (predict / features / labels / freshness / dashboard).
+The pre-cutover Dukascopy/ATSRP-subprocess path is gone.
 
 Setup:
 1. Get a free key at https://twelvedata.com (800 calls/day; we use 24).
 2. Add `TWELVEDATA_API_KEY=...` to `/home/jpcg/MHDE/.env` (mode 600, never committed).
-3. After deploying the updated `mhde-fx-predict.service`, watch the
-   first hourly firing in `data/logs/fx_predict.log` to confirm the
-   `Refresh (TwelveData): fetch=OK …` line appears.
+3. Confirm `mhde-fx-predict.service` is the post-cutover unit: one
+   `fx refresh-prices` ExecStart, no parallel `…-twelvedata` line.
+   `journalctl -u mhde-fx-predict | grep TwelveData` after the next firing
+   should show `Inserted TwelveData bar into fx_prices_hourly for …`.
 
 Manual run (one-off):
 ```bash
-venv/bin/python main.py fx refresh-prices-twelvedata
+venv/bin/python main.py fx refresh-prices
 ```
 
-Comparison + cutover gate (after 24 hours of parallel run):
-```bash
-venv/bin/python main.py fx compare-sources --hours 24 --threshold-pips 5
-# Exit 0  → all matched bars within 5 pips → eligible for Session 2 cutover
-# Exit 1  → at least one breach → investigate before cutover
-```
+Cleanup pending (~2026-05-15, after 1-week stability buffer):
+- Drop `fx_prices_hourly_twelvedata` and
+  `fx_prices_hourly_twelvedata_backfill` tables.
+- Remove `fx refresh-prices-twelvedata` and `fx compare-sources` CLI
+  subcommands from `main.py`.
+- Delete `fx/data/compare_sources.py` and `tests/fx/test_compare_sources.py`.
+- Drop `SCHEMA_FX_PRICES_HOURLY_TWELVEDATA` from `fx/schema.py`.
 
-The `compare-sources` report shows per-bar pip differences plus
-asymmetric coverage (bars present in only one source).
-
-Cutover (Session 2 of the migration, run separately):
-- Switch the predict / features / labels reads from `fx_prices_hourly`
-  to `fx_prices_hourly_twelvedata`.
-- Optionally drop the Dukascopy ExecStart from `mhde-fx-predict.service`.
-- Drop `fx_prices_hourly_twelvedata` table after 1 week of post-cutover
-  stability and rename the live table back to `fx_prices_hourly`.
-
-Rollback path during the migration window: revert the
-`fx refresh-prices-twelvedata` ExecStart line. The mirror table is
-read by nothing in production; leaving it populated is harmless.
+Rollback path during the buffer: `git revert` the cutover commit. The
+240 historical bars filled at cutover stay in `fx_prices_hourly`;
+subsequent firings would reattach to the old Dukascopy/ATSRP code path.
+ATSRP is still on disk for this purpose (also still serves Telegram
+credentials per ADR-003).
 
 ### FRED (FX macro + equity macro)
 

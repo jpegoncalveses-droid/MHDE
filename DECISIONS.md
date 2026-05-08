@@ -313,8 +313,43 @@ own the new table.
 
 ## ADR-013 — Migrate FX bars from Dukascopy (via ATSRP) to TwelveData
 
-**Date:** 2026-05-07 (Session 1 of the FX migration plan).
-**Status:** Active (parallel run); cutover deferred to Session 2.
+**Date:** 2026-05-07 (Session 1) / 2026-05-08 (Session 2 cutover).
+**Status:** IMPLEMENTED. Production fx_prices_hourly is now fed by TwelveData.
+
+**Cutover (2026-05-08, same day as Session 2).** Gate executed against a
+30-day historical backfill instead of the originally-planned 24-hour
+parallel window:
+
+- **Coverage.** TwelveData covered 720/720 hourly bars over 30 days;
+  Dukascopy was missing 240 (33%). The coverage gain was the dominant
+  cutover driver, not the agreement metric.
+- **Agreement.** 472/480 matched bars within 5 pips. The 8 breaches all
+  sit in the 20:00-21:00 UTC NYSE-close window with consistent sign
+  (Dukascopy > TwelveData by 5-7 pips), consistent with the post-close
+  liquidity-venue rotation rather than random source disagreement.
+- **Weekend bars.** Verified to be real OTC quotes (avg 2.84 pips
+  close-open movement, 0/192 zero-range bars over 4 weekends). No
+  filtering needed for downstream features/labels.
+
+**What changed at cutover.**
+- `fx/data/refresh.py` rewritten as a thin wrapper that calls the
+  TwelveData implementation, writing to the production
+  `fx_prices_hourly` table. ATSRP subprocess dependency removed.
+- The 240 historical Dukascopy gaps in `fx_prices_hourly` were filled
+  from `fx_prices_hourly_twelvedata_backfill` (the 30-day snapshot).
+- `mhde-fx-predict.service` lost the parallel
+  `fx refresh-prices-twelvedata` ExecStart; the remaining
+  `fx refresh-prices` line now runs the TwelveData fetcher.
+- Reader paths (predict / features / labels / freshness / dashboard)
+  unchanged — they still read `fx_prices_hourly`. Only the writer flipped.
+
+**1-week stability buffer (cleanup deferred to ~2026-05-15).** Drop
+`fx_prices_hourly_twelvedata`, `fx_prices_hourly_twelvedata_backfill`,
+the `fx refresh-prices-twelvedata` and `fx compare-sources` CLI
+subcommands, and `fx/data/compare_sources.py`. Tests for those modules
+move out at the same time.
+
+**Original plan (preserved for context):**
 
 **Context.** The FX engine (GBP/EUR hourly) currently fetches bars
 from Dukascopy through a subprocess into `/home/jpcg/ATSRP/`

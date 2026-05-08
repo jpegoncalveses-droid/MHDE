@@ -6,6 +6,98 @@ are at the top.
 
 ---
 
+## 2026-05-08 — Session 2 (FX migration): cutover Dukascopy → TwelveData
+
+**Branch:** `fx-twelvedata-migration` (with master merged in earlier the
+same day via the recovery sync).
+
+ADR-013 cutover landed. `fx_prices_hourly` is now fed by TwelveData
+through `fx/data/refresh.py` → `fx/data/refresh_twelvedata.py`. ATSRP
+subprocess path retired from the data flow.
+
+### What replaced the original 24h gate
+
+The originally-planned 24-hour parallel-collection gate
+(`fx compare-sources --hours 24 --threshold-pips 5`) was replaced by a
+30-day historical backfill comparison built today, because the audit
+work earlier in the day disrupted live parallel collection between 14:00
+and 22:00 UTC and a same-day cutover decision was preferable to waiting
+5 more days.
+
+### Findings that drove the go decision
+
+- **Coverage** (the headline). TwelveData covered 720/720 hourly bars
+  over 30 days. Dukascopy was missing 240 (33%). Coverage gain alone
+  justified the migration before considering price agreement.
+- **Price agreement.** 472 of 480 matched bars within 5 pips on close
+  (98.3%). The 8 breaches:
+  - All occur at hour 20:00 or 21:00 UTC (NYSE close window).
+  - All have Dukascopy > TwelveData by 5-7 pips (consistent sign).
+  - Zero correspond to scheduled macro releases (NFP, FOMC, ECB, etc.).
+  - Pattern is a known post-NYSE-close liquidity-venue rotation, not
+    random source disagreement. Bounded, explainable, acceptable.
+- **Weekend bars are real OTC.** 192 weekend bars sampled; 0/192 had
+  collapsed OHLC; mean close-open 2.84 pips, mean high-low 8.20 pips.
+  Saturday 03:00 / 12:00 UTC samples across 4 weekends all showed
+  genuine ranges. No filtering needed downstream.
+
+### Code changes
+
+- `fx/data/refresh.py` rewritten as a thin wrapper that calls
+  `fx.data.refresh_twelvedata.refresh_prices(conn, table="fx_prices_hourly")`.
+  Pre-cutover ATSRP/Dukascopy subprocess implementation deleted.
+- `fx/data/refresh_twelvedata.py` `upsert_new_bars` and `refresh_prices`
+  gained a `table=` parameter (default unchanged → backwards-compat).
+- `fx/data/compare_sources.py` `compare_recent` gained
+  `dukascopy_table` / `twelvedata_table` kwargs (also backwards-compat)
+  so the 30-day comparison could run against the backfill table.
+- 240 historical bars copied from `fx_prices_hourly_twelvedata_backfill`
+  into `fx_prices_hourly`. Row count: 71,038 → 71,278.
+- `systemd/mhde-fx-predict.service`: removed the parallel
+  `fx refresh-prices-twelvedata` ExecStart. Single `fx refresh-prices`
+  ExecStart now uses TwelveData.
+- Docs updated: ADR-013 → IMPLEMENTED, OPERATIONS.md FX section,
+  ARCHITECTURE.md ATSRP-dependency section, INFRASTRUCTURE.md FX row.
+
+### Diagnostic scripts kept under `.claude/local_scripts/`
+
+`fx_backfill_twelvedata_30d.py`, `fx_compare_30d.py`,
+`fx_check_twelvedata_weekend_bars.py`, `fx_cutover_premortem.py`,
+`fx_cutover_backfill_gaps.py`.
+
+### Verification
+
+- `tests/fx/` (32 tests), `tests/integration/test_fx_pipeline.py`,
+  `tests/dashboard/` (44 tests) all pass — 97/97 collected.
+- Manual `venv/bin/python main.py fx refresh-prices` post-rewrite
+  fetched the 22:00 UTC bar from TwelveData and inserted into
+  `fx_prices_hourly` cleanly.
+
+### Pending (operator action)
+
+1. **Deploy the systemd unit change** to take effect on next firings:
+   ```
+   sudo cp /home/jpcg/MHDE/systemd/mhde-fx-predict.service \
+           /etc/systemd/system/mhde-fx-predict.service
+   sudo systemctl daemon-reload
+   ```
+   Until done, the deployed unit still calls the parallel
+   `fx refresh-prices-twelvedata` ExecStart. Both fetchers run, both
+   succeed, data is duplicated into the mirror table harmlessly.
+2. **One-week stability buffer** until ~2026-05-15, then drop:
+   - Tables `fx_prices_hourly_twelvedata`, `fx_prices_hourly_twelvedata_backfill`
+   - CLI subcommands `fx refresh-prices-twelvedata`, `fx compare-sources`
+   - Code: `fx/data/compare_sources.py`, `tests/fx/test_compare_sources.py`
+   - Schema: `SCHEMA_FX_PRICES_HOURLY_TWELVEDATA` from `fx/schema.py`
+
+### Branch status
+
+`fx-twelvedata-migration` is ready to merge to master. The original
+parallel-fetcher infrastructure plus today's cutover (writer flip,
+240-bar backfill, doc updates) make a coherent landing.
+
+---
+
 ## 2026-05-08 — Recovery audit: production files never tracked
 
 **Not a `HARDENING_PLAN.md` session.** Triggered by an operator noticing

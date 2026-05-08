@@ -156,26 +156,43 @@ def fetch_latest_bar(now_utc: Optional[datetime] = None) -> dict[str, Any]:
     }
 
 
-def upsert_new_bars(conn: duckdb.DuckDBPyConnection, bar: dict[str, Any]) -> int:
-    """Insert one bar into fx_prices_hourly_twelvedata.
+_VALID_TABLE_NAME_CHARS = set(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
+)
+
+
+def _validate_table(name: str) -> str:
+    if not name or any(c not in _VALID_TABLE_NAME_CHARS for c in name):
+        raise ValueError(f"invalid table name: {name!r}")
+    return name
+
+
+def upsert_new_bars(
+    conn: duckdb.DuckDBPyConnection,
+    bar: dict[str, Any],
+    table: str = "fx_prices_hourly_twelvedata",
+) -> int:
+    """Insert one bar into `table`. Default target is the parallel mirror
+    used during migration; pass ``table="fx_prices_hourly"`` to write to
+    the production table post-cutover.
 
     Returns 1 if inserted, 0 if a row with the same datetime_utc already
-    existed (no-op via WHERE NOT IN).
-    """
+    existed."""
     if bar is None:
         return 0
     create_all_tables(conn)
+    tbl = _validate_table(table)
 
     before = conn.execute(
-        "SELECT COUNT(*) FROM fx_prices_hourly_twelvedata WHERE datetime_utc = ?",
+        f"SELECT COUNT(*) FROM {tbl} WHERE datetime_utc = ?",
         [bar["datetime_utc"]],
     ).fetchone()[0]
     if before > 0:
-        logger.info("Bar already in table for %s; no-op", bar["datetime_utc"])
+        logger.info("Bar already in %s for %s; no-op", tbl, bar["datetime_utc"])
         return 0
 
     conn.execute(
-        "INSERT INTO fx_prices_hourly_twelvedata "
+        f"INSERT INTO {tbl} "
         "(datetime_utc, date, weekday, hour_utc, gbpeur_open, gbpeur_high, "
         " gbpeur_low, gbpeur_close, tick_count, data_quality) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -183,19 +200,22 @@ def upsert_new_bars(conn: duckdb.DuckDBPyConnection, bar: dict[str, Any]) -> int
          bar["gbpeur_open"], bar["gbpeur_high"], bar["gbpeur_low"],
          bar["gbpeur_close"], bar["tick_count"], bar["data_quality"]],
     )
-    logger.info("Inserted TwelveData bar for %s (close=%.5f)",
-                bar["datetime_utc"], bar["gbpeur_close"])
+    logger.info("Inserted TwelveData bar into %s for %s (close=%.5f)",
+                tbl, bar["datetime_utc"], bar["gbpeur_close"])
     return 1
 
 
-def refresh_prices(conn: duckdb.DuckDBPyConnection) -> dict[str, Any]:
-    """Fetch latest bar then upsert. Mirrors fx.data.refresh.refresh_prices
-    return shape so logs read consistently."""
+def refresh_prices(
+    conn: duckdb.DuckDBPyConnection,
+    table: str = "fx_prices_hourly_twelvedata",
+) -> dict[str, Any]:
+    """Fetch latest bar then upsert into `table`. Default writes to the
+    parallel mirror; ``table="fx_prices_hourly"`` writes to production."""
     fetch_result = fetch_latest_bar()
     logger.info("TwelveData fetch: status=%s, bar=%s",
                 fetch_result.get("status"), fetch_result.get("fetched_hour"))
 
-    inserted = upsert_new_bars(conn, fetch_result.get("bar"))
+    inserted = upsert_new_bars(conn, fetch_result.get("bar"), table=table)
     return {
         "fetch_status": fetch_result.get("status"),
         "fetched_hour": fetch_result.get("fetched_hour"),

@@ -22,13 +22,28 @@ from fx.schema import create_all_tables
 logger = logging.getLogger("mhde.fx.compare_sources")
 
 
+_VALID_TABLE_NAME_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")
+
+
+def _validate_table_name(name: str) -> str:
+    if not name or any(c not in _VALID_TABLE_NAME_CHARS for c in name):
+        raise ValueError(f"invalid table name: {name!r}")
+    return name
+
+
 def compare_recent(
     conn: duckdb.DuckDBPyConnection,
     hours: int = 24,
     threshold_pips: float = 5.0,
     now_utc: datetime | None = None,
+    dukascopy_table: str = "fx_prices_hourly",
+    twelvedata_table: str = "fx_prices_hourly_twelvedata",
 ) -> dict[str, Any]:
     """Compare the last `hours` of bars between the two sources.
+
+    `dukascopy_table` / `twelvedata_table` default to the production parallel
+    pair. Override e.g. with `twelvedata_table="fx_prices_hourly_twelvedata_backfill"`
+    to run an ad-hoc historical comparison without disturbing live state.
 
     Returns a dict:
       {
@@ -43,18 +58,19 @@ def compare_recent(
       }
     """
     create_all_tables(conn)
+    duk = _validate_table_name(dukascopy_table)
+    tvd = _validate_table_name(twelvedata_table)
 
     now = (now_utc or datetime.now(tz=timezone.utc).replace(tzinfo=None))
     window_end = now
     window_start = now - timedelta(hours=hours)
 
-    # Matched bars (present in both tables)
     matched_rows = conn.execute(
-        """
+        f"""
         SELECT d.datetime_utc, d.gbpeur_close AS dukascopy_close,
                t.gbpeur_close AS twelvedata_close
-        FROM fx_prices_hourly d
-        JOIN fx_prices_hourly_twelvedata t
+        FROM {duk} d
+        JOIN {tvd} t
           ON d.datetime_utc = t.datetime_utc
         WHERE d.datetime_utc >= ? AND d.datetime_utc <= ?
         ORDER BY d.datetime_utc DESC
@@ -78,13 +94,12 @@ def compare_recent(
     matched = len(matched_rows)
     within = matched - len(breaches)
 
-    # Asymmetric coverage (one source has the bar, the other doesn't)
     missing_from_twelvedata = conn.execute(
-        """
-        SELECT COUNT(*) FROM fx_prices_hourly d
+        f"""
+        SELECT COUNT(*) FROM {duk} d
         WHERE d.datetime_utc >= ? AND d.datetime_utc <= ?
           AND NOT EXISTS (
-            SELECT 1 FROM fx_prices_hourly_twelvedata t
+            SELECT 1 FROM {tvd} t
             WHERE t.datetime_utc = d.datetime_utc
           )
         """,
@@ -92,11 +107,11 @@ def compare_recent(
     ).fetchone()[0]
 
     missing_from_dukascopy = conn.execute(
-        """
-        SELECT COUNT(*) FROM fx_prices_hourly_twelvedata t
+        f"""
+        SELECT COUNT(*) FROM {tvd} t
         WHERE t.datetime_utc >= ? AND t.datetime_utc <= ?
           AND NOT EXISTS (
-            SELECT 1 FROM fx_prices_hourly d
+            SELECT 1 FROM {duk} d
             WHERE d.datetime_utc = t.datetime_utc
           )
         """,

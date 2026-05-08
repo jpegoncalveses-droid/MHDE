@@ -161,7 +161,7 @@ crypto features.
 The unit chains four commands per firing:
 
 ```
-fx refresh-prices       → fx_prices_hourly      (Dukascopy bi5 via ATSRP)
+fx refresh-prices       → fx_prices_hourly      (TwelveData REST, post-cutover 2026-05-08)
 fx backfill-features    → fx_ml_features
 fx backfill-labels      → fx_ml_labels
 fx predict              → fx_ml_predictions     + fx_signals + Telegram
@@ -378,15 +378,17 @@ hashes and estimated cost.
 
 ## Dependency on ATSRP (external)
 
-`/home/jpcg/ATSRP/` is **not optional**:
+`/home/jpcg/ATSRP/` is **partially optional** post-2026-05-08 cutover:
 
-1. `fx/data/refresh.py` shells out to ATSRP for Dukascopy bi5 hourly bars.
+1. ~~`fx/data/refresh.py` shells out to ATSRP for Dukascopy bi5 hourly bars.~~
+   **Removed in ADR-013 cutover (2026-05-08).** FX bars now come from
+   TwelveData via in-process REST calls; no subprocess dependency.
 2. `notifications/telegram.py` loads `TELEGRAM_BOT_TOKEN` and
-   `TELEGRAM_CHAT_ID` from `/home/jpcg/ATSRP/.env`.
+   `TELEGRAM_CHAT_ID` from `/home/jpcg/ATSRP/.env`. (Still required.)
 
 The systemd services for the old ATSRP FX engine itself are disabled
-(per Session 0 ADR-003) — but the *files* in ATSRP are still read.
-Don't delete ATSRP without first migrating these two integration points.
+(per Session 0 ADR-003). Telegram credentials are now the only remaining
+ATSRP integration point; one more migration would let ATSRP be deleted.
 
 ---
 

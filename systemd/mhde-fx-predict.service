@@ -8,10 +8,6 @@ User=jpcg
 WorkingDirectory=/home/jpcg/MHDE
 Environment=MHDE_DB_PATH=/home/jpcg/MHDE/data/mhde.duckdb
 ExecStart=/home/jpcg/MHDE/venv/bin/python main.py fx refresh-prices
-# Parallel TwelveData fetcher — writes to fx_prices_hourly_twelvedata
-# during the FX migration (DECISIONS.md ADR-013). Production predict
-# still reads fx_prices_hourly only.
-ExecStart=/home/jpcg/MHDE/venv/bin/python main.py fx refresh-prices-twelvedata
 ExecStart=/home/jpcg/MHDE/venv/bin/python main.py fx backfill-features
 ExecStart=/home/jpcg/MHDE/venv/bin/python main.py fx backfill-labels
 ExecStart=/home/jpcg/MHDE/venv/bin/python main.py fx predict
