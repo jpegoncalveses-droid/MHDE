@@ -8,6 +8,14 @@ import pandas as pd
 import streamlit as st
 
 from dashboard.auth import require_auth
+from dashboard.services.maturity import (
+    format_pct_move,
+    format_time_remaining,
+    pct_move_equity_or_crypto,
+    pct_move_fx,
+    time_remaining_days,
+    time_remaining_hours,
+)
 from dashboard.services.queries import (
     get_crypto_predictions,
     get_crypto_recent_outcomes,
@@ -203,8 +211,27 @@ with tab_equities:
                 else:
                     display_df["outcome"] = "pending"
 
+                display_df["pct_move_str"] = display_df.apply(
+                    lambda r: format_pct_move(pct_move_equity_or_crypto(
+                        r.get("actual_max_return"),
+                        r.get("price_at_prediction"),
+                        r.get("current_price"),
+                        pd.notna(r.get("outcome_filled_at")),
+                    )),
+                    axis=1,
+                )
+                display_df["time_remaining_str"] = display_df.apply(
+                    lambda r: format_time_remaining(time_remaining_days(
+                        r.get("maturity_date"),
+                        outcome_filled=pd.notna(r.get("outcome_filled_at")),
+                    )),
+                    axis=1,
+                )
+
                 show_cols = ["ticker", "horizon", "prob", "confidence", "sector",
-                             "market_cap_bucket", "price_at_prediction", "outcome"]
+                             "market_cap_bucket", "price_at_prediction",
+                             "maturity_date", "price_at_maturity",
+                             "pct_move_str", "time_remaining_str", "outcome"]
                 st.dataframe(
                     display_df[show_cols].reset_index(drop=True),
                     use_container_width=True,
@@ -218,6 +245,18 @@ with tab_equities:
                         "market_cap_bucket": st.column_config.TextColumn("Cap", width="small"),
                         "price_at_prediction": st.column_config.NumberColumn(
                             "Price @ Pred", format="$%.2f", width="small"
+                        ),
+                        "maturity_date": st.column_config.DateColumn(
+                            "Maturity", width="small"
+                        ),
+                        "price_at_maturity": st.column_config.NumberColumn(
+                            "Price @ Maturity", format="$%.2f", width="small"
+                        ),
+                        "pct_move_str": st.column_config.TextColumn(
+                            "% Move", width="small"
+                        ),
+                        "time_remaining_str": st.column_config.TextColumn(
+                            "Time Left", width="small"
                         ),
                         "outcome": st.column_config.TextColumn("Outcome", width="medium"),
                     },
@@ -283,15 +322,35 @@ with tab_equities:
                                       f"dd: {r['actual_max_drawdown']*100:+.1f}%)",
                             axis=1,
                         )
+                        recent_outcomes["pct_move_str"] = recent_outcomes.apply(
+                            lambda r: format_pct_move(pct_move_equity_or_crypto(
+                                r.get("actual_max_return"),
+                                r.get("price_at_prediction"),
+                                None,
+                                outcome_filled=True,
+                            )),
+                            axis=1,
+                        )
                         st.dataframe(
                             recent_outcomes[["ticker", "prediction_date", "horizon",
                                              "predicted_probability",
-                                             "price_at_prediction", "result"]],
+                                             "price_at_prediction",
+                                             "maturity_date", "price_at_maturity",
+                                             "pct_move_str", "result"]],
                             use_container_width=True,
                             hide_index=True,
                             column_config={
                                 "price_at_prediction": st.column_config.NumberColumn(
                                     "Price @ Pred", format="$%.2f", width="small"
+                                ),
+                                "maturity_date": st.column_config.DateColumn(
+                                    "Maturity", width="small"
+                                ),
+                                "price_at_maturity": st.column_config.NumberColumn(
+                                    "Price @ Maturity", format="$%.2f", width="small"
+                                ),
+                                "pct_move_str": st.column_config.TextColumn(
+                                    "% Move", width="small"
                                 ),
                             },
                         )
@@ -426,8 +485,27 @@ with tab_crypto:
                         axis=1,
                     )
 
+                display["pct_move_str"] = display.apply(
+                    lambda r: format_pct_move(pct_move_equity_or_crypto(
+                        r.get("actual_max_return"),
+                        r.get("price_at_prediction"),
+                        r.get("current_price"),
+                        pd.notna(r.get("outcome_filled_at")),
+                    )),
+                    axis=1,
+                )
+                display["time_remaining_str"] = display.apply(
+                    lambda r: format_time_remaining(time_remaining_days(
+                        r.get("maturity_date"),
+                        outcome_filled=pd.notna(r.get("outcome_filled_at")),
+                    )),
+                    axis=1,
+                )
+
                 show_cols = ["symbol", "horizon", "Prob", "Confidence",
-                             "market_cap_bucket", "price_at_prediction"]
+                             "market_cap_bucket", "price_at_prediction",
+                             "maturity_date", "price_at_maturity",
+                             "pct_move_str", "time_remaining_str"]
                 if "Outcome" in display.columns:
                     show_cols.append("Outcome")
                 st.dataframe(
@@ -437,6 +515,18 @@ with tab_crypto:
                     column_config={
                         "price_at_prediction": st.column_config.NumberColumn(
                             "Price @ Pred", format="$%.4f", width="small"
+                        ),
+                        "maturity_date": st.column_config.DateColumn(
+                            "Maturity", width="small"
+                        ),
+                        "price_at_maturity": st.column_config.NumberColumn(
+                            "Price @ Maturity", format="$%.4f", width="small"
+                        ),
+                        "pct_move_str": st.column_config.TextColumn(
+                            "% Move", width="small"
+                        ),
+                        "time_remaining_str": st.column_config.TextColumn(
+                            "Time Left", width="small"
                         ),
                     },
                 )
@@ -476,15 +566,35 @@ with tab_crypto:
                                   f"dd: {r['actual_max_drawdown']*100:+.1f}%)",
                         axis=1,
                     )
+                    crypto_recent["pct_move_str"] = crypto_recent.apply(
+                        lambda r: format_pct_move(pct_move_equity_or_crypto(
+                            r.get("actual_max_return"),
+                            r.get("price_at_prediction"),
+                            None,
+                            outcome_filled=True,
+                        )),
+                        axis=1,
+                    )
                     st.dataframe(
                         crypto_recent[["symbol", "prediction_date", "horizon",
                                        "predicted_probability",
-                                       "price_at_prediction", "result"]],
+                                       "price_at_prediction",
+                                       "maturity_date", "price_at_maturity",
+                                       "pct_move_str", "result"]],
                         use_container_width=True,
                         hide_index=True,
                         column_config={
                             "price_at_prediction": st.column_config.NumberColumn(
                                 "Price @ Pred", format="$%.4f", width="small"
+                            ),
+                            "maturity_date": st.column_config.DateColumn(
+                                "Maturity", width="small"
+                            ),
+                            "price_at_maturity": st.column_config.NumberColumn(
+                                "Price @ Maturity", format="$%.4f", width="small"
+                            ),
+                            "pct_move_str": st.column_config.TextColumn(
+                                "% Move", width="small"
                             ),
                         },
                     )
@@ -650,10 +760,29 @@ with tab_fx:
                         ) if pd.notna(r["actual_hit"]) else "pending",
                         axis=1,
                     )
+                    fx_recent_preds["pct_move_str"] = fx_recent_preds.apply(
+                        lambda r: format_pct_move(pct_move_fx(
+                            r.get("direction"),
+                            r.get("actual_max_pips"),
+                            r.get("price_at_prediction"),
+                            r.get("current_price"),
+                            pd.notna(r.get("outcome_filled_at")),
+                        )),
+                        axis=1,
+                    )
+                    fx_recent_preds["time_remaining_str"] = fx_recent_preds.apply(
+                        lambda r: format_time_remaining(time_remaining_hours(
+                            r.get("maturity_datetime"),
+                            outcome_filled=pd.notna(r.get("outcome_filled_at")),
+                        )),
+                        axis=1,
+                    )
                     st.dataframe(
                         fx_recent_preds[
                             ["datetime_utc", "direction", "horizon",
-                             "predicted_probability", "price_at_prediction", "Outcome"]
+                             "predicted_probability", "price_at_prediction",
+                             "maturity_datetime", "price_at_maturity",
+                             "pct_move_str", "time_remaining_str", "Outcome"]
                         ],
                         use_container_width=True,
                         hide_index=True,
@@ -663,6 +792,19 @@ with tab_fx:
                             ),
                             "price_at_prediction": st.column_config.NumberColumn(
                                 "Price @ Pred", format="%.5f", width="small"
+                            ),
+                            "maturity_datetime": st.column_config.DatetimeColumn(
+                                "Maturity (UTC)", format="YYYY-MM-DD HH:mm",
+                                width="medium"
+                            ),
+                            "price_at_maturity": st.column_config.NumberColumn(
+                                "Price @ Maturity", format="%.5f", width="small"
+                            ),
+                            "pct_move_str": st.column_config.TextColumn(
+                                "% Move", width="small"
+                            ),
+                            "time_remaining_str": st.column_config.TextColumn(
+                                "Time Left", width="small"
                             ),
                         },
                     )
