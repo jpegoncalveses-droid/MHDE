@@ -5,6 +5,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import duckdb
+import pandas as pd
 
 
 def _connect() -> duckdb.DuckDBPyConnection:
@@ -389,3 +390,182 @@ def get_scorecard_experiments(conn: duckdb.DuckDBPyConnection, limit: int = 50) 
         "review_notes", "approved_by", "applied_at", "created_at",
     ]
     return [dict(zip(cols, r)) for r in rows]
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Prediction tables joined with prices for the price/maturity/move columns
+# rendered on the equity / crypto / FX prediction tabs.
+#
+# Maturity calculation MUST mirror the corresponding `fill_outcomes` logic:
+#   - Equity: trading rows forward (ROW_NUMBER on prices_daily). See
+#     ml/predict.py::fill_outcomes — the N-th row after entry.
+#   - Crypto: calendar days forward (prediction_date + INTERVAL N days).
+#     See crypto/ml/predict.py::fill_outcomes.
+#   - FX:     calendar hours forward (datetime_utc + INTERVAL N hours).
+#     See fx/ml/predict.py::fill_outcomes.
+# ─────────────────────────────────────────────────────────────────────────
+
+_EQUITY_HORIZON_DAYS = "WHEN '5d' THEN 5 WHEN '10d' THEN 10 WHEN '20d' THEN 20 ELSE 20"
+_CRYPTO_HORIZON_INTERVAL = (
+    "WHEN '1d' THEN INTERVAL '1 day' "
+    "WHEN '3d' THEN INTERVAL '3 days' "
+    "WHEN '5d' THEN INTERVAL '5 days' "
+    "WHEN '10d' THEN INTERVAL '10 days' "
+    "ELSE INTERVAL '20 days'"
+)
+_FX_HORIZON_INTERVAL = (
+    "WHEN '24h' THEN INTERVAL '24 hours' "
+    "WHEN '48h' THEN INTERVAL '48 hours'"
+)
+
+
+def get_equity_predictions(
+    conn: duckdb.DuckDBPyConnection, prediction_date
+) -> pd.DataFrame:
+    sql = f"""
+        WITH ranked AS (
+            SELECT ticker, trade_date, close,
+                   ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY trade_date) AS rn
+            FROM prices_daily
+            WHERE close IS NOT NULL
+        ),
+        latest AS (
+            SELECT ticker, MAX(trade_date) AS latest_date
+            FROM prices_daily WHERE close IS NOT NULL GROUP BY ticker
+        )
+        SELECT p.ticker, p.horizon, p.predicted_probability, p.prediction_threshold,
+               p.sector, p.market_cap_bucket,
+               entry.close AS price_at_prediction,
+               mat.trade_date AS maturity_date,
+               mat.close AS price_at_maturity,
+               cur.close AS current_price,
+               p.actual_max_return, p.actual_max_drawdown, p.actual_hit,
+               p.outcome_filled_at
+        FROM ml_predictions p
+        LEFT JOIN ranked entry
+          ON entry.ticker = p.ticker AND entry.trade_date = p.prediction_date
+        LEFT JOIN ranked mat
+          ON mat.ticker = p.ticker
+         AND mat.rn = entry.rn + CASE p.horizon {_EQUITY_HORIZON_DAYS} END
+        LEFT JOIN latest lp ON lp.ticker = p.ticker
+        LEFT JOIN prices_daily cur
+          ON cur.ticker = lp.ticker AND cur.trade_date = lp.latest_date
+        WHERE p.prediction_date = ?
+        ORDER BY p.horizon, p.predicted_probability DESC
+    """
+    return conn.execute(sql, [prediction_date]).fetchdf()
+
+
+def get_equity_recent_outcomes(
+    conn: duckdb.DuckDBPyConnection, limit: int = 50
+) -> pd.DataFrame:
+    sql = f"""
+        WITH ranked AS (
+            SELECT ticker, trade_date, close,
+                   ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY trade_date) AS rn
+            FROM prices_daily
+            WHERE close IS NOT NULL
+        )
+        SELECT p.ticker, p.prediction_date, p.horizon, p.predicted_probability,
+               entry.close AS price_at_prediction,
+               mat.trade_date AS maturity_date,
+               mat.close AS price_at_maturity,
+               p.actual_max_return, p.actual_max_drawdown, p.actual_hit,
+               p.outcome_filled_at
+        FROM ml_predictions p
+        LEFT JOIN ranked entry
+          ON entry.ticker = p.ticker AND entry.trade_date = p.prediction_date
+        LEFT JOIN ranked mat
+          ON mat.ticker = p.ticker
+         AND mat.rn = entry.rn + CASE p.horizon {_EQUITY_HORIZON_DAYS} END
+        WHERE p.outcome_filled_at IS NOT NULL
+        ORDER BY p.prediction_date DESC, p.predicted_probability DESC
+        LIMIT ?
+    """
+    return conn.execute(sql, [limit]).fetchdf()
+
+
+def get_crypto_predictions(
+    conn: duckdb.DuckDBPyConnection, prediction_date
+) -> pd.DataFrame:
+    sql = f"""
+        WITH latest AS (
+            SELECT symbol, MAX(trade_date) AS latest_date
+            FROM crypto_prices_daily WHERE close IS NOT NULL GROUP BY symbol
+        )
+        SELECT p.symbol, p.horizon, p.predicted_probability, p.prediction_threshold,
+               p.market_cap_bucket,
+               entry.close AS price_at_prediction,
+               (p.prediction_date + CASE p.horizon {_CRYPTO_HORIZON_INTERVAL} END)::DATE
+                 AS maturity_date,
+               mat.close AS price_at_maturity,
+               cur.close AS current_price,
+               p.actual_max_return, p.actual_max_drawdown, p.actual_hit,
+               p.outcome_filled_at
+        FROM crypto_ml_predictions p
+        LEFT JOIN crypto_prices_daily entry
+          ON entry.symbol = p.symbol AND entry.trade_date = p.prediction_date
+        LEFT JOIN crypto_prices_daily mat
+          ON mat.symbol = p.symbol
+         AND mat.trade_date = (p.prediction_date
+                                + CASE p.horizon {_CRYPTO_HORIZON_INTERVAL} END)::DATE
+        LEFT JOIN latest lp ON lp.symbol = p.symbol
+        LEFT JOIN crypto_prices_daily cur
+          ON cur.symbol = lp.symbol AND cur.trade_date = lp.latest_date
+        WHERE p.prediction_date = ?
+        ORDER BY p.horizon, p.predicted_probability DESC
+    """
+    return conn.execute(sql, [prediction_date]).fetchdf()
+
+
+def get_crypto_recent_outcomes(
+    conn: duckdb.DuckDBPyConnection, limit: int = 50
+) -> pd.DataFrame:
+    sql = f"""
+        SELECT p.symbol, p.prediction_date, p.horizon, p.predicted_probability,
+               entry.close AS price_at_prediction,
+               (p.prediction_date + CASE p.horizon {_CRYPTO_HORIZON_INTERVAL} END)::DATE
+                 AS maturity_date,
+               mat.close AS price_at_maturity,
+               p.actual_max_return, p.actual_max_drawdown, p.actual_hit,
+               p.outcome_filled_at
+        FROM crypto_ml_predictions p
+        LEFT JOIN crypto_prices_daily entry
+          ON entry.symbol = p.symbol AND entry.trade_date = p.prediction_date
+        LEFT JOIN crypto_prices_daily mat
+          ON mat.symbol = p.symbol
+         AND mat.trade_date = (p.prediction_date
+                                + CASE p.horizon {_CRYPTO_HORIZON_INTERVAL} END)::DATE
+        WHERE p.outcome_filled_at IS NOT NULL
+        ORDER BY p.prediction_date DESC, p.predicted_probability DESC
+        LIMIT ?
+    """
+    return conn.execute(sql, [limit]).fetchdf()
+
+
+def get_fx_recent_predictions(
+    conn: duckdb.DuckDBPyConnection, limit: int = 30
+) -> pd.DataFrame:
+    sql = f"""
+        WITH latest AS (
+            SELECT MAX(datetime_utc) AS latest_dt FROM fx_prices_hourly
+        )
+        SELECT p.datetime_utc, p.direction, p.horizon, p.predicted_probability,
+               entry.gbpeur_close AS price_at_prediction,
+               (p.datetime_utc + CASE p.horizon {_FX_HORIZON_INTERVAL} END)
+                 AS maturity_datetime,
+               mat.gbpeur_close AS price_at_maturity,
+               cur.gbpeur_close AS current_price,
+               p.actual_max_pips, p.actual_hit, p.outcome_filled_at
+        FROM fx_ml_predictions p
+        LEFT JOIN fx_prices_hourly entry
+          ON entry.datetime_utc = p.datetime_utc
+        LEFT JOIN fx_prices_hourly mat
+          ON mat.datetime_utc = p.datetime_utc
+                                + CASE p.horizon {_FX_HORIZON_INTERVAL} END
+        CROSS JOIN latest lp
+        LEFT JOIN fx_prices_hourly cur ON cur.datetime_utc = lp.latest_dt
+        ORDER BY p.datetime_utc DESC, p.direction, p.horizon
+        LIMIT ?
+    """
+    return conn.execute(sql, [limit]).fetchdf()

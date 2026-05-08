@@ -6,6 +6,79 @@ are at the top.
 
 ---
 
+## 2026-05-08 — Recovery audit: production files never tracked
+
+**Not a `HARDENING_PLAN.md` session.** Triggered by an operator noticing
+that `git status` on `master` showed files that ought to have been
+committed during Sessions 0-7 still listed as `??` Untracked.
+
+### Investigation
+
+`git log --all -- <path>` returned **empty** for ten files that the
+deployed system actively depends on. The reflog was clean — no reset,
+no destructive op, no `.gitignore` change that would mask anything.
+Conclusion: these files have been living on disk only since the
+pre-rebuild "checkpoint" commit (`7b46c50`, before Session 0). The
+hardening sessions never re-checked that the working tree was free of
+untracked load-bearing source.
+
+### Files committed (`fc6fc28` on master)
+
+| Path | Caller / unit |
+|---|---|
+| `fx/bot/__init__.py`, `fx/bot/telegram_bot.py` | `fx/ml/signals.py:53`, `main.py:2151`, `monitoring/alert.py:82`, integration tests; `mhde-fx-bot.service` (system, `Restart=always`) |
+| `fx/data/refresh.py` | `main.py:2010`; first `ExecStart` of `mhde-fx-predict.service` (hourly :05) |
+| `pipelines/freshness.py` | All 3 prediction pipelines (`crypto`, `fx`, `ml`), `dashboard/app.py`, `main.py`, regression tests |
+| `pipelines/health_check.py` | `main.py:2211`; user-level `mhde-health-check.service` (daily 06:00) |
+| `systemd/mhde-fx-bot.service` | Installed in `/etc/systemd/system/`, `enabled` |
+| `systemd/mhde-predict.{service,timer}` | Pre-suffix legacy names for the equity engine; both `enabled`, daily 00:15 / Sun 21:30 |
+| `systemd/mhde-retrain.{service,timer}` | Same as above (retrain) |
+
+### Other recovery actions
+
+- **Phase 1A/1B crypto backtest WIP** isolated onto branch
+  `crypto-phase-1a-1b-backtest` (commit `6db5674`, off `master @ cab91b8`).
+  21 files, ~8.4k LOC. Includes walk-forward backfill (`crypto/ml/`) and
+  the execution-backtest harness (`crypto/execution/backtest/`). All
+  new model_runs rows insert with `is_active=false`; live predict
+  pipeline isolated.
+- **`.gitignore` extended** (`0623307` on master) to silence the ~60
+  untracked diagnostic scripts under `.claude/local_scripts/` plus
+  dated outputs. Already-tracked diagnostics (`audit_mhde_status.py`,
+  `test_dashboard_queries.py`, `test_duckdb_failed_alter.py`, the four
+  `outputs/daily_radar_2026-05-0{1..4}.{json,md}` snapshots, and
+  `outputs/2026-05-04/`) deliberately preserved as tracked history.
+
+### What's still untracked (deferred)
+
+- 6 modified `data/processed/*.{jsonl,csv,md}` files — pipeline output
+  churn from earlier runs. Operator chose to leave them; they're not
+  noise from this session.
+- 3 documents in `docs/` (codebase inventory + 2 sector-ETF planning
+  notes). Operator wants to read first before deciding tracked vs
+  scratch.
+
+### Bugs found and recorded
+
+- **KI-118** (added to `legacy/RESOLVED_ISSUES_ARCHIVE.md`) —
+  production source files lived in the working tree without ever being
+  `git add`-ed. Resolved by `fc6fc28`. **Regression test owed**: the
+  Session 7 hardening exit-criteria didn't include a "no untracked
+  load-bearing source" check, and none of the existing regression
+  tests would catch a future recurrence. See KI-118 for proposed
+  test design.
+
+### Pending
+
+- Write the regression test described in KI-118.
+- Operator decides on the 3 deferred `docs/` files.
+- Operator decides whether to gitignore the 6 `data/processed/*` mods
+  or treat them as snapshots to commit.
+- After all the above is clean, run the FX comparison gate from
+  `fx-twelvedata-migration` per the Session 1 (TwelveData) cutover plan.
+
+---
+
 ## 2026-05-07 — Session 7: Hardening & Validation (final session)
 
 **Branch:** `session-7-hardening` off `master @ 11ad23b`.
