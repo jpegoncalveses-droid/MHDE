@@ -5,6 +5,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import duckdb
+import pandas as pd
 
 
 def _connect() -> duckdb.DuckDBPyConnection:
@@ -389,3 +390,102 @@ def get_scorecard_experiments(conn: duckdb.DuckDBPyConnection, limit: int = 50) 
         "review_notes", "approved_by", "applied_at", "created_at",
     ]
     return [dict(zip(cols, r)) for r in rows]
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Prediction tables joined with prices for `price_at_prediction` column.
+# Used by dashboard/app.py to render the equity / crypto / FX prediction tabs.
+# ─────────────────────────────────────────────────────────────────────────
+
+def get_equity_predictions(
+    conn: duckdb.DuckDBPyConnection, prediction_date
+) -> pd.DataFrame:
+    return conn.execute(
+        """
+        SELECT p.ticker, p.horizon, p.predicted_probability, p.prediction_threshold,
+               p.sector, p.market_cap_bucket,
+               pr.close AS price_at_prediction,
+               p.actual_max_return, p.actual_max_drawdown, p.actual_hit
+        FROM ml_predictions p
+        LEFT JOIN prices_daily pr
+          ON pr.ticker = p.ticker AND pr.trade_date = p.prediction_date
+        WHERE p.prediction_date = ?
+        ORDER BY p.horizon, p.predicted_probability DESC
+        """,
+        [prediction_date],
+    ).fetchdf()
+
+
+def get_equity_recent_outcomes(
+    conn: duckdb.DuckDBPyConnection, limit: int = 50
+) -> pd.DataFrame:
+    return conn.execute(
+        """
+        SELECT p.ticker, p.prediction_date, p.horizon, p.predicted_probability,
+               pr.close AS price_at_prediction,
+               p.actual_max_return, p.actual_max_drawdown, p.actual_hit
+        FROM ml_predictions p
+        LEFT JOIN prices_daily pr
+          ON pr.ticker = p.ticker AND pr.trade_date = p.prediction_date
+        WHERE p.outcome_filled_at IS NOT NULL
+        ORDER BY p.prediction_date DESC, p.predicted_probability DESC
+        LIMIT ?
+        """,
+        [limit],
+    ).fetchdf()
+
+
+def get_crypto_predictions(
+    conn: duckdb.DuckDBPyConnection, prediction_date
+) -> pd.DataFrame:
+    return conn.execute(
+        """
+        SELECT p.symbol, p.horizon, p.predicted_probability, p.prediction_threshold,
+               p.market_cap_bucket,
+               pr.close AS price_at_prediction,
+               p.actual_max_return, p.actual_max_drawdown, p.actual_hit
+        FROM crypto_ml_predictions p
+        LEFT JOIN crypto_prices_daily pr
+          ON pr.symbol = p.symbol AND pr.trade_date = p.prediction_date
+        WHERE p.prediction_date = ?
+        ORDER BY p.horizon, p.predicted_probability DESC
+        """,
+        [prediction_date],
+    ).fetchdf()
+
+
+def get_crypto_recent_outcomes(
+    conn: duckdb.DuckDBPyConnection, limit: int = 50
+) -> pd.DataFrame:
+    return conn.execute(
+        """
+        SELECT p.symbol, p.prediction_date, p.horizon, p.predicted_probability,
+               pr.close AS price_at_prediction,
+               p.actual_max_return, p.actual_max_drawdown, p.actual_hit
+        FROM crypto_ml_predictions p
+        LEFT JOIN crypto_prices_daily pr
+          ON pr.symbol = p.symbol AND pr.trade_date = p.prediction_date
+        WHERE p.outcome_filled_at IS NOT NULL
+        ORDER BY p.prediction_date DESC, p.predicted_probability DESC
+        LIMIT ?
+        """,
+        [limit],
+    ).fetchdf()
+
+
+def get_fx_recent_predictions(
+    conn: duckdb.DuckDBPyConnection, limit: int = 30
+) -> pd.DataFrame:
+    return conn.execute(
+        """
+        SELECT p.datetime_utc, p.direction, p.horizon, p.predicted_probability,
+               pr.gbpeur_close AS price_at_prediction,
+               p.actual_max_pips, p.actual_hit
+        FROM fx_ml_predictions p
+        LEFT JOIN fx_prices_hourly pr
+          ON pr.datetime_utc = p.datetime_utc
+        ORDER BY p.datetime_utc DESC, p.direction, p.horizon
+        LIMIT ?
+        """,
+        [limit],
+    ).fetchdf()

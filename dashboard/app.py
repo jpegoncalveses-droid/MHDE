@@ -8,6 +8,13 @@ import pandas as pd
 import streamlit as st
 
 from dashboard.auth import require_auth
+from dashboard.services.queries import (
+    get_crypto_predictions,
+    get_crypto_recent_outcomes,
+    get_equity_predictions,
+    get_equity_recent_outcomes,
+    get_fx_recent_predictions,
+)
 
 st.set_page_config(
     page_title="MHDE — ML Predictions",
@@ -114,13 +121,7 @@ with tab_equities:
             )
 
             # --- Load predictions for selected date ---
-            preds_df = conn.execute("""
-                SELECT ticker, horizon, predicted_probability, prediction_threshold,
-                       sector, market_cap_bucket, actual_max_return, actual_max_drawdown, actual_hit
-                FROM ml_predictions
-                WHERE prediction_date = ?
-                ORDER BY horizon, predicted_probability DESC
-            """, [selected_date]).fetchdf()
+            preds_df = get_equity_predictions(conn, selected_date)
 
             # --- Regime Indicator ---
             total_universe = conn.execute("""
@@ -203,7 +204,7 @@ with tab_equities:
                     display_df["outcome"] = "pending"
 
                 show_cols = ["ticker", "horizon", "prob", "confidence", "sector",
-                             "market_cap_bucket", "outcome"]
+                             "market_cap_bucket", "price_at_prediction", "outcome"]
                 st.dataframe(
                     display_df[show_cols].reset_index(drop=True),
                     use_container_width=True,
@@ -215,6 +216,9 @@ with tab_equities:
                         "confidence": st.column_config.TextColumn("Conf", width="small"),
                         "sector": st.column_config.TextColumn("Sector"),
                         "market_cap_bucket": st.column_config.TextColumn("Cap", width="small"),
+                        "price_at_prediction": st.column_config.NumberColumn(
+                            "Price @ Pred", format="$%.2f", width="small"
+                        ),
                         "outcome": st.column_config.TextColumn("Outcome", width="medium"),
                     },
                 )
@@ -271,14 +275,7 @@ with tab_equities:
                         )
 
                 with st.expander("Recent outcomes detail", expanded=False):
-                    recent_outcomes = conn.execute("""
-                        SELECT ticker, prediction_date, horizon, predicted_probability,
-                               actual_max_return, actual_max_drawdown, actual_hit
-                        FROM ml_predictions
-                        WHERE outcome_filled_at IS NOT NULL
-                        ORDER BY prediction_date DESC, predicted_probability DESC
-                        LIMIT 50
-                    """).fetchdf()
+                    recent_outcomes = get_equity_recent_outcomes(conn, limit=50)
                     if not recent_outcomes.empty:
                         recent_outcomes["result"] = recent_outcomes.apply(
                             lambda r: f"{'HIT' if r['actual_hit'] else 'miss'} "
@@ -288,9 +285,15 @@ with tab_equities:
                         )
                         st.dataframe(
                             recent_outcomes[["ticker", "prediction_date", "horizon",
-                                             "predicted_probability", "result"]],
+                                             "predicted_probability",
+                                             "price_at_prediction", "result"]],
                             use_container_width=True,
                             hide_index=True,
+                            column_config={
+                                "price_at_prediction": st.column_config.NumberColumn(
+                                    "Price @ Pred", format="$%.2f", width="small"
+                                ),
+                            },
                         )
 
 conn.close()
@@ -338,13 +341,7 @@ with tab_crypto:
             )
 
             # --- Load predictions ---
-            crypto_preds = conn.execute("""
-                SELECT symbol, horizon, predicted_probability, prediction_threshold,
-                       market_cap_bucket, actual_max_return, actual_max_drawdown, actual_hit
-                FROM crypto_ml_predictions
-                WHERE prediction_date = ?
-                ORDER BY horizon, predicted_probability DESC
-            """, [crypto_selected_date]).fetchdf()
+            crypto_preds = get_crypto_predictions(conn, crypto_selected_date)
 
             # --- BTC Regime Indicator ---
             btc_return_7d = conn.execute("""
@@ -429,10 +426,20 @@ with tab_crypto:
                         axis=1,
                     )
 
-                show_cols = ["symbol", "horizon", "Prob", "Confidence", "market_cap_bucket"]
+                show_cols = ["symbol", "horizon", "Prob", "Confidence",
+                             "market_cap_bucket", "price_at_prediction"]
                 if "Outcome" in display.columns:
                     show_cols.append("Outcome")
-                st.dataframe(display[show_cols], use_container_width=True, hide_index=True)
+                st.dataframe(
+                    display[show_cols],
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "price_at_prediction": st.column_config.NumberColumn(
+                            "Price @ Pred", format="$%.4f", width="small"
+                        ),
+                    },
+                )
 
             # --- Historical Accuracy ---
             crypto_accuracy = conn.execute("""
@@ -459,14 +466,7 @@ with tab_crypto:
                 )
 
             with st.expander("Recent outcomes detail", expanded=False):
-                crypto_recent = conn.execute("""
-                    SELECT symbol, prediction_date, horizon, predicted_probability,
-                           actual_max_return, actual_max_drawdown, actual_hit
-                    FROM crypto_ml_predictions
-                    WHERE outcome_filled_at IS NOT NULL
-                    ORDER BY prediction_date DESC, predicted_probability DESC
-                    LIMIT 50
-                """).fetchdf()
+                crypto_recent = get_crypto_recent_outcomes(conn, limit=50)
                 if crypto_recent.empty:
                     st.info("No outcomes yet — predictions need time for their horizons to elapse.")
                 else:
@@ -478,9 +478,15 @@ with tab_crypto:
                     )
                     st.dataframe(
                         crypto_recent[["symbol", "prediction_date", "horizon",
-                                       "predicted_probability", "result"]],
+                                       "predicted_probability",
+                                       "price_at_prediction", "result"]],
                         use_container_width=True,
                         hide_index=True,
+                        column_config={
+                            "price_at_prediction": st.column_config.NumberColumn(
+                                "Price @ Pred", format="$%.4f", width="small"
+                            ),
+                        },
                     )
 
 conn.close()
@@ -630,6 +636,36 @@ with tab_fx:
             with col2:
                 st.metric("P(Down 20pip 24h)", f"{prob_down_24h:.1%}")
                 st.metric("P(Down 20pip 48h)", f"{prob_down_48h:.1%}")
+
+            # --- Recent predictions detail ---
+            with st.expander("Recent predictions detail", expanded=False):
+                fx_recent_preds = get_fx_recent_predictions(conn, limit=30)
+                if fx_recent_preds.empty:
+                    st.info("No predictions yet.")
+                else:
+                    fx_recent_preds["Outcome"] = fx_recent_preds.apply(
+                        lambda r: (
+                            f"{'HIT' if r['actual_hit'] else 'miss'} "
+                            f"({r['actual_max_pips']:+.1f} pips)"
+                        ) if pd.notna(r["actual_hit"]) else "pending",
+                        axis=1,
+                    )
+                    st.dataframe(
+                        fx_recent_preds[
+                            ["datetime_utc", "direction", "horizon",
+                             "predicted_probability", "price_at_prediction", "Outcome"]
+                        ],
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "predicted_probability": st.column_config.NumberColumn(
+                                "Probability", format="%.1f%%"
+                            ),
+                            "price_at_prediction": st.column_config.NumberColumn(
+                                "Price @ Pred", format="%.5f", width="small"
+                            ),
+                        },
+                    )
 
         # --- Historical Accuracy ---
         st.subheader("Historical Accuracy")
