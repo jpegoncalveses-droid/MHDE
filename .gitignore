@@ -70,6 +70,7 @@ htmlcov/
 .claude/local_scripts/integrity_*.py
 .claude/local_scripts/presleep_*.py
 .claude/local_scripts/show_*.py
+.claude/local_scripts/run_*.py
 
 # Narrow audit_/test_ ignores so audit_mhde_status.py and the two
 # CLAUDE.md-referenced test_* scripts (test_dashboard_queries.py,
