@@ -82,6 +82,24 @@ def test_pipeline_execution_flags_empty_engines(temp_db):
 
 def test_pipeline_execution_ok_when_fresh(temp_db):
     from monitoring import pipeline_execution
+    # Seed an is_active=true model in each engine's *_model_runs table.
+    # The monitor JOINs predictions to model_runs WHERE is_active=true so
+    # the baseline reflects production scoring only (KI-118 lesson +
+    # monitor false-positive fix 2026-05-09).
+    temp_db.execute(
+        "INSERT INTO ml_model_runs (model_id, horizon, target_threshold, "
+        "model_path, is_active) VALUES ('m1', '20d', 0.10, '/tmp/x.joblib', true)"
+    )
+    temp_db.execute(
+        "INSERT INTO crypto_ml_model_runs (model_id, horizon, target_threshold, "
+        "model_path, is_active) VALUES ('m1', '5d', 0.10, '/tmp/x.joblib', true)"
+    )
+    temp_db.execute(
+        "INSERT INTO fx_ml_model_runs (model_id, direction, horizon, "
+        "target_pips, model_path, is_active) "
+        "VALUES ('fx_m1', 'up', '24h', 20, '/tmp/x.joblib', true)"
+    )
+
     today = date.today()
     # 30 rows for the last 14 days each → high baseline
     for d_offset in range(15):
