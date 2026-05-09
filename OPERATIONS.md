@@ -399,6 +399,64 @@ systemctl --user restart mhde-streamlit
 
 ---
 
+## Cross-scope systemd traps
+
+Three layers of systemd are involved in this deployment and they
+don't all talk to each other. The traps below cost real time on
+2026-05-09; each is documented so the next session doesn't pay
+the cost again.
+
+### `systemctl --user` from a system-level service fails without D-Bus
+
+A system-level systemd unit (under `/etc/systemd/system/` with
+`User=jpcg`) does NOT inherit a per-user D-Bus session. Calling
+`systemctl --user show <some-user-service> -p ActiveEnterTimestamp`
+from inside that unit's `ExecStart` fails with:
+
+```
+Failed to connect to bus: No medium found
+```
+
+This bit `monitoring/streamlit_freshness` on its first deploy:
+the monitor is a system-level service that needs to know when the
+user-level `mhde-streamlit.service` started. The fix was to read
+`/proc/<PID>/stat` field 22 directly via a `pgrep -f 'streamlit
+run dashboard'` lookup — works from system or user context with
+no D-Bus dependency.
+
+**Rule of thumb.** If a system-level service needs to inspect
+state from a user-level service, use kernel-level interfaces
+(`/proc`, file mtimes, sockets) rather than `systemctl --user`.
+Crossing the boundary the other way (user-level invoking
+`systemctl` on system services) is fine: a user shell normally
+inherits enough environment to reach the system manager.
+
+To enable lingering and get a persistent user manager — which
+WOULD let `systemctl --user` work from system-level services —
+run `loginctl enable-linger jpcg`. We deliberately don't, because
+it changes the security model for every other user-level service,
+and the `/proc` workaround is cleaner for the one monitor that
+needs cross-scope visibility.
+
+### `User=jpcg` in a user-level unit silently breaks the unit
+
+Documented separately in `INFRASTRUCTURE.md` and enforced by
+`scripts/pre-commit.sh`. A user-level unit (under
+`~/.config/systemd/user/`) that contains `User=` or `Group=`
+loads but produces no useful output and no error. The hook warns
+on staged user-level units that contain those lines.
+
+### A unit fragment in `/etc/systemd/system/` doesn't restart on edit
+
+The deploy step is `daemon-reload` followed by `restart`. Skipping
+the reload leaves systemd serving the old fragment from its
+in-memory cache. The repo's `Deploy procedures` section above
+spells out the right sequence; this trap is here so it's findable
+when an operator notices "I edited the unit but it's still using
+the old timer schedule".
+
+---
+
 ## Trust ladder
 
 A change isn't "fixed" because the code is committed. It's fixed when

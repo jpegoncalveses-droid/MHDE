@@ -203,7 +203,7 @@ def test_streamlit_freshness_warns_when_lag_exceeds_threshold():
 
 
 def test_streamlit_freshness_handles_unreadable_inputs():
-    """When systemctl / git are unreadable, the monitor warns instead
+    """When pgrep / git are unreadable, the monitor warns instead
     of crashing."""
     from monitoring import streamlit_freshness
     # Both inputs left as None forces the real-subprocess path. We can
@@ -214,6 +214,56 @@ def test_streamlit_freshness_handles_unreadable_inputs():
     result = streamlit_freshness.run()
     assert result.monitor == "streamlit_freshness"
     assert result.status in ("ok", "warn", "fail")
+
+
+def test_streamlit_freshness_proc_parser_handles_paren_comm(tmp_path, monkeypatch):
+    """The /proc/PID/stat comm field (#2) is in parens but may itself
+    contain spaces or close-parens. The parser must use rindex to
+    pick the LAST `)` to terminate comm reliably."""
+    from monitoring import streamlit_freshness
+
+    # Build a synthetic /proc/<pid>/stat line where comm = "weird(name)"
+    # and starttime (field 22) is a known value. That's 100 ticks.
+    pid = 12345
+    proc_dir = tmp_path / "proc" / str(pid)
+    proc_dir.mkdir(parents=True)
+    # Layout: pid (comm) state ppid pgrp session tty_nr tpgid flags
+    #         minflt cminflt majflt cmajflt utime stime cutime cstime
+    #         priority nice num_threads itrealvalue starttime ...
+    # We need 22 fields; pad with 0 placeholders for #3..#21 and put
+    # 100 at #22. Total tokens after the close-paren = 20 (state +
+    # 18 zeros + starttime). Plus we need a lot more fields after
+    # starttime for proc(5) compatibility, but the parser only reads
+    # field 22 so trailing fields don't matter.
+    fields_after_comm = ["S"] + ["0"] * 18 + ["100"]  # state + ... + starttime=100
+    line = f"{pid} (weird(name)) " + " ".join(fields_after_comm) + "\n"
+    (proc_dir / "stat").write_text(line)
+
+    # Also need a /proc/uptime — point both reads through tmp_path.
+    (tmp_path / "proc" / "uptime").write_text("1000.0 5000.0\n")
+
+    # Monkey-patch the open() calls inside the parser to redirect
+    # /proc/<pid>/stat and /proc/uptime to tmp_path.
+    real_open = open
+
+    def fake_open(path, *args, **kwargs):
+        if path == f"/proc/{pid}/stat":
+            return real_open(proc_dir / "stat", *args, **kwargs)
+        if path == "/proc/uptime":
+            return real_open(tmp_path / "proc" / "uptime", *args, **kwargs)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", fake_open)
+
+    dt, err = streamlit_freshness._read_proc_start_time(pid)
+    assert err is None, f"unexpected error: {err}"
+    assert dt is not None
+    # boot_epoch = now - 1000s; start_epoch = boot_epoch + (100 / clock_hz).
+    # We don't pin an exact value (clock_hz varies), but the result
+    # must be very close to "1000s ago" (i.e., within a few seconds).
+    from datetime import datetime as _dt, timezone as _tz
+    age_s = (_dt.now(tz=_tz.utc) - dt).total_seconds()
+    assert 990 <= age_s <= 1010, f"age {age_s}s out of expected ~1000s range"
 
 
 # ──────────────────────────────────────────────────────────────────────
