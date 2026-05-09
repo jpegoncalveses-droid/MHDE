@@ -2083,5 +2083,23 @@ def monitor_smoke():
     raise SystemExit(smoke_test.main())
 
 
+@monitor.command("streamlit-freshness")
+def monitor_streamlit_freshness():
+    from monitoring import streamlit_freshness
+    raise SystemExit(streamlit_freshness.main())
+
+
+@monitor.command("dashboard-synthetic")
+def monitor_dashboard_synthetic():
+    from monitoring import dashboard_synthetic
+    raise SystemExit(dashboard_synthetic.main())
+
+
+@monitor.command("cross-artifact")
+def monitor_cross_artifact():
+    from monitoring import cross_artifact
+    raise SystemExit(cross_artifact.main())
+
+
 if __name__ == "__main__":
     cli()
