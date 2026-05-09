@@ -10,6 +10,7 @@ Before doing any work in this repo — debugging, refactoring, adding features, 
 6. `DECISIONS.md` — architecture decision records.
 7. `HARDENING_PLAN.md` — multi-session roadmap; check the current session number before starting work.
 8. `SESSION_LOG.md` — append-only log of what was done each session (read the most recent 3 entries at session start).
+9. `docs/PATH_TO_LIVE_PLAN.md` — canonical 5-phase plan from current state to $1000 live trading on Binance Futures. Phase 0 (calibration validation) is parallel; Phases 1A/1B (backfill + execution backtest) drive Phase 2 (execution-layer build) which gates Phase 3 (paper trading) which gates Phase 4 (live). Read before any crypto-execution / Phase 1+ work.
 
 These describe the deployment topology and the code layout. They override assumptions from training data.
 
