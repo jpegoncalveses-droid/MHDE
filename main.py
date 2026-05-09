@@ -2003,6 +2003,41 @@ def crypto_backtest_report(top_n, run_id, sort_by):
         conn.close()
 
 
+@crypto.command("phase0-report")
+@click.option("--model-id", default=None,
+              help="Evaluate a single model_id. Default: every "
+                   "is_active=true crypto model.")
+@click.option("--out", default=None,
+              help="Output path for the markdown report. Default: "
+                   "data/reports/phase0_report_YYYY-MM-DD.md. Pass `-` "
+                   "to write to stdout only (no file saved).")
+def crypto_phase0_report(model_id, out):
+    """Phase 0 calibration report — go/no-go markdown for the four
+    Phase 0 criteria across active crypto models.
+
+    See docs/PATH_TO_LIVE_PLAN.md § "Phase 0: Live Calibration
+    Validation" for the criteria. The report is INTERIM until the
+    200-sample gate is met; all four metrics are still computed and
+    shown so the operator sees the trajectory week over week.
+    """
+    from pathlib import Path
+    from crypto.ml.phase0_report import build_report, save_report
+
+    cfg, conn = _engine_setup()
+    try:
+        text = build_report(conn)
+    finally:
+        conn.close()
+
+    click.echo(text)
+
+    if out == "-":
+        return  # stdout only, no save
+    target = Path(out) if out else None
+    saved = save_report(text, path=target)
+    click.echo(f"\n_(report saved to {saved})_", err=True)
+
+
 @crypto.command("backfill-walkforward-predictions")
 @click.option(
     "--horizons", default="5d,10d", show_default=True,
@@ -2405,6 +2440,12 @@ def monitor_dashboard_synthetic():
 def monitor_cross_artifact():
     from monitoring import cross_artifact
     raise SystemExit(cross_artifact.main())
+
+
+@monitor.command("phase0-calibration")
+def monitor_phase0_calibration():
+    from monitoring import phase0_calibration
+    raise SystemExit(phase0_calibration.main())
 
 
 if __name__ == "__main__":
