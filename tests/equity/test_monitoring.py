@@ -288,6 +288,112 @@ def test_dashboard_synthetic_flags_all_null_key_column(temp_db, monkeypatch):
 
 
 # ──────────────────────────────────────────────────────────────────────
+# cross_artifact
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _seed_minimal_health_data(temp_db):
+    """Insert a minimal set of equity/crypto/fx rows so the
+    health_check internals all return ok=True. Returns the
+    (yesterday, fx_dt) tuple used."""
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    yesterday = (_dt.now(tz=_tz.utc) - _td(days=1)).date()
+    today = _dt.now(tz=_tz.utc).date()
+    fx_dt = _dt.now(tz=_tz.utc).replace(
+        minute=5, second=0, microsecond=0, tzinfo=None
+    )
+
+    # Equity: one prediction for yesterday.
+    temp_db.execute(
+        "INSERT INTO ml_predictions (ticker, prediction_date, model_id, "
+        "horizon, predicted_probability, prediction_threshold) "
+        "VALUES ('AAA', ?, 'm1', '5d', 0.6, 0.05)",
+        [yesterday],
+    )
+    # Crypto: one prediction for today (latest).
+    temp_db.execute(
+        "INSERT INTO crypto_ml_predictions (symbol, prediction_date, "
+        "model_id, horizon, predicted_probability, prediction_threshold) "
+        "VALUES ('BTCUSDT', ?, 'c1', '5d', 0.6, 0.05)",
+        [today],
+    )
+    # FX: one fresh prediction within the 2h window the check uses.
+    temp_db.execute(
+        "INSERT INTO fx_ml_predictions (datetime_utc, model_id, "
+        "direction, horizon, predicted_probability, prediction_threshold) "
+        "VALUES (?, 'fx_m1', 'up', '24h', 0.6, 20)",
+        [fx_dt],
+    )
+    return yesterday, today, fx_dt
+
+
+def test_cross_artifact_ok_when_health_strings_agree_with_db(temp_db):
+    """Vanilla case: all three engines have rows, the format strings
+    match what direct DB queries return → ok."""
+    _seed_minimal_health_data(temp_db)
+    from monitoring import cross_artifact
+    result = cross_artifact.run(conn=temp_db)
+    # services check is stubbed inside the monitor; equity/crypto/fx
+    # all derive from the seeded rows.
+    assert result.status == "ok", f"got {result.status}: {result.body}"
+
+
+def test_cross_artifact_flags_equity_count_mismatch(temp_db, monkeypatch):
+    """Simulate a formatter typo: detail string says 99 predictions
+    but the DB has 1. cross_artifact must catch the disagreement."""
+    yesterday, _, _ = _seed_minimal_health_data(temp_db)
+
+    from pipelines import health_check as hc
+    real_check_equity = hc._check_equity
+
+    def _typo_check_equity(conn):
+        result = real_check_equity(conn)
+        # Inject a wrong count into the detail string.
+        return type(result)(
+            name=result.name, ok=result.ok,
+            detail=f"99 predictions for {yesterday}",
+        )
+
+    monkeypatch.setattr(hc, "_check_equity", _typo_check_equity)
+
+    from monitoring import cross_artifact
+    result = cross_artifact.run(conn=temp_db)
+    assert result.status == "fail"
+    assert "equity" in result.body
+    assert "claims 99" in result.body or "99 predictions" in result.body
+
+
+def test_cross_artifact_handles_format_evolution(temp_db, monkeypatch):
+    """If the detail format changes such that the regex no longer
+    matches, the monitor must NOT raise — it should pass through
+    quietly (or fall back to OK if no other check fails). The point
+    of this case: the operator notices format drift via the regex
+    failing to match, but the monitor itself stays robust."""
+    _seed_minimal_health_data(temp_db)
+
+    from pipelines import health_check as hc
+    real_check_crypto = hc._check_crypto
+
+    def _new_format(conn):
+        result = real_check_crypto(conn)
+        return type(result)(
+            name=result.name, ok=result.ok,
+            detail="(crypto detail in a future format unrecognized by cross_artifact)",
+        )
+
+    monkeypatch.setattr(hc, "_check_crypto", _new_format)
+
+    from monitoring import cross_artifact
+    result = cross_artifact.run(conn=temp_db)
+    # The crypto detail no longer parses → no crypto-side claims to
+    # verify → no crypto-side issue is raised. Equity and FX still
+    # ok. But _format_message now includes the new crypto detail, so
+    # the message-includes check still passes (we look for the new
+    # string in the message, which is what _format_message produces).
+    assert result.status == "ok"
+
+
+# ──────────────────────────────────────────────────────────────────────
 # dashboard_consistency: filled row with missing realized
 # ──────────────────────────────────────────────────────────────────────
 

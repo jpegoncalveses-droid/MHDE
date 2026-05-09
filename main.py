@@ -2095,5 +2095,11 @@ def monitor_dashboard_synthetic():
     raise SystemExit(dashboard_synthetic.main())
 
 
+@monitor.command("cross-artifact")
+def monitor_cross_artifact():
+    from monitoring import cross_artifact
+    raise SystemExit(cross_artifact.main())
+
+
 if __name__ == "__main__":
     cli()

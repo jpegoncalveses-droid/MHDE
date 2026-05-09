@@ -1,0 +1,12 @@
+[Unit]
+Description=MHDE monitor: cross-artifact consistency (telegram vs DB)
+After=network.target
+
+[Service]
+Type=oneshot
+User=jpcg
+WorkingDirectory=/home/jpcg/MHDE
+Environment=MHDE_DB_PATH=/home/jpcg/MHDE/data/mhde.duckdb
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py monitor cross-artifact
+StandardOutput=append:/home/jpcg/MHDE/data/logs/monitor_cross_artifact.log
+StandardError=append:/home/jpcg/MHDE/data/logs/monitor_cross_artifact.log
