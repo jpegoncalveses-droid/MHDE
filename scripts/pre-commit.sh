@@ -49,6 +49,7 @@ SMOKE_TESTS=(
     "tests/equity/test_base.py"
     "tests/equity/test_storage.py"
     "tests/equity/test_config_loader.py"
+    "tests/regression/test_no_untracked_production_imports.py"
 )
 
 # Only include smoke tests that exist (the regression dir starts empty
