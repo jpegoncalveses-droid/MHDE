@@ -1759,6 +1759,261 @@ def crypto_retrain():
         conn.close()
 
 
+@crypto.command("backtest")
+@click.option("--horizon", type=click.Choice(["5d", "10d"]), required=True,
+              help="Prediction horizon. Must match Phase 1A backfill.")
+@click.option("--policy", type=click.Choice(["A", "B", "C", "D", "E"]),
+              required=True, help="Exit policy id (see SPEC.md).")
+@click.option("--selection", type=click.Choice(["top_n", "threshold"]),
+              required=True, help="Selection rule applied per day.")
+@click.option("--params", default=None,
+              help='JSON dict of selection + policy params, e.g. \'{"n": 6}\' '
+                   'or \'{"tp_pct": 0.05, "sl_pct": 0.03}\'.')
+@click.option("--force", is_flag=True,
+              help="Overwrite an existing run with the same run_id.")
+@click.option("--dry-run", is_flag=True,
+              help="Run the lifecycle but skip DB persistence.")
+def crypto_backtest(horizon, policy, selection, params, force, dry_run):
+    """Phase 1B execution backtest (single configuration).
+
+    See crypto/execution/backtest/SPEC.md.
+    """
+    import json as _json
+    from crypto.execution.backtest.harness import run_backtest
+    from crypto.execution.backtest.metrics import compute_and_persist_summary
+
+    if params:
+        try:
+            params_dict = _json.loads(params)
+        except _json.JSONDecodeError as exc:
+            raise click.BadParameter(
+                f"--params must be valid JSON: {exc}", param_hint="--params"
+            )
+        if not isinstance(params_dict, dict):
+            raise click.BadParameter(
+                "--params must decode to a JSON object",
+                param_hint="--params",
+            )
+    else:
+        params_dict = {}
+
+    # Selection vs policy params share the user-facing JSON dict but the
+    # underlying modules want disjoint kwargs.
+    SELECTION_KEYS = {"n", "threshold"}
+    selection_params = {k: v for k, v in params_dict.items()
+                        if k in SELECTION_KEYS}
+    policy_params = {k: v for k, v in params_dict.items()
+                     if k not in SELECTION_KEYS}
+
+    cfg, conn = _engine_setup()
+    try:
+        try:
+            state = run_backtest(
+                conn,
+                horizon=horizon, exit_policy_id=policy,
+                selection_rule=selection,
+                selection_params=selection_params,
+                policy_params=policy_params,
+                dry_run=dry_run, force=force,
+            )
+        except RuntimeError as exc:
+            click.echo(f"\n{exc}", err=True)
+            raise click.Abort()
+        if not dry_run:
+            compute_and_persist_summary(conn, state.run_id)
+    finally:
+        conn.close()
+
+    # Summary
+    click.echo()
+    click.echo(f"  run_id                       : {state.run_id}")
+    click.echo(f"  predictions seen             : {state.n_predictions_seen:,}")
+    click.echo(f"  trades                       : {len(state.closed_trades):,}")
+    click.echo(f"  skipped (duplicate)          : {state.n_skipped_duplicates:,}")
+    n_atr = sum(1 for s in state.skipped if s.reason == "missing_atr")
+    click.echo(f"  skipped (missing ATR)        : {n_atr}")
+    click.echo(f"  data-gap exits               : {state.n_data_gap_exits}")
+    click.echo(f"  forward-fills                : {state.n_forward_fills}")
+    click.echo(f"  excluded by funding floor    : {state.n_excluded_by_funding_floor}")
+    click.echo(f"  missing-funding warnings     : {state.n_missing_funding_warnings}")
+    if dry_run:
+        click.echo("\n  DRY RUN — no rows persisted.")
+    else:
+        click.echo("\n  Persisted to crypto_backtest_runs / crypto_backtest_trades.")
+
+
+@crypto.command("backtest-grid")
+@click.option("--grid", type=click.Choice(["base", "sensitivity"]),
+              default="base", show_default=True,
+              help="Which grid to run.")
+@click.option("--top-run-ids", default=None,
+              help="(sensitivity only) Comma-separated list of base run_ids "
+                   "to sweep around. Default: read top-3 from "
+                   "crypto_backtest_summary ORDER BY sharpe_ratio DESC.")
+@click.option("--force", is_flag=True,
+              help="Overwrite existing rows for any colliding run_id.")
+@click.option("--skip-existing/--no-skip-existing", default=True,
+              show_default=True,
+              help="If a run_id already exists: skip silently (default) "
+                   "or mark it as a per-config failure with --no-skip-existing.")
+@click.option("--dry-run", is_flag=True,
+              help="Run lifecycles but persist nothing.")
+def crypto_backtest_grid(grid, top_run_ids, force, skip_existing, dry_run):
+    """Phase 1B grid runner — base or sensitivity configuration matrix.
+
+    See crypto/execution/backtest/SPEC.md and docs/PATH_TO_LIVE_PLAN.md.
+    """
+    from crypto.execution.backtest.runner import (
+        base_grid_configs, run_grid, sensitivity_grid_configs,
+        summarize_grid_result,
+    )
+
+    cfg, conn = _engine_setup()
+    try:
+        if grid == "sensitivity":
+            if top_run_ids:
+                ids = [s.strip() for s in top_run_ids.split(",") if s.strip()]
+            else:
+                # Top-3 by sum-of-fractions sharpe_ratio. SPEC.md
+                # ranking-preservation note: the SET of top 3 is the
+                # same whether ranked by sum-of-fractions Sharpe or
+                # portfolio Sharpe; only the order within differs, and
+                # order within doesn't matter for sensitivity (we run
+                # the same sweep on each). Portfolio metrics not
+                # required for top-3 selection.
+                rows = conn.execute(
+                    "SELECT run_id FROM crypto_backtest_summary "
+                    "ORDER BY sharpe_ratio DESC LIMIT 3"
+                ).fetchall()
+                ids = [r[0] for r in rows]
+                if not ids:
+                    raise click.ClickException(
+                        "no rows in crypto_backtest_summary; run "
+                        "'crypto backtest-grid --grid base' first."
+                    )
+            click.echo(f"Sensitivity grid: sweeping around {len(ids)} base "
+                       f"run_id(s):")
+            for i in ids:
+                click.echo(f"  {i}")
+            click.echo("")
+            configs = sensitivity_grid_configs(conn, ids)
+        else:
+            configs = base_grid_configs()
+
+        result = run_grid(
+            conn, configs,
+            force=force, skip_existing=skip_existing, dry_run=dry_run,
+        )
+    finally:
+        conn.close()
+
+    click.echo(summarize_grid_result(result))
+    if dry_run:
+        click.echo("\n  DRY RUN — no rows persisted.")
+
+
+@crypto.command("backtest-report")
+@click.option("--top-n", default=3, type=int, show_default=True,
+              help="Number of top runs to detail (sorted by --sort-by).")
+@click.option("--run-id", default=None,
+              help="Optional single run_id; emits ONLY that run's detail "
+                   "(no leaderboard).")
+@click.option("--sort-by", default="sharpe_ratio", show_default=True,
+              type=click.Choice(sorted([
+                  "sharpe_ratio", "net_pnl_total_pct",
+                  "net_pnl_annualized_pct", "max_drawdown_pct",
+                  "hit_rate", "profit_factor",
+              ])))
+def crypto_backtest_report(top_n, run_id, sort_by):
+    """Phase 1B reports — leaderboard + top-N detail with simulated portfolio.
+
+    See crypto/execution/backtest/SPEC.md.
+    """
+    from crypto.execution.backtest.report import (
+        format_portfolio_result,
+        generate_ranking_table,
+        generate_run_detail,
+        generate_top_n_detail,
+        simulate_portfolio,
+    )
+
+    cfg, conn = _engine_setup()
+    try:
+        if run_id:
+            click.echo(generate_run_detail(conn, run_id))
+            click.echo("")
+            portfolio = simulate_portfolio(conn, run_id)
+            click.echo(format_portfolio_result(portfolio))
+        else:
+            click.echo(generate_ranking_table(conn, sort_by=sort_by))
+            click.echo("\n\n---\n")
+            click.echo(generate_top_n_detail(conn, n=top_n, sort_by=sort_by))
+    finally:
+        conn.close()
+
+
+@crypto.command("backfill-walkforward-predictions")
+@click.option(
+    "--horizons", default="5d,10d", show_default=True,
+    help="Comma-separated horizons to backfill.",
+)
+@click.option(
+    "--dry-run", is_flag=True,
+    help="Run training and outcome computation but write nothing to the DB.",
+)
+@click.option(
+    "--force", is_flag=True,
+    help="Overwrite any existing backfill rows for the planned model_ids.",
+)
+def crypto_backfill_walkforward(horizons, dry_run, force):
+    """Phase 1A — persist walk-forward OOS predictions for Phase 1B.
+
+    For each horizon, runs the existing walk-forward CV (no retraining cost
+    beyond the existing crypto retrain) and persists each fold's OOS
+    probabilities to crypto_ml_predictions, tagged with a fold-specific
+    model_id (`crypto_{horizon}_walkfold_{YYYY_MM}`). New model_runs rows
+    are inserted with is_active=false; the live daily predict pipeline is
+    unaffected. See crypto/ml/PHASE1A_SPEC.md.
+    """
+    from crypto.ml.backfill_walkforward import (
+        HORIZON_CONFIGS,
+        backfill_horizon,
+        format_backfill_summary,
+        format_validation_report,
+        validate_backfill,
+    )
+
+    horizon_list = [h.strip() for h in horizons.split(",") if h.strip()]
+    invalid = [h for h in horizon_list if h not in HORIZON_CONFIGS]
+    if invalid:
+        raise click.BadParameter(
+            f"unknown horizons {invalid!r}; valid: {sorted(HORIZON_CONFIGS)}"
+        )
+
+    cfg, conn = _engine_setup()
+    try:
+        for hz in horizon_list:
+            try:
+                result = backfill_horizon(conn, hz, dry_run=dry_run, force=force)
+            except RuntimeError as exc:
+                # Idempotency collision message — surface cleanly, do not
+                # traceback through a healthy guard.
+                click.echo(f"\n[{hz}] {exc}", err=True)
+                raise click.Abort()
+            click.echo(format_backfill_summary(result))
+
+        if dry_run:
+            click.echo("\nDRY RUN — no rows written. Re-run without --dry-run to commit.")
+        else:
+            checks = validate_backfill(conn)
+            click.echo(format_validation_report(checks))
+            if not all(c.passed for c in checks):
+                click.echo("\nVALIDATION FAILED — see above.", err=True)
+                raise click.Abort()
+    finally:
+        conn.close()
+
+
 @cli.group()
 def fx():
     """GBP/EUR FX prediction engine commands."""

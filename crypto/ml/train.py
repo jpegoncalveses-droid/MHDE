@@ -59,7 +59,11 @@ def _build_walk_forward_folds(conn: duckdb.DuckDBPyConnection) -> list[dict]:
 
 
 def _load_dataset(conn: duckdb.DuckDBPyConnection, start_date: str, end_date: str,
-                  label_col: str) -> tuple[pd.DataFrame, pd.Series]:
+                  label_col: str) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame]:
+    """Return ``(X, y, meta)`` where ``meta`` is a frame of ``symbol, trade_date``
+    aligned row-for-row with ``X``/``y``. Phase 1A backfill consumes ``meta``
+    to label the OOS predictions; the existing aggregate metrics path
+    ignores it harmlessly."""
     feature_select = ", ".join(f"f.{c}" for c in FEATURE_COLS)
     query = f"""
         SELECT f.symbol, f.trade_date, {feature_select}, l.{label_col} AS label
@@ -69,14 +73,25 @@ def _load_dataset(conn: duckdb.DuckDBPyConnection, start_date: str, end_date: st
           AND f.trade_date <= '{end_date}'
           AND l.{label_col} IS NOT NULL
     """
-    df = conn.execute(query).fetchdf()
+    # One query, one DataFrame, then a single index-reset so X / y / meta
+    # are guaranteed to share the same RangeIndex by construction.
+    df = conn.execute(query).fetchdf().reset_index(drop=True)
     X = df[FEATURE_COLS].copy()
     y = df["label"].astype(int)
-    return X, y
+    meta = df[["symbol", "trade_date"]].copy()
+    return X, y, meta
 
 
 def _train_single_fold(X_train: pd.DataFrame, y_train: pd.Series,
-                       X_test: pd.DataFrame, y_test: pd.Series) -> dict:
+                       X_test: pd.DataFrame, y_test: pd.Series,
+                       meta_test: pd.DataFrame | None = None) -> dict:
+    """Train one fold; return metrics + (when ``meta_test`` supplied) a
+    ``predictions`` DataFrame of OOS probabilities for Phase 1A backfill.
+
+    ``meta_test`` must be aligned row-for-row with ``X_test`` (use the third
+    return value of :func:`_load_dataset`). When omitted, the function's
+    behaviour and return shape match the pre-Phase-1A version exactly,
+    minus the new ``predictions`` key."""
     n_pos = int(y_train.sum())
     n_neg = len(y_train) - n_pos
     if n_pos < 10:
@@ -127,7 +142,7 @@ def _train_single_fold(X_train: pd.DataFrame, y_train: pd.Series,
 
     importance = dict(zip(FEATURE_COLS, model.feature_importances_.tolist()))
 
-    return {
+    result = {
         "model": model,
         "platt": platt,
         "medians": medians,
@@ -144,6 +159,18 @@ def _train_single_fold(X_train: pd.DataFrame, y_train: pd.Series,
         "lift": precision_top / base_rate if base_rate > 0 else 0,
         "feature_importance": importance,
     }
+    if meta_test is not None:
+        if len(meta_test) != len(test_probs):
+            raise ValueError(
+                f"meta_test length {len(meta_test)} does not match test_probs "
+                f"length {len(test_probs)}"
+            )
+        result["predictions"] = pd.DataFrame({
+            "symbol": meta_test["symbol"].values,
+            "prediction_date": meta_test["trade_date"].values,
+            "predicted_probability": test_probs,
+        })
+    return result
 
 
 def train_walk_forward(conn: duckdb.DuckDBPyConnection, label_col: str = "label_10d_10pct",
@@ -157,14 +184,17 @@ def train_walk_forward(conn: duckdb.DuckDBPyConnection, label_col: str = "label_
         logger.info("  Fold %d: train to %s, test %s -> %s",
                     i + 1, fold["train_end"], fold["test_start"], fold["test_end"])
 
-        X_train, y_train = _load_dataset(conn, TRAIN_START, fold["train_end"], label_col)
-        X_test, y_test = _load_dataset(conn, fold["test_start"], fold["test_end"], label_col)
+        X_train, y_train, _ = _load_dataset(conn, TRAIN_START, fold["train_end"], label_col)
+        X_test, y_test, meta_test = _load_dataset(
+            conn, fold["test_start"], fold["test_end"], label_col
+        )
 
         if len(X_test) < 10:
             logger.warning("    Fold %d: too few test samples (%d), skipping", i + 1, len(X_test))
             continue
 
-        fold_result = _train_single_fold(X_train, y_train, X_test, y_test)
+        fold_result = _train_single_fold(X_train, y_train, X_test, y_test,
+                                          meta_test=meta_test)
         fold_result["fold"] = i + 1
         fold_result.update(fold)
         results.append(fold_result)
@@ -180,8 +210,10 @@ def train_walk_forward(conn: duckdb.DuckDBPyConnection, label_col: str = "label_
 
     valid_results = [r for r in results if "error" not in r]
     last_fold = folds[-1]
-    X_all, y_all = _load_dataset(conn, TRAIN_START, last_fold["train_end"], label_col)
-    X_test_final, y_test_final = _load_dataset(conn, last_fold["test_start"], last_fold["test_end"], label_col)
+    X_all, y_all, _ = _load_dataset(conn, TRAIN_START, last_fold["train_end"], label_col)
+    X_test_final, y_test_final, _ = _load_dataset(
+        conn, last_fold["test_start"], last_fold["test_end"], label_col
+    )
 
     final = _train_single_fold(X_all, y_all, X_test_final, y_test_final)
 
