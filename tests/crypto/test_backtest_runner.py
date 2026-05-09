@@ -372,14 +372,191 @@ def test_cli_backtest_grid_rejects_invalid_grid_value():
     assert "Invalid value for '--grid'" in result.output
 
 
-def test_cli_backtest_grid_sensitivity_raises_not_implemented():
-    """sensitivity grid is the next phase; CLI must signal that clearly."""
+# ──────────────────────────────────────────────────────────────────────
+# sensitivity_grid_configs
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _seed_base_run(conn, run_id: str, horizon: str, policy: str,
+                   selection: str, sel_params: dict, pol_params: dict) -> None:
+    """Seed a base run row in crypto_backtest_runs so the sensitivity
+    factory can read its configuration. Summary not required for the
+    factory's contract — only the runs row is read."""
+    import json as _json
+    conn.execute(
+        """
+        INSERT INTO crypto_backtest_runs
+            (run_id, run_timestamp, horizon, exit_policy,
+             selection_rule, parameters, date_start, date_end,
+             n_trades, n_data_gap_exits, n_forward_fills,
+             n_predictions_seen, n_skipped_duplicates,
+             n_skipped_missing_atr, n_excluded_by_funding_floor,
+             n_missing_funding_warnings)
+        VALUES (?, '2026-05-08 00:00:00', ?, ?, ?, ?,
+                '2025-04-05', '2026-05-08',
+                100, 0, 0, 200, 50, 0, 0, 0)
+        """,
+        [run_id, horizon, policy, selection,
+         _json.dumps({"selection_params": sel_params,
+                      "policy_params": pol_params})],
+    )
+
+
+def test_sensitivity_grid_factory_is_deterministic(temp_db):
+    """Same base_run_ids → identical config sequence (run_id-by-run_id)
+    across two invocations."""
+    from crypto.execution.backtest.runner import sensitivity_grid_configs
+    ensure_backtest_tables(temp_db)
+    _seed_base_run(
+        temp_db, "backtest_5d_D_threshold_aaaaaaaa",
+        horizon="5d", policy="D", selection="threshold",
+        sel_params={"threshold": 0.55}, pol_params={},
+    )
+
+    out1 = sensitivity_grid_configs(temp_db, ["backtest_5d_D_threshold_aaaaaaaa"])
+    out2 = sensitivity_grid_configs(temp_db, ["backtest_5d_D_threshold_aaaaaaaa"])
+    assert [c.run_id for c in out1] == [c.run_id for c in out2]
+
+
+def test_sensitivity_grid_factory_axis_coverage_per_winner(temp_db):
+    """One base run → 11 emitted configs: 3 trail + 4 activation +
+    4 selection. Each config varies exactly one axis from the base
+    while holding the other two at the base values."""
+    from crypto.execution.backtest.runner import (
+        SENSITIVITY_TRAIL_PCT, SENSITIVITY_ACTIVATION_PCT,
+        SENSITIVITY_THRESHOLD,
+        sensitivity_grid_configs,
+    )
+    ensure_backtest_tables(temp_db)
+    _seed_base_run(
+        temp_db, "backtest_5d_D_threshold_bbbbbbbb",
+        horizon="5d", policy="D", selection="threshold",
+        sel_params={"threshold": 0.55}, pol_params={},
+    )
+
+    configs = sensitivity_grid_configs(
+        temp_db, ["backtest_5d_D_threshold_bbbbbbbb"]
+    )
+    assert len(configs) == (
+        len(SENSITIVITY_TRAIL_PCT)
+        + len(SENSITIVITY_ACTIVATION_PCT)
+        + len(SENSITIVITY_THRESHOLD)
+    ) == 11
+
+    # Sweep block 1 (trail): each config has trail_pct varied; selection
+    # is the base threshold; activation_pct is unset (base default).
+    trail_block = configs[: len(SENSITIVITY_TRAIL_PCT)]
+    trail_values = []
+    for c in trail_block:
+        assert c.horizon == "5d" and c.policy == "D" and c.selection == "threshold"
+        assert c.selection_params == {"threshold": 0.55}
+        # activation_pct should NOT be set (we're not sweeping it)
+        assert "activation_pct" not in c.policy_params
+        trail_values.append(c.policy_params.get("trail_pct"))
+    # The base value (0.50) when overlaid against empty pol_params with
+    # default 0.50 is elided — that's the run_id-collision feature. So
+    # the trail sweep yields {0.30, 0.70} as explicit overrides + one
+    # config with empty policy_params (which represents trail=0.50).
+    explicit = [v for v in trail_values if v is not None]
+    elided   = [v for v in trail_values if v is None]
+    assert sorted(explicit) == [0.30, 0.70]
+    assert len(elided) == 1  # the base point
+
+    # Sweep block 2 (activation): symmetrical reasoning
+    act_block = configs[len(SENSITIVITY_TRAIL_PCT)
+                        : len(SENSITIVITY_TRAIL_PCT)
+                          + len(SENSITIVITY_ACTIVATION_PCT)]
+    act_values = [c.policy_params.get("activation_pct") for c in act_block]
+    explicit = [v for v in act_values if v is not None]
+    elided   = [v for v in act_values if v is None]
+    assert sorted(explicit) == [0.00, 0.02, 0.03]  # 0.01 is the elided base
+    assert len(elided) == 1
+
+    # Sweep block 3 (selection): threshold values
+    sel_block = configs[-len(SENSITIVITY_THRESHOLD):]
+    thresholds = sorted(c.selection_params["threshold"] for c in sel_block)
+    assert thresholds == [0.50, 0.55, 0.60, 0.65]
+
+
+def test_sensitivity_grid_factory_top_n_branch(temp_db):
+    """Base with selection=top_n must sweep 'n', not 'threshold'."""
+    from crypto.execution.backtest.runner import (
+        SENSITIVITY_TOP_N, sensitivity_grid_configs,
+    )
+    ensure_backtest_tables(temp_db)
+    _seed_base_run(
+        temp_db, "backtest_10d_D_top_n_cccccccc",
+        horizon="10d", policy="D", selection="top_n",
+        sel_params={"n": 6}, pol_params={},
+    )
+
+    configs = sensitivity_grid_configs(
+        temp_db, ["backtest_10d_D_top_n_cccccccc"]
+    )
+    sel_block = configs[-len(SENSITIVITY_TOP_N):]
+    n_values = sorted(c.selection_params["n"] for c in sel_block)
+    assert n_values == [5, 6, 7, 8]
+    # And no 'threshold' key leaked into selection_params
+    for c in sel_block:
+        assert "threshold" not in c.selection_params
+
+
+def test_sensitivity_grid_skip_existing_collapses_base_overlap(temp_db):
+    """The base-point sensitivity configs (one per axis sweep, 3 total
+    for one base) produce the SAME run_id as the stored base run.
+    `_run_id_already_persisted` skips them. Net new run_ids per base
+    after dedup = 11 - 3 + 1 = 9 unique configs, of which 1 (the base)
+    is already persisted, leaving 8 new runs."""
+    from crypto.execution.backtest.runner import (
+        sensitivity_grid_configs, _run_id_already_persisted,
+    )
+    ensure_backtest_tables(temp_db)
+    base_id = make_run_id(
+        horizon="5d", exit_policy_id="D", selection_rule="threshold",
+        selection_params={"threshold": 0.55}, policy_params={},
+    )
+    _seed_base_run(
+        temp_db, base_id,
+        horizon="5d", policy="D", selection="threshold",
+        sel_params={"threshold": 0.55}, pol_params={},
+    )
+
+    configs = sensitivity_grid_configs(temp_db, [base_id])
+    base_matches = [c for c in configs if c.run_id == base_id]
+    # Base config appears exactly 3 times (once per axis sweep that
+    # includes the base value).
+    assert len(base_matches) == 3
+    # And the runner's existence check confirms the base IS persisted.
+    assert _run_id_already_persisted(temp_db, base_id) is True
+    # Unique run_ids in the 11 emitted = 11 - 2 (base counted 3 times)
+    # = 9. Of those 9, the base is already persisted, so net new = 8.
+    unique_ids = {c.run_id for c in configs}
+    assert len(unique_ids) == 9
+    new_ids = [rid for rid in unique_ids if rid != base_id]
+    assert len(new_ids) == 8
+
+
+def test_cli_backtest_grid_sensitivity_requires_seed():
+    """Without any base runs in the DB and without --top-run-ids,
+    the CLI surfaces a clear error rather than running an empty grid."""
     from click.testing import CliRunner
     from main import cli
     runner = CliRunner()
-    result = runner.invoke(
-        cli, ["crypto", "backtest-grid", "--grid", "sensitivity"],
-    )
+    # Use a temp DB by env so we don't touch production.
+    import os, tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        env = {**os.environ, "MHDE_DB_PATH": f"{tmp}/empty.duckdb"}
+        # Initialize the DB with the backtest schema.
+        import duckdb
+        conn = duckdb.connect(env["MHDE_DB_PATH"])
+        from crypto.schema import create_all_tables as _crypto
+        from crypto.execution.backtest.harness import ensure_backtest_tables
+        _crypto(conn)
+        ensure_backtest_tables(conn)
+        conn.close()
+        result = runner.invoke(
+            cli, ["crypto", "backtest-grid", "--grid", "sensitivity"],
+            env=env,
+        )
     assert result.exit_code != 0
-    # The exception bubbles up through click's runner.
-    assert isinstance(result.exception, NotImplementedError)
+    assert "no rows in crypto_backtest_summary" in result.output

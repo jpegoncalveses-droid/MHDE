@@ -333,3 +333,57 @@ def test_format_portfolio_result_renders_decision_block(temp_db):
     assert "Sharpe ratio" in text
     assert "max drawdown" in text
     assert "profit factor" in text
+
+
+# ──────────────────────────────────────────────────────────────────────
+# generate_sensitivity_table
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_generate_sensitivity_table_orders_by_axis_value_and_marks_base(temp_db):
+    """For a Policy D / threshold base, the threshold-axis sensitivity
+    table renders one row per value in SENSITIVITY_THRESHOLD, ordered
+    by the swept value, with the base row marked. Rows whose run_id
+    isn't in crypto_backtest_summary show '—' placeholders rather
+    than crashing."""
+    from crypto.execution.backtest.harness import make_run_id
+    from crypto.execution.backtest.report import generate_sensitivity_table
+    from crypto.execution.backtest.runner import SENSITIVITY_THRESHOLD
+
+    _setup(temp_db)
+    base_id = make_run_id(
+        horizon="5d", exit_policy_id="D", selection_rule="threshold",
+        selection_params={"threshold": 0.55}, policy_params={},
+    )
+    _seed_run(
+        temp_db, base_id,
+        horizon="5d", policy="D", selection="threshold",
+        parameters='{"selection_params": {"threshold": 0.55}, "policy_params": {}}',
+    )
+    # No trades / summary seeded — every row will be '—' but the
+    # rendering must not crash and must still include the base marker.
+
+    text = generate_sensitivity_table(temp_db, base_id, axis="selection")
+
+    # One header line + 1 markdown table-divider line + 4 data rows.
+    data_lines = [ln for ln in text.splitlines() if ln.startswith("|")
+                  and not ln.startswith("|---")]
+    # 1 header row + 4 sweep rows
+    assert len(data_lines) == 1 + len(SENSITIVITY_THRESHOLD) == 5
+
+    # Order check: thresholds rendered as p≥0.50, p≥0.55, p≥0.60, p≥0.65
+    # (in the order the runner emits them).
+    rendered_values = [
+        ln.split("|")[1].strip().strip("*")  # strip bold markers
+        for ln in data_lines[1:]
+    ]
+    assert rendered_values == ["p≥0.50", "p≥0.55", "p≥0.60", "p≥0.65"]
+
+    # Base row is the one whose run_id matches base_id; it gets bolded
+    # and an "← base" marker.
+    assert "← base" in text
+    assert "**p≥0.55**" in text  # bold marker on the base row's axis cell
+
+    # Header references the axis and the base run_id.
+    assert "Sensitivity along `selection`" in text
+    assert base_id in text

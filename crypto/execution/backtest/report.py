@@ -745,3 +745,177 @@ def generate_top_n_detail(
         sections.append("")
         sections.append("---")
     return "\n".join(sections)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Phase 1B sensitivity table
+# ──────────────────────────────────────────────────────────────────────
+
+
+_VALID_SENSITIVITY_AXES = frozenset({"trail_pct", "activation_pct", "selection"})
+
+
+def generate_sensitivity_table(
+    conn: duckdb.DuckDBPyConnection,
+    base_run_id: str,
+    axis: str,
+) -> str:
+    """One Markdown sensitivity table for one base winner along one axis.
+
+    For ``axis`` in ``{"trail_pct", "activation_pct", "selection"}``,
+    iterates the 3 or 4 swept values from the runner's sensitivity
+    constants, derives each sweep config's run_id deterministically
+    via :func:`make_run_id`, looks up its summary + portfolio metrics,
+    and renders a Markdown table.
+
+    Columns: axis_value, run_id (8-char hash suffix), n_trades,
+    sharpe (sum-of-fractions), max_dd (sum-of-fractions), portfolio
+    sharpe, portfolio max_dd, portfolio final $, gates (4/4 ✓ if all
+    four pass). The base point's row is annotated ``← base``; rows
+    whose run_id is not yet in ``crypto_backtest_summary`` show ``—``
+    placeholders.
+
+    The base config is identified by run_id equality (the sweep that
+    includes the base axis value produces the same run_id as the
+    stored base run thanks to ``_overlay`` in runner.py).
+    """
+    from crypto.execution.backtest.harness import make_run_id
+    from crypto.execution.backtest.runner import (
+        SENSITIVITY_TRAIL_PCT, SENSITIVITY_ACTIVATION_PCT,
+        SENSITIVITY_TOP_N, SENSITIVITY_THRESHOLD,
+        POLICY_D_TRAIL_DEFAULT, POLICY_D_ACTIVATION_DEFAULT,
+        SELECTION_TOP_N_DEFAULT, SELECTION_THRESHOLD_DEFAULT,
+        _read_base_run_spec, _overlay,
+    )
+
+    if axis not in _VALID_SENSITIVITY_AXES:
+        raise ValueError(
+            f"axis must be one of {sorted(_VALID_SENSITIVITY_AXES)}; "
+            f"got {axis!r}"
+        )
+
+    h, p, sel, sel_params, pol_params = _read_base_run_spec(conn, base_run_id)
+
+    # Derive the sweep value sequence + the per-sweep config builder.
+    if axis == "trail_pct":
+        values: tuple[Any, ...] = SENSITIVITY_TRAIL_PCT
+        def build(v):
+            return (
+                dict(sel_params),
+                _overlay(pol_params, "trail_pct", v, POLICY_D_TRAIL_DEFAULT),
+            )
+    elif axis == "activation_pct":
+        values = SENSITIVITY_ACTIVATION_PCT
+        def build(v):
+            return (
+                dict(sel_params),
+                _overlay(pol_params, "activation_pct", v,
+                         POLICY_D_ACTIVATION_DEFAULT),
+            )
+    else:  # selection
+        if sel == "top_n":
+            values = SENSITIVITY_TOP_N
+            def build(v):
+                return (
+                    _overlay(sel_params, "n", v, SELECTION_TOP_N_DEFAULT),
+                    dict(pol_params),
+                )
+        elif sel == "threshold":
+            values = SENSITIVITY_THRESHOLD
+            def build(v):
+                return (
+                    _overlay(sel_params, "threshold", v,
+                             SELECTION_THRESHOLD_DEFAULT),
+                    dict(pol_params),
+                )
+        else:
+            raise ValueError(
+                f"unsupported selection rule {sel!r} on base "
+                f"{base_run_id!r}"
+            )
+
+    rows: list[str] = []
+    rows.append(
+        "| axis value | run_id | n_trades | sharpe (frac) | maxDD (frac) "
+        "| port. sharpe | port. maxDD | port. final $ | gates 4/4 |"
+    )
+    rows.append(
+        "|---|---|---:|---:|---:|---:|---:|---:|:---:|"
+    )
+
+    base_short = base_run_id.rsplit("_", 1)[-1]
+
+    for v in values:
+        sweep_sel, sweep_pol = build(v)
+        rid = make_run_id(
+            horizon=h, exit_policy_id=p, selection_rule=sel,
+            selection_params=sweep_sel, policy_params=sweep_pol,
+        )
+        is_base = rid == base_run_id
+
+        # Pull from summary
+        srow = conn.execute(
+            "SELECT n_trades, sharpe_ratio, max_drawdown_pct "
+            "FROM crypto_backtest_summary s "
+            "JOIN crypto_backtest_runs r USING (run_id) "
+            "WHERE s.run_id = ?",
+            [rid],
+        ).fetchone()
+
+        if srow is None:
+            n_trades = sharpe = maxdd = "—"
+            psharpe = pmaxdd = pfinal = "—"
+            gates = "—"
+        else:
+            nt, sh, mdd = srow
+            n_trades = "—" if nt is None else f"{int(nt)}"
+            sharpe = "—" if sh is None else f"{float(sh):.2f}"
+            maxdd = "—" if mdd is None else f"{float(mdd) * 100:.1f}%"
+            try:
+                pf = simulate_portfolio(conn, rid)
+                psharpe = (
+                    "—" if pf.sharpe_ratio is None
+                    else f"{pf.sharpe_ratio:.2f}"
+                )
+                pmaxdd = (
+                    "—" if pf.max_drawdown_pct is None
+                    else f"{pf.max_drawdown_pct * 100:.1f}%"
+                )
+                pfinal = (
+                    "—" if pf.final_equity is None
+                    else f"${pf.final_equity:,.0f}"
+                )
+                gates = "✓" if pf.passes_all_criteria else "✗"
+            except Exception:
+                psharpe = pmaxdd = pfinal = gates = "—"
+
+        # Render axis value
+        if axis == "selection" and sel == "top_n":
+            axis_render = f"n={int(v)}"
+        elif axis == "selection" and sel == "threshold":
+            axis_render = f"p≥{float(v):.2f}"
+        elif axis == "trail_pct":
+            axis_render = f"{float(v):.2f}"
+        else:  # activation_pct
+            axis_render = f"{float(v):.2f}"
+
+        rid_short = rid.rsplit("_", 1)[-1]
+        marker = "  ← base" if is_base else ""
+        # Bold the base row by wrapping each cell in **…**
+        if is_base:
+            rows.append(
+                f"| **{axis_render}** | **{rid_short}** | **{n_trades}** "
+                f"| **{sharpe}** | **{maxdd}** | **{psharpe}** "
+                f"| **{pmaxdd}** | **{pfinal}** | **{gates}**{marker} |"
+            )
+        else:
+            rows.append(
+                f"| {axis_render} | {rid_short} | {n_trades} | {sharpe} "
+                f"| {maxdd} | {psharpe} | {pmaxdd} | {pfinal} | {gates} |"
+            )
+
+    header = (
+        f"### Sensitivity along `{axis}` for base "
+        f"`{base_run_id}` ({h} / {p} / {sel})"
+    )
+    return "\n".join([header, "", *rows, ""])

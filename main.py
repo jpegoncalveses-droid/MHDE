@@ -1845,7 +1845,11 @@ def crypto_backtest(horizon, policy, selection, params, force, dry_run):
 @crypto.command("backtest-grid")
 @click.option("--grid", type=click.Choice(["base", "sensitivity"]),
               default="base", show_default=True,
-              help="Which grid to run. 'sensitivity' is not yet implemented.")
+              help="Which grid to run.")
+@click.option("--top-run-ids", default=None,
+              help="(sensitivity only) Comma-separated list of base run_ids "
+                   "to sweep around. Default: read top-3 from "
+                   "crypto_backtest_summary ORDER BY sharpe_ratio DESC.")
 @click.option("--force", is_flag=True,
               help="Overwrite existing rows for any colliding run_id.")
 @click.option("--skip-existing/--no-skip-existing", default=True,
@@ -1854,24 +1858,48 @@ def crypto_backtest(horizon, policy, selection, params, force, dry_run):
                    "or mark it as a per-config failure with --no-skip-existing.")
 @click.option("--dry-run", is_flag=True,
               help="Run lifecycles but persist nothing.")
-def crypto_backtest_grid(grid, force, skip_existing, dry_run):
-    """Phase 1B grid runner — run the full base configuration matrix.
+def crypto_backtest_grid(grid, top_run_ids, force, skip_existing, dry_run):
+    """Phase 1B grid runner — base or sensitivity configuration matrix.
 
-    See crypto/execution/backtest/SPEC.md.
+    See crypto/execution/backtest/SPEC.md and docs/PATH_TO_LIVE_PLAN.md.
     """
     from crypto.execution.backtest.runner import (
-        base_grid_configs, run_grid, summarize_grid_result,
+        base_grid_configs, run_grid, sensitivity_grid_configs,
+        summarize_grid_result,
     )
-
-    if grid == "sensitivity":
-        raise NotImplementedError(
-            "sensitivity grid not yet implemented (per Phase 1B step 5 scope)"
-        )
-
-    configs = base_grid_configs()
 
     cfg, conn = _engine_setup()
     try:
+        if grid == "sensitivity":
+            if top_run_ids:
+                ids = [s.strip() for s in top_run_ids.split(",") if s.strip()]
+            else:
+                # Top-3 by sum-of-fractions sharpe_ratio. SPEC.md
+                # ranking-preservation note: the SET of top 3 is the
+                # same whether ranked by sum-of-fractions Sharpe or
+                # portfolio Sharpe; only the order within differs, and
+                # order within doesn't matter for sensitivity (we run
+                # the same sweep on each). Portfolio metrics not
+                # required for top-3 selection.
+                rows = conn.execute(
+                    "SELECT run_id FROM crypto_backtest_summary "
+                    "ORDER BY sharpe_ratio DESC LIMIT 3"
+                ).fetchall()
+                ids = [r[0] for r in rows]
+                if not ids:
+                    raise click.ClickException(
+                        "no rows in crypto_backtest_summary; run "
+                        "'crypto backtest-grid --grid base' first."
+                    )
+            click.echo(f"Sensitivity grid: sweeping around {len(ids)} base "
+                       f"run_id(s):")
+            for i in ids:
+                click.echo(f"  {i}")
+            click.echo("")
+            configs = sensitivity_grid_configs(conn, ids)
+        else:
+            configs = base_grid_configs()
+
         result = run_grid(
             conn, configs,
             force=force, skip_existing=skip_existing, dry_run=dry_run,

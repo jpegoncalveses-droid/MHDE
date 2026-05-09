@@ -18,6 +18,8 @@ Public API
 * :class:`GridRunResult` — outcome of running one config.
 * :class:`GridResult`   — collection across the whole grid.
 * :func:`base_grid_configs() -> list[GridConfig]` — the spec's 20-row grid.
+* :func:`sensitivity_grid_configs(conn, base_run_ids) -> list[GridConfig]`
+  — Phase 1B sensitivity sweep around the top-3 base winners.
 * :func:`run_grid(conn, configs, *, force, skip_existing, dry_run)
   -> GridResult` — orchestrator.
 * :func:`summarize_grid_result(result) -> str` — pretty CLI summary.
@@ -43,6 +45,7 @@ package.
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass, field, replace
@@ -72,6 +75,36 @@ DEFAULT_POLICIES: tuple[str, ...] = ("A", "B", "C", "D", "E")
 DEFAULT_SELECTION_RULES: tuple[str, ...] = ("top_n", "threshold")
 DEFAULT_TOP_N: int = 6
 DEFAULT_THRESHOLD: float = 0.55
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Sensitivity grid axis values (Phase 1B step 5)
+# ──────────────────────────────────────────────────────────────────────
+#
+# Per `docs/PATH_TO_LIVE_PLAN.md` § "Phase 1B: Pending: sensitivity grid":
+# for each top-3 base winner, sweep one axis at a time while holding
+# the other two at the base values. 11 configs emitted per base
+# (3 trail + 4 activation + 4 selection), the base point appears
+# 3 times within those 11 (once per axis whose sweep includes the
+# base value); `_run_id_already_persisted` collapses the redundancy
+# at run time, so the factory contract stays pure.
+
+SENSITIVITY_TRAIL_PCT: tuple[float, ...] = (0.30, 0.50, 0.70)
+SENSITIVITY_ACTIVATION_PCT: tuple[float, ...] = (0.00, 0.01, 0.02, 0.03)
+SENSITIVITY_TOP_N: tuple[int, ...] = (5, 6, 7, 8)
+SENSITIVITY_THRESHOLD: tuple[float, ...] = (0.50, 0.55, 0.60, 0.65)
+
+# Class defaults from `crypto/execution/backtest/policies.py` and
+# `selection.py`. When a sweep value equals the corresponding default
+# AND the base run didn't override the param, the resulting config
+# has the same params shape as the base (which the harness persists
+# as `{}` for unset policy params and `{"key": value}` for the
+# explicit selection rule). That makes the run_id collide with the
+# already-stored base run_id and `_run_id_already_persisted` skips it.
+POLICY_D_TRAIL_DEFAULT: float = 0.50
+POLICY_D_ACTIVATION_DEFAULT: float = 0.01
+SELECTION_TOP_N_DEFAULT: int = 6
+SELECTION_THRESHOLD_DEFAULT: float = 0.55
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -178,6 +211,150 @@ def base_grid_configs(
                         policy_params={},
                     )
                 )
+    return configs
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Sensitivity grid
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _read_base_run_spec(
+    conn: duckdb.DuckDBPyConnection, base_run_id: str
+) -> tuple[str, str, str, dict[str, Any], dict[str, Any]]:
+    """Pull a base run's stored configuration for axis-sweeping.
+
+    Returns ``(horizon, exit_policy, selection_rule, selection_params,
+    policy_params)``. The harness persists ``parameters`` as a JSON
+    blob containing both ``selection_params`` and ``policy_params``
+    keys.
+
+    Anchoring on the persisted params (rather than recomputing what
+    the defaults *should* have been) keeps the sensitivity grid
+    robust against a future base-grid rerun with non-default params.
+    """
+    row = conn.execute(
+        "SELECT horizon, exit_policy, selection_rule, parameters "
+        "FROM crypto_backtest_runs WHERE run_id = ?",
+        [base_run_id],
+    ).fetchone()
+    if row is None:
+        raise ValueError(
+            f"base run_id {base_run_id!r} not in crypto_backtest_runs"
+        )
+    horizon, policy, selection, params_json = row
+    params = json.loads(params_json) if params_json else {}
+    selection_params = dict(params.get("selection_params", {}))
+    policy_params = dict(params.get("policy_params", {}))
+    return horizon, policy, selection, selection_params, policy_params
+
+
+def _overlay(
+    base: dict[str, Any], key: str, value: Any, default: Any
+) -> dict[str, Any]:
+    """Return a copy of ``base`` with ``key=value`` overlaid, EXCEPT
+    when ``value`` equals ``default`` AND ``key`` is absent from
+    ``base`` — in that case the unchanged base dict is returned.
+
+    The exception preserves the run_id of the base point inside an
+    axis sweep: when the swept value is the policy class default and
+    the base didn't override that key, the resulting params shape
+    matches what the harness stored for the base run. ``make_run_id``
+    is JSON-canonical on the params, so identical params produce an
+    identical digest.
+    """
+    out = dict(base)
+    if value == default and key not in base:
+        return out
+    out[key] = value
+    return out
+
+
+def sensitivity_grid_configs(
+    conn: duckdb.DuckDBPyConnection,
+    base_run_ids: list[str],
+) -> list[GridConfig]:
+    """Build the Phase 1B sensitivity grid around each base winner.
+
+    For each base ``run_id`` in ``base_run_ids``, emit 11 :class:`GridConfig`
+    instances sweeping one axis at a time while holding the other two
+    at the base values:
+
+      - ``trail_pct``       sweep over ``SENSITIVITY_TRAIL_PCT`` (3)
+      - ``activation_pct``  sweep over ``SENSITIVITY_ACTIVATION_PCT`` (4)
+      - selection axis      sweep over ``SENSITIVITY_TOP_N`` for ``top_n``
+                            bases or ``SENSITIVITY_THRESHOLD`` for
+                            ``threshold`` bases (4)
+
+    The base configuration appears 3 times across the 11 (once per
+    axis sweep that includes the base value); :func:`run_grid`'s
+    ``_run_id_already_persisted`` skip handles the redundancy. Net
+    new runs per base ≈ 8 after dedup.
+
+    Top-3 selection criterion. The CLI default reads
+    ``crypto_backtest_summary ORDER BY sharpe_ratio DESC LIMIT 3``
+    (the sum-of-fractions Sharpe). Per ``crypto/execution/backtest/
+    SPEC.md`` the SET of top 3 is preserved across sum-of-fractions
+    vs portfolio Sharpe; only the order within the set differs. Order
+    within top 3 doesn't matter for sensitivity (we run the same
+    sweep on each), so portfolio metrics are not required for
+    selection. Operators wanting an explicit selection should pass
+    ``--top-run-ids`` to bypass the DB read.
+    """
+    configs: list[GridConfig] = []
+    for base_id in base_run_ids:
+        h, p, sel, sel_params, pol_params = _read_base_run_spec(
+            conn, base_id
+        )
+
+        # Sweep 1: trail_pct (other two axes at base)
+        for v in SENSITIVITY_TRAIL_PCT:
+            new_pol = _overlay(
+                pol_params, "trail_pct", v, POLICY_D_TRAIL_DEFAULT
+            )
+            configs.append(GridConfig(
+                horizon=h, policy=p, selection=sel,
+                selection_params=dict(sel_params),
+                policy_params=new_pol,
+            ))
+        # Sweep 2: activation_pct (other two axes at base)
+        for v in SENSITIVITY_ACTIVATION_PCT:
+            new_pol = _overlay(
+                pol_params, "activation_pct", v,
+                POLICY_D_ACTIVATION_DEFAULT,
+            )
+            configs.append(GridConfig(
+                horizon=h, policy=p, selection=sel,
+                selection_params=dict(sel_params),
+                policy_params=new_pol,
+            ))
+        # Sweep 3: selection axis (depends on rule)
+        if sel == "top_n":
+            for v in SENSITIVITY_TOP_N:
+                new_sel = _overlay(
+                    sel_params, "n", v, SELECTION_TOP_N_DEFAULT
+                )
+                configs.append(GridConfig(
+                    horizon=h, policy=p, selection=sel,
+                    selection_params=new_sel,
+                    policy_params=dict(pol_params),
+                ))
+        elif sel == "threshold":
+            for v in SENSITIVITY_THRESHOLD:
+                new_sel = _overlay(
+                    sel_params, "threshold", v,
+                    SELECTION_THRESHOLD_DEFAULT,
+                )
+                configs.append(GridConfig(
+                    horizon=h, policy=p, selection=sel,
+                    selection_params=new_sel,
+                    policy_params=dict(pol_params),
+                ))
+        else:
+            raise ValueError(
+                f"unsupported selection rule {sel!r} for sensitivity sweep "
+                f"(base_run_id={base_id!r})"
+            )
     return configs
 
 
