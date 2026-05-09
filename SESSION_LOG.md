@@ -6,6 +6,158 @@ are at the top.
 
 ---
 
+## 2026-05-09 — Discipline session: monitor false-positive + tracking gates
+
+**Branch:** `discipline-session-monitor-and-tracking` off
+`master @ 52bd655`. Six commits, full test suite (966 tests) green,
+merge plan: `--no-ff` to master with the issues opened in
+`KNOWN_ISSUES.md` carried as deliberate follow-ups.
+
+**Trigger.** The `pipeline_execution` monitor fired a `warn` on
+crypto for two consecutive days (May 8 / May 9: ratios 0.30 / 0.24
+vs the 50% threshold). Investigation showed the alert was a false
+positive: the 14-day rolling baseline was contaminated by Phase
+1A/1B walk-forward backtest rows that share the
+`crypto_ml_predictions` table with production scoring. The
+investigation surfaced two related discipline gaps from the prior
+recovery audit (KI-118, the cross-chat coordination protocol)
+which the operator scoped into one session.
+
+### What was completed
+
+Six items, each landed as its own commit on the branch:
+
+1. **KI-118 regression test** (`cfb67ae`).
+   `tests/regression/test_no_untracked_production_imports.py` walks
+   every tracked `.py` outside `tests/`, `legacy/`,
+   `.claude/local_scripts/`, `venv/`, `.venv/` and resolves every
+   import to a path; if the path is inside the repo, it must be in
+   `git ls-files`. Plus: every `.service`/`.timer` under `systemd/`
+   must be tracked. Plus (when on the production host): every
+   deployed `mhde-*` unit's source in `systemd/` must be tracked.
+   Wired into `scripts/pre-commit.sh` smoke list. Verified
+   fail-then-pass with a canary (a tracked importer of an untracked
+   target produces a clear failure message).
+
+2. **HARDENING_PLAN.md exit criteria** (`5a63c62`).
+   Added a "Lesson from KI-118" paragraph near the top documenting
+   the process gap. Added a "Universal exit criteria (every
+   session)" block before the per-session breakdowns: clean `git
+   status`, the new regression test passes, full `tests/regression/`
+   green, SESSION_LOG + KNOWN_ISSUES updated. These apply on top of
+   each session's specific exit criteria.
+
+3. **CLAUDE.md cross-chat protocol** (`bc171d1`).
+   New "Cross-chat protocol" section. Before substantial work,
+   search SESSION_LOG.md for related ongoing workstreams; check
+   branch state if found; ask the user when overlap is uncertain.
+   The chat that starts substantial work owns updating SESSION_LOG
+   before ending — even with a "Pending" section if unfinished.
+   Motivated by the Phase 1A/1B / cutover-session collision that
+   produced KI-119.
+
+4. **pipeline_execution monitor false-positive fix** (`72040cd`).
+   `monitoring/pipeline_execution.py:_check_engine_pipeline` now
+   JOINs each predictions table with the corresponding
+   `*_model_runs` table `WHERE is_active=true`. Both the latest
+   count (`n_latest`) and the 14-day rolling baseline (`n_avg`)
+   filter on the active set. Verified against the production DB:
+   crypto's ratio went from 0.24 (warn) to 0.78 (ok) using the
+   exact same data underneath — proving the prior alert was the
+   baseline's fault, not a real volume drop. FX stays ok. Equity
+   surfaces a separate flag (`n_latest=10` vs `n_avg=27.5`) which
+   was previously masked by the same baseline contamination —
+   tracked as KI-120 for separate triage.
+
+5. **Monitor baseline composition regression test** (`86e4517`).
+   `tests/regression/test_pipeline_execution_baseline.py` —
+   seeds `crypto_ml_predictions` with 30 rows/day from an
+   `is_active=true` model and 96 rows/day from an `is_active=false`
+   model across the last 15 days. Asserts the monitor sees
+   `n_latest=30` and `n_avg=30` (active-only on both sides). If
+   anyone drops the `WHERE m.is_active=true` clause from either
+   query, the test fails with a clear pointer to which side broke.
+   Partner check asserts the monitor flags an engine whose
+   `*_model_runs` has no `is_active=true` rows. Verified
+   fail-then-pass.
+
+6. **KNOWN_ISSUES.md updates** (`0a9fbe6`).
+   KI-118 marked fully resolved (regression test now in place;
+   the "owed" caveat removed). KI-119 opened — Phase 1A/1B
+   walkfold backfill writes into `crypto_ml_predictions` without
+   a matching `crypto_ml_model_runs` row, leaving downstream
+   consumers unable to distinguish backtest from production.
+   Reinforcement of writer isolation owed when
+   `crypto-phase-1a-1b-backtest` is next reviewed; out of scope
+   for this session. KI-120 opened — equity engine flag from the
+   monitor verification (10 vs 27.5 baseline); three candidate
+   interpretations listed; operator triage owed.
+
+### Verification
+
+- `make test` (full suite, no skips): **966 passed in 222.20s.**
+- `bash scripts/pre-commit.sh`: 27 tests pass in 2s including the
+  new KI-118 regression test.
+- Production-DB monitor run via
+  `.claude/local_scripts/verify_pipeline_monitor_after_fix.py`:
+  crypto ok (ratio 0.78), fx ok (4/4 ratio 1.0), equity warn (10
+  vs 27.5 — see KI-120).
+- KI-118 regression test fail-then-pass demonstrated by injecting a
+  canary: `pipelines/_ki118_canary_importer.py` (tracked) importing
+  `pipelines/_ki118_canary_target.py` (untracked) → clear failure;
+  cleaned up → pass.
+- KI-119 (baseline-composition) test fail-then-pass demonstrated by
+  commenting out the `WHERE m.is_active=true` clause: test reports
+  "Got 126, expected 30"; restored → pass.
+
+### Files changed
+
+- `tests/regression/test_no_untracked_production_imports.py` (new)
+- `tests/regression/test_pipeline_execution_baseline.py` (new)
+- `tests/equity/test_monitoring.py` — `test_pipeline_execution_ok_when_fresh`
+  now seeds `is_active=true` rows in each engine's `*_model_runs`
+  table to match the monitor's new contract.
+- `monitoring/pipeline_execution.py` — `_check_engine_pipeline` gains
+  a `model_runs_table` parameter; all three queries filter on
+  `m.is_active=true`.
+- `scripts/pre-commit.sh` — regression test added to smoke list.
+- `HARDENING_PLAN.md` — KI-118 lesson + universal exit criteria.
+- `CLAUDE.md` — cross-chat protocol section.
+- `KNOWN_ISSUES.md` — KI-118 resolution + KI-119 + KI-120.
+- `.claude/local_scripts/crypto_volume_diagnostic.py`,
+  `crypto_who_wrote.py`, `verify_pipeline_monitor_after_fix.py` —
+  diagnostic scripts kept as session artifacts (already covered by
+  the `.claude/local_scripts/*` gitignore prefix-glob from the
+  recovery audit).
+
+### Pending
+
+1. **KI-119 reinforcement.** When `crypto-phase-1a-1b-backtest` is
+   reviewed for merge, audit every writer that touches a
+   `*_ml_predictions` table to confirm it registers a matching
+   `*_ml_model_runs` row first (with `is_active=false`). Consider
+   adding a regression test asserting "every distinct `model_id` in
+   `*_ml_predictions` has a row in `*_ml_model_runs`".
+2. **KI-120 triage.** Investigate the equity engine's
+   `n_latest=10 vs n_avg=27.5` flag. Most likely path:
+   `.claude/local_scripts/equity_volume_diagnostic.py` patterned on
+   the crypto diagnostic from this session.
+3. **Operator items still deferred from the 2026-05-08 recovery
+   audit** (unchanged this session): 6 modified
+   `data/processed/*.{jsonl,csv,md}` files (gitignore vs commit),
+   3 untracked `docs/` files (tracked vs scratch), and the
+   one-week stability buffer cleanup of FX migration mirror tables
+   around 2026-05-15.
+
+### Branch status
+
+`discipline-session-monitor-and-tracking` is ready to merge to
+master with `--no-ff`. The six commits are independent enough that
+the operator could cherry-pick (e.g. land Item 1 alone) but they
+were authored as a coherent unit and should land together.
+
+---
+
 ## 2026-05-08 — Session 2 (FX migration): cutover Dukascopy → TwelveData
 
 **Branch:** `fx-twelvedata-migration` (with master merged in earlier the
