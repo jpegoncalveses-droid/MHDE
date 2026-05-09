@@ -1,9 +1,12 @@
 # Known Issues
 
-**2 open observations** (KI-119 and KI-120, both surfaced 2026-05-09
-during the discipline session). Neither is a code defect requiring a
-hot fix — they are tracked here so a future session triages them
-deliberately rather than letting them rot in the working tree.
+**4 open observations** (KI-119, KI-120, KI-122, KI-123). KI-119 and
+KI-120 surfaced 2026-05-09 during the discipline session. KI-122 and
+KI-123 surfaced 2026-05-09 during the equity ingestion fix session
+as out-of-scope cleanups identified while triaging the 520-ticker
+universe cap. None require a hot fix — they are tracked here so a
+future session triages them deliberately rather than letting them
+rot in the working tree.
 
 The historical record of resolved bugs lives in
 [`legacy/RESOLVED_ISSUES_ARCHIVE.md`](legacy/RESOLVED_ISSUES_ARCHIVE.md).
@@ -79,6 +82,54 @@ ticket.
 finding is a side-effect of the monitor fix verification and is
 not part of the listed scope. Tracked here so the next session
 triages deliberately.
+
+### KI-122 — Universe builder reconciliation leaks stale extended-tier rows
+
+**Symptom.** `companies WHERE is_active=true` returns 678 rows
+(504 primary + 174 extended), but a fresh universe build only
+intends to populate ~520 rows (504 primary + ~16 extended slots
+under `max_symbols=520`). The 174 extended-tier rows are residue
+from prior builds — old extended fillers that were active on a
+previous date and never got deactivated when the SP500 list
+shifted or when the SEC filter chose a different set of fillers.
+
+**Root cause.** `universe/universe_builder.py:148-164` deactivates
+primary-tier rows that fall off the current S&P list, but has no
+analogous reconciliation for extended-tier rows. So extended-tier
+`is_active=true` rows accumulate monotonically across builds.
+
+**Detection / fix path.** Mirror the primary-tier reconciliation
+for extended: `UPDATE companies SET is_active = false WHERE
+universe_tier = 'extended' AND ticker NOT IN (<current_extended_set>)`.
+Add a regression test that walks back the universe builder twice
+with disjoint extended sets and asserts `companies` flips correctly.
+
+**Out of scope for the equity ingestion fix session 2026-05-09.**
+The 174 stale rows don't currently flow through to `ml_features`
+or `ml_predictions` (the predict/features stages don't carry
+extended-tier tickers in practice — confirmed in the cap audit),
+so no production data quality impact today. Tracking for a future
+universe-cleanup session.
+
+### KI-123 — Misleading "Dev mode" log line in daily_radar.py
+
+**Symptom.** `pipelines/daily_radar.py:83` logs `"Dev mode: capped
+tickers to %d (universe has %d)"` whenever `len(tickers) >
+max_symbols`. The "Dev mode" prefix implies the cap is a debugging
+shortcut, but `max_symbols=520` is the deliberate production
+universe scope (see ADR-014). The log line gives operators the
+wrong impression that production is running in a degraded mode.
+
+**Root cause.** Historical: the cap was added during early dev as
+a runtime-tunable to limit Polygon-cost while iterating, and the
+log line predates the decision to make 520 the canonical scope.
+
+**Detection / fix path.** Drop the "Dev mode: " prefix. Suggested
+replacement: `"Universe capped to %d (companies WHERE is_active=true
+has %d, see ADR-014 for cap rationale)"`. Trivial one-liner.
+
+**Out of scope for the equity ingestion fix session 2026-05-09.**
+Documentation/clarity fix; no behavioral impact.
 
 ## Recently resolved (post-Session-7)
 

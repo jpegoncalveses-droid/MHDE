@@ -411,3 +411,63 @@ compare-sources CLI.
   KI-112 regression test (`test_repo_vs_deployed_unit_parity`) will
   fail until the deployed unit is refreshed with `sudo cp …
   /etc/systemd/system/` and `sudo systemctl daemon-reload`.
+
+---
+
+## ADR-014 — Equity universe scope is S&P 500 + named extras (max_symbols=520), not a Polygon-cost workaround
+
+**Date:** 2026-05-09
+**Session:** Equity ingestion fix session
+**Status:** Active
+
+**Context.** During the KI-120 triage we found that `pipelines/daily_radar.py:80-83`
+applies a `max_symbols` cap from `config/universe.yaml` on top of the
+universe loaded from `companies WHERE is_active=true`. The cap value
+is 520 and the log line calls it "Dev mode". On inspection the cap is
+not a debugging tunable and not a Polygon-cost workaround; it is the
+deliberate production scope.
+
+**Composition of the 520 (verified in production DB):**
+
+- 504 primary-tier rows = current S&P 500 list from
+  `universe/sp500_tickers.yaml` + the 6 named extras under
+  `fallback_tickers` in `config/universe.yaml`
+  (AAPL, NVDA, TSLA, JPM, UBER, RKLB).
+- ~16 extended-tier slots filled per build, drawn from a SEC-filtered
+  list (`universe.filter_non_equities`) until total reaches `max_symbols`.
+
+`companies WHERE is_active=true` reports 678 (504 primary + 174
+extended) only because the universe builder doesn't reconcile
+extended-tier rows across builds — they accumulate as residue from
+prior builds. This is tracked separately as KI-122 and does not
+change the production scope. The extra 174 stale extended rows
+don't reach `ml_features` or `ml_predictions` in practice.
+
+**Decision.** Treat 520 as the canonical equity universe scope. The
+authoritative source of truth is `config/universe.yaml`; the
+existing comment block in that file ("Set high enough to leave a
+few extended slots after ~503 S&P primaries") is what governs the
+number. The cap in `daily_radar.py` is therefore a hard scope bound,
+not a soft cost limit.
+
+The grouped-daily Polygon endpoint (this session's ingestion fix)
+removes the per-ticker API-call cost that the cap was historically
+suspected to be guarding against. The cap stays where it is for
+reasons of investment scope, not API economics.
+
+**Consequence.**
+- Raising `max_symbols` would add SEC-filtered extended-tier
+  fillers (small-caps that pass only name heuristics, no
+  liquidity/cap filter), not S&P 500 expansion. Most have thin
+  data quality. Don't raise without a corresponding upgrade to
+  the universe builder's extended-tier filter.
+- The misleading "Dev mode" log prefix in `daily_radar.py:83` is
+  tracked as KI-123. When that log line is updated, point operators
+  at this ADR for the cap rationale.
+- The `ml backfill-features` step computes features for the full
+  result of the universe builder (~411 tickers per healthy day in
+  practice — primary tier minus tickers without 60d price history).
+  The 520-cap and the 411-feature numbers are not the same metric:
+  cap is "how many tickers ingestion attempts", features is "how
+  many computed successfully". They will rarely match exactly and
+  this is fine.
