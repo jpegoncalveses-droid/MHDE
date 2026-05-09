@@ -6,6 +6,130 @@ are at the top.
 
 ---
 
+## 2026-05-09 — Equity ingestion fix: KI-120 resolved
+
+**Branch:** `fix-equity-ingestion-degradation` off
+`master @ aeefb36`. Six commits, full test suite (973 tests, +7
+new) green, merge plan: `--no-ff` to master.
+
+**Trigger.** KI-120 triage from earlier the same day pointed at
+upstream Polygon ingestion as the root cause of equity prediction
+volume thinning (May 5-8 saw 47-524 tickers/day vs 634 baseline).
+The triage suggested investigation order; this session executed
+the fix.
+
+### Root cause (confirmed)
+
+`ingestion/ingest_prices.py` looped per-ticker against
+`/v2/aggs/ticker/{ticker}/range/1/day/...` once per universe
+ticker. With ~520 active tickers and Polygon's free-tier 5
+req/min limit, the run took ~50 minutes and rate-limited heavily.
+Most days only 50-200 of 520 tickers actually got bars inserted.
+The thinning then propagated linearly through `ml_features` and
+`ml_predictions`.
+
+### What was completed
+
+Six commits, each landing one item:
+
+1. **Doc upfront** (`7d09938`).
+   KI-122 (universe builder leaks stale extended-tier rows) and
+   KI-123 (misleading "Dev mode" log line) opened. ADR-014 added
+   documenting that `max_symbols=520` is S&P 500 + named extras +
+   ~16 SEC-filtered fillers — deliberate scope, not a Polygon-cost
+   workaround. Authoritative source remains `config/universe.yaml`.
+
+2. **Polygon ingestor refactor + tests** (`473b92a`).
+   Switched primary path to the grouped-daily endpoint. Added
+   `ingest_dates(conn, run_id, dates, tickers)` for explicit-date
+   use (backfill). Per-ticker fallback retained but bounded
+   (`DEFAULT_FALLBACK_LIMIT=10` per date). Throttling between
+   consecutive calls (`DEFAULT_THROTTLE_S=13`) plus a 65s retry
+   after 429 keeps the run inside free-tier budget.
+   `tests/equity/test_ingest_prices.py` covers grouped filter,
+   non-trading-day, fallback firing/cap, idempotency, missing key,
+   default lookback.
+
+3. **Backfill script** (added under `.claude/local_scripts/`,
+   covered by the `.claude/local_scripts/*` gitignore prefix from
+   the recovery audit). `equity_backfill_prices.py` re-fetches
+   prices for explicit `TARGET_DATES`. Idempotent.
+
+4. **Backfill executed against production DB.** Per-day rows
+   inserted for May 5-8; idempotent inserts via `prices_daily` PK +
+   `ON CONFLICT DO NOTHING`. Followed by `ml backfill-features` (one
+   pass over all dates) and `ml predict --date <D> --skip-outcomes`
+   for each of May 5-8 to write the missing predictions.
+
+5. **Verification.** Post-fix data state:
+
+   | trade_date | prices_daily | ml_features | ml_predictions |
+   |---|---|---|---|
+   | 2026-05-05 | 82 → **520** | 42 → **312** | 24 → **43** |
+   | 2026-05-06 | 47 → **519** | 24 → **312** | 0  → **41** |
+   | 2026-05-07 | 463 → **514** | 282 → **311** | 43 → **45** |
+   | 2026-05-08 | 53 → **514** | 29 → **311** | 10 → **37** |
+
+   pipeline_execution monitor against production DB: equity
+   `count_ok=True` with `n_latest=43, n_avg=50.0, ratio=0.86`
+   (above the 50% threshold). The recency side still flags —
+   that's a pre-existing, unrelated monitor bug (KI-124, see
+   below).
+   smoke_test monitor: ok.
+   `make test`: **973 passed in 227.06s** (was 966 before this
+   session; +7 from `test_ingest_prices.py`).
+
+6. **Doc finalization** (this entry + KNOWN_ISSUES + OPERATIONS).
+   KI-120 moved to "Recently resolved" with full root cause and
+   fix description. KI-124 opened. OPERATIONS.md Polygon section
+   rewritten to document the grouped-daily architecture and call
+   budget; backfill recipe pointed at the new script.
+
+### KI-124 opened (out of scope, surfaced during verification)
+
+`monitoring/pipeline_execution.py` derives recency from
+`MAX(prediction_date)` treated as midnight UTC of that date. For
+equity, which fires daily at 00:15 UTC and writes
+`prediction_date = T-1`, that means the row is "47h old by the
+midnight rule" by 23:00 UTC each day, far over the 27h budget.
+Two suggested fixes captured in the KI: raise the budget to ~75h
+(covers weekend gap) or add `row_inserted_at TIMESTAMP` and key
+the recency check off the actual write time.
+
+### Files changed
+
+- `ingestion/ingest_prices.py` — refactored.
+- `tests/equity/test_ingest_prices.py` — new, 7 tests.
+- `KNOWN_ISSUES.md` — KI-120 resolved; KI-122/123/124 opened.
+- `DECISIONS.md` — ADR-014.
+- `OPERATIONS.md` — Polygon section rewritten.
+- `.claude/local_scripts/{equity_backfill_prices,equity_post_backfill_state,run_smoke_monitor,probe_polygon_tier,probe_universe_composition,equity_volume_diagnostic}.py`
+  — diagnostic + backfill scripts kept as session artifacts
+  (under existing gitignore prefix-glob).
+
+### Pending
+
+1. **KI-122** — universe builder reconciliation for extended tier.
+   Cosmetic (174 stale rows don't reach features). Future cleanup.
+2. **KI-123** — daily_radar.py:83 "Dev mode" log line. Trivial
+   one-liner; future cleanup.
+3. **KI-124** — pipeline_execution recency budget for equity's
+   T-1 schedule. Pick one of the two fixes captured in the KI;
+   future monitor-tuning session.
+4. **Operator items still deferred from the 2026-05-08 recovery
+   audit** (unchanged): 6 modified `data/processed/*` files,
+   3 untracked `docs/` files, and the FX migration mirror-table
+   cleanup around 2026-05-15.
+
+### Branch status
+
+`fix-equity-ingestion-degradation` is ready to merge to master
+with `--no-ff`. The six commits are independent enough that the
+operator could cherry-pick (e.g. land just the ingestor refactor
+without the docs) but they form a coherent unit.
+
+---
+
 ## 2026-05-09 — Discipline session: monitor false-positive + tracking gates
 
 **Branch:** `discipline-session-monitor-and-tracking` off

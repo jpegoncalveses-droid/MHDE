@@ -1,9 +1,18 @@
 # Known Issues
 
-**2 open observations** (KI-119 and KI-120, both surfaced 2026-05-09
-during the discipline session). Neither is a code defect requiring a
-hot fix — they are tracked here so a future session triages them
+**4 open observations** (KI-119, KI-122, KI-123, KI-124). KI-119
+surfaced 2026-05-09 during the discipline session. KI-122 / KI-123
+surfaced 2026-05-09 during the equity ingestion fix session as
+out-of-scope cleanups identified while triaging the 520-ticker
+universe cap. KI-124 surfaced 2026-05-09 during the same session's
+verification — the pipeline_execution recency budget for equity is
+too tight given equity's T-1 scoring schedule. None require a hot
+fix — they are tracked here so a future session triages them
 deliberately rather than letting them rot in the working tree.
+
+**KI-120 resolved** the same session by switching the Polygon
+ingestor to the grouped-daily endpoint (see "Recently resolved"
+below for fix detail).
 
 The historical record of resolved bugs lives in
 [`legacy/RESOLVED_ISSUES_ARCHIVE.md`](legacy/RESOLVED_ISSUES_ARCHIVE.md).
@@ -46,41 +55,135 @@ monitor patch landed in this session unblocks the alert; the Phase
 1A/1B isolation reinforcement is a separate workstream and lives
 on its own branch.
 
-### KI-120 — Equity pipeline_execution flag (10 rows vs 27.5 14d baseline)
+### KI-122 — Universe builder reconciliation leaks stale extended-tier rows
 
-**Symptom.** After the monitor fix in this session correctly
-filtered baseline counts to active-model rows only, the equity
-engine surfaced as `warn`: latest `prediction_date=2026-05-08`,
-`n_latest=10` rows, `n_avg=27.5`, `ratio=0.36` (below the 50%
-threshold). The crypto fix made this visible by removing the
-training-row inflation that previously masked it.
+**Symptom.** `companies WHERE is_active=true` returns 678 rows
+(504 primary + 174 extended), but a fresh universe build only
+intends to populate ~520 rows (504 primary + ~16 extended slots
+under `max_symbols=520`). The 174 extended-tier rows are residue
+from prior builds — old extended fillers that were active on a
+previous date and never got deactivated when the SP500 list
+shifted or when the SEC filter chose a different set of fillers.
 
-**Possible interpretations** (not yet investigated):
+**Root cause.** `universe/universe_builder.py:148-164` deactivates
+primary-tier rows that fall off the current S&P list, but has no
+analogous reconciliation for extended-tier rows. So extended-tier
+`is_active=true` rows accumulate monotonically across builds.
 
-1. The active equity model genuinely scored 10 tickers on
-   2026-05-08 — universe regime change or threshold-induced
-   thinning analogous to today's crypto count.
-2. The 14-day baseline still contains some non-production rows
-   (a different writer pattern than crypto's walkfold).
-3. A training/walk-forward path on the equity engine is also
-   contaminating the predictions table the same way crypto
-   was, in which case the same KI-119 fix-pattern applies.
+**Detection / fix path.** Mirror the primary-tier reconciliation
+for extended: `UPDATE companies SET is_active = false WHERE
+universe_tier = 'extended' AND ticker NOT IN (<current_extended_set>)`.
+Add a regression test that walks back the universe builder twice
+with disjoint extended sets and asserts `companies` flips correctly.
 
-**Detection / fix path.** Run the equity-side equivalent of the
-2026-05-09 crypto diagnostic
-(`.claude/local_scripts/crypto_volume_diagnostic.py` is the
-template): per-day row counts last 21 days for `ml_predictions`
-broken down by `model_id`, plus the `ml_model_runs` rows actually
-registered. Decide between (1)-(3) based on the data, then either
-file the count as expected, add a tighter filter, or open a fix
-ticket.
+**Out of scope for the equity ingestion fix session 2026-05-09.**
+The 174 stale rows don't currently flow through to `ml_features`
+or `ml_predictions` (the predict/features stages don't carry
+extended-tier tickers in practice — confirmed in the cap audit),
+so no production data quality impact today. Tracking for a future
+universe-cleanup session.
 
-**Out of scope for the discipline session 2026-05-09.** This
-finding is a side-effect of the monitor fix verification and is
-not part of the listed scope. Tracked here so the next session
-triages deliberately.
+### KI-123 — Misleading "Dev mode" log line in daily_radar.py
+
+**Symptom.** `pipelines/daily_radar.py:83` logs `"Dev mode: capped
+tickers to %d (universe has %d)"` whenever `len(tickers) >
+max_symbols`. The "Dev mode" prefix implies the cap is a debugging
+shortcut, but `max_symbols=520` is the deliberate production
+universe scope (see ADR-014). The log line gives operators the
+wrong impression that production is running in a degraded mode.
+
+**Root cause.** Historical: the cap was added during early dev as
+a runtime-tunable to limit Polygon-cost while iterating, and the
+log line predates the decision to make 520 the canonical scope.
+
+**Detection / fix path.** Drop the "Dev mode: " prefix. Suggested
+replacement: `"Universe capped to %d (companies WHERE is_active=true
+has %d, see ADR-014 for cap rationale)"`. Trivial one-liner.
+
+**Out of scope for the equity ingestion fix session 2026-05-09.**
+Documentation/clarity fix; no behavioral impact.
+
+### KI-124 — pipeline_execution recency budget too tight for equity's T-1 scoring
+
+**Symptom.** After the equity ingestion fix landed in the
+2026-05-09 session, `pipeline_execution.run()` against the
+production DB returned:
+```
+[equity] recency_ok=False count_ok=True
+  reason: latest prediction_date=2026-05-08 is 1 day, 8:34h old,
+          threshold 1 day, 3:00h
+  n_latest=43 n_avg=50.0 ratio=0.86  ← count side green
+```
+Volume is fine; recency flags every cycle.
+
+**Root cause.** `monitoring/pipeline_execution.py` derives `age =
+now - latest_dt`, where `latest_dt = MAX(prediction_date)` treated
+as midnight UTC of that date. Equity scoring runs at 00:15 UTC
+daily, but writes `prediction_date = T-1` (yesterday). So as soon
+as the 27h `RECENCY_BUDGET["equity"]` window passes 24h since
+midnight of the prediction_date — i.e., for ~22 of every 24 hours
+between fires, plus the entire weekend — recency_ok is False even
+though the pipeline ran on schedule. The schema has no
+`row_inserted_at` column on `ml_predictions`, so the monitor has
+no other anchor available.
+
+**Detection / fix path.** Two reasonable fixes:
+
+1. *Easy.* Raise `RECENCY_BUDGET["equity"]` to 75h (covers the
+   weekend gap: Friday 00:15 fire → next Monday 00:15 fire = 72h
+   plus 3h grace). Same for crypto, which has the same daily
+   pattern (RECENCY_BUDGET["crypto"]=27h today; crypto is
+   continuous so a 27h budget might be correct for it — verify).
+2. *Better but more work.* Add `row_inserted_at TIMESTAMP` to
+   `ml_predictions` / `crypto_ml_predictions` (default
+   `CURRENT_TIMESTAMP`). Have the monitor check
+   `MAX(row_inserted_at)` instead of `MAX(prediction_date)`. This
+   gives a true freshness signal independent of the prediction-date
+   cycle.
+
+**Out of scope for the equity ingestion fix session 2026-05-09.**
+The volume question (KI-120) is what was asked for; this recency
+issue pre-existed and just became visible after the volume side
+went green. Tracked here for a future monitor-tuning session.
 
 ## Recently resolved (post-Session-7)
+
+- **KI-120 — equity ml_predictions volume thinning May 5-8** (resolved
+  2026-05-09 on `fix-equity-ingestion-degradation`). The original
+  triage incorrectly suspected (a) Yahoo thinning, (b) smaller
+  eligible universe, or (c) model drift. Real cause: the Polygon
+  ingestor (`ingestion/ingest_prices.py`) looped per-ticker
+  against `/v2/aggs/ticker/{ticker}/range/1/day/` for every active
+  universe ticker. Free-tier rate limit (~5 req/min) made the
+  ~520-call run unreliable; most days only 50-200 of 520 tickers
+  succeeded, which thinned `prices_daily` → `ml_features` →
+  `ml_predictions` linearly. **Fix.** Switched the ingestor to
+  Polygon's grouped-daily endpoint
+  (`/v2/aggs/grouped/locale/us/market/stocks/{date}`), one HTTP
+  call per date returning ~12k US tickers in ~1s. Added bounded
+  per-ticker fallback for the rare universe ticker missing from
+  the grouped feed. Added 13s throttle between consecutive calls
+  + 65s 429 retry to stay under the free-tier limit. Backfilled
+  May 5-8 from one-shot script
+  `.claude/local_scripts/equity_backfill_prices.py`. Re-ran
+  `ml backfill-features` + `ml predict` for those dates.
+  **Verification (post-fix vs the May 9 diagnostic):**
+
+  | trade_date | prices_daily | ml_features | ml_predictions |
+  |---|---|---|---|
+  | 2026-05-05 | 82 → **520** | 42 → **312** | 24 → **43** |
+  | 2026-05-06 | 47 → **519** | 24 → **312** | 0  → **41** |
+  | 2026-05-07 | 463 → **514** | 282 → **311** | 43 → **45** |
+  | 2026-05-08 | 53 → **514** | 29 → **311** | 10 → **37** |
+
+  pipeline_execution monitor: equity `count_ok=True` with
+  `n_latest=43, n_avg=50.0, ratio=0.86`. (Recency side still
+  flags — tracked separately as KI-124.) Regression test:
+  `tests/equity/test_ingest_prices.py` (7 cases covering grouped
+  filter, non-trading-day, fallback firing, fallback cap,
+  idempotency, missing key, default lookback). Verified
+  fail-then-pass would require reverting to the per-ticker loop;
+  the new tests pin the grouped-path contract.
 
 - **KI-118** (resolved 2026-05-08, commit `fc6fc28`; regression
   test landed 2026-05-09 on `discipline-session-monitor-and-tracking`)

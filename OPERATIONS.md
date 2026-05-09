@@ -458,7 +458,40 @@ directly — no API key. Rate-limit aware. If failures spike, check
 ### Polygon (equity)
 
 `ingestion/ingest_prices.py`. Needs `POLYGON_API_KEY`. Free tier has
-strict rate limits (~5 calls/min). Check call counts in `source_runs`:
+strict rate limits (~5 calls/min) but the ingestor has been tuned to
+fit inside that budget — see below.
+
+**Architecture (post-2026-05-09 fix, see KI-120 in archive).** Primary
+path uses Polygon's **grouped daily** endpoint:
+
+```
+GET /v2/aggs/grouped/locale/us/market/stocks/{date}?adjusted=true&apiKey=...
+```
+
+One HTTP call per date returns OHLCV for ~12,000 US tickers (~1s
+observed). The ingestor filters the result to our universe and
+inserts into `prices_daily` with `ON CONFLICT DO NOTHING` (idempotent).
+Per-ticker fallback (the older
+`/v2/aggs/ticker/{ticker}/range/1/day/...` endpoint) runs for the
+rare universe ticker missing from the grouped feed, capped per date
+to keep API budget bounded (`DEFAULT_FALLBACK_LIMIT=10`). Anything
+beyond the cap falls through to the orchestrator's downstream
+Stooq / Yahoo stages.
+
+**Call budget per nightly run.** `DEFAULT_LOOKBACK_DAYS=7` ⇒ 7
+grouped calls plus up to ~10 fallback calls per date with missing
+universe tickers. Worst case ≤ ~80 calls; typical ~10. With 13s
+throttle between calls (`DEFAULT_THROTTLE_S=13`) and an automatic
+65s retry after 429, the orchestrator's polygon stage runs in
+1-2 minutes total.
+
+**Pre-fix history.** Before 2026-05-09 the ingestor looped per-ticker
+against the single-ticker aggregates endpoint, which on ~520 universe
+tickers exceeded the 5/min limit by orders of magnitude and caused
+multi-day ingestion thinning (KI-120). Per-ticker is now the bounded
+fallback, not the primary path.
+
+Check call counts in `source_runs`:
 
 ```sql
 SELECT use_case, status, records_attempted, records_inserted, error_message
@@ -466,6 +499,12 @@ FROM source_runs
 WHERE source_name = 'polygon'
 ORDER BY started_at DESC LIMIT 10;
 ```
+
+**Backfill recipe** (when prices_daily is thin for specific dates):
+```
+venv/bin/python .claude/local_scripts/equity_backfill_prices.py
+```
+Edit the `TARGET_DATES` list at the top of the script. Idempotent.
 
 ### Alpha Vantage (equity)
 
