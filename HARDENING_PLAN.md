@@ -10,6 +10,23 @@ The current system was built fast by AI across many sessions. It works most of t
 
 This plan replaces that pattern with engineering discipline: cleanup, documentation, automated tests, CI, monitoring, and context preservation.
 
+Lesson from KI-118 (added 2026-05-09)
+
+A `git status` audit on master surfaced 10 production source files
+(`fx/bot/*`, `fx/data/refresh.py`, `pipelines/{freshness,health_check}.py`,
+five `systemd/mhde-*` units) that had been live on the deployment host
+for months without ever being `git add`-ed. The pre-rebuild
+"checkpoint" commit had reorganized the layout but the moved files were
+never staged, and Sessions 0-7 ran on top of that gap because none of
+the exit criteria checked for it. The fix landed in `fc6fc28`; the
+process gap was the harder lesson — eight hardening sessions of test
+and monitor scaffolding cannot detect a load-bearing module that
+isn't visible to `git`. From the discipline session
+(2026-05-09) forward, every session's exit criteria include a clean
+working tree and a passing `tests/regression/test_no_untracked_production_imports.py`
+gate. Process gaps are tracked in `KNOWN_ISSUES.md` the same way code
+defects are.
+
 Multi-Session Plan Overview
 
 8 sessions, executed sequentially. Each session has a defined scope, deliverables, and exit criteria. Don't move to the next session until exit criteria are met.
@@ -122,6 +139,41 @@ Append a new entry to SESSION_LOG.md with:
 - Any new known issues discovered
 - What's pending for the next session
 - Update KNOWN_ISSUES.md if any bugs were resolved or discovered
+
+
+Universal exit criteria (every session)
+
+In addition to each session's specific exit criteria below, no session
+is considered complete until all of:
+
+- `git status` on the session branch is clean. No untracked or unstaged
+  load-bearing source under any production directory (the regression
+  test below enforces this for `.py` and `systemd/` units; operator-
+  decided scratch under `data/processed/` or `docs/` plans may remain in
+  the working tree only when it's explicit which class they fall under).
+- `tests/regression/test_no_untracked_production_imports.py` passes
+  (added 2026-05-09 as the KI-118 gate). It walks every tracked `.py`
+  outside `tests/`, `legacy/`, `.claude/local_scripts/`, `venv/`,
+  `.venv/` and asserts that every import resolving to a path in the
+  repo is in `git ls-files`. Plus: every `.service`/`.timer` under
+  `systemd/` is tracked.
+- The full `tests/regression/` suite passes.
+- `SESSION_LOG.md` has a new entry covering what was done.
+- `KNOWN_ISSUES.md` updated if any bugs were resolved or discovered.
+- **L5 verification.** A user-visible artifact (CSV download, Telegram
+  message, dashboard render, exported report) demonstrates the fix is
+  actually applied end-to-end. See the trust ladder in
+  [`OPERATIONS.md`](OPERATIONS.md#trust-ladder) and ADR-016. "Fixed"
+  is not "code committed and tests pass" — it's "the user-visible
+  artifact matches expectation". Added 2026-05-09 after the equity
+  dashboard maturity-date fix passed every code-side test for hours
+  before anyone noticed the running Streamlit process predated the
+  fix and was still serving stale output.
+
+These apply on top of the per-session exit criteria below. They were
+introduced after KI-118 (see lesson note at the top of this file) so
+that the next process gap surfaces inside the discipline rather than
+in production.
 
 
 ───

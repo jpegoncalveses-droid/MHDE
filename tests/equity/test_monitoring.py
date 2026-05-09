@@ -58,11 +58,413 @@ def test_send_alert_dry_run_does_not_call_telegram(mock_telegram, monkeypatch):
 
 def test_dashboard_consistency_ok_on_empty_db(temp_db):
     """Empty DB has no candidate_outcomes — dashboard and direct query
-    both return 0; no mismatch."""
+    both return 0; no mismatch. Empty engines also produce no
+    column-completeness issues (an empty engine is pipeline_execution's
+    concern, not dashboard_consistency's)."""
     from monitoring import dashboard_consistency
     result = dashboard_consistency.run(conn=temp_db)
     assert result.monitor == "dashboard_consistency"
     assert result.status == "ok"
+
+
+def _seed_equity_pending_row(temp_db, ticker, pred_date, horizon, with_maturity_date):
+    """Helper: insert one ticker's prices_daily entry and one pending
+    ml_predictions row. `with_maturity_date=True` means we also seed
+    enough trading rows so the JOIN resolves maturity (matured-style);
+    `False` means the JOIN returns NULL (the May 9 bug shape — pending
+    with no future rows yet)."""
+    from datetime import timedelta
+    rows = [(pred_date, 100.0)]
+    if with_maturity_date:
+        # 5 weekday rows after pred_date so 5d horizon resolves.
+        cur = pred_date + timedelta(days=1)
+        while len(rows) < 7:
+            if cur.weekday() < 5:
+                rows.append((cur, 100.0 + len(rows)))
+            cur += timedelta(days=1)
+    for i, (d, c) in enumerate(rows):
+        temp_db.execute(
+            "INSERT INTO prices_daily (id, ticker, trade_date, close, adjusted_close) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [f"{ticker}-{i}", ticker, d, c, c],
+        )
+    temp_db.execute(
+        "INSERT INTO ml_predictions (ticker, prediction_date, model_id, "
+        "horizon, predicted_probability, prediction_threshold) "
+        "VALUES (?, ?, 'm1', ?, 0.65, 0.05)",
+        [ticker, pred_date, horizon],
+    )
+
+
+def test_dashboard_consistency_flags_all_null_maturity_date(temp_db, monkeypatch):
+    """Regression for the May 9 equity bug: pending equity rows with
+    NULL maturity_date are flagged. We bypass the busday-offset
+    backfill in queries.py so the column STAYS NULL the way it did
+    before the fix landed — and assert dashboard_consistency catches it."""
+    from datetime import date
+
+    # Patch out the post-processor that fills the estimate so we can
+    # simulate the pre-fix state.
+    from dashboard.services import queries as q
+    monkeypatch.setattr(
+        q, "_fill_estimated_equity_maturity", lambda df, prediction_date_value=None: df
+    )
+
+    pred_date = date(2026, 5, 8)
+    _seed_equity_pending_row(temp_db, "AAA", pred_date, "5d", with_maturity_date=False)
+    _seed_equity_pending_row(temp_db, "BBB", pred_date, "5d", with_maturity_date=False)
+
+    from monitoring import dashboard_consistency
+    result = dashboard_consistency.run(conn=temp_db)
+    assert result.status == "fail"
+    assert "maturity_date" in result.body
+    assert "all-NULL" in result.body or "NULL" in result.body
+    # Per-horizon labelling is expected.
+    assert "equity/5d" in result.body
+
+
+def test_dashboard_consistency_ok_with_filled_maturity_for_pending(temp_db):
+    """Pending equity rows with maturity_date populated (via the
+    busday-offset estimator in get_equity_predictions) and
+    price_at_maturity correctly NULL — no failures."""
+    from datetime import date
+    pred_date = date(2026, 5, 8)
+    _seed_equity_pending_row(temp_db, "AAA", pred_date, "5d", with_maturity_date=False)
+
+    from monitoring import dashboard_consistency
+    result = dashboard_consistency.run(conn=temp_db)
+    # Only 1 ticker, 1 horizon — get_equity_predictions's
+    # _fill_estimated_equity_maturity puts the May 15 estimate in.
+    # The realized columns are NULL but the row is pending so no flag.
+    assert result.status == "ok", f"got {result.status}: {result.body}"
+
+
+def test_dashboard_consistency_pct_move_rendering_for_pending(temp_db):
+    """Pending row with current_price populated — pct_move format helper
+    renders +/- N% (or "+0.00%" for same-day same-price). Should NOT
+    flag — "+0.00%" is a valid render; only an empty result fails."""
+    from datetime import date
+    pred_date = date(2026, 5, 8)
+    _seed_equity_pending_row(temp_db, "AAA", pred_date, "5d", with_maturity_date=False)
+
+    # Sanity: confirm the format helper renders non-empty for this row.
+    from dashboard.services.queries import get_equity_predictions
+    df = get_equity_predictions(temp_db, pred_date)
+    assert not df.empty
+    from monitoring.dashboard_consistency import _check_pct_move_string
+    assert _check_pct_move_string(df.iloc[0], "equity") is True
+
+
+# ──────────────────────────────────────────────────────────────────────
+# streamlit_freshness
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_streamlit_freshness_ok_when_process_post_dates_commit():
+    """Process started after the latest commit → ok."""
+    from datetime import timedelta as _td
+    from monitoring import streamlit_freshness
+    commit = datetime(2026, 5, 9, 9, 0, 0, tzinfo=timezone.utc)
+    process = commit + _td(hours=1)
+    result = streamlit_freshness.run(
+        process_start=process, latest_commit=commit
+    )
+    assert result.status == "ok"
+    assert result.metrics["lag_hours"] <= 0
+
+
+def test_streamlit_freshness_ok_when_lag_under_threshold():
+    """Lag of 2h with default 4h threshold → ok."""
+    from datetime import timedelta as _td
+    from monitoring import streamlit_freshness
+    process = datetime(2026, 5, 9, 7, 0, 0, tzinfo=timezone.utc)
+    commit  = datetime(2026, 5, 9, 9, 0, 0, tzinfo=timezone.utc)
+    result = streamlit_freshness.run(
+        process_start=process, latest_commit=commit
+    )
+    assert result.status == "ok"
+    assert result.metrics["lag_hours"] == 2.0
+
+
+def test_streamlit_freshness_warns_when_lag_exceeds_threshold():
+    """Lag of 18h (the May 9 incident) → warn."""
+    from datetime import timedelta as _td
+    from monitoring import streamlit_freshness
+    process = datetime(2026, 5, 8, 15, 20, 0, tzinfo=timezone.utc)
+    commit  = datetime(2026, 5, 9,  9,  0, 0, tzinfo=timezone.utc)
+    result = streamlit_freshness.run(
+        process_start=process, latest_commit=commit
+    )
+    assert result.status == "fail"
+    assert result.severity == "warn"
+    assert "Restart with" in result.body
+    assert "systemctl --user restart" in result.body
+    assert result.metrics["lag_hours"] > 4
+
+
+def test_streamlit_freshness_handles_unreadable_inputs():
+    """When pgrep / git are unreadable, the monitor warns instead
+    of crashing."""
+    from monitoring import streamlit_freshness
+    # Both inputs left as None forces the real-subprocess path. We can
+    # at least verify the result structure doesn't raise. Whether the
+    # subprocess succeeds depends on the host; in CI both are likely to
+    # work; on a stripped-down test env they may not. Either way, the
+    # call returns a MonitorResult.
+    result = streamlit_freshness.run()
+    assert result.monitor == "streamlit_freshness"
+    assert result.status in ("ok", "warn", "fail")
+
+
+def test_streamlit_freshness_proc_parser_handles_paren_comm(tmp_path, monkeypatch):
+    """The /proc/PID/stat comm field (#2) is in parens but may itself
+    contain spaces or close-parens. The parser must use rindex to
+    pick the LAST `)` to terminate comm reliably."""
+    from monitoring import streamlit_freshness
+
+    # Build a synthetic /proc/<pid>/stat line where comm = "weird(name)"
+    # and starttime (field 22) is a known value. That's 100 ticks.
+    pid = 12345
+    proc_dir = tmp_path / "proc" / str(pid)
+    proc_dir.mkdir(parents=True)
+    # Layout: pid (comm) state ppid pgrp session tty_nr tpgid flags
+    #         minflt cminflt majflt cmajflt utime stime cutime cstime
+    #         priority nice num_threads itrealvalue starttime ...
+    # We need 22 fields; pad with 0 placeholders for #3..#21 and put
+    # 100 at #22. Total tokens after the close-paren = 20 (state +
+    # 18 zeros + starttime). Plus we need a lot more fields after
+    # starttime for proc(5) compatibility, but the parser only reads
+    # field 22 so trailing fields don't matter.
+    fields_after_comm = ["S"] + ["0"] * 18 + ["100"]  # state + ... + starttime=100
+    line = f"{pid} (weird(name)) " + " ".join(fields_after_comm) + "\n"
+    (proc_dir / "stat").write_text(line)
+
+    # Also need a /proc/uptime — point both reads through tmp_path.
+    (tmp_path / "proc" / "uptime").write_text("1000.0 5000.0\n")
+
+    # Monkey-patch the open() calls inside the parser to redirect
+    # /proc/<pid>/stat and /proc/uptime to tmp_path.
+    real_open = open
+
+    def fake_open(path, *args, **kwargs):
+        if path == f"/proc/{pid}/stat":
+            return real_open(proc_dir / "stat", *args, **kwargs)
+        if path == "/proc/uptime":
+            return real_open(tmp_path / "proc" / "uptime", *args, **kwargs)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", fake_open)
+
+    dt, err = streamlit_freshness._read_proc_start_time(pid)
+    assert err is None, f"unexpected error: {err}"
+    assert dt is not None
+    # boot_epoch = now - 1000s; start_epoch = boot_epoch + (100 / clock_hz).
+    # We don't pin an exact value (clock_hz varies), but the result
+    # must be very close to "1000s ago" (i.e., within a few seconds).
+    from datetime import datetime as _dt, timezone as _tz
+    age_s = (_dt.now(tz=_tz.utc) - dt).total_seconds()
+    assert 990 <= age_s <= 1010, f"age {age_s}s out of expected ~1000s range"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# dashboard_synthetic
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_dashboard_synthetic_ok_on_empty_db_skip_http(temp_db):
+    """Empty DB: helpers return no rows, no failures, http skipped."""
+    from monitoring import dashboard_synthetic
+    result = dashboard_synthetic.run(conn=temp_db, skip_http=True)
+    assert result.status == "ok"
+    for engine in ("equity", "crypto", "fx"):
+        assert result.metrics[engine]["rows"] == 0
+
+
+def test_dashboard_synthetic_flags_helper_raise(temp_db, monkeypatch):
+    """If a helper raises, the monitor reports it cleanly."""
+    from monitoring import dashboard_synthetic
+    from dashboard.services import queries as q
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("simulated helper failure")
+    monkeypatch.setattr(q, "get_equity_predictions", _boom)
+
+    # Seed enough rows so we DO call get_equity_predictions (it's
+    # short-circuited when ml_predictions is empty).
+    from datetime import date
+    temp_db.execute(
+        "INSERT INTO ml_predictions (ticker, prediction_date, model_id, "
+        "horizon, predicted_probability, prediction_threshold) "
+        "VALUES ('XYZ', ?, 'm1', '5d', 0.6, 0.05)",
+        [date(2026, 5, 8)],
+    )
+
+    result = dashboard_synthetic.run(conn=temp_db, skip_http=True)
+    assert result.status == "fail"
+    assert "equity: helper raised" in result.body
+    assert "RuntimeError" in result.body
+
+
+def test_dashboard_synthetic_flags_all_null_key_column(temp_db, monkeypatch):
+    """If a key column is entirely NULL in the helper result, monitor
+    flags it. Mirrors the May 9 maturity-date failure."""
+    from monitoring import dashboard_synthetic
+    from dashboard.services import queries as q
+    import pandas as pd
+
+    def _stub_equity(conn, prediction_date):
+        return pd.DataFrame({
+            "ticker": ["AAA", "BBB"],
+            "horizon": ["5d", "5d"],
+            "predicted_probability": [0.6, 0.7],
+            "price_at_prediction": [100.0, 200.0],
+            "maturity_date": [None, None],   # all-NULL — the bug
+            "outcome_filled_at": [None, None],
+        })
+    monkeypatch.setattr(q, "get_equity_predictions", _stub_equity)
+
+    from datetime import date
+    temp_db.execute(
+        "INSERT INTO ml_predictions (ticker, prediction_date, model_id, "
+        "horizon, predicted_probability, prediction_threshold) "
+        "VALUES ('AAA', ?, 'm1', '5d', 0.6, 0.05)",
+        [date(2026, 5, 8)],
+    )
+
+    result = dashboard_synthetic.run(conn=temp_db, skip_http=True)
+    assert result.status == "fail"
+    assert "maturity_date" in result.body
+    assert "all-NULL" in result.body
+
+
+# ──────────────────────────────────────────────────────────────────────
+# cross_artifact
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _seed_minimal_health_data(temp_db):
+    """Insert a minimal set of equity/crypto/fx rows so the
+    health_check internals all return ok=True. Returns the
+    (yesterday, fx_dt) tuple used."""
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    yesterday = (_dt.now(tz=_tz.utc) - _td(days=1)).date()
+    today = _dt.now(tz=_tz.utc).date()
+    fx_dt = _dt.now(tz=_tz.utc).replace(
+        minute=5, second=0, microsecond=0, tzinfo=None
+    )
+
+    # Equity: one prediction for yesterday.
+    temp_db.execute(
+        "INSERT INTO ml_predictions (ticker, prediction_date, model_id, "
+        "horizon, predicted_probability, prediction_threshold) "
+        "VALUES ('AAA', ?, 'm1', '5d', 0.6, 0.05)",
+        [yesterday],
+    )
+    # Crypto: one prediction for today (latest).
+    temp_db.execute(
+        "INSERT INTO crypto_ml_predictions (symbol, prediction_date, "
+        "model_id, horizon, predicted_probability, prediction_threshold) "
+        "VALUES ('BTCUSDT', ?, 'c1', '5d', 0.6, 0.05)",
+        [today],
+    )
+    # FX: one fresh prediction within the 2h window the check uses.
+    temp_db.execute(
+        "INSERT INTO fx_ml_predictions (datetime_utc, model_id, "
+        "direction, horizon, predicted_probability, prediction_threshold) "
+        "VALUES (?, 'fx_m1', 'up', '24h', 0.6, 20)",
+        [fx_dt],
+    )
+    return yesterday, today, fx_dt
+
+
+def test_cross_artifact_ok_when_health_strings_agree_with_db(temp_db):
+    """Vanilla case: all three engines have rows, the format strings
+    match what direct DB queries return → ok."""
+    _seed_minimal_health_data(temp_db)
+    from monitoring import cross_artifact
+    result = cross_artifact.run(conn=temp_db)
+    # services check is stubbed inside the monitor; equity/crypto/fx
+    # all derive from the seeded rows.
+    assert result.status == "ok", f"got {result.status}: {result.body}"
+
+
+def test_cross_artifact_flags_equity_count_mismatch(temp_db, monkeypatch):
+    """Simulate a formatter typo: detail string says 99 predictions
+    but the DB has 1. cross_artifact must catch the disagreement."""
+    yesterday, _, _ = _seed_minimal_health_data(temp_db)
+
+    from pipelines import health_check as hc
+    real_check_equity = hc._check_equity
+
+    def _typo_check_equity(conn):
+        result = real_check_equity(conn)
+        # Inject a wrong count into the detail string.
+        return type(result)(
+            name=result.name, ok=result.ok,
+            detail=f"99 predictions for {yesterday}",
+        )
+
+    monkeypatch.setattr(hc, "_check_equity", _typo_check_equity)
+
+    from monitoring import cross_artifact
+    result = cross_artifact.run(conn=temp_db)
+    assert result.status == "fail"
+    assert "equity" in result.body
+    assert "claims 99" in result.body or "99 predictions" in result.body
+
+
+def test_cross_artifact_handles_format_evolution(temp_db, monkeypatch):
+    """If the detail format changes such that the regex no longer
+    matches, the monitor must NOT raise — it should pass through
+    quietly (or fall back to OK if no other check fails). The point
+    of this case: the operator notices format drift via the regex
+    failing to match, but the monitor itself stays robust."""
+    _seed_minimal_health_data(temp_db)
+
+    from pipelines import health_check as hc
+    real_check_crypto = hc._check_crypto
+
+    def _new_format(conn):
+        result = real_check_crypto(conn)
+        return type(result)(
+            name=result.name, ok=result.ok,
+            detail="(crypto detail in a future format unrecognized by cross_artifact)",
+        )
+
+    monkeypatch.setattr(hc, "_check_crypto", _new_format)
+
+    from monitoring import cross_artifact
+    result = cross_artifact.run(conn=temp_db)
+    # The crypto detail no longer parses → no crypto-side claims to
+    # verify → no crypto-side issue is raised. Equity and FX still
+    # ok. But _format_message now includes the new crypto detail, so
+    # the message-includes check still passes (we look for the new
+    # string in the message, which is what _format_message produces).
+    assert result.status == "ok"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# dashboard_consistency: filled row with missing realized
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_dashboard_consistency_flags_filled_row_missing_realized(temp_db):
+    """A filled row (outcome_filled_at set) without actual_max_return
+    should be flagged — fill_outcomes is the writer that should have
+    populated it."""
+    from datetime import date, timedelta
+    pred_date = date(2026, 4, 1)
+    _seed_equity_pending_row(temp_db, "AAA", pred_date, "5d", with_maturity_date=True)
+    # Mark filled but DON'T set actual_max_return.
+    temp_db.execute(
+        "UPDATE ml_predictions SET outcome_filled_at = CURRENT_TIMESTAMP "
+        "WHERE ticker = 'AAA'"
+    )
+
+    from monitoring import dashboard_consistency
+    result = dashboard_consistency.run(conn=temp_db)
+    assert result.status == "fail"
+    assert "actual_max_return" in result.body
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -82,6 +484,24 @@ def test_pipeline_execution_flags_empty_engines(temp_db):
 
 def test_pipeline_execution_ok_when_fresh(temp_db):
     from monitoring import pipeline_execution
+    # Seed an is_active=true model in each engine's *_model_runs table.
+    # The monitor JOINs predictions to model_runs WHERE is_active=true so
+    # the baseline reflects production scoring only (KI-118 lesson +
+    # monitor false-positive fix 2026-05-09).
+    temp_db.execute(
+        "INSERT INTO ml_model_runs (model_id, horizon, target_threshold, "
+        "model_path, is_active) VALUES ('m1', '20d', 0.10, '/tmp/x.joblib', true)"
+    )
+    temp_db.execute(
+        "INSERT INTO crypto_ml_model_runs (model_id, horizon, target_threshold, "
+        "model_path, is_active) VALUES ('m1', '5d', 0.10, '/tmp/x.joblib', true)"
+    )
+    temp_db.execute(
+        "INSERT INTO fx_ml_model_runs (model_id, direction, horizon, "
+        "target_pips, model_path, is_active) "
+        "VALUES ('fx_m1', 'up', '24h', 20, '/tmp/x.joblib', true)"
+    )
+
     today = date.today()
     # 30 rows for the last 14 days each → high baseline
     for d_offset in range(15):

@@ -6,6 +6,622 @@ are at the top.
 
 ---
 
+## 2026-05-09 — Monitoring-gaps session: close the L4↔L5 gap
+
+**Branch:** `monitoring-gaps-session` off `master @ aa5c53c`. Five
+commits, full test suite (990 tests, +14 new) green, four monitors
+verified ok against production.
+
+**Trigger.** Earlier the same day, an equity dashboard maturity-date
+fix passed every code-side check but the user's CSV was still empty
+because Streamlit had been running stale code for 18 hours. Every
+existing layer-monitor was green at the time. This session adds
+monitors that catch user-experience failures, not just internal-layer
+failures.
+
+### What was completed
+
+Five commits, each landing one item:
+
+1. **Trust-ladder docs** (`7f7eca5`).
+   ADR-016 codifies a six-level trust ladder (L0 code committed →
+   L5 user-visible artifact matches expectation). HARDENING_PLAN
+   universal exit criteria gain an explicit L5 verification bullet.
+   OPERATIONS gets a new "Trust ladder" section with verification
+   commands per level, plus a "Streamlit does NOT auto-reload"
+   subsection under "Restarting after a code change" pointing at
+   the new monitor.
+
+2. **dashboard_consistency strengthened** (`967eb69`).
+   Per-engine × per-horizon column-completeness checks. Asserts
+   `price_at_prediction`, `maturity_date`, `current_price` populated
+   for every row; `price_at_maturity` populated for filled and NULL
+   for pending; realized columns populated for filled; `pct_move_str`
+   non-empty/parseable (the format helper, when called, returns
+   non-empty — "+0.00%" is a valid render). Five new tests.
+
+3. **streamlit_freshness — new** (`a6811b8`).
+   Compares `systemctl --user show mhde-streamlit -p
+   ActiveEnterTimestamp --value` against `git log -1 --format=%ct
+   master`. Warns if process predates latest commit by > 4h.
+   Hourly system-level timer at :35. Four tests including the May 9
+   incident shape.
+
+4. **dashboard_synthetic — new** (`7521c5d`).
+   Hourly E2E probe: HTTP GET on `/_stcore/health` (catches
+   "Streamlit unreachable") plus calls each `get_*_predictions`
+   helper (catches "helper raised" + "key column all-NULL").
+   Three tests.
+
+5. **cross_artifact — new** (`d5e5821`).
+   Daily 06:30 UTC. Re-runs the health-check internals, parses the
+   detail strings via regex, independently re-queries the DB for
+   the same facts, alerts on disagreement. Plus verifies the
+   assembled Telegram message contains each detail string. Catches
+   the formatter-typo / dropped-section class of bug. Three tests.
+
+### Verification
+
+- `make test` (full suite): **990 passed in 228.47s** (was 976; +14
+  new tests in `tests/equity/test_monitoring.py`).
+- All four monitors smoke-tested end-to-end against the production
+  DB / running services with `MONITORING_DRY_RUN=true`:
+  - dashboard_consistency: status=ok across 3 engines × their
+    horizons (equity 5d/10d/20d, crypto 5d/10d, fx 24h/48h).
+  - streamlit_freshness: status=ok (Streamlit was restarted at
+    09:26 UTC; latest commit ~10:00 UTC; lag well under 4h).
+  - dashboard_synthetic: status=ok (HTTP 200 from
+    `/_stcore/health`, all three helpers return non-empty).
+  - cross_artifact: status=ok (all three engine details match DB).
+- `bash scripts/pre-commit.sh`: 27 tests in 2-3s including KI-118
+  regression.
+
+### Files changed
+
+New monitors:
+- `monitoring/streamlit_freshness.py`
+- `monitoring/dashboard_synthetic.py`
+- `monitoring/cross_artifact.py`
+Extended:
+- `monitoring/dashboard_consistency.py`
+New systemd units (added to `systemd/`, NOT yet deployed to
+`/etc/systemd/system/` — operator step):
+- `mhde-monitor-streamlit-freshness.{service,timer}` — hourly :35
+- `mhde-monitor-dashboard-synthetic.{service,timer}` — hourly :40
+- `mhde-monitor-cross-artifact.{service,timer}` — daily 06:30
+Docs:
+- `DECISIONS.md` ADR-016
+- `HARDENING_PLAN.md` universal exit criteria
+- `OPERATIONS.md` trust ladder + streamlit-restart subsection
+CLI:
+- `main.py` — three new `monitor <name>` subcommands
+Tests:
+- `tests/equity/test_monitoring.py` — 14 new test cases
+
+### KIs
+
+No new KIs surfaced — all four monitors reported `ok` against
+production on first run. The pre-existing open-list (KI-119,
+KI-122, KI-123) is unchanged.
+
+### Pending (operator action — not blocking the merge)
+
+Deploy the three new systemd timers:
+
+```
+sudo cp systemd/mhde-monitor-streamlit-freshness.{service,timer} /etc/systemd/system/
+sudo cp systemd/mhde-monitor-dashboard-synthetic.{service,timer} /etc/systemd/system/
+sudo cp systemd/mhde-monitor-cross-artifact.{service,timer}      /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now \
+    mhde-monitor-streamlit-freshness.timer \
+    mhde-monitor-dashboard-synthetic.timer \
+    mhde-monitor-cross-artifact.timer
+```
+
+Until deployed, the monitors run only via the manual CLI; the
+fixes themselves (extended dashboard_consistency, three new
+monitors) ARE active in code.
+
+### Branch status
+
+`monitoring-gaps-session` ready to merge to master `--no-ff`.
+
+---
+
+## 2026-05-09 — KI-124 fix: equity recency budget
+
+**Branch:** `fix-ki124-equity-recency-budget` off
+`master @ 0e372e6`. Single targeted fix; one commit.
+
+**Trigger.** KI-124 was opened earlier the same day during
+KI-120 verification: monitor count side green for equity but
+recency_ok=False because the 27h `RECENCY_BUDGET["equity"]`
+couldn't accommodate equity's T-1 scoring (`prediction_date =
+yesterday`) plus the Friday→Monday weekend roll (latest
+`prediction_date` stays at Friday for ~72h).
+
+### What changed
+
+- `monitoring/pipeline_execution.py` —
+  `RECENCY_BUDGET["equity"]` raised from 27h to 75h (72h weekend
+  roll + 3h grace). Crypto stays at 27h (24/7 trading, no
+  weekend gap); FX stays at 2h. Inline comments document why
+  the three budgets are asymmetric. Module docstring schedule
+  line corrected from "21:00 UTC" to "00:15 UTC, scores T-1"
+  per KI-101.
+- `DECISIONS.md` — ADR-015 documents the asymmetric per-engine
+  recency budgets with explicit holiday-extended-weekend
+  trade-off (deliberately not covered to keep the monitor
+  responsive to real outages). Future option to land
+  `row_inserted_at TIMESTAMP` and tighten all budgets is noted
+  as deferred.
+
+### Verification
+
+- `pipeline_execution.run()` against production DB:
+  ```
+  [equity] recency_ok=True count_ok=True  latest=2026-05-08
+           n_latest=43  n_avg=50.0  ratio=0.86
+  [crypto] recency_ok=True count_ok=True  latest=2026-05-09
+  [fx]     recency_ok=True count_ok=True  latest=2026-05-09 08:00
+  ```
+- `tests/equity/test_monitoring.py` + `tests/regression/`:
+  **38 passed**, no regressions.
+
+### KI status
+
+- KI-124 → resolved.
+- Open observations now: KI-119, KI-122, KI-123 (down from 4).
+
+### Branch status
+
+`fix-ki124-equity-recency-budget` ready to merge to master.
+Single commit, narrow scope.
+
+---
+
+## 2026-05-09 — Equity ingestion fix: KI-120 resolved
+
+**Branch:** `fix-equity-ingestion-degradation` off
+`master @ aeefb36`. Six commits, full test suite (973 tests, +7
+new) green, merge plan: `--no-ff` to master.
+
+**Trigger.** KI-120 triage from earlier the same day pointed at
+upstream Polygon ingestion as the root cause of equity prediction
+volume thinning (May 5-8 saw 47-524 tickers/day vs 634 baseline).
+The triage suggested investigation order; this session executed
+the fix.
+
+### Root cause (confirmed)
+
+`ingestion/ingest_prices.py` looped per-ticker against
+`/v2/aggs/ticker/{ticker}/range/1/day/...` once per universe
+ticker. With ~520 active tickers and Polygon's free-tier 5
+req/min limit, the run took ~50 minutes and rate-limited heavily.
+Most days only 50-200 of 520 tickers actually got bars inserted.
+The thinning then propagated linearly through `ml_features` and
+`ml_predictions`.
+
+### What was completed
+
+Six commits, each landing one item:
+
+1. **Doc upfront** (`7d09938`).
+   KI-122 (universe builder leaks stale extended-tier rows) and
+   KI-123 (misleading "Dev mode" log line) opened. ADR-014 added
+   documenting that `max_symbols=520` is S&P 500 + named extras +
+   ~16 SEC-filtered fillers — deliberate scope, not a Polygon-cost
+   workaround. Authoritative source remains `config/universe.yaml`.
+
+2. **Polygon ingestor refactor + tests** (`473b92a`).
+   Switched primary path to the grouped-daily endpoint. Added
+   `ingest_dates(conn, run_id, dates, tickers)` for explicit-date
+   use (backfill). Per-ticker fallback retained but bounded
+   (`DEFAULT_FALLBACK_LIMIT=10` per date). Throttling between
+   consecutive calls (`DEFAULT_THROTTLE_S=13`) plus a 65s retry
+   after 429 keeps the run inside free-tier budget.
+   `tests/equity/test_ingest_prices.py` covers grouped filter,
+   non-trading-day, fallback firing/cap, idempotency, missing key,
+   default lookback.
+
+3. **Backfill script** (added under `.claude/local_scripts/`,
+   covered by the `.claude/local_scripts/*` gitignore prefix from
+   the recovery audit). `equity_backfill_prices.py` re-fetches
+   prices for explicit `TARGET_DATES`. Idempotent.
+
+4. **Backfill executed against production DB.** Per-day rows
+   inserted for May 5-8; idempotent inserts via `prices_daily` PK +
+   `ON CONFLICT DO NOTHING`. Followed by `ml backfill-features` (one
+   pass over all dates) and `ml predict --date <D> --skip-outcomes`
+   for each of May 5-8 to write the missing predictions.
+
+5. **Verification.** Post-fix data state:
+
+   | trade_date | prices_daily | ml_features | ml_predictions |
+   |---|---|---|---|
+   | 2026-05-05 | 82 → **520** | 42 → **312** | 24 → **43** |
+   | 2026-05-06 | 47 → **519** | 24 → **312** | 0  → **41** |
+   | 2026-05-07 | 463 → **514** | 282 → **311** | 43 → **45** |
+   | 2026-05-08 | 53 → **514** | 29 → **311** | 10 → **37** |
+
+   pipeline_execution monitor against production DB: equity
+   `count_ok=True` with `n_latest=43, n_avg=50.0, ratio=0.86`
+   (above the 50% threshold). The recency side still flags —
+   that's a pre-existing, unrelated monitor bug (KI-124, see
+   below).
+   smoke_test monitor: ok.
+   `make test`: **973 passed in 227.06s** (was 966 before this
+   session; +7 from `test_ingest_prices.py`).
+
+6. **Doc finalization** (this entry + KNOWN_ISSUES + OPERATIONS).
+   KI-120 moved to "Recently resolved" with full root cause and
+   fix description. KI-124 opened. OPERATIONS.md Polygon section
+   rewritten to document the grouped-daily architecture and call
+   budget; backfill recipe pointed at the new script.
+
+### KI-124 opened (out of scope, surfaced during verification)
+
+`monitoring/pipeline_execution.py` derives recency from
+`MAX(prediction_date)` treated as midnight UTC of that date. For
+equity, which fires daily at 00:15 UTC and writes
+`prediction_date = T-1`, that means the row is "47h old by the
+midnight rule" by 23:00 UTC each day, far over the 27h budget.
+Two suggested fixes captured in the KI: raise the budget to ~75h
+(covers weekend gap) or add `row_inserted_at TIMESTAMP` and key
+the recency check off the actual write time.
+
+### Files changed
+
+- `ingestion/ingest_prices.py` — refactored.
+- `tests/equity/test_ingest_prices.py` — new, 7 tests.
+- `KNOWN_ISSUES.md` — KI-120 resolved; KI-122/123/124 opened.
+- `DECISIONS.md` — ADR-014.
+- `OPERATIONS.md` — Polygon section rewritten.
+- `.claude/local_scripts/{equity_backfill_prices,equity_post_backfill_state,run_smoke_monitor,probe_polygon_tier,probe_universe_composition,equity_volume_diagnostic}.py`
+  — diagnostic + backfill scripts kept as session artifacts
+  (under existing gitignore prefix-glob).
+
+### Pending
+
+1. **KI-122** — universe builder reconciliation for extended tier.
+   Cosmetic (174 stale rows don't reach features). Future cleanup.
+2. **KI-123** — daily_radar.py:83 "Dev mode" log line. Trivial
+   one-liner; future cleanup.
+3. **KI-124** — pipeline_execution recency budget for equity's
+   T-1 schedule. Pick one of the two fixes captured in the KI;
+   future monitor-tuning session.
+4. **Operator items still deferred from the 2026-05-08 recovery
+   audit** (unchanged): 6 modified `data/processed/*` files,
+   3 untracked `docs/` files, and the FX migration mirror-table
+   cleanup around 2026-05-15.
+
+### Branch status
+
+`fix-equity-ingestion-degradation` is ready to merge to master
+with `--no-ff`. The six commits are independent enough that the
+operator could cherry-pick (e.g. land just the ingestor refactor
+without the docs) but they form a coherent unit.
+
+---
+
+## 2026-05-09 — Discipline session: monitor false-positive + tracking gates
+
+**Branch:** `discipline-session-monitor-and-tracking` off
+`master @ 52bd655`. Six commits, full test suite (966 tests) green,
+merge plan: `--no-ff` to master with the issues opened in
+`KNOWN_ISSUES.md` carried as deliberate follow-ups.
+
+**Trigger.** The `pipeline_execution` monitor fired a `warn` on
+crypto for two consecutive days (May 8 / May 9: ratios 0.30 / 0.24
+vs the 50% threshold). Investigation showed the alert was a false
+positive: the 14-day rolling baseline was contaminated by Phase
+1A/1B walk-forward backtest rows that share the
+`crypto_ml_predictions` table with production scoring. The
+investigation surfaced two related discipline gaps from the prior
+recovery audit (KI-118, the cross-chat coordination protocol)
+which the operator scoped into one session.
+
+### What was completed
+
+Six items, each landed as its own commit on the branch:
+
+1. **KI-118 regression test** (`cfb67ae`).
+   `tests/regression/test_no_untracked_production_imports.py` walks
+   every tracked `.py` outside `tests/`, `legacy/`,
+   `.claude/local_scripts/`, `venv/`, `.venv/` and resolves every
+   import to a path; if the path is inside the repo, it must be in
+   `git ls-files`. Plus: every `.service`/`.timer` under `systemd/`
+   must be tracked. Plus (when on the production host): every
+   deployed `mhde-*` unit's source in `systemd/` must be tracked.
+   Wired into `scripts/pre-commit.sh` smoke list. Verified
+   fail-then-pass with a canary (a tracked importer of an untracked
+   target produces a clear failure message).
+
+2. **HARDENING_PLAN.md exit criteria** (`5a63c62`).
+   Added a "Lesson from KI-118" paragraph near the top documenting
+   the process gap. Added a "Universal exit criteria (every
+   session)" block before the per-session breakdowns: clean `git
+   status`, the new regression test passes, full `tests/regression/`
+   green, SESSION_LOG + KNOWN_ISSUES updated. These apply on top of
+   each session's specific exit criteria.
+
+3. **CLAUDE.md cross-chat protocol** (`bc171d1`).
+   New "Cross-chat protocol" section. Before substantial work,
+   search SESSION_LOG.md for related ongoing workstreams; check
+   branch state if found; ask the user when overlap is uncertain.
+   The chat that starts substantial work owns updating SESSION_LOG
+   before ending — even with a "Pending" section if unfinished.
+   Motivated by the Phase 1A/1B / cutover-session collision that
+   produced KI-119.
+
+4. **pipeline_execution monitor false-positive fix** (`72040cd`).
+   `monitoring/pipeline_execution.py:_check_engine_pipeline` now
+   JOINs each predictions table with the corresponding
+   `*_model_runs` table `WHERE is_active=true`. Both the latest
+   count (`n_latest`) and the 14-day rolling baseline (`n_avg`)
+   filter on the active set. Verified against the production DB:
+   crypto's ratio went from 0.24 (warn) to 0.78 (ok) using the
+   exact same data underneath — proving the prior alert was the
+   baseline's fault, not a real volume drop. FX stays ok. Equity
+   surfaces a separate flag (`n_latest=10` vs `n_avg=27.5`) which
+   was previously masked by the same baseline contamination —
+   tracked as KI-120 for separate triage.
+
+5. **Monitor baseline composition regression test** (`86e4517`).
+   `tests/regression/test_pipeline_execution_baseline.py` —
+   seeds `crypto_ml_predictions` with 30 rows/day from an
+   `is_active=true` model and 96 rows/day from an `is_active=false`
+   model across the last 15 days. Asserts the monitor sees
+   `n_latest=30` and `n_avg=30` (active-only on both sides). If
+   anyone drops the `WHERE m.is_active=true` clause from either
+   query, the test fails with a clear pointer to which side broke.
+   Partner check asserts the monitor flags an engine whose
+   `*_model_runs` has no `is_active=true` rows. Verified
+   fail-then-pass.
+
+6. **KNOWN_ISSUES.md updates** (`0a9fbe6`).
+   KI-118 marked fully resolved (regression test now in place;
+   the "owed" caveat removed). KI-119 opened — Phase 1A/1B
+   walkfold backfill writes into `crypto_ml_predictions` without
+   a matching `crypto_ml_model_runs` row, leaving downstream
+   consumers unable to distinguish backtest from production.
+   Reinforcement of writer isolation owed when
+   `crypto-phase-1a-1b-backtest` is next reviewed; out of scope
+   for this session. KI-120 opened — equity engine flag from the
+   monitor verification (10 vs 27.5 baseline); three candidate
+   interpretations listed; operator triage owed.
+
+### Verification
+
+- `make test` (full suite, no skips): **966 passed in 222.20s.**
+- `bash scripts/pre-commit.sh`: 27 tests pass in 2s including the
+  new KI-118 regression test.
+- Production-DB monitor run via
+  `.claude/local_scripts/verify_pipeline_monitor_after_fix.py`:
+  crypto ok (ratio 0.78), fx ok (4/4 ratio 1.0), equity warn (10
+  vs 27.5 — see KI-120).
+- KI-118 regression test fail-then-pass demonstrated by injecting a
+  canary: `pipelines/_ki118_canary_importer.py` (tracked) importing
+  `pipelines/_ki118_canary_target.py` (untracked) → clear failure;
+  cleaned up → pass.
+- KI-119 (baseline-composition) test fail-then-pass demonstrated by
+  commenting out the `WHERE m.is_active=true` clause: test reports
+  "Got 126, expected 30"; restored → pass.
+
+### Files changed
+
+- `tests/regression/test_no_untracked_production_imports.py` (new)
+- `tests/regression/test_pipeline_execution_baseline.py` (new)
+- `tests/equity/test_monitoring.py` — `test_pipeline_execution_ok_when_fresh`
+  now seeds `is_active=true` rows in each engine's `*_model_runs`
+  table to match the monitor's new contract.
+- `monitoring/pipeline_execution.py` — `_check_engine_pipeline` gains
+  a `model_runs_table` parameter; all three queries filter on
+  `m.is_active=true`.
+- `scripts/pre-commit.sh` — regression test added to smoke list.
+- `HARDENING_PLAN.md` — KI-118 lesson + universal exit criteria.
+- `CLAUDE.md` — cross-chat protocol section.
+- `KNOWN_ISSUES.md` — KI-118 resolution + KI-119 + KI-120.
+- `.claude/local_scripts/crypto_volume_diagnostic.py`,
+  `crypto_who_wrote.py`, `verify_pipeline_monitor_after_fix.py` —
+  diagnostic scripts kept as session artifacts (already covered by
+  the `.claude/local_scripts/*` gitignore prefix-glob from the
+  recovery audit).
+
+### Pending
+
+1. **KI-119 reinforcement.** When `crypto-phase-1a-1b-backtest` is
+   reviewed for merge, audit every writer that touches a
+   `*_ml_predictions` table to confirm it registers a matching
+   `*_ml_model_runs` row first (with `is_active=false`). Consider
+   adding a regression test asserting "every distinct `model_id` in
+   `*_ml_predictions` has a row in `*_ml_model_runs`".
+2. **KI-120 triage.** Investigate the equity engine's
+   `n_latest=10 vs n_avg=27.5` flag. Most likely path:
+   `.claude/local_scripts/equity_volume_diagnostic.py` patterned on
+   the crypto diagnostic from this session.
+3. **Operator items still deferred from the 2026-05-08 recovery
+   audit** (unchanged this session): 6 modified
+   `data/processed/*.{jsonl,csv,md}` files (gitignore vs commit),
+   3 untracked `docs/` files (tracked vs scratch), and the
+   one-week stability buffer cleanup of FX migration mirror tables
+   around 2026-05-15.
+
+### Branch status
+
+`discipline-session-monitor-and-tracking` is ready to merge to
+master with `--no-ff`. The six commits are independent enough that
+the operator could cherry-pick (e.g. land Item 1 alone) but they
+were authored as a coherent unit and should land together.
+
+---
+
+## 2026-05-08 — Session 2 (FX migration): cutover Dukascopy → TwelveData
+
+**Branch:** `fx-twelvedata-migration` (with master merged in earlier the
+same day via the recovery sync).
+
+ADR-013 cutover landed. `fx_prices_hourly` is now fed by TwelveData
+through `fx/data/refresh.py` → `fx/data/refresh_twelvedata.py`. ATSRP
+subprocess path retired from the data flow.
+
+### What replaced the original 24h gate
+
+The originally-planned 24-hour parallel-collection gate
+(`fx compare-sources --hours 24 --threshold-pips 5`) was replaced by a
+30-day historical backfill comparison built today, because the audit
+work earlier in the day disrupted live parallel collection between 14:00
+and 22:00 UTC and a same-day cutover decision was preferable to waiting
+5 more days.
+
+### Findings that drove the go decision
+
+- **Coverage** (the headline). TwelveData covered 720/720 hourly bars
+  over 30 days. Dukascopy was missing 240 (33%). Coverage gain alone
+  justified the migration before considering price agreement.
+- **Price agreement.** 472 of 480 matched bars within 5 pips on close
+  (98.3%). The 8 breaches:
+  - All occur at hour 20:00 or 21:00 UTC (NYSE close window).
+  - All have Dukascopy > TwelveData by 5-7 pips (consistent sign).
+  - Zero correspond to scheduled macro releases (NFP, FOMC, ECB, etc.).
+  - Pattern is a known post-NYSE-close liquidity-venue rotation, not
+    random source disagreement. Bounded, explainable, acceptable.
+- **Weekend bars are real OTC.** 192 weekend bars sampled; 0/192 had
+  collapsed OHLC; mean close-open 2.84 pips, mean high-low 8.20 pips.
+  Saturday 03:00 / 12:00 UTC samples across 4 weekends all showed
+  genuine ranges. No filtering needed downstream.
+
+### Code changes
+
+- `fx/data/refresh.py` rewritten as a thin wrapper that calls
+  `fx.data.refresh_twelvedata.refresh_prices(conn, table="fx_prices_hourly")`.
+  Pre-cutover ATSRP/Dukascopy subprocess implementation deleted.
+- `fx/data/refresh_twelvedata.py` `upsert_new_bars` and `refresh_prices`
+  gained a `table=` parameter (default unchanged → backwards-compat).
+- `fx/data/compare_sources.py` `compare_recent` gained
+  `dukascopy_table` / `twelvedata_table` kwargs (also backwards-compat)
+  so the 30-day comparison could run against the backfill table.
+- 240 historical bars copied from `fx_prices_hourly_twelvedata_backfill`
+  into `fx_prices_hourly`. Row count: 71,038 → 71,278.
+- `systemd/mhde-fx-predict.service`: removed the parallel
+  `fx refresh-prices-twelvedata` ExecStart. Single `fx refresh-prices`
+  ExecStart now uses TwelveData.
+- Docs updated: ADR-013 → IMPLEMENTED, OPERATIONS.md FX section,
+  ARCHITECTURE.md ATSRP-dependency section, INFRASTRUCTURE.md FX row.
+
+### Diagnostic scripts kept under `.claude/local_scripts/`
+
+`fx_backfill_twelvedata_30d.py`, `fx_compare_30d.py`,
+`fx_check_twelvedata_weekend_bars.py`, `fx_cutover_premortem.py`,
+`fx_cutover_backfill_gaps.py`.
+
+### Verification
+
+- `tests/fx/` (32 tests), `tests/integration/test_fx_pipeline.py`,
+  `tests/dashboard/` (44 tests) all pass — 97/97 collected.
+- Manual `venv/bin/python main.py fx refresh-prices` post-rewrite
+  fetched the 22:00 UTC bar from TwelveData and inserted into
+  `fx_prices_hourly` cleanly.
+
+### Pending (operator action)
+
+1. **Deploy the systemd unit change** to take effect on next firings:
+   ```
+   sudo cp /home/jpcg/MHDE/systemd/mhde-fx-predict.service \
+           /etc/systemd/system/mhde-fx-predict.service
+   sudo systemctl daemon-reload
+   ```
+   Until done, the deployed unit still calls the parallel
+   `fx refresh-prices-twelvedata` ExecStart. Both fetchers run, both
+   succeed, data is duplicated into the mirror table harmlessly.
+2. **One-week stability buffer** until ~2026-05-15, then drop:
+   - Tables `fx_prices_hourly_twelvedata`, `fx_prices_hourly_twelvedata_backfill`
+   - CLI subcommands `fx refresh-prices-twelvedata`, `fx compare-sources`
+   - Code: `fx/data/compare_sources.py`, `tests/fx/test_compare_sources.py`
+   - Schema: `SCHEMA_FX_PRICES_HOURLY_TWELVEDATA` from `fx/schema.py`
+
+### Branch status
+
+`fx-twelvedata-migration` is ready to merge to master. The original
+parallel-fetcher infrastructure plus today's cutover (writer flip,
+240-bar backfill, doc updates) make a coherent landing.
+
+---
+
+## 2026-05-08 — Recovery audit: production files never tracked
+
+**Not a `HARDENING_PLAN.md` session.** Triggered by an operator noticing
+that `git status` on `master` showed files that ought to have been
+committed during Sessions 0-7 still listed as `??` Untracked.
+
+### Investigation
+
+`git log --all -- <path>` returned **empty** for ten files that the
+deployed system actively depends on. The reflog was clean — no reset,
+no destructive op, no `.gitignore` change that would mask anything.
+Conclusion: these files have been living on disk only since the
+pre-rebuild "checkpoint" commit (`7b46c50`, before Session 0). The
+hardening sessions never re-checked that the working tree was free of
+untracked load-bearing source.
+
+### Files committed (`fc6fc28` on master)
+
+| Path | Caller / unit |
+|---|---|
+| `fx/bot/__init__.py`, `fx/bot/telegram_bot.py` | `fx/ml/signals.py:53`, `main.py:2151`, `monitoring/alert.py:82`, integration tests; `mhde-fx-bot.service` (system, `Restart=always`) |
+| `fx/data/refresh.py` | `main.py:2010`; first `ExecStart` of `mhde-fx-predict.service` (hourly :05) |
+| `pipelines/freshness.py` | All 3 prediction pipelines (`crypto`, `fx`, `ml`), `dashboard/app.py`, `main.py`, regression tests |
+| `pipelines/health_check.py` | `main.py:2211`; user-level `mhde-health-check.service` (daily 06:00) |
+| `systemd/mhde-fx-bot.service` | Installed in `/etc/systemd/system/`, `enabled` |
+| `systemd/mhde-predict.{service,timer}` | Pre-suffix legacy names for the equity engine; both `enabled`, daily 00:15 / Sun 21:30 |
+| `systemd/mhde-retrain.{service,timer}` | Same as above (retrain) |
+
+### Other recovery actions
+
+- **Phase 1A/1B crypto backtest WIP** isolated onto branch
+  `crypto-phase-1a-1b-backtest` (commit `6db5674`, off `master @ cab91b8`).
+  21 files, ~8.4k LOC. Includes walk-forward backfill (`crypto/ml/`) and
+  the execution-backtest harness (`crypto/execution/backtest/`). All
+  new model_runs rows insert with `is_active=false`; live predict
+  pipeline isolated.
+- **`.gitignore` extended** (`0623307` on master) to silence the ~60
+  untracked diagnostic scripts under `.claude/local_scripts/` plus
+  dated outputs. Already-tracked diagnostics (`audit_mhde_status.py`,
+  `test_dashboard_queries.py`, `test_duckdb_failed_alter.py`, the four
+  `outputs/daily_radar_2026-05-0{1..4}.{json,md}` snapshots, and
+  `outputs/2026-05-04/`) deliberately preserved as tracked history.
+
+### What's still untracked (deferred)
+
+- 6 modified `data/processed/*.{jsonl,csv,md}` files — pipeline output
+  churn from earlier runs. Operator chose to leave them; they're not
+  noise from this session.
+- 3 documents in `docs/` (codebase inventory + 2 sector-ETF planning
+  notes). Operator wants to read first before deciding tracked vs
+  scratch.
+
+### Bugs found and recorded
+
+- **KI-118** (added to `legacy/RESOLVED_ISSUES_ARCHIVE.md`) —
+  production source files lived in the working tree without ever being
+  `git add`-ed. Resolved by `fc6fc28`. **Regression test owed**: the
+  Session 7 hardening exit-criteria didn't include a "no untracked
+  load-bearing source" check, and none of the existing regression
+  tests would catch a future recurrence. See KI-118 for proposed
+  test design.
+
+### Pending
+
+- Write the regression test described in KI-118.
+- Operator decides on the 3 deferred `docs/` files.
+- Operator decides whether to gitignore the 6 `data/processed/*` mods
+  or treat them as snapshots to commit.
+- After all the above is clean, run the FX comparison gate from
+  `fx-twelvedata-migration` per the Session 1 (TwelveData) cutover plan.
+
+---
+
 ## 2026-05-07 — Session 7: Hardening & Validation (final session)
 
 **Branch:** `session-7-hardening` off `master @ 11ad23b`.

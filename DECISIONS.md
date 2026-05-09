@@ -308,3 +308,319 @@ touching shared migrations. Trade-off: there's no single place to read
 future migration to add cross-engine relationships (e.g. shared model
 registry) would have to choose one of the four schema-loading paths to
 own the new table.
+
+---
+
+## ADR-013 — Migrate FX bars from Dukascopy (via ATSRP) to TwelveData
+
+**Date:** 2026-05-07 (Session 1) / 2026-05-08 (Session 2 cutover).
+**Status:** IMPLEMENTED. Production fx_prices_hourly is now fed by TwelveData.
+
+**Cutover (2026-05-08, same day as Session 2).** Gate executed against a
+30-day historical backfill instead of the originally-planned 24-hour
+parallel window:
+
+- **Coverage.** TwelveData covered 720/720 hourly bars over 30 days;
+  Dukascopy was missing 240 (33%). The coverage gain was the dominant
+  cutover driver, not the agreement metric.
+- **Agreement.** 472/480 matched bars within 5 pips. The 8 breaches all
+  sit in the 20:00-21:00 UTC NYSE-close window with consistent sign
+  (Dukascopy > TwelveData by 5-7 pips), consistent with the post-close
+  liquidity-venue rotation rather than random source disagreement.
+- **Weekend bars.** Verified to be real OTC quotes (avg 2.84 pips
+  close-open movement, 0/192 zero-range bars over 4 weekends). No
+  filtering needed for downstream features/labels.
+
+**What changed at cutover.**
+- `fx/data/refresh.py` rewritten as a thin wrapper that calls the
+  TwelveData implementation, writing to the production
+  `fx_prices_hourly` table. ATSRP subprocess dependency removed.
+- The 240 historical Dukascopy gaps in `fx_prices_hourly` were filled
+  from `fx_prices_hourly_twelvedata_backfill` (the 30-day snapshot).
+- `mhde-fx-predict.service` lost the parallel
+  `fx refresh-prices-twelvedata` ExecStart; the remaining
+  `fx refresh-prices` line now runs the TwelveData fetcher.
+- Reader paths (predict / features / labels / freshness / dashboard)
+  unchanged — they still read `fx_prices_hourly`. Only the writer flipped.
+
+**1-week stability buffer (cleanup deferred to ~2026-05-15).** Drop
+`fx_prices_hourly_twelvedata`, `fx_prices_hourly_twelvedata_backfill`,
+the `fx refresh-prices-twelvedata` and `fx compare-sources` CLI
+subcommands, and `fx/data/compare_sources.py`. Tests for those modules
+move out at the same time.
+
+**Original plan (preserved for context):**
+
+**Context.** The FX engine (GBP/EUR hourly) currently fetches bars
+from Dukascopy through a subprocess into `/home/jpcg/ATSRP/`
+(`fx/data/refresh.py`). Two long-standing operational issues:
+
+1. **Lag.** `fx_predict.log` regularly shows `ATSRP fetch:
+   status=NO_DATA, bar=… HTTP 404` for the most recent hour;
+   measured gap was 3+ hours on 2026-05-07 18:05. Pre-validation
+   showed TwelveData is ~11 minutes behind realtime.
+2. **External path dependency.** Dukascopy ingestion lives entirely
+   outside the MHDE repo (in ATSRP). It's hard to test, hard to
+   monitor, and ATSRP's `.venv` is a separate runtime
+   (`/home/jpcg/ATSRP/.venv/bin/python`). We retain ATSRP for the
+   Telegram credentials it stores (ADR-003) but want to remove it
+   from the data path.
+
+**Decision.** Migrate FX bar ingestion from Dukascopy to TwelveData
+in two sessions:
+
+- **Session 1 (this commit) — parallel run, no cutover.** Add
+  `fx/data/refresh_twelvedata.py` that mirrors the Dukascopy
+  `fx/data/refresh.py` interface but writes to a new mirror table
+  `fx_prices_hourly_twelvedata`. Wire it into the hourly systemd
+  unit (`mhde-fx-predict.service`) as an extra ExecStart line. The
+  production path is unchanged — predict / features / labels /
+  freshness all still read `fx_prices_hourly`.
+
+- **Session 2 — cutover (deferred).** Gated on the comparison
+  criterion: `main.py fx compare-sources --hours 24 --threshold-pips 5`
+  exits 0, meaning every matched hourly bar agreed within 5 pips on
+  close. Pre-validation already showed agreement within 1.5 pips on
+  the 2026-05-07 18:00 bar, so passing 24 bars by the same standard
+  is highly likely. After cutover: switch readers to TwelveData,
+  remove the Dukascopy ExecStart, drop the mirror table.
+
+**Why TwelveData.**
+- Free tier delivers 800 API calls/day; we use 24 (one per hour).
+- Simple REST API; no subprocess; in-process Python `requests`.
+- Pre-validation showed real-time-ish data and bar agreement with
+  Dukascopy within 1.5 pips on the 2026-05-07 18:00 sample.
+
+**Why mirror-table strategy** (vs. dual-write to `fx_prices_hourly`).
+Lowest risk: production readers see exactly the same data
+they always have during the migration window. Comparison is an
+independent SQL JOIN, not a constraint on the hot path. Drop is a
+single `DROP TABLE` post-cutover.
+
+**Rollback.** Revert the systemd ExecStart line and the mirror table
+keeps existing rows but stops growing. Production has been untouched
+by definition. No code path consumes the mirror table outside the
+compare-sources CLI.
+
+**Consequence.**
+- New env var `TWELVEDATA_API_KEY` (in `MHDE/.env`, surfaced via
+  `storage.config.load_engine_config` overlay).
+- New table `fx_prices_hourly_twelvedata`. Will be dropped after
+  Session 2 cutover stabilizes (1 week buffer).
+- `mhde-fx-predict.service` ExecStart grows by one line; the
+  KI-112 regression test (`test_repo_vs_deployed_unit_parity`) will
+  fail until the deployed unit is refreshed with `sudo cp …
+  /etc/systemd/system/` and `sudo systemctl daemon-reload`.
+
+---
+
+## ADR-014 — Equity universe scope is S&P 500 + named extras (max_symbols=520), not a Polygon-cost workaround
+
+**Date:** 2026-05-09
+**Session:** Equity ingestion fix session
+**Status:** Active
+
+**Context.** During the KI-120 triage we found that `pipelines/daily_radar.py:80-83`
+applies a `max_symbols` cap from `config/universe.yaml` on top of the
+universe loaded from `companies WHERE is_active=true`. The cap value
+is 520 and the log line calls it "Dev mode". On inspection the cap is
+not a debugging tunable and not a Polygon-cost workaround; it is the
+deliberate production scope.
+
+**Composition of the 520 (verified in production DB):**
+
+- 504 primary-tier rows = current S&P 500 list from
+  `universe/sp500_tickers.yaml` + the 6 named extras under
+  `fallback_tickers` in `config/universe.yaml`
+  (AAPL, NVDA, TSLA, JPM, UBER, RKLB).
+- ~16 extended-tier slots filled per build, drawn from a SEC-filtered
+  list (`universe.filter_non_equities`) until total reaches `max_symbols`.
+
+`companies WHERE is_active=true` reports 678 (504 primary + 174
+extended) only because the universe builder doesn't reconcile
+extended-tier rows across builds — they accumulate as residue from
+prior builds. This is tracked separately as KI-122 and does not
+change the production scope. The extra 174 stale extended rows
+don't reach `ml_features` or `ml_predictions` in practice.
+
+**Decision.** Treat 520 as the canonical equity universe scope. The
+authoritative source of truth is `config/universe.yaml`; the
+existing comment block in that file ("Set high enough to leave a
+few extended slots after ~503 S&P primaries") is what governs the
+number. The cap in `daily_radar.py` is therefore a hard scope bound,
+not a soft cost limit.
+
+The grouped-daily Polygon endpoint (this session's ingestion fix)
+removes the per-ticker API-call cost that the cap was historically
+suspected to be guarding against. The cap stays where it is for
+reasons of investment scope, not API economics.
+
+**Consequence.**
+- Raising `max_symbols` would add SEC-filtered extended-tier
+  fillers (small-caps that pass only name heuristics, no
+  liquidity/cap filter), not S&P 500 expansion. Most have thin
+  data quality. Don't raise without a corresponding upgrade to
+  the universe builder's extended-tier filter.
+- The misleading "Dev mode" log prefix in `daily_radar.py:83` is
+  tracked as KI-123. When that log line is updated, point operators
+  at this ADR for the cap rationale.
+- The `ml backfill-features` step computes features for the full
+  result of the universe builder (~411 tickers per healthy day in
+  practice — primary tier minus tickers without 60d price history).
+  The 520-cap and the 411-feature numbers are not the same metric:
+  cap is "how many tickers ingestion attempts", features is "how
+  many computed successfully". They will rarely match exactly and
+  this is fine.
+
+---
+
+## ADR-015 — Asymmetric pipeline_execution recency budgets per engine
+
+**Date:** 2026-05-09
+**Session:** KI-124 fix
+**Status:** Active
+
+**Context.** `monitoring/pipeline_execution.py` checks
+`now - MAX(prediction_date)` against a per-engine `RECENCY_BUDGET`
+to decide whether each prediction pipeline ran on schedule. The
+`prediction_date` column has different semantics per engine:
+
+- **Equity** writes `prediction_date = T-1` (the previous trading
+  day). Equity ML predict fires at 00:15 UTC daily; on Mon morning
+  the most recent prediction_date is Friday (no fresh trading data
+  Sat/Sun), and the row stays "Friday" until Tuesday's fire writes
+  Monday. So `now - prediction_date_midnight` is naturally up to
+  ~72h on a Sunday evening even though the pipeline is healthy.
+- **Crypto** writes `prediction_date = T` (today; crypto trades
+  24/7). Latest prediction_date refreshes daily at 00:30 UTC; the
+  pre-existing 27h budget covers a 24h cycle plus 3h grace.
+- **FX** writes `prediction_date = datetime_utc` (timestamp, not
+  date). Latest refreshes hourly at :05; a 2h budget covers a 1h
+  cycle plus 1h grace.
+
+**Decision.** Set `RECENCY_BUDGET` asymmetrically:
+
+| Engine | Budget | Rationale |
+|---|---|---|
+| equity | 75h | 72h Fri→Tue weekend roll + 3h grace |
+| crypto | 27h | 24h daily cycle + 3h grace |
+| fx     | 2h  | 1h hourly cycle + 1h grace |
+
+The 75h equity budget assumes an ordinary weekend. US market
+holidays that extend a weekend (e.g. Thanksgiving Friday off,
+Memorial Day Monday off) would push the gap past 75h and produce a
+warn. That's accepted: a holiday-extended outage warrants an
+operator-level note ("we're going to flag for ~24h after this
+holiday weekend") rather than over-relaxing the budget so the
+monitor can't catch a real outage on a normal weekend.
+
+**Why not raise to 96h to cover holidays?** Each hour added to the
+budget weakens the monitor's ability to detect a real outage. 75h
+catches a real outage that misses the Tuesday morning fire; 96h
+would not catch it until Wednesday morning. Holiday warnings are
+acknowledgeable; outage warnings need to fire fast.
+
+**Why not add `row_inserted_at TIMESTAMP` to `ml_predictions` and
+key the recency check off the actual write time?** That's the
+better long-term fix — it removes the conflation between
+prediction_date semantics and write time entirely — but requires a
+schema migration plus monitor refactor. Out of scope for this
+session. Captured as a future option in the resolved KI-124 entry.
+
+**Consequence.**
+- The "Dev mode" log line in daily_radar.py:83 (KI-123) is no
+  longer the only daily_radar message that mis-implies status —
+  but the recency-budget asymmetry is now an explicit design
+  choice rather than a forgotten constant.
+- `monitoring/pipeline_execution.py:RECENCY_BUDGET` carries an
+  inline comment per engine pointing back to this ADR.
+- A future session that adds `row_inserted_at` should land that
+  schema column AND tighten all three budgets back to single-hour
+  multiples (the budgets stop needing to absorb prediction_date
+  semantics once the recency check uses real write time).
+
+---
+
+## ADR-016 — Trust ladder: "fixed" requires Level 5 verification
+
+**Date:** 2026-05-09
+**Session:** Monitoring-gaps session
+**Status:** Active
+
+**Context.** On 2026-05-09 a real bug fix to the equity dashboard's
+maturity-date column passed every code-side check — DB query
+returned the right values, unit tests green, regression tests green,
+the manual probe confirmed the helper computed the expected May 22
+estimate from production data — but the user's CSV download still
+showed blanks for the rest of the day. Root cause: the
+`mhde-streamlit.service` process had been running since 18 hours
+before the fix was committed, and Streamlit doesn't auto-reload in
+this deployment. Every layer up to and including "Claude Code calls
+the dashboard helper directly" was correct; only the user-visible
+artifact lied.
+
+The same failure mode is latent for any change that lands without
+a restart of the consuming process: dashboard renders, scheduled
+Telegram messages, exported CSVs, anything where the user reads
+output produced by a long-lived process.
+
+**Decision.** Adopt a six-level "trust ladder" and require **L5
+verification** as part of every session's exit criteria. The levels:
+
+| Level | Predicate |
+|---|---|
+| L0 | Code committed |
+| L1 | Tests pass |
+| L2 | Database state correct |
+| L3 | Service / pipeline produces expected output |
+| L4 | Dashboard renders correctly (and does so with the latest code) |
+| L5 | User-visible artifact (CSV, Telegram message, report) matches expectation |
+
+The full table with verification commands lives in
+[`OPERATIONS.md` → "Trust ladder"](OPERATIONS.md#trust-ladder).
+HARDENING_PLAN's universal exit criteria block adds an explicit L5
+bullet pointing back here.
+
+**Why six levels and not "code + tests + manual verify".** Naming
+each level forces an explicit hand-off between layers. When a
+session reports "fix verified", the report should say *which level*
+was verified. "L4 verified" without "L5 verified" is exactly the
+2026-05-09 failure: the dashboard layer can be correct while the
+serving layer is stale.
+
+**What L5 verification looks like in practice.** For a dashboard
+fix: the **user** pulls a fresh CSV / loads the dashboard page in
+their browser / takes a screenshot of the column they cared about,
+and confirms it matches the code's expected output. Not Claude Code
+running the same query helpers from a fresh Python process — that
+is L2 (or possibly L3) at best. For a Telegram fix: a real send
+into the channel after the bot service restart. For a pipeline
+fix: the next scheduled firing's log + DB write, observed
+end-to-end.
+
+**Monitors that close the L4 → L5 gap.**
+
+- `monitoring/streamlit_freshness` — process start time vs latest
+  master commit timestamp; alerts if stale.
+- `monitoring/dashboard_synthetic` — HTTP liveness on
+  `/_stcore/health` plus calling the query helpers directly to
+  confirm they don't raise.
+- `monitoring/dashboard_consistency` (extended) — column-level
+  completeness assertions per engine × horizon, so an "all-NULL
+  column where data should exist" failure pages the operator
+  rather than waiting for a user complaint.
+- `monitoring/cross_artifact` — verifies the Telegram daily-health
+  message agrees with direct DB queries.
+
+**Consequence.**
+- Session reports must state the highest level verified. "Tests
+  pass" alone closes nothing.
+- The "fix verified" claim now has an external check: the four
+  monitors above either page within an hour of any L4-or-higher
+  regression, or the operator writes a short L5-verification
+  artifact (CSV screenshot / Telegram screenshot) into the session
+  report when a monitor doesn't apply.
+- Dashboard changes specifically gain a hard requirement to
+  restart `mhde-streamlit.service` before claiming any level
+  above L3. The OPERATIONS deploy matrix flags this; the
+  streamlit_freshness monitor catches forgotten restarts.

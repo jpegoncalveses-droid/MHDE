@@ -53,3 +53,53 @@ data/processed/mhde_gap_analysis.csv
 htmlcov/
 .coverage
 .coverage.*
+
+# Session-scope diagnostic scripts (added 2026-05-08 audit)
+.claude/local_scripts/crypto_*.py
+.claude/local_scripts/equity_*.py
+.claude/local_scripts/debug_*.py
+.claude/local_scripts/query_*.py
+.claude/local_scripts/smoke_*.py
+.claude/local_scripts/snapshot_*.py
+.claude/local_scripts/simulate_*.py
+.claude/local_scripts/grid_*.py
+.claude/local_scripts/find_*.py
+.claude/local_scripts/inventory_*.py
+.claude/local_scripts/categorize_*.py
+.claude/local_scripts/compute_*.py
+.claude/local_scripts/integrity_*.py
+.claude/local_scripts/presleep_*.py
+.claude/local_scripts/show_*.py
+.claude/local_scripts/run_*.py
+
+# Narrow audit_/test_ ignores so audit_mhde_status.py and the two
+# CLAUDE.md-referenced test_* scripts (test_dashboard_queries.py,
+# test_duckdb_failed_alter.py) stay tracked.
+.claude/local_scripts/audit_data_freshness.py
+.claude/local_scripts/audit_funding_hours.py
+.claude/local_scripts/test_active_imports.py
+.claude/local_scripts/test_crypto_dashboard.py
+.claude/local_scripts/test_fred_boe.py
+.claude/local_scripts/test_fred_boe2.py
+.claude/local_scripts/test_freshness.py
+.claude/local_scripts/test_freshness_skip_path.py
+.claude/local_scripts/test_fx_bot.py
+.claude/local_scripts/test_fx_dashboard.py
+.claude/local_scripts/test_fx_position_aware_alerts.py
+.claude/local_scripts/test_fx_schema.py
+.claude/local_scripts/test_fx_status_freshness.py
+.claude/local_scripts/test_health_check.py
+.claude/local_scripts/test_lock_retry.py
+.claude/local_scripts/inventory_output.txt
+.claude/local_scripts/mhde_timer_overlap.py
+
+# Daily radar / dated output snapshots
+# (outputs/2026-05-04/ stays tracked; pattern only governs new dirs)
+outputs/daily_radar_*.json
+outputs/daily_radar_*.md
+outputs/2026-*/
+
+# Generated reports + log dir
+data/processed/ifrs_mapping_gap_diagnostics.csv
+data/processed/mhde_inventory.md
+data/logs/

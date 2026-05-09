@@ -10,6 +10,7 @@ Before doing any work in this repo — debugging, refactoring, adding features, 
 6. `DECISIONS.md` — architecture decision records.
 7. `HARDENING_PLAN.md` — multi-session roadmap; check the current session number before starting work.
 8. `SESSION_LOG.md` — append-only log of what was done each session (read the most recent 3 entries at session start).
+9. `docs/PATH_TO_LIVE_PLAN.md` — canonical 5-phase plan from current state to $1000 live trading on Binance Futures. Phase 0 (calibration validation) is parallel; Phases 1A/1B (backfill + execution backtest) drive Phase 2 (execution-layer build) which gates Phase 3 (paper trading) which gates Phase 4 (live). Read before any crypto-execution / Phase 1+ work.
 
 These describe the deployment topology and the code layout. They override assumptions from training data.
 
@@ -48,3 +49,26 @@ Do not use inline `python -c` blocks for DuckDB smoke tests.
 Use this command instead:
 
 `venv/bin/python .claude/local_scripts/test_duckdb_failed_alter.py`
+
+## Cross-chat protocol
+
+This repo is sometimes worked on by parallel Claude Code chat sessions.
+A workstream started in one chat (e.g. an in-flight branch, a deferred
+test, an ADR mid-cutover) is invisible to a chat that starts cold —
+unless `SESSION_LOG.md` and the branch state make it visible.
+
+**Before starting substantial work** (anything beyond a one-line edit
+or a read-only investigation): search `SESSION_LOG.md` for related
+ongoing workstreams (recent entries, "Pending" sections, branches
+named in the entry). If you find one, check the branch state with
+`git branch -a` and `git log` for that branch before touching
+overlapping code paths. If you're uncertain whether your work overlaps
+an in-flight workstream, **stop and ask the user** before proceeding.
+The cost of a clarifying question is much lower than the cost of two
+chats colliding on the same files.
+
+**When working in parallel chat sessions**, the chat that starts
+substantial work is responsible for updating `SESSION_LOG.md` before
+ending — even if the work is unfinished. A "Pending" section in the
+session entry is enough to make the work visible to the next chat.
+Don't rely on memory or the assumption that the user will mention it.

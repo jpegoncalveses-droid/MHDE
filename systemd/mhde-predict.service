@@ -1,0 +1,14 @@
+[Unit]
+Description=MHDE equity daily prediction
+After=network.target
+
+[Service]
+Type=oneshot
+User=jpcg
+WorkingDirectory=/home/jpcg/MHDE
+Environment=MHDE_DB_PATH=/home/jpcg/MHDE/data/mhde.duckdb
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py ml backfill-features
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py ml predict
+StandardOutput=append:/home/jpcg/MHDE/data/logs/equity_predict.log
+StandardError=append:/home/jpcg/MHDE/data/logs/equity_predict.log
+TimeoutStartSec=1800

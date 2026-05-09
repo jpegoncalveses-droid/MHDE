@@ -339,13 +339,33 @@ The decision matrix (which services need to restart):
 
 | Files changed | Restart |
 |---|---|
-| `dashboard/*` | `systemctl --user restart mhde-streamlit` |
+| `dashboard/*` | `systemctl --user restart mhde-streamlit` (mandatory — see below) |
 | `fx/bot/*` | `sudo systemctl restart mhde-fx-bot` |
 | `pipelines/freshness.py`, `storage/db.py` | (no restart) — picked up next firing |
 | `pipelines/{ml,crypto,fx}_prediction_pipeline.py` | (no restart) — picked up next firing |
 | `ml/*`, `crypto/*`, `fx/*` (non-bot) | (no restart) — picked up next firing |
 | `systemd/*.service` or `.timer` | Copy to `/etc/systemd/system/` (sudo) or `~/.config/systemd/user/`, then `daemon-reload` and `restart`. |
 | `.env` | Restart any service that reads it (not the systemd unit env vars). |
+
+#### Streamlit does NOT auto-reload in this deployment
+
+`mhde-streamlit.service` runs Streamlit without `--server.runOnSave`
+(omitted to keep the dashboard from reloading mid-render). That means
+**any change under `dashboard/`** — query helpers, format functions,
+the page itself — sits on disk unloaded until the process restarts.
+A restart is mandatory after every dashboard code change:
+
+```bash
+systemctl --user restart mhde-streamlit
+# Verify the new PID has a recent ActiveEnterTimestamp
+systemctl --user show mhde-streamlit -p ActiveEnterTimestamp --value
+```
+
+The `monitoring/streamlit_freshness` monitor (added 2026-05-09) flags
+when the running process predates the latest commit on master by more
+than 4 hours so this gap is caught even if the operator forgets the
+restart. See the trust ladder below: a code commit is L0, not L5 —
+"the user-visible artifact matches" only holds after the restart.
 
 ### Deploying a new systemd unit
 
@@ -376,6 +396,95 @@ NEW_HASH=$(echo -n "newpassword" | sha256sum | awk '{print $1}')
 systemctl --user daemon-reload
 systemctl --user restart mhde-streamlit
 ```
+
+---
+
+## Cross-scope systemd traps
+
+Three layers of systemd are involved in this deployment and they
+don't all talk to each other. The traps below cost real time on
+2026-05-09; each is documented so the next session doesn't pay
+the cost again.
+
+### `systemctl --user` from a system-level service fails without D-Bus
+
+A system-level systemd unit (under `/etc/systemd/system/` with
+`User=jpcg`) does NOT inherit a per-user D-Bus session. Calling
+`systemctl --user show <some-user-service> -p ActiveEnterTimestamp`
+from inside that unit's `ExecStart` fails with:
+
+```
+Failed to connect to bus: No medium found
+```
+
+This bit `monitoring/streamlit_freshness` on its first deploy:
+the monitor is a system-level service that needs to know when the
+user-level `mhde-streamlit.service` started. The fix was to read
+`/proc/<PID>/stat` field 22 directly via a `pgrep -f 'streamlit
+run dashboard'` lookup — works from system or user context with
+no D-Bus dependency.
+
+**Rule of thumb.** If a system-level service needs to inspect
+state from a user-level service, use kernel-level interfaces
+(`/proc`, file mtimes, sockets) rather than `systemctl --user`.
+Crossing the boundary the other way (user-level invoking
+`systemctl` on system services) is fine: a user shell normally
+inherits enough environment to reach the system manager.
+
+To enable lingering and get a persistent user manager — which
+WOULD let `systemctl --user` work from system-level services —
+run `loginctl enable-linger jpcg`. We deliberately don't, because
+it changes the security model for every other user-level service,
+and the `/proc` workaround is cleaner for the one monitor that
+needs cross-scope visibility.
+
+### `User=jpcg` in a user-level unit silently breaks the unit
+
+Documented separately in `INFRASTRUCTURE.md` and enforced by
+`scripts/pre-commit.sh`. A user-level unit (under
+`~/.config/systemd/user/`) that contains `User=` or `Group=`
+loads but produces no useful output and no error. The hook warns
+on staged user-level units that contain those lines.
+
+### A unit fragment in `/etc/systemd/system/` doesn't restart on edit
+
+The deploy step is `daemon-reload` followed by `restart`. Skipping
+the reload leaves systemd serving the old fragment from its
+in-memory cache. The repo's `Deploy procedures` section above
+spells out the right sequence; this trap is here so it's findable
+when an operator notices "I edited the unit but it's still using
+the old timer schedule".
+
+---
+
+## Trust ladder
+
+A change isn't "fixed" because the code is committed. It's fixed when
+the user-visible artifact reflects the change. We codify that here as
+six levels; ADR-016 is the long-form rationale.
+
+| Level | Predicate | How you verify |
+|---|---|---|
+| **L0** | Code committed | `git log` shows the commit on the working branch |
+| **L1** | Tests pass | `make test` green; pre-commit hook OK |
+| **L2** | Database state correct | A direct SQL probe against the production DB returns the expected rows / values |
+| **L3** | Service / pipeline produces expected output | `journalctl -u mhde-…` shows the unit ran cleanly and wrote what L2 confirms |
+| **L4** | Dashboard renders correctly | A request to `http://127.0.0.1:8501` returns 200 AND the rendered page runs the latest code (process start ≥ commit time — see `monitoring/streamlit_freshness`) |
+| **L5** | User-visible artifact matches expectation | The CSV the user downloads / the Telegram message they receive / the report they read agrees with L2's truth |
+
+L5 verification is part of the universal exit criteria (see
+`HARDENING_PLAN.md`). For dashboard changes specifically, L5 means a
+fresh CSV pulled by the user — not a fresh CSV pulled by Claude
+Code from the same query helpers. The latter passes through the
+running Streamlit process; if Streamlit is stale, the artifact lies
+even though every other layer is correct. The 2026-05-09 equity
+maturity-date fix demonstrated this gap: L0-L4 all green for hours
+before someone noticed the user's CSV still showed blanks.
+
+The four monitors in `monitoring/{dashboard_consistency,
+streamlit_freshness, dashboard_synthetic, cross_artifact}` between
+them aim to convert "L5 silently fails" into a Telegram alert within
+an hour.
 
 ---
 
@@ -458,7 +567,40 @@ directly — no API key. Rate-limit aware. If failures spike, check
 ### Polygon (equity)
 
 `ingestion/ingest_prices.py`. Needs `POLYGON_API_KEY`. Free tier has
-strict rate limits (~5 calls/min). Check call counts in `source_runs`:
+strict rate limits (~5 calls/min) but the ingestor has been tuned to
+fit inside that budget — see below.
+
+**Architecture (post-2026-05-09 fix, see KI-120 in archive).** Primary
+path uses Polygon's **grouped daily** endpoint:
+
+```
+GET /v2/aggs/grouped/locale/us/market/stocks/{date}?adjusted=true&apiKey=...
+```
+
+One HTTP call per date returns OHLCV for ~12,000 US tickers (~1s
+observed). The ingestor filters the result to our universe and
+inserts into `prices_daily` with `ON CONFLICT DO NOTHING` (idempotent).
+Per-ticker fallback (the older
+`/v2/aggs/ticker/{ticker}/range/1/day/...` endpoint) runs for the
+rare universe ticker missing from the grouped feed, capped per date
+to keep API budget bounded (`DEFAULT_FALLBACK_LIMIT=10`). Anything
+beyond the cap falls through to the orchestrator's downstream
+Stooq / Yahoo stages.
+
+**Call budget per nightly run.** `DEFAULT_LOOKBACK_DAYS=7` ⇒ 7
+grouped calls plus up to ~10 fallback calls per date with missing
+universe tickers. Worst case ≤ ~80 calls; typical ~10. With 13s
+throttle between calls (`DEFAULT_THROTTLE_S=13`) and an automatic
+65s retry after 429, the orchestrator's polygon stage runs in
+1-2 minutes total.
+
+**Pre-fix history.** Before 2026-05-09 the ingestor looped per-ticker
+against the single-ticker aggregates endpoint, which on ~520 universe
+tickers exceeded the 5/min limit by orders of magnitude and caused
+multi-day ingestion thinning (KI-120). Per-ticker is now the bounded
+fallback, not the primary path.
+
+Check call counts in `source_runs`:
 
 ```sql
 SELECT use_case, status, records_attempted, records_inserted, error_message
@@ -466,6 +608,12 @@ FROM source_runs
 WHERE source_name = 'polygon'
 ORDER BY started_at DESC LIMIT 10;
 ```
+
+**Backfill recipe** (when prices_daily is thin for specific dates):
+```
+venv/bin/python .claude/local_scripts/equity_backfill_prices.py
+```
+Edit the `TARGET_DATES` list at the top of the script. Idempotent.
 
 ### Alpha Vantage (equity)
 
@@ -483,6 +631,42 @@ most endpoints. Watch for HTTP 451 (geographic block) or 429.
 fetcher is brittle — if it returns 0 bars, retry; if it consistently
 fails, the upstream is most likely 404'ing for a recent hour (data
 sometimes lags by 30-60 min).
+
+### TwelveData (FX) — production fetcher post-cutover
+
+`fx/data/refresh.py` is the production GBP/EUR 1h bar fetcher; it
+delegates to the TwelveData implementation in
+`fx/data/refresh_twelvedata.py`. Cutover landed 2026-05-08
+(DECISIONS.md ADR-013). Writes to `fx_prices_hourly`, the table all
+FX readers consume (predict / features / labels / freshness / dashboard).
+The pre-cutover Dukascopy/ATSRP-subprocess path is gone.
+
+Setup:
+1. Get a free key at https://twelvedata.com (800 calls/day; we use 24).
+2. Add `TWELVEDATA_API_KEY=...` to `/home/jpcg/MHDE/.env` (mode 600, never committed).
+3. Confirm `mhde-fx-predict.service` is the post-cutover unit: one
+   `fx refresh-prices` ExecStart, no parallel `…-twelvedata` line.
+   `journalctl -u mhde-fx-predict | grep TwelveData` after the next firing
+   should show `Inserted TwelveData bar into fx_prices_hourly for …`.
+
+Manual run (one-off):
+```bash
+venv/bin/python main.py fx refresh-prices
+```
+
+Cleanup pending (~2026-05-15, after 1-week stability buffer):
+- Drop `fx_prices_hourly_twelvedata` and
+  `fx_prices_hourly_twelvedata_backfill` tables.
+- Remove `fx refresh-prices-twelvedata` and `fx compare-sources` CLI
+  subcommands from `main.py`.
+- Delete `fx/data/compare_sources.py` and `tests/fx/test_compare_sources.py`.
+- Drop `SCHEMA_FX_PRICES_HOURLY_TWELVEDATA` from `fx/schema.py`.
+
+Rollback path during the buffer: `git revert` the cutover commit. The
+240 historical bars filled at cutover stay in `fx_prices_hourly`;
+subsequent firings would reattach to the old Dukascopy/ATSRP code path.
+ATSRP is still on disk for this purpose (also still serves Telegram
+credentials per ADR-003).
 
 ### FRED (FX macro + equity macro)
 

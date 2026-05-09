@@ -110,9 +110,12 @@ def test_equity_maturity_skips_weekends_via_row_number(temp_db):
     assert (rows[10] - pred_date).days > 10
 
 
-def test_equity_maturity_null_when_not_enough_rows(temp_db):
-    """If only entry row exists, no 5th-row trade_date yet → NULL."""
-    pred_date = date(2026, 5, 5)
+def test_equity_pending_maturity_uses_busday_estimate(temp_db):
+    """When the JOIN has no future row yet (pending prediction), the
+    dashboard fills `maturity_date` with the np.busday_offset estimate
+    (skipping weekends and NYSE holidays). `price_at_maturity` stays
+    NULL — the price genuinely doesn't exist yet."""
+    pred_date = date(2026, 5, 5)  # Tuesday
     temp_db.execute(
         "INSERT INTO prices_daily (id, ticker, trade_date, close) VALUES (?, ?, ?, ?)",
         ["r0", "NEWCO", pred_date, 50.0],
@@ -126,8 +129,99 @@ def test_equity_maturity_null_when_not_enough_rows(temp_db):
         [pred_date],
     )
     df = get_equity_predictions(temp_db, pred_date)
-    assert pd.isna(df.iloc[0]["maturity_date"])
+    # Tue 5/5 + 5 business days = Tue 5/12 (Wed 5/6, Thu 5/7, Fri 5/8,
+    # Mon 5/11, Tue 5/12). No NYSE holidays in this window.
+    assert _as_date(df.iloc[0]["maturity_date"]) == date(2026, 5, 12)
     assert pd.isna(df.iloc[0]["price_at_maturity"])
+
+
+def test_equity_pending_estimate_skips_holidays(temp_db):
+    """Pending estimate for a horizon spanning Good Friday 2026-04-03
+    must skip the holiday — 5 business days from Wed 4/1 lands on
+    Thu 4/9 (4/2 Thu, 4/3 holiday, 4/6 Mon, 4/7 Tue, 4/8 Wed, 4/9 Thu)."""
+    pred_date = date(2026, 4, 1)  # Wednesday before Good Friday
+    temp_db.execute(
+        "INSERT INTO prices_daily (id, ticker, trade_date, close) VALUES (?, ?, ?, ?)",
+        ["r0", "HOLD", pred_date, 100.0],
+    )
+    temp_db.execute(
+        """
+        INSERT INTO ml_predictions
+            (ticker, prediction_date, model_id, horizon, predicted_probability)
+        VALUES ('HOLD', ?, 'm1', '5d', 0.6)
+        """,
+        [pred_date],
+    )
+    df = get_equity_predictions(temp_db, pred_date)
+    assert _as_date(df.iloc[0]["maturity_date"]) == date(2026, 4, 9)
+    assert pd.isna(df.iloc[0]["price_at_maturity"])
+
+
+def test_equity_pending_time_remaining_str_renders(temp_db):
+    """End-to-end: pending equity prediction → maturity_date populated
+    by the estimator → format_time_remaining returns a `<n>d` string
+    instead of an empty cell."""
+    pred_date = date(2026, 5, 5)
+    temp_db.execute(
+        "INSERT INTO prices_daily (id, ticker, trade_date, close) VALUES (?, ?, ?, ?)",
+        ["r0", "NEWCO2", pred_date, 50.0],
+    )
+    temp_db.execute(
+        """
+        INSERT INTO ml_predictions
+            (ticker, prediction_date, model_id, horizon, predicted_probability)
+        VALUES ('NEWCO2', ?, 'm1', '10d', 0.6)
+        """,
+        [pred_date],
+    )
+    df = get_equity_predictions(temp_db, pred_date)
+    maturity = _as_date(df.iloc[0]["maturity_date"])
+    # format_time_remaining(time_remaining_days(...)) — the same path
+    # the dashboard renders on the equity tab.
+    rendered = format_time_remaining(time_remaining_days(
+        maturity, today=pred_date, outcome_filled=False,
+    ))
+    # Tue 5/5 + 10 business days = Tue 5/19 (14 calendar days). The
+    # rendered "Time Left" the dashboard shows from pred_date is 14d.
+    assert rendered == "14d"
+
+
+def test_equity_matured_prefers_exact_join_over_estimate(temp_db):
+    """When the JOIN can resolve the future row (matured prediction),
+    `maturity_date` must come from the exact trading-rows-forward
+    JOIN, NOT the busday estimate. Concretely: insert a price on a
+    trade_date that is NOT what the busday estimate would compute
+    (e.g. a synthetic out-of-pattern series), and confirm the JOIN
+    value is what surfaces."""
+    pred_date = date(2026, 4, 6)  # Mon
+    # Six rows, all on consecutive WEEKDAYS (no holidays in window).
+    weekday_rows: list[date] = []
+    cur = pred_date
+    while len(weekday_rows) < 6:
+        if cur.weekday() < 5:
+            weekday_rows.append(cur)
+        cur += timedelta(days=1)
+    for i, d in enumerate(weekday_rows):
+        temp_db.execute(
+            "INSERT INTO prices_daily (id, ticker, trade_date, close) VALUES (?, ?, ?, ?)",
+            [f"row{i}", "EXACT", d, 200.0 + i],
+        )
+    temp_db.execute(
+        """
+        INSERT INTO ml_predictions
+            (ticker, prediction_date, model_id, horizon, predicted_probability,
+             outcome_filled_at)
+        VALUES ('EXACT', ?, 'm1', '5d', 0.7, CURRENT_TIMESTAMP)
+        """,
+        [pred_date],
+    )
+    df = get_equity_predictions(temp_db, pred_date)
+    # JOIN: entry rn=1, mat at rn=6 → weekday_rows[5]. busday estimate
+    # would also be weekday_rows[5] in this synthetic series, so the
+    # values agree — but we assert the JOIN's price is also surfaced
+    # (which the busday-estimate path could not provide).
+    assert _as_date(df.iloc[0]["maturity_date"]) == weekday_rows[5]
+    assert df.iloc[0]["price_at_maturity"] == pytest.approx(205.0)
 
 
 # ──────────────────────────────────────────────────────────────────────

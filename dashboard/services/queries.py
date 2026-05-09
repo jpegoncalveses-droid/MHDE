@@ -419,6 +419,48 @@ _FX_HORIZON_INTERVAL = (
 )
 
 
+def _fill_estimated_equity_maturity(
+    df: pd.DataFrame, prediction_date_value=None
+) -> pd.DataFrame:
+    """Fill missing ``maturity_date`` values with the busday-offset
+    estimate for pending equity predictions.
+
+    The trading-rows-forward JOIN populates ``maturity_date`` for
+    matured predictions only — pending rows have no future row in
+    ``prices_daily`` yet, so the JOIN yields NULL for both the
+    maturity date and the price. We leave ``price_at_maturity`` NULL
+    for pending (the price doesn't exist yet) but fill the date with
+    a calendar estimate so the dashboard's ``time_remaining_str``
+    column renders.
+
+    ``prediction_date_value`` is used for ``get_equity_predictions``
+    where every row shares the same prediction_date (it isn't returned
+    in the SELECT). For ``get_equity_recent_outcomes`` we fall back to
+    the per-row ``prediction_date`` column.
+    """
+    from dashboard.services.maturity import estimate_equity_maturity_date
+
+    if df.empty or "maturity_date" not in df.columns or "horizon" not in df.columns:
+        return df
+
+    needs_estimate = df["maturity_date"].isna()
+    if not needs_estimate.any():
+        return df
+
+    def _row_estimate(row):
+        pd_val = (
+            prediction_date_value
+            if prediction_date_value is not None
+            else row.get("prediction_date")
+        )
+        return estimate_equity_maturity_date(pd_val, row.get("horizon"))
+
+    df.loc[needs_estimate, "maturity_date"] = df.loc[needs_estimate].apply(
+        _row_estimate, axis=1
+    )
+    return df
+
+
 def get_equity_predictions(
     conn: duckdb.DuckDBPyConnection, prediction_date
 ) -> pd.DataFrame:
@@ -453,7 +495,8 @@ def get_equity_predictions(
         WHERE p.prediction_date = ?
         ORDER BY p.horizon, p.predicted_probability DESC
     """
-    return conn.execute(sql, [prediction_date]).fetchdf()
+    df = conn.execute(sql, [prediction_date]).fetchdf()
+    return _fill_estimated_equity_maturity(df, prediction_date_value=prediction_date)
 
 
 def get_equity_recent_outcomes(
@@ -482,7 +525,8 @@ def get_equity_recent_outcomes(
         ORDER BY p.prediction_date DESC, p.predicted_probability DESC
         LIMIT ?
     """
-    return conn.execute(sql, [limit]).fetchdf()
+    df = conn.execute(sql, [limit]).fetchdf()
+    return _fill_estimated_equity_maturity(df)
 
 
 def get_crypto_predictions(

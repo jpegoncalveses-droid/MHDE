@@ -2,7 +2,7 @@
 and produced a row count above a sensible floor.
 
 Per ARCHITECTURE.md schedules:
-  equity ML predict   → daily 21:00 UTC      (expect new ml_predictions rows daily)
+  equity ML predict   → daily 00:15 UTC, scores T-1 (expect new ml_predictions rows daily)
   crypto ML predict   → daily 00:30 UTC      (expect new crypto_ml_predictions rows daily)
   fx     ML predict   → hourly :05           (expect new fx_ml_predictions rows every hour)
   daily-analysis      → Mon-Fri 23:15        (expect new pipeline_runs rows weekday)
@@ -12,6 +12,15 @@ For each pipeline we check:
   2. row count for the last write vs a 14-day rolling average
 
 Below 50% of the rolling average → warn. Below 20% → fail.
+
+Both the latest count and the trailing baseline filter to predictions
+written by `is_active=true` model_ids in the corresponding *_model_runs
+table. This is required for correctness: the predictions tables also
+hold rows from training/walk-forward backtest paths, and including
+those in the baseline inflates the rolling average and produces false
+positives when only production scoring is active for the day. Fix
+landed in the discipline session 2026-05-09 after the crypto pipeline
+fired a false-positive warning for two consecutive days.
 
 Schedule: hourly (FX pacing). Equity / crypto / daily-analysis only
 flag once per day; the same hourly run handles all four.
@@ -28,12 +37,24 @@ logger = logging.getLogger("mhde.monitoring.pipeline_execution")
 
 
 # Grace windows after the scheduled firing before we consider the
-# pipeline "missed". Generous to avoid flapping when a slow Yahoo
-# fetch pushes a run into the next hour.
+# pipeline "missed". The monitor compares `now - latest_dt` against
+# this budget, where `latest_dt` is `MAX(prediction_date)` interpreted
+# as midnight UTC of that date. The budgets must therefore include
+# both the schedule's natural lag AND the schema's prediction-date
+# convention.
 RECENCY_BUDGET = {
-    "equity": timedelta(hours=27),       # daily @ 21:00 + 6h grace
-    "crypto": timedelta(hours=27),       # daily @ 00:30 + 6h grace
-    "fx":     timedelta(hours=2),        # hourly @ :05 + 1h grace
+    # Equity: T-1 scoring at 00:15 UTC daily. prediction_date is
+    # yesterday's trading date; on a Friday → Monday weekend the
+    # latest stays at Friday until Tuesday's 00:15 fire (~72h gap
+    # between fresh prediction_date values). 75h = 72h weekend roll +
+    # 3h grace. Holiday-extended weekends may still warn — accepted.
+    # See ADR-015 for rationale.
+    "equity": timedelta(hours=75),
+    # Crypto: 24/7 scoring at 00:30 UTC; no weekend gap.
+    # 27h = 24h cycle + 3h grace.
+    "crypto": timedelta(hours=27),
+    # FX: hourly at :05; tight budget appropriate.
+    "fx":     timedelta(hours=2),
 }
 
 
@@ -42,19 +63,41 @@ def _check_engine_pipeline(
     engine: str,
     table: str,
     date_col: str,
+    model_runs_table: str,
     now: datetime,
 ) -> dict[str, Any]:
-    """Return a dict of {recency_ok, count_ok, latest, n_latest, n_avg}."""
+    """Return a dict of {recency_ok, count_ok, latest, n_latest, n_avg}.
+
+    Both the latest count and the 14-day baseline filter to predictions
+    written by ``is_active=true`` model_ids in ``model_runs_table``.
+    Without that filter, the baseline includes training / walk-forward
+    backtest rows that share the predictions table and produces false
+    positives when only production scoring is active.
+    """
     out: dict[str, Any] = {"recency_ok": True, "count_ok": True}
 
-    row = conn.execute(f"SELECT MAX({date_col}) FROM {table}").fetchone()
+    n_active = conn.execute(
+        f"SELECT COUNT(*) FROM {model_runs_table} WHERE is_active = true"
+    ).fetchone()[0]
+    if n_active == 0:
+        out["recency_ok"] = False
+        out["count_ok"] = False
+        out["reason"] = f"{model_runs_table} has no is_active=true models"
+        return out
+
+    row = conn.execute(f"""
+        SELECT MAX(p.{date_col})
+        FROM {table} p
+        JOIN {model_runs_table} m ON p.model_id = m.model_id
+        WHERE m.is_active = true
+    """).fetchone()
     latest = row[0] if row else None
     out["latest"] = latest
 
     if latest is None:
         out["recency_ok"] = False
         out["count_ok"] = False
-        out["reason"] = f"{table} is empty"
+        out["reason"] = f"{table} has no rows written by active models"
         return out
 
     # Recency check
@@ -70,18 +113,24 @@ def _check_engine_pipeline(
             f"{RECENCY_BUDGET[engine]}"
         )
 
-    # Row-count check vs 14-day rolling average. We compute average rows
-    # per distinct {date_col} value over the prior 14 windows.
-    n_latest = conn.execute(
-        f"SELECT COUNT(*) FROM {table} WHERE {date_col} = ?", [latest]
-    ).fetchone()[0]
+    # Row-count check vs 14-day rolling average. Both sides filter to
+    # active model_ids so the baseline reflects production scoring only
+    # (KI-118 lesson + monitor false-positive fix 2026-05-09).
+    n_latest = conn.execute(f"""
+        SELECT COUNT(*)
+        FROM {table} p
+        JOIN {model_runs_table} m ON p.model_id = m.model_id
+        WHERE p.{date_col} = ? AND m.is_active = true
+    """, [latest]).fetchone()[0]
     out["n_latest"] = n_latest
 
     avg_row = conn.execute(f"""
         SELECT AVG(c) FROM (
-            SELECT COUNT(*) AS c FROM {table}
-            WHERE {date_col} >= ? AND {date_col} < ?
-            GROUP BY {date_col}
+            SELECT COUNT(*) AS c FROM {table} p
+            JOIN {model_runs_table} m ON p.model_id = m.model_id
+            WHERE p.{date_col} >= ? AND p.{date_col} < ?
+              AND m.is_active = true
+            GROUP BY p.{date_col}
         )
     """, [latest_dt - timedelta(days=14), latest_dt]).fetchone()
     n_avg = float(avg_row[0]) if avg_row and avg_row[0] is not None else 0.0
@@ -121,16 +170,16 @@ def run(conn=None, now: datetime | None = None) -> MonitorResult:
 
     try:
         engines = [
-            ("equity", "ml_predictions", "prediction_date"),
-            ("crypto", "crypto_ml_predictions", "prediction_date"),
-            ("fx", "fx_ml_predictions", "datetime_utc"),
+            ("equity", "ml_predictions", "prediction_date", "ml_model_runs"),
+            ("crypto", "crypto_ml_predictions", "prediction_date", "crypto_ml_model_runs"),
+            ("fx", "fx_ml_predictions", "datetime_utc", "fx_ml_model_runs"),
         ]
         problems: list[str] = []
         worst_severity = "info"
         metrics: dict[str, Any] = {}
 
-        for engine, table, date_col in engines:
-            r = _check_engine_pipeline(conn, engine, table, date_col, now)
+        for engine, table, date_col, model_runs_table in engines:
+            r = _check_engine_pipeline(conn, engine, table, date_col, model_runs_table, now)
             metrics[engine] = r
             if not r["recency_ok"] or not r["count_ok"]:
                 worst_severity = "critical" if r.get("count_severity") == "fail" or not r["recency_ok"] else \

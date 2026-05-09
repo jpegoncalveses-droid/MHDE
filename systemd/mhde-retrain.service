@@ -1,0 +1,13 @@
+[Unit]
+Description=MHDE equity weekly retrain
+After=network.target
+
+[Service]
+Type=oneshot
+User=jpcg
+WorkingDirectory=/home/jpcg/MHDE
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py ml train
+Environment=MHDE_DB_PATH=/home/jpcg/MHDE/data/mhde.duckdb
+StandardOutput=append:/home/jpcg/MHDE/data/logs/equity_retrain.log
+StandardError=append:/home/jpcg/MHDE/data/logs/equity_retrain.log
+TimeoutStartSec=1800

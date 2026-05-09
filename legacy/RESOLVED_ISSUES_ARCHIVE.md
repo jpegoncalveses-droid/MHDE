@@ -12,6 +12,65 @@ tracker; when resolved they should be appended here.
 
 ## All resolved (with regression-test pointers)
 
+### KI-118 — Production source files were never `git add`-ed
+
+**Resolved:** 2026-05-08 (commit `fc6fc28`).
+
+**Symptom.** A `git status` on `master` showed ten files as `??`
+Untracked even though tracked code (`main.py`, `monitoring/alert.py`,
+the three prediction pipelines, `dashboard/app.py`) imported them, and
+five of them were active systemd units installed in
+`/etc/systemd/system/`:
+
+```
+fx/bot/__init__.py, fx/bot/telegram_bot.py
+fx/data/refresh.py
+pipelines/freshness.py, pipelines/health_check.py
+systemd/mhde-fx-bot.service
+systemd/mhde-predict.service, systemd/mhde-predict.timer
+systemd/mhde-retrain.service, systemd/mhde-retrain.timer
+```
+
+`git log --all -- <path>` returned **empty** for each — no branch
+anywhere had ever held them. The reflog was clean (no destructive op,
+no `.gitignore` change masked them).
+
+**Root cause.** Working tree on the deployment host was the only copy
+of these files since before Session 0. The pre-rebuild
+"checkpoint: pipeline freshness guards, FX position-aware alerts,
+service chaining" commit (`7b46c50`) reorganized similar code into the
+`pipelines/` and `fx/bot/` paths, but the moved/new files never got
+re-staged. Sessions 0-7 then ran on a working tree that already had
+this gap, and the hardening exit criteria didn't include a check that
+would surface it.
+
+**Fix.** Single commit (`fc6fc28`) staged all ten files to `master`.
+Production behavior unchanged — the files were already live; the repo
+just caught up to ground truth. Repo copies verified identical to
+deployed copies (`diff systemd/mhde-*.service /etc/systemd/system/...`
+returned empty for all three).
+
+**Regression test (owed, not yet written).** Proposed module:
+`tests/regression/test_no_untracked_production_imports.py`. Algorithm:
+
+1. Walk every tracked `.py` file.
+2. Extract `import X.Y.Z` and `from X.Y import Z` statements.
+3. Resolve each to a path under the repo root.
+4. Assert each resolved path is tracked by `git ls-files`.
+5. Separately, walk `/etc/systemd/system/mhde-*.{service,timer}` and
+   `~/.config/systemd/user/mhde-*.{service,timer}` (when running on
+   the production host); for each `ExecStart` that points into the
+   repo, assert that the source `systemd/<name>` file is tracked.
+
+Skip step 5 gracefully when not on the production host (mirrors the
+pattern in `test_active_model_paths_resolve`). Step 1-4 always run.
+
+**Pattern note.** This is the first KI in the archive that's a
+*process* gap rather than a code defect. Future hardening sessions
+should explicitly verify the working tree is free of untracked
+load-bearing source — `git status` on a clean checkout should be the
+first check, not the last.
+
 ### KI-003 — Promotion of trained models to `is_active=TRUE` was manual
 
 **Resolved:** 2026-05-07 (Session 7).

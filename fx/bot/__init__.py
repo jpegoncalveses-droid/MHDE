@@ -1,0 +1,1 @@
+"""FX Telegram bot package."""
