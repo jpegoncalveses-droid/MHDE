@@ -1,55 +1,21 @@
 # Known Issues
 
-**3 open observations** (KI-119, KI-122, KI-123). All cosmetic /
-process — none require a hot fix. They are tracked here so a future
-session triages them deliberately rather than letting them rot in
-the working tree.
+**2 open observations** (KI-122, KI-123). Both cosmetic — no hot
+fix required. They are tracked so a future session triages them
+deliberately rather than letting them rot in the working tree.
 
-**KI-120 and KI-124 resolved** in the 2026-05-09 sessions (KI-120
-by switching the Polygon ingestor to grouped-daily; KI-124 by
-raising the equity recency budget to 75h; see "Recently resolved"
-below).
+**KI-119, KI-120, and KI-124 resolved** in the 2026-05-09 sessions.
+KI-119 reclassified after empirical verification on the merged
+`crypto-phase-1a-1b-backtest` branch: the writer isolation is
+sound (38 prediction model_ids match 38 model_runs entries
+exactly; 36 walkfold model_runs all `is_active=false`); only the
+monitor false-positive was real and that was already patched. See
+"Recently resolved" below.
 
 The historical record of resolved bugs lives in
 [`legacy/RESOLVED_ISSUES_ARCHIVE.md`](legacy/RESOLVED_ISSUES_ARCHIVE.md).
 
 ## Open
-
-### KI-119 — Phase 1A/1B walkfold backfill writes to a production table without setting model active state
-
-**Symptom.** The Phase 1A/1B crypto backtest workstream (preserved
-on branch `crypto-phase-1a-1b-backtest`) populated 36 walk-forward
-model_ids' worth of rows into `crypto_ml_predictions` covering
-prediction_dates 2024-12-04 → 2026-05-07, without inserting the
-matching `crypto_ml_model_runs` rows. The model_runs entries for
-those walkfold IDs only got registered on 2026-05-08 19:30 UTC —
-all with `is_active=false`. Production scoring uses the same
-`crypto_ml_predictions` table, and the pipeline_execution monitor
-read both kinds of rows when computing its 14-day rolling baseline.
-That contamination is the proximate cause of today's monitor false
-positive (resolved by the 2026-05-09 monitor patch).
-
-**Root cause (provisional).** The Phase 1A/1B backfill writer
-isolation was incomplete: writing into a production table is fine
-in principle, but only if every row is paired with a model_runs
-entry whose `is_active` flag is set deliberately at write time.
-Without that pairing, downstream consumers (this monitor, the
-dashboard's "predictions today" metrics, anything else aggregating
-the table) cannot distinguish backtest from production.
-
-**Detection / fix path.** When `crypto-phase-1a-1b-backtest` is next
-reviewed for merge-back: verify every writer that touches
-`crypto_ml_predictions` (or any `*_ml_predictions` table) registers
-its model_id in the matching `*_ml_model_runs` table with
-`is_active=false` BEFORE inserting predictions. Consider adding
-a regression test in `tests/regression/` that asserts
-"every distinct model_id in `*_ml_predictions` has a row in
-`*_ml_model_runs`" so the gap surfaces immediately if it recurs.
-
-**Out of scope for the discipline session 2026-05-09.** The
-monitor patch landed in this session unblocks the alert; the Phase
-1A/1B isolation reinforcement is a separate workstream and lives
-on its own branch.
 
 ### KI-122 — Universe builder reconciliation leaks stale extended-tier rows
 
@@ -100,6 +66,37 @@ has %d, see ADR-014 for cap rationale)"`. Trivial one-liner.
 Documentation/clarity fix; no behavioral impact.
 
 ## Recently resolved (post-Session-7)
+
+- **KI-119 — Phase 1A/1B walkfold backfill writer isolation**
+  (originally opened 2026-05-09 in the discipline session;
+  reclassified to "by design, verified" 2026-05-09 in the Phase
+  1A/1B resumption session). The original framing claimed the
+  walkfold writer left model_id rows in `crypto_ml_predictions`
+  without matching rows in `crypto_ml_model_runs`. Empirical
+  verification on the merged
+  `crypto-phase-1a-1b-backtest` branch contradicted this: every
+  one of the 38 distinct model_ids in `crypto_ml_predictions`
+  has a corresponding row in `crypto_ml_model_runs`. The 36
+  walkfold model_runs are all `is_active=false`; the 2 production
+  model_runs (`crypto_5d_ab428f75`, `crypto_10d_db171418`) are
+  `is_active=true`. The original symptom (monitor flagging crypto
+  on 2026-05-08/09) was real, but the proximate fault was in the
+  monitor — the 14-day baseline counted both walkfold and
+  production rows because it didn't filter on
+  `is_active=true`. That fault was patched in the 2026-05-09
+  discipline session
+  (`monitoring/pipeline_execution.py:_check_engine_pipeline` JOINs
+  `*_ml_model_runs` with the active filter; regression test
+  `tests/regression/test_pipeline_execution_baseline.py`). With
+  that filter in place, the walkfold rows are correctly
+  segregated from the production baseline. The Phase 1A/1B writer
+  is doing the right thing — it always was — and
+  `PATH_TO_LIVE_PLAN.md` codifies the design ("is_active integrity
+  preserved" is one of the six validation checks the Phase 1A
+  backfill enforces). No further fix needed; KI-119 closes here.
+  Probe script that produced the verification:
+  `.claude/local_scripts/probe_ki119_isolation.py` (kept under the
+  session-artifact gitignore prefix).
 
 - **KI-124 — pipeline_execution recency budget too tight for
   equity's T-1 scoring** (resolved 2026-05-09 on
