@@ -1850,6 +1850,12 @@ def crypto_backtest(horizon, policy, selection, params, force, dry_run):
               help="(sensitivity only) Comma-separated list of base run_ids "
                    "to sweep around. Default: read top-3 from "
                    "crypto_backtest_summary ORDER BY sharpe_ratio DESC.")
+@click.option("--allow-iterated", is_flag=True,
+              help="(sensitivity only) Bypass the iterated-sweep guard. "
+                   "Required when any base run_id is itself a sensitivity-"
+                   "shape config (i.e. not in the canonical base grid). "
+                   "See KNOWN_ISSUES.md KI-125. With this flag the CLI "
+                   "still warns loudly and logs the iterated bases.")
 @click.option("--force", is_flag=True,
               help="Overwrite existing rows for any colliding run_id.")
 @click.option("--skip-existing/--no-skip-existing", default=True,
@@ -1858,10 +1864,20 @@ def crypto_backtest(horizon, policy, selection, params, force, dry_run):
                    "or mark it as a per-config failure with --no-skip-existing.")
 @click.option("--dry-run", is_flag=True,
               help="Run lifecycles but persist nothing.")
-def crypto_backtest_grid(grid, top_run_ids, force, skip_existing, dry_run):
+def crypto_backtest_grid(grid, top_run_ids, allow_iterated, force,
+                         skip_existing, dry_run):
     """Phase 1B grid runner — base or sensitivity configuration matrix.
 
     See crypto/execution/backtest/SPEC.md and docs/PATH_TO_LIVE_PLAN.md.
+
+    The sensitivity grid sweeps ONE axis at a time per base run. Running
+    this command more than once against an evolving DB produces multi-
+    axis configs through greedy axis-by-axis hill climbing — the second
+    invocation re-ranks against the first invocation's outputs and
+    starts sweeping around them. To prevent this silent drift, the CLI
+    refuses to proceed when any selected base is not in the canonical
+    base grid. Pass `--allow-iterated` to override deliberately. See
+    KI-125 in KNOWN_ISSUES.md.
     """
     from crypto.execution.backtest.runner import (
         base_grid_configs, run_grid, sensitivity_grid_configs,
@@ -1891,6 +1907,41 @@ def crypto_backtest_grid(grid, top_run_ids, force, skip_existing, dry_run):
                         "no rows in crypto_backtest_summary; run "
                         "'crypto backtest-grid --grid base' first."
                     )
+
+            # KI-125 guard: the canonical base grid emits a fixed set of
+            # 20 run_ids. Anything else is a sensitivity-shape config —
+            # sweeping around it produces multi-axis stacks via greedy
+            # hill climbing. Refuse by default; `--allow-iterated`
+            # overrides with a loud warning.
+            base_grid_ids = {c.run_id for c in base_grid_configs()}
+            iterated = [rid for rid in ids if rid not in base_grid_ids]
+            if iterated:
+                if not allow_iterated:
+                    raise click.ClickException(
+                        "sensitivity grid would sweep around "
+                        f"{len(iterated)} non-base-grid run_id(s):\n"
+                        + "\n".join(f"  - {rid}" for rid in iterated)
+                        + "\n\nThese are sensitivity-shape configs, not "
+                        "canonical base-grid runs. Sweeping around them "
+                        "produces multi-axis configs through greedy axis-"
+                        "by-axis hill climbing (KI-125). To proceed "
+                        "deliberately, pass --allow-iterated. To run a "
+                        "clean single-axis sensitivity grid, pass "
+                        "--top-run-ids with run_ids drawn from the base "
+                        "grid (or first re-run the base grid)."
+                    )
+                click.echo(
+                    "⚠  --allow-iterated: sweeping around "
+                    f"{len(iterated)} sensitivity-shape base(s):"
+                )
+                for rid in iterated:
+                    click.echo(f"     - {rid}")
+                click.echo(
+                    "   This will emit multi-axis configs via greedy "
+                    "hill climbing. See KI-125."
+                )
+                click.echo("")
+
             click.echo(f"Sensitivity grid: sweeping around {len(ids)} base "
                        f"run_id(s):")
             for i in ids:

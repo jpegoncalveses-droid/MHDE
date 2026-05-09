@@ -67,6 +67,37 @@ Documentation/clarity fix; no behavioral impact.
 
 ## Recently resolved (post-Session-7)
 
+- **KI-125 — sensitivity grid produces multi-axis configs through
+  iterated CLI invocations** (opened + resolved 2026-05-09 on
+  `phase1b-winner-and-followups`). The factory
+  `sensitivity_grid_configs(conn, base_run_ids)` correctly emits
+  single-axis sweeps per the agreed Phase 1B spec. But running
+  `crypto backtest-grid --grid sensitivity` more than once against
+  an evolving DB produces multi-axis configs through greedy axis-
+  by-axis hill climbing: the second invocation re-ranks against
+  the first invocation's outputs (sensitivity-shape configs now
+  have higher Sharpe than the original bases) and starts sweeping
+  around them. Each individual invocation respects the contract;
+  the chain emerges via repeated re-ranking. The Phase 1B winner
+  selection on 2026-05-09 was initially reported with a config
+  (`db11de9b`) produced by THREE chained invocations — not the
+  agreed single-axis grid. Caught by operator review of the
+  reported provenance. **Fix.** `main.py:crypto backtest-grid` now
+  detects when any selected base is not in the canonical 20-row
+  base grid (the deterministic `run_id` set emitted by
+  `base_grid_configs()`) and refuses with a clear error message
+  that points at this KI. `--allow-iterated` overrides with a
+  loud warning. The factory docstring in
+  `crypto/execution/backtest/runner.py` documents the gotcha for
+  programmatic callers (tests, notebooks) that bypass the CLI
+  guard. Tests in `tests/crypto/test_backtest_runner.py` pin
+  both the block path and the bypass+warn path.
+  Side-effect: the actual Phase 1B winner is the strict-slice
+  result `backtest_10d_D_top_n_a02e15a0` (single trail-axis change
+  from a published base; 4/4 gates pass). See
+  `docs/PATH_TO_LIVE_PLAN.md` and `docs/PHASE1B_HANDOFF.md` for
+  the locked-in spec.
+
 - **KI-119 — Phase 1A/1B walkfold backfill writer isolation**
   (originally opened 2026-05-09 in the discipline session;
   reclassified to "by design, verified" 2026-05-09 in the Phase
