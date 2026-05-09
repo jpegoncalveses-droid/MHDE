@@ -160,6 +160,15 @@ is considered complete until all of:
 - The full `tests/regression/` suite passes.
 - `SESSION_LOG.md` has a new entry covering what was done.
 - `KNOWN_ISSUES.md` updated if any bugs were resolved or discovered.
+- **L5 verification.** A user-visible artifact (CSV download, Telegram
+  message, dashboard render, exported report) demonstrates the fix is
+  actually applied end-to-end. See the trust ladder in
+  [`OPERATIONS.md`](OPERATIONS.md#trust-ladder) and ADR-016. "Fixed"
+  is not "code committed and tests pass" — it's "the user-visible
+  artifact matches expectation". Added 2026-05-09 after the equity
+  dashboard maturity-date fix passed every code-side test for hours
+  before anyone noticed the running Streamlit process predated the
+  fix and was still serving stale output.
 
 These apply on top of the per-session exit criteria below. They were
 introduced after KI-118 (see lesson note at the top of this file) so

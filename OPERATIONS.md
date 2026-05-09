@@ -339,13 +339,33 @@ The decision matrix (which services need to restart):
 
 | Files changed | Restart |
 |---|---|
-| `dashboard/*` | `systemctl --user restart mhde-streamlit` |
+| `dashboard/*` | `systemctl --user restart mhde-streamlit` (mandatory — see below) |
 | `fx/bot/*` | `sudo systemctl restart mhde-fx-bot` |
 | `pipelines/freshness.py`, `storage/db.py` | (no restart) — picked up next firing |
 | `pipelines/{ml,crypto,fx}_prediction_pipeline.py` | (no restart) — picked up next firing |
 | `ml/*`, `crypto/*`, `fx/*` (non-bot) | (no restart) — picked up next firing |
 | `systemd/*.service` or `.timer` | Copy to `/etc/systemd/system/` (sudo) or `~/.config/systemd/user/`, then `daemon-reload` and `restart`. |
 | `.env` | Restart any service that reads it (not the systemd unit env vars). |
+
+#### Streamlit does NOT auto-reload in this deployment
+
+`mhde-streamlit.service` runs Streamlit without `--server.runOnSave`
+(omitted to keep the dashboard from reloading mid-render). That means
+**any change under `dashboard/`** — query helpers, format functions,
+the page itself — sits on disk unloaded until the process restarts.
+A restart is mandatory after every dashboard code change:
+
+```bash
+systemctl --user restart mhde-streamlit
+# Verify the new PID has a recent ActiveEnterTimestamp
+systemctl --user show mhde-streamlit -p ActiveEnterTimestamp --value
+```
+
+The `monitoring/streamlit_freshness` monitor (added 2026-05-09) flags
+when the running process predates the latest commit on master by more
+than 4 hours so this gap is caught even if the operator forgets the
+restart. See the trust ladder below: a code commit is L0, not L5 —
+"the user-visible artifact matches" only holds after the restart.
 
 ### Deploying a new systemd unit
 
@@ -376,6 +396,37 @@ NEW_HASH=$(echo -n "newpassword" | sha256sum | awk '{print $1}')
 systemctl --user daemon-reload
 systemctl --user restart mhde-streamlit
 ```
+
+---
+
+## Trust ladder
+
+A change isn't "fixed" because the code is committed. It's fixed when
+the user-visible artifact reflects the change. We codify that here as
+six levels; ADR-016 is the long-form rationale.
+
+| Level | Predicate | How you verify |
+|---|---|---|
+| **L0** | Code committed | `git log` shows the commit on the working branch |
+| **L1** | Tests pass | `make test` green; pre-commit hook OK |
+| **L2** | Database state correct | A direct SQL probe against the production DB returns the expected rows / values |
+| **L3** | Service / pipeline produces expected output | `journalctl -u mhde-…` shows the unit ran cleanly and wrote what L2 confirms |
+| **L4** | Dashboard renders correctly | A request to `http://127.0.0.1:8501` returns 200 AND the rendered page runs the latest code (process start ≥ commit time — see `monitoring/streamlit_freshness`) |
+| **L5** | User-visible artifact matches expectation | The CSV the user downloads / the Telegram message they receive / the report they read agrees with L2's truth |
+
+L5 verification is part of the universal exit criteria (see
+`HARDENING_PLAN.md`). For dashboard changes specifically, L5 means a
+fresh CSV pulled by the user — not a fresh CSV pulled by Claude
+Code from the same query helpers. The latter passes through the
+running Streamlit process; if Streamlit is stale, the artifact lies
+even though every other layer is correct. The 2026-05-09 equity
+maturity-date fix demonstrated this gap: L0-L4 all green for hours
+before someone noticed the user's CSV still showed blanks.
+
+The four monitors in `monitoring/{dashboard_consistency,
+streamlit_freshness, dashboard_synthetic, cross_artifact}` between
+them aim to convert "L5 silently fails" into a Telegram alert within
+an hour.
 
 ---
 

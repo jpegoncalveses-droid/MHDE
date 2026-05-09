@@ -538,3 +538,89 @@ session. Captured as a future option in the resolved KI-124 entry.
   schema column AND tighten all three budgets back to single-hour
   multiples (the budgets stop needing to absorb prediction_date
   semantics once the recency check uses real write time).
+
+---
+
+## ADR-016 — Trust ladder: "fixed" requires Level 5 verification
+
+**Date:** 2026-05-09
+**Session:** Monitoring-gaps session
+**Status:** Active
+
+**Context.** On 2026-05-09 a real bug fix to the equity dashboard's
+maturity-date column passed every code-side check — DB query
+returned the right values, unit tests green, regression tests green,
+the manual probe confirmed the helper computed the expected May 22
+estimate from production data — but the user's CSV download still
+showed blanks for the rest of the day. Root cause: the
+`mhde-streamlit.service` process had been running since 18 hours
+before the fix was committed, and Streamlit doesn't auto-reload in
+this deployment. Every layer up to and including "Claude Code calls
+the dashboard helper directly" was correct; only the user-visible
+artifact lied.
+
+The same failure mode is latent for any change that lands without
+a restart of the consuming process: dashboard renders, scheduled
+Telegram messages, exported CSVs, anything where the user reads
+output produced by a long-lived process.
+
+**Decision.** Adopt a six-level "trust ladder" and require **L5
+verification** as part of every session's exit criteria. The levels:
+
+| Level | Predicate |
+|---|---|
+| L0 | Code committed |
+| L1 | Tests pass |
+| L2 | Database state correct |
+| L3 | Service / pipeline produces expected output |
+| L4 | Dashboard renders correctly (and does so with the latest code) |
+| L5 | User-visible artifact (CSV, Telegram message, report) matches expectation |
+
+The full table with verification commands lives in
+[`OPERATIONS.md` → "Trust ladder"](OPERATIONS.md#trust-ladder).
+HARDENING_PLAN's universal exit criteria block adds an explicit L5
+bullet pointing back here.
+
+**Why six levels and not "code + tests + manual verify".** Naming
+each level forces an explicit hand-off between layers. When a
+session reports "fix verified", the report should say *which level*
+was verified. "L4 verified" without "L5 verified" is exactly the
+2026-05-09 failure: the dashboard layer can be correct while the
+serving layer is stale.
+
+**What L5 verification looks like in practice.** For a dashboard
+fix: the **user** pulls a fresh CSV / loads the dashboard page in
+their browser / takes a screenshot of the column they cared about,
+and confirms it matches the code's expected output. Not Claude Code
+running the same query helpers from a fresh Python process — that
+is L2 (or possibly L3) at best. For a Telegram fix: a real send
+into the channel after the bot service restart. For a pipeline
+fix: the next scheduled firing's log + DB write, observed
+end-to-end.
+
+**Monitors that close the L4 → L5 gap.**
+
+- `monitoring/streamlit_freshness` — process start time vs latest
+  master commit timestamp; alerts if stale.
+- `monitoring/dashboard_synthetic` — HTTP liveness on
+  `/_stcore/health` plus calling the query helpers directly to
+  confirm they don't raise.
+- `monitoring/dashboard_consistency` (extended) — column-level
+  completeness assertions per engine × horizon, so an "all-NULL
+  column where data should exist" failure pages the operator
+  rather than waiting for a user complaint.
+- `monitoring/cross_artifact` — verifies the Telegram daily-health
+  message agrees with direct DB queries.
+
+**Consequence.**
+- Session reports must state the highest level verified. "Tests
+  pass" alone closes nothing.
+- The "fix verified" claim now has an external check: the four
+  monitors above either page within an hour of any L4-or-higher
+  regression, or the operator writes a short L5-verification
+  artifact (CSV screenshot / Telegram screenshot) into the session
+  report when a monitor doesn't apply.
+- Dashboard changes specifically gain a hard requirement to
+  restart `mhde-streamlit.service` before claiming any level
+  above L3. The OPERATIONS deploy matrix flags this; the
+  streamlit_freshness monitor catches forgotten restarts.
