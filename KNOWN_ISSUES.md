@@ -6,6 +6,11 @@ weekly reliability snapshots accumulate. None requires a hot fix —
 all tracked so a future session triages deliberately rather than
 letting them rot in the working tree.
 
+**KI-127** opened + resolved same session (Phase 0 calibration
+drift detector false-fired on small-sample-per-bucket noise; fix:
+`min_samples_per_bucket=10` guard in
+`check_calibration_buckets`). See "Recently resolved" below.
+
 **KI-119, KI-120, and KI-124 resolved** in the 2026-05-09 sessions.
 KI-119 reclassified after empirical verification on the merged
 `crypto-phase-1a-1b-backtest` branch: the writer isolation is
@@ -101,6 +106,28 @@ has %d, see ADR-014 for cap rationale)"`. Trivial one-liner.
 Documentation/clarity fix; no behavioral impact.
 
 ## Recently resolved (post-Session-7)
+
+- **KI-127 — phase0 calibration drift detector false-fired on
+  small-sample-per-bucket noise** (opened + resolved 2026-05-09 on
+  `phase0-evaluation-infrastructure`). Surfaced during the L5
+  verification run of `monitor phase0-calibration` against
+  production. The 5d crypto model had only 32 filled outcomes
+  spread across 9 reliability buckets; one bucket had 3 samples,
+  three had 6-8, and the consecutive-runs detector fired on
+  three adjacent buckets each with single-digit samples. At n=3
+  in a bucket, the 95% CI half-width exceeds 30pp, so the
+  observed-vs-midpoint difference was noise, not signal. **Fix.**
+  Added `min_samples_per_bucket=10` parameter to
+  `crypto/ml/phase0_evaluate.py:check_calibration_buckets`.
+  Buckets below the minimum now break the consecutive-run chain
+  the same way empty buckets do. Detail line surfaces the count
+  of qualifying buckets so the operator can see when the detector
+  has enough data to be meaningful. Verified post-fix: monitor
+  exits 0 against production. New test in
+  `tests/crypto/test_phase0_evaluate.py` pins the small-sample
+  guard against a synthetic scenario (3 adjacent 100%-hit
+  buckets at n=3 each → no flag); a second test confirms the
+  parameter is tunable for future research.
 
 - **KI-125 — sensitivity grid produces multi-axis configs through
   iterated CLI invocations** (opened + resolved 2026-05-09 on

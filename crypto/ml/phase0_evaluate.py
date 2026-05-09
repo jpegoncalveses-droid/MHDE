@@ -333,19 +333,29 @@ def check_calibration_buckets(
     bucket_edges: tuple[float, ...] = _DEFAULT_BUCKET_EDGES,
     deviation_threshold_pp: float = 10.0,
     consecutive_required: int = 3,
+    min_samples_per_bucket: int = 10,
 ) -> CriterionResult:
     """Definition (a) absolute drift detection: flag when ``≥
-    consecutive_required`` adjacent buckets (with non-empty samples) are
-    off the bucket midpoint by ``> deviation_threshold_pp`` in the same
-    direction. Same direction = systematic miscalibration.
+    consecutive_required`` adjacent buckets (each with ≥
+    ``min_samples_per_bucket`` filled outcomes) are off the bucket
+    midpoint by ``> deviation_threshold_pp`` in the same direction.
+    Same direction = systematic miscalibration.
 
-    Definition (b) relative — week-over-week comparison — is deferred to
-    KI-126 once weekly snapshots have accumulated.
+    The ``min_samples_per_bucket`` guard prevents single-digit-sample
+    buckets from triggering the consecutive-run detector (KI-127 — at
+    n=3 in a bucket, the CI half-width is ≥ 30pp, so a 100%-hit-rate
+    artifact can blow past a 10pp threshold without representing real
+    drift). Buckets below the minimum are treated like empty buckets:
+    they break the chain rather than count toward it.
+
+    Definition (b) relative — week-over-week comparison — is deferred
+    to KI-126 once weekly snapshots have accumulated.
     """
     buckets = compute_reliability_diagram(
         conn, model_id, engine=engine, bucket_edges=bucket_edges,
     )
     populated = [b for b in buckets if b.n > 0 and b.deviation_pp is not None]
+    qualifying = [b for b in populated if b.n >= min_samples_per_bucket]
     n_filled = sum(b.n for b in buckets)
 
     if not populated:
@@ -359,13 +369,15 @@ def check_calibration_buckets(
         )
 
     # Detect runs of consecutive-direction over-threshold deviations.
+    # A bucket is "eligible" only when it has ≥ min_samples_per_bucket
+    # samples; sub-minimum buckets break the run chain like empty ones.
     flagged_run: list[ReliabilityBucket] = []
     longest_run: list[ReliabilityBucket] = []
     current_dir: Optional[int] = None     # +1 over, -1 under, None reset
     current_run: list[ReliabilityBucket] = []
     for b in buckets:
-        # A bucket with no data breaks the consecutive chain.
-        if b.deviation_pp is None:
+        # Empty bucket OR sub-minimum bucket: chain breaks.
+        if b.deviation_pp is None or b.n < min_samples_per_bucket:
             current_dir = None
             current_run = []
             continue
@@ -384,6 +396,10 @@ def check_calibration_buckets(
         if len(current_run) >= consecutive_required:
             flagged_run = list(current_run)
 
+    # Average absolute deviation reported on populated buckets; the
+    # qualifying-buckets count appears in the detail line so the
+    # operator sees how many buckets currently meet the
+    # min_samples_per_bucket bar.
     avg_abs_dev = sum(abs(b.deviation_pp) for b in populated) / len(populated)
     if flagged_run:
         worst = max(flagged_run, key=lambda b: abs(b.deviation_pp or 0.0))
@@ -414,7 +430,9 @@ def check_calibration_buckets(
         detail=(
             f"no run of ≥{consecutive_required} consecutive same-direction "
             f"buckets off > {deviation_threshold_pp:.0f}pp "
-            f"(avg|dev|={avg_abs_dev:.1f}pp; longest run={len(longest_run)})"
+            f"(avg|dev|={avg_abs_dev:.1f}pp; longest run={len(longest_run)}; "
+            f"{len(qualifying)}/{len(populated)} buckets above "
+            f"min_samples_per_bucket={min_samples_per_bucket})"
         ),
     )
 

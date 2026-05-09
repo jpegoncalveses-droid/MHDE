@@ -222,6 +222,43 @@ def test_calibration_fail_three_consecutive_over_confident(temp_db):
     assert "OVER" in r.detail
 
 
+def test_calibration_small_samples_per_bucket_break_chain(temp_db):
+    """KI-127: 3+ consecutive buckets each with < 10 samples must NOT
+    fire the drift detector even at extreme deviations. At n=3 in a
+    bucket the CI half-width exceeds 30pp; observed-vs-expected
+    differences are noise, not signal."""
+    _seed_model(temp_db)
+    items = []
+    # Three adjacent buckets each with only 3 samples but extreme
+    # 100% / 0% rates → would fire absent the min_samples guard.
+    items += [(0.52, True)] * 3 + [(0.52, False)] * 0    # n=3 dev +47.5pp
+    items += [(0.57, True)] * 3 + [(0.57, False)] * 0    # n=3 dev +42.5pp
+    items += [(0.62, True)] * 3 + [(0.62, False)] * 0    # n=3 dev +37.5pp
+    _seed_predictions(temp_db, items=items)
+
+    r = check_calibration_buckets(temp_db, "crypto_5d_test")
+    assert r.status == "pass"
+    assert "0/3 buckets above min_samples_per_bucket" in r.detail
+
+
+def test_calibration_can_lower_min_samples_per_bucket(temp_db):
+    """The guard is a function parameter — synthetic tests / future
+    research can lower it to exercise the chain detector with smaller
+    populations."""
+    _seed_model(temp_db)
+    items = []
+    items += [(0.52, True)] * 3
+    items += [(0.57, True)] * 3
+    items += [(0.62, True)] * 3
+    _seed_predictions(temp_db, items=items)
+
+    r = check_calibration_buckets(
+        temp_db, "crypto_5d_test", min_samples_per_bucket=2,
+    )
+    assert r.status == "fail"
+    assert "OVER" in r.detail
+
+
 def test_calibration_pass_when_only_two_adjacent_drifts(temp_db):
     """Two adjacent off-midpoint buckets is below the 3-consecutive
     threshold; isolated noise rather than systematic drift."""
