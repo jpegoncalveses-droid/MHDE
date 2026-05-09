@@ -153,19 +153,57 @@ Decision criteria evaluation
 
 Spec requires all four: annualized > 5%, Sharpe > 1.0, max drawdown < 25%, profit factor > 1.3.
 
-No config passes all four. All top 3 fail max drawdown < 25% by 1-4 percentage points using realistic-portfolio numbers. Annualized return, Sharpe, and profit factor all pass comfortably.
+Base grid result (initial state, 2026-05-08): no config passed all four. All top 3 failed max drawdown < 25% by 1-4 percentage points using realistic-portfolio numbers. Annualized return, Sharpe, and profit factor all passed comfortably.
 
-Pending: sensitivity grid
+Sensitivity grid result (executed 2026-05-09): 8 of 27 single-axis-around-original-3 configs pass all four gates. The dominant axis change is `trail_pct: 0.50 → 0.30`. See "Phase 1B selected winner" below for the chosen policy.
 
-For top 3 winners, sweep:
+Sensitivity grid (executed)
+
+Per the spec, for each top-3 base winner sweep one axis at a time:
 • trail_pct: 0.30, 0.50, 0.70
 • activation_pct: 0.0, 0.01, 0.02, 0.03
 • Selection: top_n in {5,6,7,8} or threshold in {0.50, 0.55, 0.60, 0.65}
 
-11 configs per top run, 33 total. ~1-2 minutes wall-clock.
+11 configs per top run, 33 total. Actual wall-clock ~25s. Iterated CLI invocations were observed to produce multi-axis configs through greedy axis-by-axis hill climbing — guarded against in the runner CLI from 2026-05-09 onward; see KNOWN_ISSUES KI-125.
 
-If sensitivity finds a config passing all four criteria, that becomes the chosen Phase 1B policy.
-If not, revisit the 25% DD threshold (set as a heuristic, not a hard rule).
+Phase 1B selected winner: `backtest_10d_D_top_n_a02e15a0`
+
+Source: strict single-axis sensitivity slice around the base grid's top-3.
+
+| Field | Value |
+|---|---|
+| run_id | `backtest_10d_D_top_n_a02e15a0` |
+| Horizon | 10d |
+| Exit policy | D (trailing stop with activation) |
+| Selection rule | top_n |
+| `n` | 6 |
+| `trail_pct` | **0.30** (changed from base default 0.50 — the dominant sensitivity axis) |
+| `activation_pct` | 0.01 (class default; not overridden in stored params) |
+| Stored `policy_params` | `{"trail_pct": 0.3}` |
+| Stored `selection_params` | `{"n": 6}` |
+
+Portfolio metrics ($1,000 starting capital, 80% deployed across 6 concurrent positions, 1× leverage, 398-day span 2025-04-05 → 2026-05-07):
+
+| Gate | Rule | Realized | Pass? |
+|---|---|---|:---:|
+| Annualized return | > 5% | +2854% | ✓ |
+| Sharpe ratio | > 1.0 | 5.096 | ✓ |
+| Max drawdown | < 25% | -23.73% | ✓ (1.27 pp under the gate) |
+| Profit factor | > 1.3 | 3.811 | ✓ |
+
+End equity: $32,121.89 from $1,000.
+Trades taken: 484 (448 skipped at the 6-position cap).
+Best month: +$13,655; worst month: -$1,170. Months in drawdown: 12 of ~13.
+
+Sum-of-fractions metrics (the values stored in `crypto_backtest_summary`): Sharpe 6.32, max DD -17.0%, profit factor 3.13, hit rate 87.1%, 932 trades, avg holding 3.66 days. As documented in "Methodology caveats" below, sum-of-fractions inflates absolute Sharpe / DD vs portfolio reality; ranking is preserved.
+
+Why this winner over alternatives:
+• **Cleanest derivation** — single-axis change from a published top-3 base (`backtest_10d_D_top_n_e08cf9da`, originally trail=0.5, n=6).
+• **Highest portfolio Sharpe** (5.10) among the strict-slice passers.
+• **Drawdown comfortably under 25%** (1.27 pp margin) without relying on multiple simultaneous axis changes.
+• **No iteration / no multi-axis stacking** — the result the agreed sensitivity-grid contract emits.
+
+Iterated extras (out of agreed spec): 30 additional configs exist in `crypto_backtest_summary` from chained CLI invocations that re-ranked against sensitivity-found bases. The strongest of these (`backtest_10d_D_top_n_d884e9f2`, two-axis-from-base) hit portfolio Sharpe 6.04, maxDD -12.9%, $80,931 — but its provenance is iterated, not single-axis. A targeted single-invocation sweep around it (per KI-125 follow-up) is documented in `PHASE1B_HANDOFF.md`. The selected winner remains `a02e15a0` unless that follow-up demonstrates a robust local optimum.
 
 ───
 
@@ -174,6 +212,27 @@ Phase 2: Execution Layer Build
 Status: Not started. Authorized to begin only after Phase 0 calibration passes.
 
 Goal: Build the bot that takes daily predictions and executes trades on Binance Futures Demo.
+
+Phase 1B Selected Winner — inputs to Phase 2
+
+The execution layer must implement these exact parameters (locked 2026-05-09):
+
+| Parameter | Value | Source |
+|---|---|---|
+| Horizon | **10d** | Phase 1B winner |
+| Selection rule | **top_n** | Phase 1B winner |
+| Top N | **6** | Phase 1B winner |
+| Exit policy | **D** (trailing stop) | Phase 1B base + sensitivity |
+| `trail_pct` | **0.30** | Sensitivity (50% → 30%) |
+| `activation_pct` | **0.01** | Class default |
+| Concurrent positions | 6 target (5-8 range) | Locked Decision (sizing) |
+| Capital deployment | 80% of wallet, 20% reserve | Locked Decision (sizing) |
+| Per-position size | Equal weight | Locked Decision (sizing) |
+| Leverage | 1x or 2x | Locked Decision |
+| Margin mode | Isolated | Locked Decision |
+| Reference run_id | `backtest_10d_D_top_n_a02e15a0` | DB anchor |
+
+**Phase 2 acceptance criterion**: paper-trading P&L over 4 weeks must track the realistic-portfolio expectation derived from `simulate_portfolio` on `a02e15a0` within the ±20% rolling-30-day band specified in Phase 3.
 
 Tasks:
 1. Order placement module (limit orders, fill tracking, retry logic)
