@@ -6,6 +6,58 @@ are at the top.
 
 ---
 
+## 2026-05-09 — KI-124 fix: equity recency budget
+
+**Branch:** `fix-ki124-equity-recency-budget` off
+`master @ 0e372e6`. Single targeted fix; one commit.
+
+**Trigger.** KI-124 was opened earlier the same day during
+KI-120 verification: monitor count side green for equity but
+recency_ok=False because the 27h `RECENCY_BUDGET["equity"]`
+couldn't accommodate equity's T-1 scoring (`prediction_date =
+yesterday`) plus the Friday→Monday weekend roll (latest
+`prediction_date` stays at Friday for ~72h).
+
+### What changed
+
+- `monitoring/pipeline_execution.py` —
+  `RECENCY_BUDGET["equity"]` raised from 27h to 75h (72h weekend
+  roll + 3h grace). Crypto stays at 27h (24/7 trading, no
+  weekend gap); FX stays at 2h. Inline comments document why
+  the three budgets are asymmetric. Module docstring schedule
+  line corrected from "21:00 UTC" to "00:15 UTC, scores T-1"
+  per KI-101.
+- `DECISIONS.md` — ADR-015 documents the asymmetric per-engine
+  recency budgets with explicit holiday-extended-weekend
+  trade-off (deliberately not covered to keep the monitor
+  responsive to real outages). Future option to land
+  `row_inserted_at TIMESTAMP` and tighten all budgets is noted
+  as deferred.
+
+### Verification
+
+- `pipeline_execution.run()` against production DB:
+  ```
+  [equity] recency_ok=True count_ok=True  latest=2026-05-08
+           n_latest=43  n_avg=50.0  ratio=0.86
+  [crypto] recency_ok=True count_ok=True  latest=2026-05-09
+  [fx]     recency_ok=True count_ok=True  latest=2026-05-09 08:00
+  ```
+- `tests/equity/test_monitoring.py` + `tests/regression/`:
+  **38 passed**, no regressions.
+
+### KI status
+
+- KI-124 → resolved.
+- Open observations now: KI-119, KI-122, KI-123 (down from 4).
+
+### Branch status
+
+`fix-ki124-equity-recency-budget` ready to merge to master.
+Single commit, narrow scope.
+
+---
+
 ## 2026-05-09 — Equity ingestion fix: KI-120 resolved
 
 **Branch:** `fix-equity-ingestion-degradation` off

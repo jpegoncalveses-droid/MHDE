@@ -2,7 +2,7 @@
 and produced a row count above a sensible floor.
 
 Per ARCHITECTURE.md schedules:
-  equity ML predict   → daily 21:00 UTC      (expect new ml_predictions rows daily)
+  equity ML predict   → daily 00:15 UTC, scores T-1 (expect new ml_predictions rows daily)
   crypto ML predict   → daily 00:30 UTC      (expect new crypto_ml_predictions rows daily)
   fx     ML predict   → hourly :05           (expect new fx_ml_predictions rows every hour)
   daily-analysis      → Mon-Fri 23:15        (expect new pipeline_runs rows weekday)
@@ -37,12 +37,24 @@ logger = logging.getLogger("mhde.monitoring.pipeline_execution")
 
 
 # Grace windows after the scheduled firing before we consider the
-# pipeline "missed". Generous to avoid flapping when a slow Yahoo
-# fetch pushes a run into the next hour.
+# pipeline "missed". The monitor compares `now - latest_dt` against
+# this budget, where `latest_dt` is `MAX(prediction_date)` interpreted
+# as midnight UTC of that date. The budgets must therefore include
+# both the schedule's natural lag AND the schema's prediction-date
+# convention.
 RECENCY_BUDGET = {
-    "equity": timedelta(hours=27),       # daily @ 21:00 + 6h grace
-    "crypto": timedelta(hours=27),       # daily @ 00:30 + 6h grace
-    "fx":     timedelta(hours=2),        # hourly @ :05 + 1h grace
+    # Equity: T-1 scoring at 00:15 UTC daily. prediction_date is
+    # yesterday's trading date; on a Friday → Monday weekend the
+    # latest stays at Friday until Tuesday's 00:15 fire (~72h gap
+    # between fresh prediction_date values). 75h = 72h weekend roll +
+    # 3h grace. Holiday-extended weekends may still warn — accepted.
+    # See ADR-015 for rationale.
+    "equity": timedelta(hours=75),
+    # Crypto: 24/7 scoring at 00:30 UTC; no weekend gap.
+    # 27h = 24h cycle + 3h grace.
+    "crypto": timedelta(hours=27),
+    # FX: hourly at :05; tight budget appropriate.
+    "fx":     timedelta(hours=2),
 }
 
 
