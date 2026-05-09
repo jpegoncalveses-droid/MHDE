@@ -2083,5 +2083,11 @@ def monitor_smoke():
     raise SystemExit(smoke_test.main())
 
 
+@monitor.command("streamlit-freshness")
+def monitor_streamlit_freshness():
+    from monitoring import streamlit_freshness
+    raise SystemExit(streamlit_freshness.main())
+
+
 if __name__ == "__main__":
     cli()

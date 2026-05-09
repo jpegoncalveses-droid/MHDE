@@ -155,6 +155,72 @@ def test_dashboard_consistency_pct_move_rendering_for_pending(temp_db):
     assert _check_pct_move_string(df.iloc[0], "equity") is True
 
 
+# ──────────────────────────────────────────────────────────────────────
+# streamlit_freshness
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_streamlit_freshness_ok_when_process_post_dates_commit():
+    """Process started after the latest commit → ok."""
+    from datetime import timedelta as _td
+    from monitoring import streamlit_freshness
+    commit = datetime(2026, 5, 9, 9, 0, 0, tzinfo=timezone.utc)
+    process = commit + _td(hours=1)
+    result = streamlit_freshness.run(
+        process_start=process, latest_commit=commit
+    )
+    assert result.status == "ok"
+    assert result.metrics["lag_hours"] <= 0
+
+
+def test_streamlit_freshness_ok_when_lag_under_threshold():
+    """Lag of 2h with default 4h threshold → ok."""
+    from datetime import timedelta as _td
+    from monitoring import streamlit_freshness
+    process = datetime(2026, 5, 9, 7, 0, 0, tzinfo=timezone.utc)
+    commit  = datetime(2026, 5, 9, 9, 0, 0, tzinfo=timezone.utc)
+    result = streamlit_freshness.run(
+        process_start=process, latest_commit=commit
+    )
+    assert result.status == "ok"
+    assert result.metrics["lag_hours"] == 2.0
+
+
+def test_streamlit_freshness_warns_when_lag_exceeds_threshold():
+    """Lag of 18h (the May 9 incident) → warn."""
+    from datetime import timedelta as _td
+    from monitoring import streamlit_freshness
+    process = datetime(2026, 5, 8, 15, 20, 0, tzinfo=timezone.utc)
+    commit  = datetime(2026, 5, 9,  9,  0, 0, tzinfo=timezone.utc)
+    result = streamlit_freshness.run(
+        process_start=process, latest_commit=commit
+    )
+    assert result.status == "fail"
+    assert result.severity == "warn"
+    assert "Restart with" in result.body
+    assert "systemctl --user restart" in result.body
+    assert result.metrics["lag_hours"] > 4
+
+
+def test_streamlit_freshness_handles_unreadable_inputs():
+    """When systemctl / git are unreadable, the monitor warns instead
+    of crashing."""
+    from monitoring import streamlit_freshness
+    # Both inputs left as None forces the real-subprocess path. We can
+    # at least verify the result structure doesn't raise. Whether the
+    # subprocess succeeds depends on the host; in CI both are likely to
+    # work; on a stripped-down test env they may not. Either way, the
+    # call returns a MonitorResult.
+    result = streamlit_freshness.run()
+    assert result.monitor == "streamlit_freshness"
+    assert result.status in ("ok", "warn", "fail")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# dashboard_consistency: filled row with missing realized
+# ──────────────────────────────────────────────────────────────────────
+
+
 def test_dashboard_consistency_flags_filled_row_missing_realized(temp_db):
     """A filled row (outcome_filled_at set) without actual_max_return
     should be flagged — fill_outcomes is the writer that should have
