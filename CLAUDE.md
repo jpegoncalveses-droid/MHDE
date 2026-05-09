@@ -48,3 +48,26 @@ Do not use inline `python -c` blocks for DuckDB smoke tests.
 Use this command instead:
 
 `venv/bin/python .claude/local_scripts/test_duckdb_failed_alter.py`
+
+## Cross-chat protocol
+
+This repo is sometimes worked on by parallel Claude Code chat sessions.
+A workstream started in one chat (e.g. an in-flight branch, a deferred
+test, an ADR mid-cutover) is invisible to a chat that starts cold —
+unless `SESSION_LOG.md` and the branch state make it visible.
+
+**Before starting substantial work** (anything beyond a one-line edit
+or a read-only investigation): search `SESSION_LOG.md` for related
+ongoing workstreams (recent entries, "Pending" sections, branches
+named in the entry). If you find one, check the branch state with
+`git branch -a` and `git log` for that branch before touching
+overlapping code paths. If you're uncertain whether your work overlaps
+an in-flight workstream, **stop and ask the user** before proceeding.
+The cost of a clarifying question is much lower than the cost of two
+chats colliding on the same files.
+
+**When working in parallel chat sessions**, the chat that starts
+substantial work is responsible for updating `SESSION_LOG.md` before
+ending — even if the work is unfinished. A "Pending" section in the
+session entry is enough to make the work visible to the next chat.
+Don't rely on memory or the assumption that the user will mention it.
