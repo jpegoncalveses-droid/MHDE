@@ -76,7 +76,11 @@ def test_ingest_dates_grouped_filters_to_universe(temp_db):
                  json=_grouped_payload("AAPL", "MSFT", "GOOG", "AMZN", "NFLX"),
                  status=200, match_querystring=False)
 
-    ing = PricesIngestor(cfg={"polygon_api_key": "TEST_KEY"})
+    ing = PricesIngestor(cfg={
+        "polygon_api_key": "TEST_KEY",
+        "polygon_throttle_s": 0,           # no throttling under test
+        "polygon_retry_after_429_s": 0,    # no retry sleep under test
+    })
     result = ing.ingest_dates(
         temp_db, run_id="r1",
         dates=[date(2026, 5, 8)],
@@ -98,7 +102,11 @@ def test_ingest_dates_grouped_non_trading_day_is_silent(temp_db):
                  json={"resultsCount": 0, "results": [], "status": "OK"},
                  status=200, match_querystring=False)
 
-    ing = PricesIngestor(cfg={"polygon_api_key": "TEST_KEY"})
+    ing = PricesIngestor(cfg={
+        "polygon_api_key": "TEST_KEY",
+        "polygon_throttle_s": 0,           # no throttling under test
+        "polygon_retry_after_429_s": 0,    # no retry sleep under test
+    })
     result = ing.ingest_dates(
         temp_db, run_id="r1",
         dates=[date(2026, 5, 9)],  # Saturday
@@ -120,7 +128,11 @@ def test_ingest_dates_fallback_runs_for_universe_tickers_missing_from_grouped(te
                  json=_single_payload("RKLB"),
                  status=200, match_querystring=False)
 
-    ing = PricesIngestor(cfg={"polygon_api_key": "TEST_KEY"})
+    ing = PricesIngestor(cfg={
+        "polygon_api_key": "TEST_KEY",
+        "polygon_throttle_s": 0,           # no throttling under test
+        "polygon_retry_after_429_s": 0,    # no retry sleep under test
+    })
     result = ing.ingest_dates(
         temp_db, run_id="r1",
         dates=[date(2026, 5, 8)],
@@ -157,7 +169,11 @@ def test_ingest_dates_fallback_is_capped(temp_db):
                  json={"resultsCount": 0, "results": [], "status": "OK"},
                  status=200, match_querystring=False)
 
-    ing = PricesIngestor(cfg={"polygon_api_key": "TEST_KEY"})
+    ing = PricesIngestor(cfg={
+        "polygon_api_key": "TEST_KEY",
+        "polygon_throttle_s": 0,           # no throttling under test
+        "polygon_retry_after_429_s": 0,    # no retry sleep under test
+    })
     result = ing.ingest_dates(
         temp_db, run_id="r1",
         dates=[date(2026, 5, 8)],
@@ -177,7 +193,11 @@ def test_ingest_dates_idempotent(temp_db):
                  json=_grouped_payload("AAPL"),
                  status=200, match_querystring=False)
 
-    ing = PricesIngestor(cfg={"polygon_api_key": "TEST_KEY"})
+    ing = PricesIngestor(cfg={
+        "polygon_api_key": "TEST_KEY",
+        "polygon_throttle_s": 0,           # no throttling under test
+        "polygon_retry_after_429_s": 0,    # no retry sleep under test
+    })
     ing.ingest_dates(temp_db, "r1", [date(2026, 5, 8)], ["AAPL"])
     ing.ingest_dates(temp_db, "r2", [date(2026, 5, 8)], ["AAPL"])
 
@@ -202,7 +222,11 @@ def test_ingest_default_uses_lookback_days(temp_db):
                  json={"resultsCount": 0, "results": [], "status": "OK"},
                  status=200, match_querystring=False)
 
-    ing = PricesIngestor(cfg={"polygon_api_key": "TEST_KEY"})
+    ing = PricesIngestor(cfg={
+        "polygon_api_key": "TEST_KEY",
+        "polygon_throttle_s": 0,           # no throttling under test
+        "polygon_retry_after_429_s": 0,    # no retry sleep under test
+    })
     result = ing.ingest(temp_db, "r1", ["AAPL"])
     assert result["status"] == "ok"
     # One per-date entry per lookback day.

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 import uuid
 from datetime import date, datetime, timedelta
 from typing import Any, Iterable
@@ -61,23 +62,82 @@ DEFAULT_LOOKBACK_DAYS = 7
 # falls through to the orchestrator's Stooq / Yahoo stages.
 DEFAULT_FALLBACK_LIMIT = 10
 
+# Free-tier rate limit is ~5 req/min. We sleep this many seconds
+# between consecutive Polygon HTTP calls (grouped or single) to stay
+# safely under the limit. 13s × 5 = 65s window — gives a buffer.
+DEFAULT_THROTTLE_S = 13.0
+
+# 429 (Too Many Requests) retry policy. Wait this many seconds and
+# retry once before giving up on a date. Polygon doesn't always send
+# Retry-After; this is a fixed-budget fallback.
+RETRY_AFTER_429_S = 65.0
+
 
 class PricesIngestor(BaseIngestor):
     source_name = "polygon"
+
+    def __init__(self, cfg: dict):
+        super().__init__(cfg)
+        # Throttle and retry timings can be overridden in cfg for tests.
+        self._throttle_s = float(cfg.get("polygon_throttle_s", DEFAULT_THROTTLE_S))
+        self._retry_after_429_s = float(
+            cfg.get("polygon_retry_after_429_s", RETRY_AFTER_429_S)
+        )
+        # Tracks the wall-clock time of the last Polygon HTTP call so
+        # back-to-back calls space themselves out.
+        self._last_call_at: float = 0.0
 
     def _api_key(self) -> str | None:
         return self.cfg.get("polygon_api_key") or os.environ.get("POLYGON_API_KEY")
 
     # ── HTTP helpers ─────────────────────────────────────────────────
 
+    def _throttle(self) -> None:
+        """Sleep just long enough since the last call to keep under the
+        free-tier 5 req/min budget."""
+        if self._throttle_s <= 0:
+            return
+        elapsed = time.monotonic() - self._last_call_at
+        if elapsed < self._throttle_s:
+            time.sleep(self._throttle_s - elapsed)
+        self._last_call_at = time.monotonic()
+
+    def _get_with_429_retry(self, url: str, timeout: int) -> requests.Response | None:
+        """GET that retries once on 429 after a fixed cooldown. Returns
+        None on transport-level failure."""
+        self._throttle()
+        try:
+            r = requests.get(url, timeout=timeout)
+        except requests.RequestException as exc:
+            self.logger.debug("Polygon GET failed: %s", exc)
+            return None
+        if r.status_code == 429 and self._retry_after_429_s > 0:
+            wait_s = self._retry_after_429_s
+            # Honor Retry-After header when present.
+            ra = r.headers.get("Retry-After")
+            if ra:
+                try:
+                    wait_s = max(wait_s, float(ra))
+                except ValueError:
+                    pass
+            self.logger.warning(
+                "Polygon 429 — sleeping %.0fs and retrying once", wait_s
+            )
+            time.sleep(wait_s)
+            self._last_call_at = time.monotonic()
+            try:
+                r = requests.get(url, timeout=timeout)
+            except requests.RequestException as exc:
+                self.logger.debug("Polygon retry failed: %s", exc)
+                return None
+        return r
+
     def _fetch_grouped(self, api_key: str, d: date) -> tuple[list[dict], int]:
         """Fetch all US stocks' daily bars for `d`. Returns (results, status).
         Empty list on a 200 with no data (e.g. weekends, market holidays)."""
         url = _GROUPED_URL_TMPL.format(date=d.isoformat(), key=api_key)
-        try:
-            r = requests.get(url, timeout=30)
-        except requests.RequestException as exc:
-            self.logger.warning("Polygon grouped %s: request failed: %s", d, exc)
+        r = self._get_with_429_retry(url, timeout=30)
+        if r is None:
             return [], -1
         if r.status_code != 200:
             return [], r.status_code
@@ -90,10 +150,8 @@ class PricesIngestor(BaseIngestor):
     def _fetch_single(self, api_key: str, ticker: str, d: date) -> tuple[list[dict], int]:
         """Fallback: fetch a single ticker's bar for one date."""
         url = _SINGLE_URL_TMPL.format(ticker=ticker, date=d.isoformat(), key=api_key)
-        try:
-            r = requests.get(url, timeout=15)
-        except requests.RequestException as exc:
-            self.logger.debug("Polygon single %s %s: request failed: %s", ticker, d, exc)
+        r = self._get_with_429_retry(url, timeout=15)
+        if r is None:
             return [], -1
         if r.status_code != 200:
             return [], r.status_code
