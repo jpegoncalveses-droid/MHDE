@@ -217,6 +217,77 @@ def test_streamlit_freshness_handles_unreadable_inputs():
 
 
 # ──────────────────────────────────────────────────────────────────────
+# dashboard_synthetic
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_dashboard_synthetic_ok_on_empty_db_skip_http(temp_db):
+    """Empty DB: helpers return no rows, no failures, http skipped."""
+    from monitoring import dashboard_synthetic
+    result = dashboard_synthetic.run(conn=temp_db, skip_http=True)
+    assert result.status == "ok"
+    for engine in ("equity", "crypto", "fx"):
+        assert result.metrics[engine]["rows"] == 0
+
+
+def test_dashboard_synthetic_flags_helper_raise(temp_db, monkeypatch):
+    """If a helper raises, the monitor reports it cleanly."""
+    from monitoring import dashboard_synthetic
+    from dashboard.services import queries as q
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("simulated helper failure")
+    monkeypatch.setattr(q, "get_equity_predictions", _boom)
+
+    # Seed enough rows so we DO call get_equity_predictions (it's
+    # short-circuited when ml_predictions is empty).
+    from datetime import date
+    temp_db.execute(
+        "INSERT INTO ml_predictions (ticker, prediction_date, model_id, "
+        "horizon, predicted_probability, prediction_threshold) "
+        "VALUES ('XYZ', ?, 'm1', '5d', 0.6, 0.05)",
+        [date(2026, 5, 8)],
+    )
+
+    result = dashboard_synthetic.run(conn=temp_db, skip_http=True)
+    assert result.status == "fail"
+    assert "equity: helper raised" in result.body
+    assert "RuntimeError" in result.body
+
+
+def test_dashboard_synthetic_flags_all_null_key_column(temp_db, monkeypatch):
+    """If a key column is entirely NULL in the helper result, monitor
+    flags it. Mirrors the May 9 maturity-date failure."""
+    from monitoring import dashboard_synthetic
+    from dashboard.services import queries as q
+    import pandas as pd
+
+    def _stub_equity(conn, prediction_date):
+        return pd.DataFrame({
+            "ticker": ["AAA", "BBB"],
+            "horizon": ["5d", "5d"],
+            "predicted_probability": [0.6, 0.7],
+            "price_at_prediction": [100.0, 200.0],
+            "maturity_date": [None, None],   # all-NULL — the bug
+            "outcome_filled_at": [None, None],
+        })
+    monkeypatch.setattr(q, "get_equity_predictions", _stub_equity)
+
+    from datetime import date
+    temp_db.execute(
+        "INSERT INTO ml_predictions (ticker, prediction_date, model_id, "
+        "horizon, predicted_probability, prediction_threshold) "
+        "VALUES ('AAA', ?, 'm1', '5d', 0.6, 0.05)",
+        [date(2026, 5, 8)],
+    )
+
+    result = dashboard_synthetic.run(conn=temp_db, skip_http=True)
+    assert result.status == "fail"
+    assert "maturity_date" in result.body
+    assert "all-NULL" in result.body
+
+
+# ──────────────────────────────────────────────────────────────────────
 # dashboard_consistency: filled row with missing realized
 # ──────────────────────────────────────────────────────────────────────
 

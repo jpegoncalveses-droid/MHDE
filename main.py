@@ -2089,5 +2089,11 @@ def monitor_streamlit_freshness():
     raise SystemExit(streamlit_freshness.main())
 
 
+@monitor.command("dashboard-synthetic")
+def monitor_dashboard_synthetic():
+    from monitoring import dashboard_synthetic
+    raise SystemExit(dashboard_synthetic.main())
+
+
 if __name__ == "__main__":
     cli()
