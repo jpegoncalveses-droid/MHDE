@@ -103,3 +103,4 @@ outputs/2026-*/
 data/processed/ifrs_mapping_gap_diagnostics.csv
 data/processed/mhde_inventory.md
 data/logs/
+data/reports/
