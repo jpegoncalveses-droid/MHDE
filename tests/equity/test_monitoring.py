@@ -58,11 +58,120 @@ def test_send_alert_dry_run_does_not_call_telegram(mock_telegram, monkeypatch):
 
 def test_dashboard_consistency_ok_on_empty_db(temp_db):
     """Empty DB has no candidate_outcomes — dashboard and direct query
-    both return 0; no mismatch."""
+    both return 0; no mismatch. Empty engines also produce no
+    column-completeness issues (an empty engine is pipeline_execution's
+    concern, not dashboard_consistency's)."""
     from monitoring import dashboard_consistency
     result = dashboard_consistency.run(conn=temp_db)
     assert result.monitor == "dashboard_consistency"
     assert result.status == "ok"
+
+
+def _seed_equity_pending_row(temp_db, ticker, pred_date, horizon, with_maturity_date):
+    """Helper: insert one ticker's prices_daily entry and one pending
+    ml_predictions row. `with_maturity_date=True` means we also seed
+    enough trading rows so the JOIN resolves maturity (matured-style);
+    `False` means the JOIN returns NULL (the May 9 bug shape — pending
+    with no future rows yet)."""
+    from datetime import timedelta
+    rows = [(pred_date, 100.0)]
+    if with_maturity_date:
+        # 5 weekday rows after pred_date so 5d horizon resolves.
+        cur = pred_date + timedelta(days=1)
+        while len(rows) < 7:
+            if cur.weekday() < 5:
+                rows.append((cur, 100.0 + len(rows)))
+            cur += timedelta(days=1)
+    for i, (d, c) in enumerate(rows):
+        temp_db.execute(
+            "INSERT INTO prices_daily (id, ticker, trade_date, close, adjusted_close) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [f"{ticker}-{i}", ticker, d, c, c],
+        )
+    temp_db.execute(
+        "INSERT INTO ml_predictions (ticker, prediction_date, model_id, "
+        "horizon, predicted_probability, prediction_threshold) "
+        "VALUES (?, ?, 'm1', ?, 0.65, 0.05)",
+        [ticker, pred_date, horizon],
+    )
+
+
+def test_dashboard_consistency_flags_all_null_maturity_date(temp_db, monkeypatch):
+    """Regression for the May 9 equity bug: pending equity rows with
+    NULL maturity_date are flagged. We bypass the busday-offset
+    backfill in queries.py so the column STAYS NULL the way it did
+    before the fix landed — and assert dashboard_consistency catches it."""
+    from datetime import date
+
+    # Patch out the post-processor that fills the estimate so we can
+    # simulate the pre-fix state.
+    from dashboard.services import queries as q
+    monkeypatch.setattr(
+        q, "_fill_estimated_equity_maturity", lambda df, prediction_date_value=None: df
+    )
+
+    pred_date = date(2026, 5, 8)
+    _seed_equity_pending_row(temp_db, "AAA", pred_date, "5d", with_maturity_date=False)
+    _seed_equity_pending_row(temp_db, "BBB", pred_date, "5d", with_maturity_date=False)
+
+    from monitoring import dashboard_consistency
+    result = dashboard_consistency.run(conn=temp_db)
+    assert result.status == "fail"
+    assert "maturity_date" in result.body
+    assert "all-NULL" in result.body or "NULL" in result.body
+    # Per-horizon labelling is expected.
+    assert "equity/5d" in result.body
+
+
+def test_dashboard_consistency_ok_with_filled_maturity_for_pending(temp_db):
+    """Pending equity rows with maturity_date populated (via the
+    busday-offset estimator in get_equity_predictions) and
+    price_at_maturity correctly NULL — no failures."""
+    from datetime import date
+    pred_date = date(2026, 5, 8)
+    _seed_equity_pending_row(temp_db, "AAA", pred_date, "5d", with_maturity_date=False)
+
+    from monitoring import dashboard_consistency
+    result = dashboard_consistency.run(conn=temp_db)
+    # Only 1 ticker, 1 horizon — get_equity_predictions's
+    # _fill_estimated_equity_maturity puts the May 15 estimate in.
+    # The realized columns are NULL but the row is pending so no flag.
+    assert result.status == "ok", f"got {result.status}: {result.body}"
+
+
+def test_dashboard_consistency_pct_move_rendering_for_pending(temp_db):
+    """Pending row with current_price populated — pct_move format helper
+    renders +/- N% (or "+0.00%" for same-day same-price). Should NOT
+    flag — "+0.00%" is a valid render; only an empty result fails."""
+    from datetime import date
+    pred_date = date(2026, 5, 8)
+    _seed_equity_pending_row(temp_db, "AAA", pred_date, "5d", with_maturity_date=False)
+
+    # Sanity: confirm the format helper renders non-empty for this row.
+    from dashboard.services.queries import get_equity_predictions
+    df = get_equity_predictions(temp_db, pred_date)
+    assert not df.empty
+    from monitoring.dashboard_consistency import _check_pct_move_string
+    assert _check_pct_move_string(df.iloc[0], "equity") is True
+
+
+def test_dashboard_consistency_flags_filled_row_missing_realized(temp_db):
+    """A filled row (outcome_filled_at set) without actual_max_return
+    should be flagged — fill_outcomes is the writer that should have
+    populated it."""
+    from datetime import date, timedelta
+    pred_date = date(2026, 4, 1)
+    _seed_equity_pending_row(temp_db, "AAA", pred_date, "5d", with_maturity_date=True)
+    # Mark filled but DON'T set actual_max_return.
+    temp_db.execute(
+        "UPDATE ml_predictions SET outcome_filled_at = CURRENT_TIMESTAMP "
+        "WHERE ticker = 'AAA'"
+    )
+
+    from monitoring import dashboard_consistency
+    result = dashboard_consistency.run(conn=temp_db)
+    assert result.status == "fail"
+    assert "actual_max_return" in result.body
 
 
 # ──────────────────────────────────────────────────────────────────────
