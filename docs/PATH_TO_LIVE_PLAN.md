@@ -67,6 +67,13 @@ Pass criteria:
 
 Decision gate: if Phase 0 fails, halt project regardless of other progress. Reassess model.
 
+Tooling (added 2026-05-09):
+
+• Formal evaluation: `venv/bin/python main.py crypto phase0-report` produces a markdown go/no-go document covering all four criteria per active model. Saves to `data/reports/phase0_report_YYYY-MM-DD.md`. The verdict is INTERIM until the 200-sample gate is met; all four metrics are still computed and shown so the operator can track the trajectory week over week.
+• Weekly interim monitoring: `mhde-monitor-phase0-calibration.timer` (Sundays 06:00 UTC, system-level, `User=jpcg`) runs `monitoring/phase0_calibration.py`. Three alert paths: drift signal (lift < 1.5×, rolling-precision/baseline < 0.85, or 3+ consecutive calibration buckets > 10pp off), sample-rate slowdown (projected gate ETA slipped > 7 days vs prior week), and one-shot "200 reached" notification idempotently fired via `phase0_milestones`.
+• Implementation: `crypto/ml/phase0_evaluate.py` (4 criterion evaluators + reliability diagram + sample projection), `crypto/ml/phase0_report.py` (markdown renderer), `monitoring/phase0_calibration.py` (weekly monitor). Crypto-only wired today; engine extension is a one-config-block change.
+• Calibration drift definition is currently absolute (3+ consecutive buckets off > 10pp in the current week's data). Week-over-week relative drift detection is deferred to KI-126 until weekly snapshots accumulate.
+
 ───
 
 Phase 1A: Walk-Forward Prediction Backfill

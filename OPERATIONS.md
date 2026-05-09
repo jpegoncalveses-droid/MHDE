@@ -701,9 +701,9 @@ hard failure).
 
 ---
 
-## Monitors (Session 6)
+## Monitors (Session 6 + extensions)
 
-Six runtime monitors fire Telegram alerts on detected anomalies. Source
+Ten runtime monitors fire Telegram alerts on detected anomalies. Source
 under `monitoring/`, dispatched via `main.py monitor <name>`. Schedules
 are systemd-driven from `systemd/mhde-monitor-*.{service,timer}`.
 
@@ -711,12 +711,16 @@ are systemd-driven from `systemd/mhde-monitor-*.{service,timer}`.
 
 | Monitor | Schedule (UTC) | Module | What it checks |
 |---|---|---|---|
-| `dashboard-consistency` | every 6h at :30 | `monitoring/dashboard_consistency.py` | Dashboard query layer matches direct DB query (counts, latest-date rows). |
-| `pipeline-execution` | hourly at :40 | `monitoring/pipeline_execution.py` | Each engine has a fresh-enough latest write + row count ≥ 50% of 14-day rolling avg. |
+| `dashboard-consistency` | every 6h at :30 | `monitoring/dashboard_consistency.py` | Dashboard query layer matches direct DB query (counts, latest-date rows, per-engine × per-horizon column completeness). |
+| `pipeline-execution` | hourly at :40 | `monitoring/pipeline_execution.py` | Each engine has a fresh-enough latest write + row count ≥ 50% of 14-day rolling avg, both filtered to `is_active=true` model_ids. |
 | `config-drift` | daily 12:15 | `monitoring/config_drift.py` | Repo `systemd/*` ↔ deployed copies under `/etc/systemd/system` and `~/.config/systemd/user`. |
 | `model-performance` | daily 13:15 | `monitoring/model_performance.py` | Rolling 7d precision per active model ≥ 0.8× walk-forward baseline. |
 | `data-quality` | daily 02:00 | `monitoring/data_quality.py` | Per engine: distinct ticker / symbol count on latest day ≥ 80% of 14-day avg. |
 | `smoke` | hourly at :50 | `monitoring/smoke_test.py` | DB opens, every active joblib loads, `dashboard.services.queries.get_overview_stats` returns. |
+| `streamlit-freshness` | hourly at :35 | `monitoring/streamlit_freshness.py` | Running Streamlit process start time vs latest commit on master; warns if process predates commit by > 4h. |
+| `dashboard-synthetic` | hourly at :40 | `monitoring/dashboard_synthetic.py` | HTTP liveness on `/_stcore/health` + each `get_*_predictions` helper returns non-empty without raising. |
+| `cross-artifact` | daily 06:30 | `monitoring/cross_artifact.py` | Daily Telegram health-check formatter strings agree with direct DB queries. |
+| `phase0-calibration` | weekly Sun 06:00 | `monitoring/phase0_calibration.py` | Phase 0 interim drift (lift, precision-ratio, calibration buckets), sample-rate slowdown, and one-shot 200-sample-reached notification. See `docs/PATH_TO_LIVE_PLAN.md` § Phase 0. |
 
 Schedules are staggered to avoid the FX hourly :05 firing window and the
 nightly daily-analysis 23:15 lock window.
@@ -730,12 +734,52 @@ venv/bin/python main.py monitor smoke
 # Dry-run mode — compute the alert payload but never call Telegram
 MONITORING_DRY_RUN=true venv/bin/python main.py monitor smoke
 
-# All six in sequence (useful for end-to-end exercising on a fresh deploy)
+# All ten in sequence (useful for end-to-end exercising on a fresh deploy)
 for m in dashboard-consistency pipeline-execution config-drift \
-         model-performance data-quality smoke; do
+         model-performance data-quality smoke streamlit-freshness \
+         dashboard-synthetic cross-artifact phase0-calibration; do
     MONITORING_DRY_RUN=true venv/bin/python main.py monitor "$m"
 done
 ```
+
+### Phase 0 calibration evaluation runbook
+
+The formal Phase 0 go/no-go is the markdown report:
+
+```bash
+# Default: every is_active=true crypto model, save to data/reports/
+venv/bin/python main.py crypto phase0-report
+
+# One model only
+venv/bin/python main.py crypto phase0-report --model-id crypto_5d_ab428f75
+
+# Custom save path
+venv/bin/python main.py crypto phase0-report --out /tmp/phase0.md
+
+# Stdout only — no file save
+venv/bin/python main.py crypto phase0-report --out -
+```
+
+Verdict per model: `PASS` / `FAIL` / `INTERIM` (the latter when sample
+size < 200; all four metrics are still computed and shown so the
+operator can see trajectory). The four criteria, per
+`docs/PATH_TO_LIVE_PLAN.md` § Phase 0:
+
+1. Top-N hit rate within ±25% of walk-forward `precision_at_threshold`.
+2. Lift ≥ 1.3× over `base_rate` over rolling 30 days.
+3. No run of ≥ 3 consecutive same-direction reliability buckets > 10pp
+   off the bucket midpoint (definition (a) absolute; relative
+   week-over-week drift is KI-126).
+4. ≥ 200 filled outcomes.
+
+The weekly `phase0-calibration` monitor uses tighter "yellow flag"
+thresholds (lift < 1.5×, precision-ratio < 0.85) than the formal hard
+gates so drift surfaces before week 6.
+
+The one-shot "200-sample reached" notification fires once per model
+via `phase0_milestones` (engine, model_id, milestone="200_reached").
+Resetting that row will re-fire the notification — useful when
+intentionally re-running Phase 0 after a model retrain.
 
 Exit code 0 = ok, 1 = warn or fail. The systemd unit interprets non-zero
 as "service failed" — check `journalctl --user -u mhde-monitor-X.service`

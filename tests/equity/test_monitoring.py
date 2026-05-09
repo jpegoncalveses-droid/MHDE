@@ -448,6 +448,160 @@ def test_cross_artifact_handles_format_evolution(temp_db, monkeypatch):
 # ──────────────────────────────────────────────────────────────────────
 
 
+# ──────────────────────────────────────────────────────────────────────
+# phase0_calibration
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _seed_phase0_model(conn, model_id, horizon, **kwargs):
+    """Insert a crypto active model with optional metric overrides."""
+    defaults = dict(
+        target_threshold=0.10, base_rate=0.30,
+        precision_at_threshold=0.60, lift_over_base=2.0,
+    )
+    defaults.update(kwargs)
+    conn.execute(
+        """
+        INSERT INTO crypto_ml_model_runs
+            (model_id, horizon, target_threshold, base_rate,
+             precision_at_threshold, lift_over_base,
+             train_start, train_end, test_start, test_end, is_active)
+        VALUES (?, ?, ?, ?, ?, ?,
+                '2024-01-01', '2025-04-04',
+                '2025-04-05', '2025-04-30', true)
+        """,
+        [model_id, horizon, defaults["target_threshold"],
+         defaults["base_rate"], defaults["precision_at_threshold"],
+         defaults["lift_over_base"]],
+    )
+
+
+def _seed_phase0_predictions(conn, model_id, horizon, items):
+    """items: list of (predicted_probability, hit_bool, days_ago_filled)."""
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    from datetime import date as _date
+    now = _dt.now(tz=_tz.utc)
+    for i, (prob, hit, days_ago) in enumerate(items):
+        filled_at = now - _td(days=days_ago)
+        conn.execute(
+            """
+            INSERT INTO crypto_ml_predictions
+                (symbol, prediction_date, model_id, horizon,
+                 predicted_probability, prediction_threshold,
+                 actual_hit, outcome_filled_at, market_cap_bucket)
+            VALUES (?, ?, ?, ?, ?, 0.10, ?, ?, 'unknown')
+            """,
+            [f"PH0COIN{i:04d}USDT",
+             _date.today() - _td(days=i % 21),
+             model_id, horizon, prob, hit, filled_at],
+        )
+
+
+def test_phase0_monitor_ok_when_no_active_models(temp_db):
+    from monitoring import phase0_calibration
+    result = phase0_calibration.run(conn=temp_db)
+    assert result.status == "ok"
+    assert result.metrics["n_active_models"] == 0
+
+
+def test_phase0_monitor_ok_when_no_drift_no_threshold(temp_db):
+    """Healthy active model below 200 samples, no drift triggers."""
+    _seed_phase0_model(temp_db, "crypto_5d_test", "5d",
+                       precision_at_threshold=0.60, base_rate=0.30)
+    # 100 filled, hit rate 0.60 → ratio 1.00 (no drift), lift 2.0× (no drift)
+    items = [(0.62, True, 3)] * 60 + [(0.62, False, 3)] * 40
+    _seed_phase0_predictions(temp_db, "crypto_5d_test", "5d", items)
+    from monitoring import phase0_calibration
+    result = phase0_calibration.run(conn=temp_db)
+    assert result.status == "ok", f"got {result.status}: {result.body}"
+
+
+def test_phase0_monitor_warns_on_lift_drift(temp_db):
+    """Lift in last 30d below 1.5 → drift alert."""
+    _seed_phase0_model(temp_db, "crypto_5d_test", "5d",
+                       precision_at_threshold=0.60, base_rate=0.30)
+    # Lift = 0.40 / 0.30 = 1.33 — below 1.5 threshold
+    items = [(0.62, True, 3)] * 40 + [(0.62, False, 3)] * 60
+    _seed_phase0_predictions(temp_db, "crypto_5d_test", "5d", items)
+    from monitoring import phase0_calibration
+    result = phase0_calibration.run(conn=temp_db)
+    assert result.status == "warn"
+    assert result.severity == "warn"
+    assert "lift" in result.body.lower()
+    assert "1.33" in result.body
+
+
+def test_phase0_monitor_warns_on_precision_ratio_drift(temp_db):
+    """Rolling precision / baseline below 0.85 → drift alert."""
+    _seed_phase0_model(temp_db, "crypto_5d_test", "5d",
+                       precision_at_threshold=0.80, base_rate=0.30)
+    # 60 hits / 100 = 0.60 — ratio 0.75 against baseline 0.80
+    items = [(0.62, True, 3)] * 60 + [(0.62, False, 3)] * 40
+    _seed_phase0_predictions(temp_db, "crypto_5d_test", "5d", items)
+    from monitoring import phase0_calibration
+    result = phase0_calibration.run(conn=temp_db)
+    assert result.status == "warn"
+    assert "rolling precision" in result.body.lower()
+    assert "ratio" in result.body.lower()
+
+
+def test_phase0_monitor_threshold_reached_one_shot(temp_db):
+    """When n_filled crosses 200 for a model that hasn't fired the
+    milestone, monitor emits info alert. Subsequent runs do NOT
+    re-fire the same alert (idempotency via phase0_milestones)."""
+    _seed_phase0_model(temp_db, "crypto_5d_test", "5d",
+                       precision_at_threshold=0.60, base_rate=0.30)
+    # 200 filled, healthy hit rate so no drift signals fire
+    items = [(0.62, True, 3)] * 120 + [(0.62, False, 3)] * 80
+    _seed_phase0_predictions(temp_db, "crypto_5d_test", "5d", items)
+
+    from monitoring import phase0_calibration
+    first = phase0_calibration.run(conn=temp_db)
+    assert first.status == "warn"
+    assert first.severity == "info"
+    assert "Phase 0 sample threshold reached" in first.title
+    assert "phase0-report" in first.body
+
+    # Second run — should NOT re-fire the threshold-reached alert
+    second = phase0_calibration.run(conn=temp_db)
+    assert second.status == "ok", f"got {second.status}: {second.body}"
+
+
+def test_phase0_monitor_records_eta_for_slip_detection(temp_db):
+    """ETA from the projection is persisted into phase0_milestones
+    every run; week-over-week slip detection compares against it."""
+    _seed_phase0_model(temp_db, "crypto_5d_test", "5d",
+                       precision_at_threshold=0.60, base_rate=0.30)
+    # 50 filled spread across recent week so a projection ETA exists
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    from datetime import date as _date
+    now = _dt.now(tz=_tz.utc)
+    for i in range(50):
+        temp_db.execute(
+            """
+            INSERT INTO crypto_ml_predictions
+                (symbol, prediction_date, model_id, horizon,
+                 predicted_probability, prediction_threshold,
+                 actual_hit, outcome_filled_at, market_cap_bucket)
+            VALUES (?, ?, 'crypto_5d_test', '5d', 0.62, 0.10,
+                    ?, ?, 'unknown')
+            """,
+            [f"PH0ETACOIN{i:04d}USDT",
+             _date.today() - _td(days=i % 21),
+             i % 2 == 0,
+             now - _td(days=i % 7)],
+        )
+    from monitoring import phase0_calibration
+    phase0_calibration.run(conn=temp_db)
+    row = temp_db.execute(
+        "SELECT detail FROM phase0_milestones "
+        "WHERE engine = 'crypto' AND model_id = 'crypto_5d_test' "
+        "AND milestone = 'last_eta_projection'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] is not None  # an ISO date string
+
+
 def test_dashboard_consistency_flags_filled_row_missing_realized(temp_db):
     """A filled row (outcome_filled_at set) without actual_max_return
     should be flagged — fill_outcomes is the writer that should have

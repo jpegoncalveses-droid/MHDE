@@ -6,6 +6,69 @@ are at the top.
 
 ---
 
+## 2026-05-09 — Phase 0 evaluation infrastructure
+
+**Branch:** `phase0-evaluation-infrastructure` off `master`. Six
+commits, full test suite green.
+
+**Trigger.** Earlier the same day the operator asked whether Phase 0
+calibration validation was automated. Audit showed only partial
+coverage via `monitoring/model_performance.py` (one-sided 7-day
+precision check; no lift, no calibration buckets, no 200-sample
+gate). This session built the missing infrastructure so weekly drift
+surfaces before week 6 instead of waiting for the formal date.
+
+### What was completed
+
+1. `feat(crypto/ml): phase0_evaluate` — pure functions for the four
+   Phase 0 criteria + reliability diagram + sample-accumulation
+   projection. ``EngineConfig`` abstraction (CRYPTO wired today;
+   equity/FX = one-config-block extension). 25 tests.
+2. `feat(crypto/ml): phase0_report` — Markdown go/no-go renderer
+   with PASS/FAIL/INTERIM verdict, criterion table, per-criterion
+   detail, ASCII reliability diagram, sample accumulation block. 12 tests.
+3. `feat(monitoring): phase0_calibration` weekly monitor +
+   `phase0_milestones` schema. Three alert paths: drift (tighter
+   than formal gates), sample-rate slowdown (week-over-week ETA
+   slip > 7d), idempotent one-shot 200-reached notification. 6 tests.
+4. `feat(systemd): mhde-monitor-phase0-calibration` unit. Sundays
+   06:00 UTC, system-level, User=jpcg. The 10th monitor in the stack.
+5. `feat(main): crypto phase0-report` + `monitor phase0-calibration`
+   CLI bindings. `--model-id`, `--out` (with `-` for stdout-only).
+6. Docs: KI-126 opened (definition (b) week-over-week relative drift
+   detection deferred until snapshots accumulate). PATH_TO_LIVE_PLAN
+   Phase 0 section references the new tooling. OPERATIONS monitor
+   catalog grew from 6 to 10; new Phase 0 runbook section.
+
+### Verification (L5)
+
+Verification commands run during the session:
+- Full test suite green (1202 + 43 new tests = 1245).
+- `crypto phase0-report` against production DB rendered cleanly for
+  both active crypto models in INTERIM mode (32 and 57 filled, well
+  below 200-sample gate).
+- `monitor phase0-calibration` against production with
+  `MONITORING_DRY_RUN=true` returned ok (no false-positive alerts).
+- Pre-commit hook: clean (~2-3s, 27 smoke tests).
+
+### KIs
+
+- KI-126 opened — week-over-week relative drift detection deferred.
+- Open observations now: KI-122, KI-123, KI-126.
+
+### Pending operator deploy
+
+```bash
+sudo cp systemd/mhde-monitor-phase0-calibration.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now mhde-monitor-phase0-calibration.timer
+```
+
+Until deployed, the weekly run only fires via manual CLI; CLI
+report and underlying evaluators are live in master.
+
+---
+
 ## 2026-05-09 — Monitoring-gaps session: close the L4↔L5 gap
 
 **Branch:** `monitoring-gaps-session` off `master @ aa5c53c`. Five
