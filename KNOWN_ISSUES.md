@@ -1,8 +1,10 @@
 # Known Issues
 
-**2 open observations** (KI-122, KI-123). Both cosmetic — no hot
-fix required. They are tracked so a future session triages them
-deliberately rather than letting them rot in the working tree.
+**3 open observations** (KI-122, KI-123, KI-126). KI-122/123 are
+cosmetic; KI-126 is a future Phase 0 enhancement deferred until
+weekly reliability snapshots accumulate. None requires a hot fix —
+all tracked so a future session triages deliberately rather than
+letting them rot in the working tree.
 
 **KI-119, KI-120, and KI-124 resolved** in the 2026-05-09 sessions.
 KI-119 reclassified after empirical verification on the merged
@@ -44,6 +46,39 @@ or `ml_predictions` (the predict/features stages don't carry
 extended-tier tickers in practice — confirmed in the cap audit),
 so no production data quality impact today. Tracking for a future
 universe-cleanup session.
+
+### KI-126 — Phase 0 calibration drift definition (b) week-over-week relative not yet implemented
+
+**Symptom (anticipated, not yet observed).** The Phase 0 calibration-
+bucket criterion (`crypto/ml/phase0_evaluate.py:check_calibration_buckets`)
+currently uses **definition (a) absolute**: flag when ≥ 3 consecutive
+same-direction reliability buckets are off the bucket midpoint by
+> 10pp. This catches systematic miscalibration in any single
+evaluation. It does NOT catch slow drift week-over-week when each
+weekly snapshot is individually within tolerance but the trajectory
+is shifting (e.g. -3pp this week, -6pp next week, -9pp the week
+after — none failing alone, but the trend is real and would matter
+at week 6).
+
+**Plan (deferred).** Add **definition (b) relative**: persist the
+weekly reliability diagram into a `phase0_reliability_snapshots`
+table; the monitor compares this week's per-bucket hit rates against
+last week's snapshot and flags > 5pp week-over-week swings in the
+same direction across 3+ buckets. Needs ~4 weekly snapshots before
+the comparison is meaningful, so wiring it before that is premature.
+
+**Detection / fix path.** When the
+`mhde-monitor-phase0-calibration.timer` has accumulated 4+ Sunday
+firings, add the snapshot table to `crypto/schema.py`, extend
+`monitoring/phase0_calibration.py` to read/write it, add
+`check_calibration_drift_relative()` to `phase0_evaluate.py`, and
+wire it into the weekly monitor as a fourth alert path. Tests in
+`tests/equity/test_monitoring.py` should cover both directions
+(rapid drift week 2 → week 3 vs slow drift across 4 weeks).
+
+**Out of scope for the Phase 0 evaluation infrastructure session
+2026-05-09.** Recorded here so the future session knows the
+definition-(a) coverage today and how to extend.
 
 ### KI-123 — Misleading "Dev mode" log line in daily_radar.py
 
