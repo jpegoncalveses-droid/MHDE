@@ -89,6 +89,32 @@ After three CLI invocations of `--grid sensitivity` in quick succession, the ite
 
 CLI guard added 2026-05-09: re-running `--grid sensitivity` against a DB that already contains sensitivity-shape rows now refuses by default with an explanatory message. Override with `--allow-iterated` only if you know what you're doing. See `KNOWN_ISSUES.md` KI-125.
 
+### d884e9f2 robustness analysis (executed 2026-05-09)
+
+A targeted single-invocation sweep around `backtest_10d_D_top_n_d884e9f2` (10d / D / top_n with `trail_pct=0.30`, `activation_pct=0.00`, `n=5`; base portfolio Sharpe 6.04, maxDD -12.9%, $80,931) was run with `--allow-iterated` to characterize the local neighborhood. Verdict: **sharp peak**, not a smooth local optimum.
+
+Per-axis neighbor metrics (portfolio Sharpe / portfolio maxDD), with `|Δ vs base|` classification (>30% on either metric → "sharp"):
+
+| Axis | Value | port. Sharpe | port. maxDD | Classification |
+|---|---|---:|---:|---|
+| `trail_pct` | 0.30 (base) | 6.04 | -12.9% | base |
+| `trail_pct` | 0.50 | 2.78 | -13.1% | **sharp** (Sharpe -54%) |
+| `trail_pct` | 0.70 | 3.05 | -27.3% | **sharp** (Sharpe -50%, DD blows past 25% gate) |
+| `activation_pct` | 0.00 (base) | 6.04 | -12.9% | base |
+| `activation_pct` | 0.01 | 5.55 | -22.8% | **sharp** (DD +76% from -12.9% to -22.8%) |
+| `activation_pct` | 0.02 | 4.86 | -22.9% | **sharp** |
+| `activation_pct` | 0.03 | 4.65 | -22.1% | **sharp** |
+| `n` | 5 (base) | 6.04 | -12.9% | base |
+| `n` | 6 | 5.13 | -17.9% | **sharp** (DD +39%) |
+| `n` | 7 | 1.76 | -23.6% | **sharp** (Sharpe -71%) |
+| `n` | 8 | 1.80 | -19.6% | **sharp** (Sharpe -70%) |
+
+The base sits at the corner of the favorable region on every axis. A 1% perturbation on `activation_pct` (0.00 → 0.01, the class default) raises drawdown ~10 percentage points. The `n` axis goes off a cliff between n=6 and n=7 (Sharpe 5.13 → 1.76).
+
+**Conclusion: d884e9f2 is NOT a robust local optimum.** Its standout numbers are likely an overfit artifact of the chained-sweep search path through this period's specific drawdown structure. Live execution would not preserve them under the small parameter drift expected from real-world conditions (different funding-rate cadence in newer months, occasional missing bars, rounding).
+
+`a02e15a0` remains the Phase 1B selected winner. It sits in a smoother neighborhood (trail axis: 0.30 passes, 0.50/0.70 fail by similar margins; activation axis: 0.00/0.01 both pass with comparable metrics; n axis: n=5/n=6 both pass).
+
 ## Methodology caveats already documented
 
 ## Methodology caveats already documented
