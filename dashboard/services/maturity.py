@@ -3,6 +3,10 @@
 - Compute % move since prediction (filled vs pending)
 - Compute time remaining until maturity (days for equity/crypto, hours for FX)
 - Format both as user-facing strings ("+1.8%", "3d", "Past due")
+- Estimate maturity_date for pending equity predictions (calendar
+  approximation via business-day forward counting; the SQL
+  trading-rows-forward JOIN can only resolve maturity once the future
+  rows actually exist in prices_daily).
 
 Kept independent of any DB/Streamlit imports so they're trivial to test.
 Pandas NaT/NaN values flowing in from DuckDB DataFrames are treated as
@@ -14,6 +18,8 @@ import math
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Optional
+
+import numpy as np
 
 from fx.config import PIP_SIZE
 
@@ -126,6 +132,72 @@ def time_remaining_hours(
     seconds = (maturity_dt - now).total_seconds()
     hours = int(seconds // 3600) if seconds >= 0 else -int((-seconds) // 3600 + (1 if (-seconds) % 3600 else 0))
     return TimeRemaining(value=hours, unit="h", past_due=hours < 0)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Estimated maturity date for pending equity predictions
+# ──────────────────────────────────────────────────────────────────────
+
+
+# NYSE market closures. Used by `numpy.busday_offset` so the estimate
+# matches what `ml/predict.py:fill_outcomes` will eventually compute
+# from the trading-rows-forward JOIN once those future rows exist.
+# Extend this list when crossing into a new calendar year.
+_NYSE_HOLIDAYS = np.array(
+    [
+        # 2024
+        "2024-01-01", "2024-01-15", "2024-02-19", "2024-03-29",
+        "2024-05-27", "2024-06-19", "2024-07-04", "2024-09-02",
+        "2024-11-28", "2024-12-25",
+        # 2025
+        "2025-01-01", "2025-01-20", "2025-02-17", "2025-04-18",
+        "2025-05-26", "2025-06-19", "2025-07-04", "2025-09-01",
+        "2025-11-27", "2025-12-25",
+        # 2026
+        "2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03",
+        "2026-05-25", "2026-06-19", "2026-07-03", "2026-09-07",
+        "2026-11-26", "2026-12-25",
+        # 2027
+        "2027-01-01", "2027-01-18", "2027-02-15", "2027-03-26",
+        "2027-05-31", "2027-06-18", "2027-07-05", "2027-09-06",
+        "2027-11-25", "2027-12-24",
+    ],
+    dtype="datetime64[D]",
+)
+
+
+# Equity horizons map to N trading days forward; mirrors
+# ``ml/predict.py::fill_outcomes`` and the dashboard query's
+# trading-rows-forward JOIN.
+_EQUITY_HORIZON_TRADING_DAYS = {"5d": 5, "10d": 10, "20d": 20}
+
+
+def estimate_equity_maturity_date(
+    prediction_date: Optional[date], horizon: Optional[str]
+) -> Optional[date]:
+    """Estimate the trading-day maturity for a pending equity prediction.
+
+    Returns ``prediction_date + N business days`` where N is the
+    horizon's trading-day count (5/10/20), skipping NYSE holidays.
+    Used as a fallback when the trading-rows-forward JOIN in
+    `dashboard/services/queries.py:get_equity_predictions` returns
+    NULL because the future rows don't exist yet in `prices_daily`.
+
+    For matured predictions the JOIN's exact `mat.trade_date` is
+    authoritative; this estimate is only consulted when that is NULL.
+    """
+    if _is_missing(prediction_date) or _is_missing(horizon):
+        return None
+    n = _EQUITY_HORIZON_TRADING_DAYS.get(horizon)
+    if n is None:
+        return None
+    pd_date = _to_date(prediction_date)
+    start = np.datetime64(pd_date, "D")
+    out = np.busday_offset(
+        start, n, roll="forward", holidays=_NYSE_HOLIDAYS
+    )
+    # numpy returns a datetime64[D]; convert back to a plain date.
+    return out.astype("O")
 
 
 def format_time_remaining(tr: Optional[TimeRemaining]) -> str:
