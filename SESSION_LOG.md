@@ -6,6 +6,129 @@ are at the top.
 
 ---
 
+## 2026-05-09 — Monitoring-gaps session: close the L4↔L5 gap
+
+**Branch:** `monitoring-gaps-session` off `master @ aa5c53c`. Five
+commits, full test suite (990 tests, +14 new) green, four monitors
+verified ok against production.
+
+**Trigger.** Earlier the same day, an equity dashboard maturity-date
+fix passed every code-side check but the user's CSV was still empty
+because Streamlit had been running stale code for 18 hours. Every
+existing layer-monitor was green at the time. This session adds
+monitors that catch user-experience failures, not just internal-layer
+failures.
+
+### What was completed
+
+Five commits, each landing one item:
+
+1. **Trust-ladder docs** (`7f7eca5`).
+   ADR-016 codifies a six-level trust ladder (L0 code committed →
+   L5 user-visible artifact matches expectation). HARDENING_PLAN
+   universal exit criteria gain an explicit L5 verification bullet.
+   OPERATIONS gets a new "Trust ladder" section with verification
+   commands per level, plus a "Streamlit does NOT auto-reload"
+   subsection under "Restarting after a code change" pointing at
+   the new monitor.
+
+2. **dashboard_consistency strengthened** (`967eb69`).
+   Per-engine × per-horizon column-completeness checks. Asserts
+   `price_at_prediction`, `maturity_date`, `current_price` populated
+   for every row; `price_at_maturity` populated for filled and NULL
+   for pending; realized columns populated for filled; `pct_move_str`
+   non-empty/parseable (the format helper, when called, returns
+   non-empty — "+0.00%" is a valid render). Five new tests.
+
+3. **streamlit_freshness — new** (`a6811b8`).
+   Compares `systemctl --user show mhde-streamlit -p
+   ActiveEnterTimestamp --value` against `git log -1 --format=%ct
+   master`. Warns if process predates latest commit by > 4h.
+   Hourly system-level timer at :35. Four tests including the May 9
+   incident shape.
+
+4. **dashboard_synthetic — new** (`7521c5d`).
+   Hourly E2E probe: HTTP GET on `/_stcore/health` (catches
+   "Streamlit unreachable") plus calls each `get_*_predictions`
+   helper (catches "helper raised" + "key column all-NULL").
+   Three tests.
+
+5. **cross_artifact — new** (`d5e5821`).
+   Daily 06:30 UTC. Re-runs the health-check internals, parses the
+   detail strings via regex, independently re-queries the DB for
+   the same facts, alerts on disagreement. Plus verifies the
+   assembled Telegram message contains each detail string. Catches
+   the formatter-typo / dropped-section class of bug. Three tests.
+
+### Verification
+
+- `make test` (full suite): **990 passed in 228.47s** (was 976; +14
+  new tests in `tests/equity/test_monitoring.py`).
+- All four monitors smoke-tested end-to-end against the production
+  DB / running services with `MONITORING_DRY_RUN=true`:
+  - dashboard_consistency: status=ok across 3 engines × their
+    horizons (equity 5d/10d/20d, crypto 5d/10d, fx 24h/48h).
+  - streamlit_freshness: status=ok (Streamlit was restarted at
+    09:26 UTC; latest commit ~10:00 UTC; lag well under 4h).
+  - dashboard_synthetic: status=ok (HTTP 200 from
+    `/_stcore/health`, all three helpers return non-empty).
+  - cross_artifact: status=ok (all three engine details match DB).
+- `bash scripts/pre-commit.sh`: 27 tests in 2-3s including KI-118
+  regression.
+
+### Files changed
+
+New monitors:
+- `monitoring/streamlit_freshness.py`
+- `monitoring/dashboard_synthetic.py`
+- `monitoring/cross_artifact.py`
+Extended:
+- `monitoring/dashboard_consistency.py`
+New systemd units (added to `systemd/`, NOT yet deployed to
+`/etc/systemd/system/` — operator step):
+- `mhde-monitor-streamlit-freshness.{service,timer}` — hourly :35
+- `mhde-monitor-dashboard-synthetic.{service,timer}` — hourly :40
+- `mhde-monitor-cross-artifact.{service,timer}` — daily 06:30
+Docs:
+- `DECISIONS.md` ADR-016
+- `HARDENING_PLAN.md` universal exit criteria
+- `OPERATIONS.md` trust ladder + streamlit-restart subsection
+CLI:
+- `main.py` — three new `monitor <name>` subcommands
+Tests:
+- `tests/equity/test_monitoring.py` — 14 new test cases
+
+### KIs
+
+No new KIs surfaced — all four monitors reported `ok` against
+production on first run. The pre-existing open-list (KI-119,
+KI-122, KI-123) is unchanged.
+
+### Pending (operator action — not blocking the merge)
+
+Deploy the three new systemd timers:
+
+```
+sudo cp systemd/mhde-monitor-streamlit-freshness.{service,timer} /etc/systemd/system/
+sudo cp systemd/mhde-monitor-dashboard-synthetic.{service,timer} /etc/systemd/system/
+sudo cp systemd/mhde-monitor-cross-artifact.{service,timer}      /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now \
+    mhde-monitor-streamlit-freshness.timer \
+    mhde-monitor-dashboard-synthetic.timer \
+    mhde-monitor-cross-artifact.timer
+```
+
+Until deployed, the monitors run only via the manual CLI; the
+fixes themselves (extended dashboard_consistency, three new
+monitors) ARE active in code.
+
+### Branch status
+
+`monitoring-gaps-session` ready to merge to master `--no-ff`.
+
+---
+
 ## 2026-05-09 — KI-124 fix: equity recency budget
 
 **Branch:** `fix-ki124-equity-recency-budget` off
