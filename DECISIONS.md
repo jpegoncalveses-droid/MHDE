@@ -471,3 +471,70 @@ reasons of investment scope, not API economics.
   cap is "how many tickers ingestion attempts", features is "how
   many computed successfully". They will rarely match exactly and
   this is fine.
+
+---
+
+## ADR-015 — Asymmetric pipeline_execution recency budgets per engine
+
+**Date:** 2026-05-09
+**Session:** KI-124 fix
+**Status:** Active
+
+**Context.** `monitoring/pipeline_execution.py` checks
+`now - MAX(prediction_date)` against a per-engine `RECENCY_BUDGET`
+to decide whether each prediction pipeline ran on schedule. The
+`prediction_date` column has different semantics per engine:
+
+- **Equity** writes `prediction_date = T-1` (the previous trading
+  day). Equity ML predict fires at 00:15 UTC daily; on Mon morning
+  the most recent prediction_date is Friday (no fresh trading data
+  Sat/Sun), and the row stays "Friday" until Tuesday's fire writes
+  Monday. So `now - prediction_date_midnight` is naturally up to
+  ~72h on a Sunday evening even though the pipeline is healthy.
+- **Crypto** writes `prediction_date = T` (today; crypto trades
+  24/7). Latest prediction_date refreshes daily at 00:30 UTC; the
+  pre-existing 27h budget covers a 24h cycle plus 3h grace.
+- **FX** writes `prediction_date = datetime_utc` (timestamp, not
+  date). Latest refreshes hourly at :05; a 2h budget covers a 1h
+  cycle plus 1h grace.
+
+**Decision.** Set `RECENCY_BUDGET` asymmetrically:
+
+| Engine | Budget | Rationale |
+|---|---|---|
+| equity | 75h | 72h Fri→Tue weekend roll + 3h grace |
+| crypto | 27h | 24h daily cycle + 3h grace |
+| fx     | 2h  | 1h hourly cycle + 1h grace |
+
+The 75h equity budget assumes an ordinary weekend. US market
+holidays that extend a weekend (e.g. Thanksgiving Friday off,
+Memorial Day Monday off) would push the gap past 75h and produce a
+warn. That's accepted: a holiday-extended outage warrants an
+operator-level note ("we're going to flag for ~24h after this
+holiday weekend") rather than over-relaxing the budget so the
+monitor can't catch a real outage on a normal weekend.
+
+**Why not raise to 96h to cover holidays?** Each hour added to the
+budget weakens the monitor's ability to detect a real outage. 75h
+catches a real outage that misses the Tuesday morning fire; 96h
+would not catch it until Wednesday morning. Holiday warnings are
+acknowledgeable; outage warnings need to fire fast.
+
+**Why not add `row_inserted_at TIMESTAMP` to `ml_predictions` and
+key the recency check off the actual write time?** That's the
+better long-term fix — it removes the conflation between
+prediction_date semantics and write time entirely — but requires a
+schema migration plus monitor refactor. Out of scope for this
+session. Captured as a future option in the resolved KI-124 entry.
+
+**Consequence.**
+- The "Dev mode" log line in daily_radar.py:83 (KI-123) is no
+  longer the only daily_radar message that mis-implies status —
+  but the recency-budget asymmetry is now an explicit design
+  choice rather than a forgotten constant.
+- `monitoring/pipeline_execution.py:RECENCY_BUDGET` carries an
+  inline comment per engine pointing back to this ADR.
+- A future session that adds `row_inserted_at` should land that
+  schema column AND tighten all three budgets back to single-hour
+  multiples (the budgets stop needing to absorb prediction_date
+  semantics once the recency check uses real write time).

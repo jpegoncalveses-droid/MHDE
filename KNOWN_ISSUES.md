@@ -1,18 +1,14 @@
 # Known Issues
 
-**4 open observations** (KI-119, KI-122, KI-123, KI-124). KI-119
-surfaced 2026-05-09 during the discipline session. KI-122 / KI-123
-surfaced 2026-05-09 during the equity ingestion fix session as
-out-of-scope cleanups identified while triaging the 520-ticker
-universe cap. KI-124 surfaced 2026-05-09 during the same session's
-verification — the pipeline_execution recency budget for equity is
-too tight given equity's T-1 scoring schedule. None require a hot
-fix — they are tracked here so a future session triages them
-deliberately rather than letting them rot in the working tree.
+**3 open observations** (KI-119, KI-122, KI-123). All cosmetic /
+process — none require a hot fix. They are tracked here so a future
+session triages them deliberately rather than letting them rot in
+the working tree.
 
-**KI-120 resolved** the same session by switching the Polygon
-ingestor to the grouped-daily endpoint (see "Recently resolved"
-below for fix detail).
+**KI-120 and KI-124 resolved** in the 2026-05-09 sessions (KI-120
+by switching the Polygon ingestor to grouped-daily; KI-124 by
+raising the equity recency budget to 75h; see "Recently resolved"
+below).
 
 The historical record of resolved bugs lives in
 [`legacy/RESOLVED_ISSUES_ARCHIVE.md`](legacy/RESOLVED_ISSUES_ARCHIVE.md).
@@ -103,50 +99,36 @@ has %d, see ADR-014 for cap rationale)"`. Trivial one-liner.
 **Out of scope for the equity ingestion fix session 2026-05-09.**
 Documentation/clarity fix; no behavioral impact.
 
-### KI-124 — pipeline_execution recency budget too tight for equity's T-1 scoring
-
-**Symptom.** After the equity ingestion fix landed in the
-2026-05-09 session, `pipeline_execution.run()` against the
-production DB returned:
-```
-[equity] recency_ok=False count_ok=True
-  reason: latest prediction_date=2026-05-08 is 1 day, 8:34h old,
-          threshold 1 day, 3:00h
-  n_latest=43 n_avg=50.0 ratio=0.86  ← count side green
-```
-Volume is fine; recency flags every cycle.
-
-**Root cause.** `monitoring/pipeline_execution.py` derives `age =
-now - latest_dt`, where `latest_dt = MAX(prediction_date)` treated
-as midnight UTC of that date. Equity scoring runs at 00:15 UTC
-daily, but writes `prediction_date = T-1` (yesterday). So as soon
-as the 27h `RECENCY_BUDGET["equity"]` window passes 24h since
-midnight of the prediction_date — i.e., for ~22 of every 24 hours
-between fires, plus the entire weekend — recency_ok is False even
-though the pipeline ran on schedule. The schema has no
-`row_inserted_at` column on `ml_predictions`, so the monitor has
-no other anchor available.
-
-**Detection / fix path.** Two reasonable fixes:
-
-1. *Easy.* Raise `RECENCY_BUDGET["equity"]` to 75h (covers the
-   weekend gap: Friday 00:15 fire → next Monday 00:15 fire = 72h
-   plus 3h grace). Same for crypto, which has the same daily
-   pattern (RECENCY_BUDGET["crypto"]=27h today; crypto is
-   continuous so a 27h budget might be correct for it — verify).
-2. *Better but more work.* Add `row_inserted_at TIMESTAMP` to
-   `ml_predictions` / `crypto_ml_predictions` (default
-   `CURRENT_TIMESTAMP`). Have the monitor check
-   `MAX(row_inserted_at)` instead of `MAX(prediction_date)`. This
-   gives a true freshness signal independent of the prediction-date
-   cycle.
-
-**Out of scope for the equity ingestion fix session 2026-05-09.**
-The volume question (KI-120) is what was asked for; this recency
-issue pre-existed and just became visible after the volume side
-went green. Tracked here for a future monitor-tuning session.
-
 ## Recently resolved (post-Session-7)
+
+- **KI-124 — pipeline_execution recency budget too tight for
+  equity's T-1 scoring** (resolved 2026-05-09 on
+  `fix-ki124-equity-recency-budget`). Equity's `prediction_date`
+  is `T-1` and stays at "Friday" for 72+ hours over a weekend
+  (the Friday 00:15 fire scores Thursday; the Monday 00:15 fire
+  scores Friday; nothing fresh between). The `RECENCY_BUDGET`
+  was 27h for both equity and crypto with the same comment, but
+  crypto trades 24/7 and equity does not. Production monitor
+  was firing `recency_ok=False` for ~22 of every 24h on equity
+  even when the pipeline was healthy. **Fix.** Raised
+  `RECENCY_BUDGET["equity"]` to 75h (72h weekend roll + 3h
+  grace). Crypto stayed at 27h; FX stayed at 2h. Inline comment
+  documents why the budgets are asymmetric. ADR-015 captures
+  the design decision and explains why holiday-extended
+  weekends are deliberately not covered (each hour added to the
+  budget weakens the monitor's ability to detect a real
+  outage). **Verification.** Monitor against production DB now
+  reports all three engines green:
+  ```
+  [equity] recency_ok=True count_ok=True   latest=2026-05-08
+           n_latest=43  n_avg=50.0  ratio=0.86
+  [crypto] recency_ok=True count_ok=True   latest=2026-05-09
+  [fx]     recency_ok=True count_ok=True   latest=2026-05-09 08:00
+  ```
+  Future option captured: add `row_inserted_at TIMESTAMP` to
+  `ml_predictions` and key the recency check off real write time
+  (would let all three budgets shrink back to single-hour
+  multiples). Schema migration; deferred.
 
 - **KI-120 — equity ml_predictions volume thinning May 5-8** (resolved
   2026-05-09 on `fix-equity-ingestion-degradation`). The original
