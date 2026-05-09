@@ -1,22 +1,115 @@
 # Known Issues
 
-**No open issues.**
+**2 open observations** (KI-119 and KI-120, both surfaced 2026-05-09
+during the discipline session). Neither is a code defect requiring a
+hot fix — they are tracked here so a future session triages them
+deliberately rather than letting them rot in the working tree.
 
-Last cleared at end of Session 7 (2026-05-07). All previously-tracked
-KIs (28 across Sessions 0-7) were either resolved with a regression
-test pointer or formally closed. The historical record lives in
+The historical record of resolved bugs lives in
 [`legacy/RESOLVED_ISSUES_ARCHIVE.md`](legacy/RESOLVED_ISSUES_ARCHIVE.md).
+
+## Open
+
+### KI-119 — Phase 1A/1B walkfold backfill writes to a production table without setting model active state
+
+**Symptom.** The Phase 1A/1B crypto backtest workstream (preserved
+on branch `crypto-phase-1a-1b-backtest`) populated 36 walk-forward
+model_ids' worth of rows into `crypto_ml_predictions` covering
+prediction_dates 2024-12-04 → 2026-05-07, without inserting the
+matching `crypto_ml_model_runs` rows. The model_runs entries for
+those walkfold IDs only got registered on 2026-05-08 19:30 UTC —
+all with `is_active=false`. Production scoring uses the same
+`crypto_ml_predictions` table, and the pipeline_execution monitor
+read both kinds of rows when computing its 14-day rolling baseline.
+That contamination is the proximate cause of today's monitor false
+positive (resolved by the 2026-05-09 monitor patch).
+
+**Root cause (provisional).** The Phase 1A/1B backfill writer
+isolation was incomplete: writing into a production table is fine
+in principle, but only if every row is paired with a model_runs
+entry whose `is_active` flag is set deliberately at write time.
+Without that pairing, downstream consumers (this monitor, the
+dashboard's "predictions today" metrics, anything else aggregating
+the table) cannot distinguish backtest from production.
+
+**Detection / fix path.** When `crypto-phase-1a-1b-backtest` is next
+reviewed for merge-back: verify every writer that touches
+`crypto_ml_predictions` (or any `*_ml_predictions` table) registers
+its model_id in the matching `*_ml_model_runs` table with
+`is_active=false` BEFORE inserting predictions. Consider adding
+a regression test in `tests/regression/` that asserts
+"every distinct model_id in `*_ml_predictions` has a row in
+`*_ml_model_runs`" so the gap surfaces immediately if it recurs.
+
+**Out of scope for the discipline session 2026-05-09.** The
+monitor patch landed in this session unblocks the alert; the Phase
+1A/1B isolation reinforcement is a separate workstream and lives
+on its own branch.
+
+### KI-120 — Equity pipeline_execution flag (10 rows vs 27.5 14d baseline)
+
+**Symptom.** After the monitor fix in this session correctly
+filtered baseline counts to active-model rows only, the equity
+engine surfaced as `warn`: latest `prediction_date=2026-05-08`,
+`n_latest=10` rows, `n_avg=27.5`, `ratio=0.36` (below the 50%
+threshold). The crypto fix made this visible by removing the
+training-row inflation that previously masked it.
+
+**Possible interpretations** (not yet investigated):
+
+1. The active equity model genuinely scored 10 tickers on
+   2026-05-08 — universe regime change or threshold-induced
+   thinning analogous to today's crypto count.
+2. The 14-day baseline still contains some non-production rows
+   (a different writer pattern than crypto's walkfold).
+3. A training/walk-forward path on the equity engine is also
+   contaminating the predictions table the same way crypto
+   was, in which case the same KI-119 fix-pattern applies.
+
+**Detection / fix path.** Run the equity-side equivalent of the
+2026-05-09 crypto diagnostic
+(`.claude/local_scripts/crypto_volume_diagnostic.py` is the
+template): per-day row counts last 21 days for `ml_predictions`
+broken down by `model_id`, plus the `ml_model_runs` rows actually
+registered. Decide between (1)-(3) based on the data, then either
+file the count as expected, add a tighter filter, or open a fix
+ticket.
+
+**Out of scope for the discipline session 2026-05-09.** This
+finding is a side-effect of the monitor fix verification and is
+not part of the listed scope. Tracked here so the next session
+triages deliberately.
 
 ## Recently resolved (post-Session-7)
 
-- **KI-118** (resolved 2026-05-08, commit `fc6fc28`) — production
-  source files (10 files: `fx/bot/*`, `fx/data/refresh.py`,
-  `pipelines/{freshness,health_check}.py`, 5 `systemd/mhde-*` units)
-  lived in the working tree on the VPS without ever being `git add`-ed.
-  Discovered when an audit on master flagged them as `??` Untracked
-  despite being imported by tracked code and live in active systemd
-  units. **Regression test owed** — see archive entry for the
-  proposed test (`tests/regression/test_no_untracked_production_imports.py`).
+- **KI-118** (resolved 2026-05-08, commit `fc6fc28`; regression
+  test landed 2026-05-09 on `discipline-session-monitor-and-tracking`)
+  — production source files (10 files: `fx/bot/*`,
+  `fx/data/refresh.py`, `pipelines/{freshness,health_check}.py`, 5
+  `systemd/mhde-*` units) lived in the working tree on the VPS
+  without ever being `git add`-ed. Discovered when an audit on
+  master flagged them as `??` Untracked despite being imported by
+  tracked code and live in active systemd units. **Regression test
+  in place**: `tests/regression/test_no_untracked_production_imports.py`
+  walks every tracked .py outside `tests/`, `legacy/`,
+  `.claude/local_scripts/`, `venv/` and asserts every import
+  resolving to a path in the repo is in `git ls-files`; plus
+  asserts every `.service`/`.timer` under `systemd/` is tracked;
+  plus (when on production host) every deployed mhde-* unit's
+  source in `systemd/` is tracked. Wired into
+  `scripts/pre-commit.sh`. Verified fail-then-pass with a canary.
+
+- **Pipeline_execution monitor false positive** (resolved
+  2026-05-09 on `discipline-session-monitor-and-tracking`) — the
+  monitor's 14-day rolling baseline was contaminated by training/
+  walk-forward backtest rows that share the predictions tables
+  with production scoring. Fixed by filtering BOTH the latest
+  count and the baseline to `is_active=true` model_ids in the
+  corresponding `*_model_runs` table. Regression test:
+  `tests/regression/test_pipeline_execution_baseline.py`. After the
+  fix, crypto's 2026-05-09 ratio rose from 0.24 (warn) to 0.78
+  (ok) using the same underlying data — proving the previous
+  result was the baseline's fault, not a real volume drop.
 
 ---
 
