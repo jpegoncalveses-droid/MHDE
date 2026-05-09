@@ -560,3 +560,168 @@ def test_cli_backtest_grid_sensitivity_requires_seed():
         )
     assert result.exit_code != 0
     assert "no rows in crypto_backtest_summary" in result.output
+
+
+# ──────────────────────────────────────────────────────────────────────
+# KI-125: iterated-sweep guard
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _setup_with_iterated_top(tmp, *, include_sensitivity_shape: bool):
+    """Build a temp DB with one base-grid run plus optionally one
+    sensitivity-shape run (non-empty policy_params). Return the env
+    dict + the run_ids inserted."""
+    import os
+    env = {**os.environ, "MHDE_DB_PATH": f"{tmp}/iter.duckdb"}
+    import duckdb
+    conn = duckdb.connect(env["MHDE_DB_PATH"])
+    from crypto.schema import create_all_tables as _crypto
+    from crypto.execution.backtest.harness import ensure_backtest_tables
+    _crypto(conn)
+    ensure_backtest_tables(conn)
+
+    # Insert a canonical base-grid run (Sharpe 1.0).
+    base_id = make_run_id(
+        horizon="5d", exit_policy_id="D", selection_rule="top_n",
+        selection_params={"n": 6}, policy_params={},
+    )
+    conn.execute(
+        """
+        INSERT INTO crypto_backtest_runs
+            (run_id, run_timestamp, horizon, exit_policy, selection_rule,
+             parameters, date_start, date_end, n_trades,
+             n_data_gap_exits, n_forward_fills, n_predictions_seen,
+             n_skipped_duplicates, n_skipped_missing_atr,
+             n_excluded_by_funding_floor, n_missing_funding_warnings)
+        VALUES (?, '2026-05-08 00:00:00', '5d', 'D', 'top_n',
+                '{"selection_params": {"n": 6}, "policy_params": {}}',
+                '2025-04-05', '2026-05-08', 100, 0, 0, 200, 50, 0, 0, 0)
+        """,
+        [base_id],
+    )
+    conn.execute(
+        "INSERT INTO crypto_backtest_summary (run_id, sharpe_ratio) VALUES (?, 1.0)",
+        [base_id],
+    )
+
+    sensitivity_id = None
+    if include_sensitivity_shape:
+        # Higher Sharpe so it ends up in the auto-top-3.
+        sensitivity_id = make_run_id(
+            horizon="5d", exit_policy_id="D", selection_rule="top_n",
+            selection_params={"n": 6}, policy_params={"trail_pct": 0.3},
+        )
+        conn.execute(
+            """
+            INSERT INTO crypto_backtest_runs
+                (run_id, run_timestamp, horizon, exit_policy, selection_rule,
+                 parameters, date_start, date_end, n_trades,
+                 n_data_gap_exits, n_forward_fills, n_predictions_seen,
+                 n_skipped_duplicates, n_skipped_missing_atr,
+                 n_excluded_by_funding_floor, n_missing_funding_warnings)
+            VALUES (?, '2026-05-09 11:09:00', '5d', 'D', 'top_n',
+                    '{"selection_params": {"n": 6}, "policy_params": {"trail_pct": 0.3}}',
+                    '2025-04-05', '2026-05-08', 100, 0, 0, 200, 50, 0, 0, 0)
+            """,
+            [sensitivity_id],
+        )
+        conn.execute(
+            "INSERT INTO crypto_backtest_summary (run_id, sharpe_ratio) VALUES (?, 5.0)",
+            [sensitivity_id],
+        )
+    conn.close()
+    return env, base_id, sensitivity_id
+
+
+def test_cli_sensitivity_guard_blocks_iterated_auto_top():
+    """Auto top-3 from DB contains a sensitivity-shape run → CLI
+    refuses with a KI-125 message and a clear bypass instruction."""
+    from click.testing import CliRunner
+    from main import cli
+    import tempfile
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        env, _, sensitivity_id = _setup_with_iterated_top(
+            tmp, include_sensitivity_shape=True
+        )
+        result = runner.invoke(
+            cli, ["crypto", "backtest-grid", "--grid", "sensitivity"],
+            env=env,
+        )
+    assert result.exit_code != 0
+    assert "non-base-grid" in result.output
+    assert "--allow-iterated" in result.output
+    assert "KI-125" in result.output
+    assert sensitivity_id in result.output
+
+
+def test_cli_sensitivity_guard_explicit_iterated_top_run_ids_blocked():
+    """Explicit --top-run-ids that includes a non-base-grid id is
+    also blocked. The user being explicit doesn't waive the safety
+    check; --allow-iterated is the sanctioned escape hatch."""
+    from click.testing import CliRunner
+    from main import cli
+    import tempfile
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        env, _, sensitivity_id = _setup_with_iterated_top(
+            tmp, include_sensitivity_shape=True
+        )
+        result = runner.invoke(
+            cli, ["crypto", "backtest-grid", "--grid", "sensitivity",
+                  "--top-run-ids", sensitivity_id],
+            env=env,
+        )
+    assert result.exit_code != 0
+    assert "--allow-iterated" in result.output
+
+
+def test_cli_sensitivity_allow_iterated_proceeds_with_warning():
+    """--allow-iterated bypasses the guard; the CLI still warns
+    loudly and prints the iterated bases. We use --dry-run so no
+    actual lifecycle runs (the guard logic happens before the
+    grid runs)."""
+    from click.testing import CliRunner
+    from main import cli
+    import tempfile
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        env, _, sensitivity_id = _setup_with_iterated_top(
+            tmp, include_sensitivity_shape=True
+        )
+        result = runner.invoke(
+            cli, ["crypto", "backtest-grid", "--grid", "sensitivity",
+                  "--top-run-ids", sensitivity_id,
+                  "--allow-iterated", "--dry-run"],
+            env=env,
+        )
+    # Whether the dry-run grid runs to completion depends on whether
+    # the test DB has predictions to score. We only assert the guard
+    # was bypassed and the warning fired.
+    assert "--allow-iterated" in result.output
+    assert "sensitivity-shape" in result.output
+    assert sensitivity_id in result.output
+
+
+def test_cli_sensitivity_no_guard_when_top_is_base_grid_only():
+    """When the auto-selected top is entirely from the canonical
+    base grid, the guard does NOT fire — even without
+    --allow-iterated."""
+    from click.testing import CliRunner
+    from main import cli
+    import tempfile
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        env, base_id, _ = _setup_with_iterated_top(
+            tmp, include_sensitivity_shape=False
+        )
+        # The grid runs the actual sweep, which will fail for other
+        # reasons in a temp DB without seeded predictions. We only
+        # assert the guard does NOT fire (no KI-125 message).
+        result = runner.invoke(
+            cli, ["crypto", "backtest-grid", "--grid", "sensitivity",
+                  "--top-run-ids", base_id, "--dry-run"],
+            env=env,
+        )
+    assert "non-base-grid" not in result.output
+    assert "KI-125" not in result.output

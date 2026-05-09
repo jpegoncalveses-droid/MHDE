@@ -300,6 +300,19 @@ def sensitivity_grid_configs(
     sweep on each), so portfolio metrics are not required for
     selection. Operators wanting an explicit selection should pass
     ``--top-run-ids`` to bypass the DB read.
+
+    **Iterated-sweep gotcha (KI-125).** This factory only emits
+    single-axis sweeps. But running ``crypto backtest-grid --grid
+    sensitivity`` MORE THAN ONCE against an evolving DB produces
+    multi-axis configs through greedy axis-by-axis hill climbing:
+    the second invocation re-ranks against the first invocation's
+    outputs and starts sweeping around them. The CLI guards against
+    this by refusing when any selected base is not in the canonical
+    base grid; ``--allow-iterated`` overrides with a loud warning.
+    Callers using this factory programmatically (e.g. tests, ad-hoc
+    notebooks) bypass the CLI guard — be explicit about which bases
+    you pass and avoid feeding sensitivity-shape run_ids back in
+    unless you understand the iterated-sweep semantics.
     """
     configs: list[GridConfig] = []
     for base_id in base_run_ids:

@@ -38,34 +38,84 @@ Spec gates (all four required to pass to Phase 2):
 | 5d/D/top_n=6 | +1027.2% ✅ | 1.880 ✅ | -28.73% ❌ | 2.36 ✅ | 3/4 |
 | 10d/D/top_n=6 | +2136.6% ✅ | 2.414 ✅ | -28.29% ❌ | 3.73 ✅ | 3/4 |
 
-## Pending decisions
+## Sensitivity grid result (executed 2026-05-09)
 
-1. **Run sensitivity grid on top 3** to test whether parameter perturbation pushes drawdown below 25% while preserving Sharpe.
-2. **If sensitivity can't push DD below 25%**: decide whether to
-   - relax the 25% threshold (which was set as a heuristic, not a hard rule) given otherwise-excellent metrics, or
-   - pursue methodological changes (regime filter on BTC trend; smaller `deploy_fraction`; larger `max_positions` cap; per-coin position caps; volatility-targeted sizing).
+Strict slice — single-axis sweeps around the 3 base winners — emitted 27 unique configs (33 emitted, 6 base-collisions). **8 of the 27 pass all four Phase 1B gates.**
 
-## Pending command (sensitivity grid)
+### Top of the strict-slice ranking by portfolio Sharpe
 
-Build out the sensitivity infrastructure first:
+| Rank | run_id | params delta from base | port. Sharpe | port. maxDD | port. final $ | Gates |
+|---:|---|---|---:|---:|---:|:---:|
+| 1 | `backtest_10d_D_top_n_a02e15a0` | trail 0.50 → **0.30** | **5.10** | -23.7% | $32,122 | ✓ |
+| 2 | `backtest_5d_D_top_n_5aff7b45` | trail 0.50 → **0.30** | 4.94 | -23.4% | $20,281 | ✓ |
+| 3 | `backtest_5d_D_threshold_28ae40f4` | trail 0.50 → **0.30** | 4.60 | -22.4% | $6,751 | ✓ |
+| 4 | `backtest_5d_D_threshold_b6d3b92e` | threshold 0.55 → **0.65** | 3.77 | -19.6% | $2,846 | ✓ |
+| 5 | `backtest_10d_D_top_n_ae1b2312` | activation 0.01 → **0.00** | 2.53 | -18.4% | $34,016 | ✓ |
+| 6 | `backtest_5d_D_threshold_b800f49f` | threshold 0.55 → **0.50** | 2.22 | -24.8% | $13,705 | ✓ |
+| 7 | `backtest_5d_D_top_n_e1e0a0f5` | n 6 → **5** | 2.23 | -21.3% | $22,658 | ✓ |
+| 8 | `backtest_5d_D_top_n_077c7923` | activation 0.01 → **0.00** | 2.15 | -24.2% | $21,576 | ✓ |
 
-1. Add `sensitivity_grid_configs(top_run_ids: list[str]) -> list[GridConfig]` in `crypto/execution/backtest/runner.py`. For each of the top 3 base winners, sweep:
-   - `trail_pct` ∈ {0.30, 0.50, 0.70} — 3 variants
-   - `activation_pct` ∈ {0.00, 0.01, 0.02, 0.03} — 4 variants
-   - selection param: `n` ∈ {5, 6, 7, 8} for top_n configs **or** `threshold` ∈ {0.50, 0.55, 0.60, 0.65} for threshold configs — 4 variants
-   - Total per top winner: 11 configs (3 + 4 + 4, since baselines naturally re-skipped via `skip_existing`).
-   - **33 configs total** for the top 3 (some overlap with the base grid will be auto-skipped).
-2. Update CLI: `--grid sensitivity` reads the top 3 from `crypto_backtest_summary ORDER BY sharpe_ratio DESC LIMIT 3` and dispatches to the sensitivity factory.
-3. Add tests in `tests/crypto/test_backtest_runner.py`: factory determinism, axis-sweep coverage per top winner, skip-existing on overlap with base.
+The dominant axis change is `trail_pct: 0.50 → 0.30`. All three top-3 base winners' trail-axis sweeps land in the passing set. activation_pct and selection sweeps each yield one passer per base.
 
-Once the above is in place and tests pass, run:
+### Selected Phase 1B winner: `backtest_10d_D_top_n_a02e15a0`
 
-```bash
-venv/bin/python main.py crypto backtest-grid --grid sensitivity
-venv/bin/python main.py crypto backtest-report --top-n 5
-```
+| Field | Value |
+|---|---|
+| Horizon | 10d |
+| Policy | D (trailing stop) |
+| Selection | top_n with n=6 |
+| `trail_pct` | 0.30 |
+| `activation_pct` | 0.01 (class default) |
+| Stored params | `{"policy_params": {"trail_pct": 0.3}, "selection_params": {"n": 6}}` |
 
-Then generate per-axis sensitivity tables for each top winner — likely a `report.generate_sensitivity_table(conn, base_run_id, axis="trail_pct")` helper that joins runs/summary on shared (horizon, policy, selection) and varies one axis at a time.
+Portfolio metrics (398-day window, $1k start, 80% deploy × 6 positions, 1×):
+- annualized return: +2854% ✓
+- portfolio Sharpe: 5.096 ✓
+- max drawdown: -23.73% ✓ (1.27 pp under the 25% gate)
+- profit factor: 3.811 ✓
+- final equity: $32,121.89
+- 484 trades taken; 448 skipped at the 6-position cap
+
+Sum-of-fractions metrics from `crypto_backtest_summary` (used for ranking, inflated absolute values per spec): Sharpe 6.32, max DD -17.0%, profit factor 3.13, hit rate 87.1%, 932 trades.
+
+Why this one over the others in the passing set:
+- **Highest portfolio Sharpe** (5.10) of the strict-slice passers.
+- **Cleanest single-axis derivation** — one parameter changed from the originally documented base.
+- **Drawdown comfortably under 25%** (-23.7%) without stacking multiple axis changes.
+
+### Iterated extras (out of agreed spec)
+
+After three CLI invocations of `--grid sensitivity` in quick succession, the iterated re-rank picked up sensitivity-found configs as new top-3 bases and produced 30 additional multi-axis configs through greedy axis-by-axis hill climbing. The strongest of these, `backtest_10d_D_top_n_d884e9f2` (10d / D / top_n with n=5, trail=0.30, activation=0.0), reaches portfolio Sharpe 6.04, maxDD -12.9%, $80,931 — but its provenance is iterated, not single-axis. Treated as research, not selected. A targeted single-invocation sweep around it ran 2026-05-09 (see "d884e9f2 robustness analysis" below) to determine whether it is a smooth local optimum or a sharp peak from chained sweeps.
+
+CLI guard added 2026-05-09: re-running `--grid sensitivity` against a DB that already contains sensitivity-shape rows now refuses by default with an explanatory message. Override with `--allow-iterated` only if you know what you're doing. See `KNOWN_ISSUES.md` KI-125.
+
+### d884e9f2 robustness analysis (executed 2026-05-09)
+
+A targeted single-invocation sweep around `backtest_10d_D_top_n_d884e9f2` (10d / D / top_n with `trail_pct=0.30`, `activation_pct=0.00`, `n=5`; base portfolio Sharpe 6.04, maxDD -12.9%, $80,931) was run with `--allow-iterated` to characterize the local neighborhood. Verdict: **sharp peak**, not a smooth local optimum.
+
+Per-axis neighbor metrics (portfolio Sharpe / portfolio maxDD), with `|Δ vs base|` classification (>30% on either metric → "sharp"):
+
+| Axis | Value | port. Sharpe | port. maxDD | Classification |
+|---|---|---:|---:|---|
+| `trail_pct` | 0.30 (base) | 6.04 | -12.9% | base |
+| `trail_pct` | 0.50 | 2.78 | -13.1% | **sharp** (Sharpe -54%) |
+| `trail_pct` | 0.70 | 3.05 | -27.3% | **sharp** (Sharpe -50%, DD blows past 25% gate) |
+| `activation_pct` | 0.00 (base) | 6.04 | -12.9% | base |
+| `activation_pct` | 0.01 | 5.55 | -22.8% | **sharp** (DD +76% from -12.9% to -22.8%) |
+| `activation_pct` | 0.02 | 4.86 | -22.9% | **sharp** |
+| `activation_pct` | 0.03 | 4.65 | -22.1% | **sharp** |
+| `n` | 5 (base) | 6.04 | -12.9% | base |
+| `n` | 6 | 5.13 | -17.9% | **sharp** (DD +39%) |
+| `n` | 7 | 1.76 | -23.6% | **sharp** (Sharpe -71%) |
+| `n` | 8 | 1.80 | -19.6% | **sharp** (Sharpe -70%) |
+
+The base sits at the corner of the favorable region on every axis. A 1% perturbation on `activation_pct` (0.00 → 0.01, the class default) raises drawdown ~10 percentage points. The `n` axis goes off a cliff between n=6 and n=7 (Sharpe 5.13 → 1.76).
+
+**Conclusion: d884e9f2 is NOT a robust local optimum.** Its standout numbers are likely an overfit artifact of the chained-sweep search path through this period's specific drawdown structure. Live execution would not preserve them under the small parameter drift expected from real-world conditions (different funding-rate cadence in newer months, occasional missing bars, rounding).
+
+`a02e15a0` remains the Phase 1B selected winner. It sits in a smoother neighborhood (trail axis: 0.30 passes, 0.50/0.70 fail by similar margins; activation axis: 0.00/0.01 both pass with comparable metrics; n axis: n=5/n=6 both pass).
+
+## Methodology caveats already documented
 
 ## Methodology caveats already documented
 
