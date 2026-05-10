@@ -6,6 +6,85 @@ are at the top.
 
 ---
 
+## 2026-05-10 — KI-130 dashboard date-selector DuckDB DISTINCT+TopN bug
+
+**Branch:** `dashboard-distinct-limit-bug` (committed; pushed; NOT
+merged — pending operator approval).
+
+**Trigger.** Investigation of three operator-reported findings: (1)
+walk-fold predictions "stopped" May 8, (2) dashboard surfaced only
+May 9 + May 10 crypto predictions despite 10+ days in the DB, (3)
+no monitor caught either. Findings (1) and (3) turned out to be
+expected behaviour — walk-fold is a one-shot Phase 1A backfill (not
+a daily pipeline) and `monitoring/pipeline_execution.py` correctly
+filters on `is_active=true` so walk-fold rows are intentionally
+excluded. Only Finding (2) was a real bug.
+
+**Root cause (Finding 2).** Both prediction-tab date dropdowns ran
+`SELECT DISTINCT prediction_date FROM <table> ORDER BY
+prediction_date DESC LIMIT 30`. Against the production DuckDB file
+this returned 2 rows instead of 30. Bisected to a DuckDB 1.5.2
+TopN-with-DISTINCT planner fusion that triggers data-volume
+dependently: same query with `LIMIT 100` returns 100 rows; same
+logical query with `GROUP BY` returns 30 rows. Bug does NOT
+reproduce in fresh in-memory or file DBs even at 40k rows; only
+manifests on the production DB's specific block layout.
+
+**Fix.** New helper `get_distinct_prediction_dates(conn, table,
+date_col, limit)` in `dashboard/services/queries.py` uses
+`GROUP BY` + `ORDER BY` + `LIMIT` to avoid the broken planner path.
+Both call sites in `dashboard/app.py` (equity tab at line 117,
+crypto tab at line 387) switched to the helper. FX tab uses a
+different shape (`MAX(datetime_utc)` and `WHERE datetime_utc = ?`)
+so is unaffected; `dashboard/components/filters.py:23` is unaffected
+because its GROUP-BY-shaped query selects two columns rather than
+DISTINCT on a single sort key.
+
+**Tests added (5).**
+`tests/dashboard/test_distinct_date_selector_regression.py`:
+- 4 behavioural contract tests verifying the helper returns every
+  distinct date under `limit`, returns the most-recent N when the
+  table exceeds `limit`, and collapses multi-row dates correctly.
+- 1 source-level anti-pattern test that intercepts the SQL the
+  helper actually executes (via a `_Capture` shim conn) and asserts
+  it contains `GROUP BY` and not `DISTINCT`. The behaviour tests
+  cannot reliably catch a regression to the broken pattern (bug
+  doesn't reproduce in synthetic test data), so the source guard is
+  the durable backstop. Confirmed it fires when the SQL is reverted
+  to the buggy shape.
+
+**Verification.** Local smoke script
+`.claude/local_scripts/smoke_distinct_dates.py` (gitignored under
+the `smoke_*` prefix) runs the helper against the production DB:
+crypto returns 30 dates (previously 2 — fix confirmed), FX returns
+30 datetimes, equity returns 6 (the production table genuinely has
+only 6 distinct prediction dates — separate data fact, no
+regression). Full test suite green (1263 passed, 1 skipped, 0
+failed; 3m06s).
+
+**Docs.** KNOWN_ISSUES.md: KI-130 added under "Recently resolved"
+with the full repro detail and fix description; KI-131 added under
+"Open" as a low-priority side-observation (crypto 5d production
+model wrote 23 rows on 2026-05-09 vs ~30 expected — below the
+50% monitor threshold so didn't fire; hypotheses listed for future
+triage). A new "Walk-fold semantics — FAQ" callout at the top of
+KNOWN_ISSUES.md surfaces that walk-fold is a one-shot Phase 1A
+backfill (per `crypto/ml/backfill_walkforward.py:35` and KI-119),
+not a daily pipeline — so future operators / chats won't repeat the
+"walk-fold stopped writing" misread that prompted this session.
+
+**Commits on branch:**
+- `feat(dashboard): get_distinct_prediction_dates helper — DuckDB
+  DISTINCT+TopN bug workaround (KI-130)`
+- `test(dashboard): regression + anti-pattern tests for KI-130`
+- `docs(known_issues): KI-130 resolved, KI-131 open, walk-fold FAQ`
+
+**Pending operator action.** Review and merge `dashboard-distinct-
+limit-bug`. No deployment beyond `git pull` on the VPS dashboard
+host — Streamlit auto-reloads. Branch is pushed; not yet merged.
+
+---
+
 ## 2026-05-10 — KI-128 weekday-aware recency for health_check + pipeline_execution
 
 **Branch:** `ki128-weekday-aware-recency` (committed; not yet merged — pending operator approval).
