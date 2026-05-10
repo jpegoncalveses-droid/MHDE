@@ -12,7 +12,7 @@ for the full design and DECISIONS.md ADR-018 for the rationale.
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 
 def expected_equity_prediction_date(now: datetime) -> date:
@@ -41,6 +41,50 @@ def expected_equity_prediction_date(now: datetime) -> date:
     while cur.weekday() >= 5:  # Sat=5, Sun=6
         cur -= timedelta(days=1)
     return cur
+
+
+# Forex spot trades roughly Sun 22:00 UTC → Fri 22:00 UTC. The
+# closed window is the rest. Lower bound inclusive, upper exclusive
+# so a `now` exactly at Sun 22:00 UTC is treated as open.
+_FRIDAY = 4
+_SATURDAY = 5
+_SUNDAY = 6
+_FOREX_CLOSE_HOUR_UTC = 22
+
+
+def is_forex_closed(now: datetime) -> bool:
+    """True iff Fri 22:00 UTC <= now < Sun 22:00 UTC.
+
+    `now` must be tz-aware UTC.
+    """
+    wd = now.weekday()
+    if wd == _SATURDAY:
+        return True
+    if wd == _FRIDAY and now.hour >= _FOREX_CLOSE_HOUR_UTC:
+        return True
+    if wd == _SUNDAY and now.hour < _FOREX_CLOSE_HOUR_UTC:
+        return True
+    return False
+
+
+def fx_close_floor(now: datetime) -> datetime:
+    """Return the Friday 22:00:00 UTC of the closure that contains
+    `now`. Caller is expected to pass a `now` for which
+    `is_forex_closed(now)` is True; behavior outside that window is
+    undefined.
+
+    The closure floor is the lower bound the latest FX bar must
+    satisfy during the closed window for the data to count as
+    healthy (no outage during the close).
+    """
+    wd = now.weekday()
+    # Days back to the most recent Friday: Fri=0, Sat=1, Sun=2.
+    days_back = (wd - _FRIDAY) % 7
+    floor_date = (now - timedelta(days=days_back)).date()
+    return datetime(
+        floor_date.year, floor_date.month, floor_date.day,
+        _FOREX_CLOSE_HOUR_UTC, 0, 0, tzinfo=timezone.utc,
+    )
 
 
 def trading_days_between(start: date, end: date) -> int:
