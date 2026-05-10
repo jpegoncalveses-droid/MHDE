@@ -8,63 +8,48 @@ Public API
   (Task 1.4) after a new model is inserted but before ``is_active`` is
   flipped.
 
-Gate logic (0.9× multiplicative threshold)
--------------------------------------------
+Gate logic (single-arm, 0.9× multiplicative threshold)
+-------------------------------------------------------
 The gate compares the new model against the previously-active model on
-two metrics:
+one metric: **label hit rate** — ``precision_at_threshold`` stored on
+``crypto_ml_model_runs`` at training time.  If the stored value is NULL
+(shouldn't happen in practice, but defensive), the gate falls back to
+computing the live precision from ``crypto_ml_predictions``.
 
-1. **Label hit rate** — ``precision_at_threshold`` stored on
-   ``crypto_ml_model_runs`` at training time.  If the stored value is
-   NULL (shouldn't happen in practice, but defensive), the gate falls
-   back to computing the live precision from ``crypto_ml_predictions``.
+The gate passes when ``new_hit_rate >= 0.9 * old_hit_rate``.
 
-2. **Trade Sharpe** — annualised gross Sharpe from walkfold OOS
-   predictions via :func:`~crypto.ml.sharpe_sim.compute_walkfold_trade_sharpe`.
+No backfill step is required; the hit-rate check is a single SELECT
+query and is essentially instant.
 
-Both metrics must satisfy ``new >= 0.9 * old`` for the gate to pass.
+Originally specified with a second Sharpe arm; dropped after we
+discovered walkfold predictions are tagged per-fold (e.g.
+``crypto_10d_walkfold_2024_03_a3b1``), not per-production-model, so
+``compute_walkfold_trade_sharpe(conn, new_model_id, horizon)`` returned
+zero rows and the degenerate-baseline rule caused the Sharpe arm to
+trivially pass.  ADR-019 (Task 1.5) captures the full rationale and
+escape valve (AUC arm if hit-rate-only proves too forgiving).
 
 Edge cases
 ----------
 * **First model (no prior active):** returns ``passed=True`` with
   ``reason="first_model_skip"``.  There is no baseline to defend.
 
-* **Degenerate baseline (old_sharpe <= 0 or old_hit_rate <= 0):** the
-  multiplicative threshold is meaningless when the baseline is zero or
-  negative.  Each degenerate arm is treated as *passing* — we cannot
-  defend a baseline that has no value.  This is more permissive than the
-  strict rule and is only reachable in bootstrap-like edge cases.
-
-Timeout enforcement
--------------------
-:func:`validate_promotion` uses :class:`concurrent.futures.ThreadPoolExecutor`
-with ``future.result(timeout=...)`` to bound the time spent waiting for
-the backfill step.  The timeout is read from
-``MHDE_RETRAIN_VALIDATION_TIMEOUT_SEC`` (default 600 seconds).  If the
-backfill does not complete within the timeout, the gate returns
-``passed=False, reason="validation_timeout"`` immediately — timeout
-never counts as PASS.  The backfill thread continues running in the
-background (Python threads cannot be killed); this is acceptable because
-the train pipeline discards the result and moves on.
+* **Degenerate baseline (old_hit_rate <= 0):** the multiplicative
+  threshold is meaningless when the baseline is zero or negative.  The
+  hit-rate arm is treated as *passing* — we cannot defend a baseline
+  that has no value.  This is more permissive than the strict rule and
+  is only reachable in bootstrap-like edge cases.
 """
 from __future__ import annotations
 
 import logging
-import math
-import os
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass
 from typing import Optional
 
 import duckdb
 
-from crypto.ml.backfill_walkforward import backfill_horizon
-from crypto.ml.sharpe_sim import compute_walkfold_trade_sharpe
-
 logger = logging.getLogger("mhde.crypto.validation_gate")
-
-# Default timeout (seconds) for the full validation run (backfill + metrics).
-_DEFAULT_TIMEOUT_SEC: int = 600
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -74,13 +59,16 @@ _DEFAULT_TIMEOUT_SEC: int = 600
 
 @dataclass
 class ValidationResult:
-    """Outcome of :func:`validate_promotion`."""
+    """Outcome of :func:`validate_promotion`.
+
+    ``reason`` valid values: ``None`` (pass), ``"first_model_skip"``,
+    ``"hit_rate_below_threshold"``.
+    """
 
     passed: bool
     comparison: dict
     duration_sec: float
-    reason: Optional[str] = None  # e.g. "first_model_skip", "validation_timeout",
-    #   "hit_rate_below_threshold", "sharpe_below_threshold", "both_below_threshold"
+    reason: Optional[str] = None
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -152,25 +140,6 @@ def _get_hit_rate(
     return _compute_live_hit_rate(conn, model_id)
 
 
-def _run_backfill(
-    conn: duckdb.DuckDBPyConnection,
-    horizon: str,
-    new_model_id: str,
-) -> None:
-    """Run walkfold backfill for the given horizon.
-
-    This is extracted into its own function so tests can monkeypatch it
-    without touching ``backfill_walkforward.backfill_horizon`` directly.
-
-    In production, this calls :func:`~crypto.ml.backfill_walkforward.backfill_horizon`
-    with ``force=True`` so any existing walkfold predictions for the
-    horizon are refreshed with the latest fold data.  The ``new_model_id``
-    parameter is accepted for monkeypatching convenience (tests patch
-    this function and may need the model_id to seed predictions).
-    """
-    backfill_horizon(conn, horizon, force=True)
-
-
 # ──────────────────────────────────────────────────────────────────────
 # Gate entry point
 # ──────────────────────────────────────────────────────────────────────
@@ -186,8 +155,8 @@ def validate_promotion(
     Parameters
     ----------
     conn:
-        Open DuckDB connection with write access (needed by the backfill
-        step).
+        Open DuckDB connection (read access is sufficient; no backfill
+        step is performed).
     new_model_id:
         The ``model_id`` of the newly-trained model.  It must already
         exist in ``crypto_ml_model_runs`` (INSERTed by the train pipeline)
@@ -202,10 +171,6 @@ def validate_promotion(
         ``passed=False`` → caller must block promotion.
     """
     gate_start = time.perf_counter()
-
-    timeout_sec: int = int(os.environ.get(
-        "MHDE_RETRAIN_VALIDATION_TIMEOUT_SEC", str(_DEFAULT_TIMEOUT_SEC)
-    ))
 
     # ── 1. Find previous active model for the same horizon ──────────────
     row = conn.execute(
@@ -238,69 +203,18 @@ def validate_promotion(
             reason="first_model_skip",
         )
 
-    # ── 2. Run walkfold backfill for the new model (bounded by timeout) ──
-    #
-    # We use ThreadPoolExecutor so that future.result(timeout=...) actually
-    # bounds our *wait* time.  The backfill thread may continue after we
-    # return (Python threads cannot be killed), but the gate will return
-    # FAIL/TIMEOUT immediately.
-
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_run_backfill, conn, horizon, new_model_id)
-        elapsed_before_backfill = time.perf_counter() - gate_start
-        remaining_timeout = max(0.0, timeout_sec - elapsed_before_backfill)
-        try:
-            future.result(timeout=remaining_timeout)
-        except FuturesTimeoutError:
-            duration = time.perf_counter() - gate_start
-            logger.warning(
-                "validate_promotion(%s): backfill timed out after %.1fs (limit=%ds)",
-                new_model_id, duration, timeout_sec,
-            )
-            return ValidationResult(
-                passed=False,
-                comparison={
-                    "old": {"model_id": old_model_id},
-                    "new": {"model_id": new_model_id},
-                    "reason": "validation_timeout",
-                },
-                duration_sec=duration,
-                reason="validation_timeout",
-            )
-        except Exception as exc:
-            # Backfill raised — treat as timeout/failure (do not promote).
-            duration = time.perf_counter() - gate_start
-            logger.error(
-                "validate_promotion(%s): backfill raised %s — blocking promotion",
-                new_model_id, exc, exc_info=True,
-            )
-            return ValidationResult(
-                passed=False,
-                comparison={
-                    "old": {"model_id": old_model_id},
-                    "new": {"model_id": new_model_id},
-                    "reason": f"backfill_error: {type(exc).__name__}: {exc}",
-                },
-                duration_sec=duration,
-                reason="validation_timeout",
-            )
-
-    # ── 3. Compute label hit rate for both models ─────────────────────
+    # ── 2. Compute label hit rate for both models ─────────────────────
     old_hit_rate = _get_hit_rate(conn, old_model_id)
     new_hit_rate = _get_hit_rate(conn, new_model_id)
 
-    # ── 4. Compute trade Sharpe for both models ───────────────────────
-    old_sharpe = compute_walkfold_trade_sharpe(conn, old_model_id, horizon)
-    new_sharpe = compute_walkfold_trade_sharpe(conn, new_model_id, horizon)
-
-    # ── 5. Apply gates (0.9× threshold) ──────────────────────────────
+    # ── 3. Apply hit-rate gate (0.9× threshold) ───────────────────────
     #
     # Edge case: if the old baseline is zero or negative the multiplicative
     # threshold is meaningless (0.9 * 0 = 0 would trivially pass anything,
     # and 0.9 * negative_value would invert the direction of the gate).
-    # Policy: treat each degenerate arm as *passing* — there is no positive
-    # baseline to defend.  This applies only in bootstrap-like situations
-    # where the previously-active model had no useful track record.
+    # Policy: treat the arm as *passing* — there is no positive baseline
+    # to defend.  This applies only in bootstrap-like situations where the
+    # previously-active model had no useful track record.
 
     if old_hit_rate is None or old_hit_rate <= 0:
         # No meaningful hit-rate baseline; pass this arm.
@@ -315,30 +229,9 @@ def validate_promotion(
         hit_rate_floor = 0.9 * old_hit_rate
         passed_hit_rate = (new_hit_rate is not None) and (new_hit_rate >= hit_rate_floor)
 
-    if math.isnan(old_sharpe) or old_sharpe <= 0:
-        # No meaningful Sharpe baseline; pass this arm.
-        passed_sharpe = True
-        sharpe_floor = None
-        logger.info(
-            "validate_promotion(%s): old_sharpe=%s (degenerate/nan) — "
-            "Sharpe arm treated as PASS",
-            new_model_id, old_sharpe,
-        )
-    else:
-        sharpe_floor = 0.9 * old_sharpe
-        new_sharpe_val = new_sharpe if not math.isnan(new_sharpe) else float("-inf")
-        passed_sharpe = new_sharpe_val >= sharpe_floor
+    overall_passed = passed_hit_rate
 
-    overall_passed = passed_hit_rate and passed_sharpe
-
-    if not passed_hit_rate and not passed_sharpe:
-        reason = "both_below_threshold"
-    elif not passed_hit_rate:
-        reason = "hit_rate_below_threshold"
-    elif not passed_sharpe:
-        reason = "sharpe_below_threshold"
-    else:
-        reason = None
+    reason = None if overall_passed else "hit_rate_below_threshold"
 
     duration = time.perf_counter() - gate_start
 
@@ -346,32 +239,24 @@ def validate_promotion(
         "old": {
             "model_id": old_model_id,
             "label_hit_rate": old_hit_rate,
-            "trade_sharpe": old_sharpe if not math.isnan(old_sharpe) else None,
         },
         "new": {
             "model_id": new_model_id,
             "label_hit_rate": new_hit_rate,
-            "trade_sharpe": new_sharpe if not math.isnan(new_sharpe) else None,
         },
         "thresholds": {
             "hit_rate_floor": hit_rate_floor,
-            "sharpe_floor": sharpe_floor,
         },
         "passed_hit_rate": passed_hit_rate,
-        "passed_sharpe": passed_sharpe,
     }
 
     log_level = logging.INFO if overall_passed else logging.WARNING
     logger.log(
         log_level,
         "validate_promotion(%s, horizon=%s): passed=%s reason=%s "
-        "hit_rate(old=%.3f new=%.3f floor=%.3f ok=%s) "
-        "sharpe(old=%.3f new=%.3f floor=%.3f ok=%s) duration=%.1fs",
+        "hit_rate(old=%.3f new=%.3f floor=%.3f ok=%s) duration=%.1fs",
         new_model_id, horizon, overall_passed, reason,
         old_hit_rate or 0, new_hit_rate or 0, hit_rate_floor or 0, passed_hit_rate,
-        old_sharpe if not math.isnan(old_sharpe) else 0,
-        new_sharpe if not math.isnan(new_sharpe) else 0,
-        sharpe_floor or 0, passed_sharpe,
         duration,
     )
 
