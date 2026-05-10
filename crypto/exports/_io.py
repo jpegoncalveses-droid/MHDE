@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 from pathlib import Path
 
 EXPORTS_DIR = Path("/home/jpcg/MHDE/data/exports")
