@@ -1,12 +1,10 @@
 # Known Issues
 
-**5 open observations** (KI-122, KI-123, KI-126, KI-128, KI-129).
-KI-122/123/128 are cosmetic; KI-126 is a future Phase 0 enhancement
-deferred until weekly reliability snapshots accumulate; KI-129 is a
-features-pipeline gap surfaced by the engine-export preflight. None
-requires a hot fix beyond a one-time backfill for KI-129 — all tracked
-so a future session triages deliberately rather than letting them rot
-in the working tree.
+**4 open observations** (KI-122, KI-123, KI-126, KI-128). KI-122/123/128
+are cosmetic; KI-126 is a future Phase 0 enhancement deferred until
+weekly reliability snapshots accumulate. None requires a hot fix —
+all tracked so a future session triages deliberately rather than
+letting them rot in the working tree.
 
 **KI-127** opened + resolved same session (Phase 0 calibration
 drift detector false-fired on small-sample-per-bucket noise; fix:
@@ -136,57 +134,31 @@ the calendar overlay simpler.
 
 **Mitigation until fixed.** Operator ignores weekend alerts.
 
-### KI-129 — Newly-added universe symbols don't have features computed
-
-**Priority.** Medium (blocks engine-export preflight; one-shot backfill
-unblocks; root cause in features pipeline still unfixed).
-
-**Symptom.** Surfaced 2026-05-10 during the first production run of
-`crypto export-predictions` (engine-export contract Task 9). The
-strict-100% coverage preflight refused to emit a partial 48/50 file
-with the message:
-
-> preflight failed: missing features for 2 active universe symbol(s)
-> on 2026-05-10: BSBUSDT, PRLUSDT
-
-Both symbols had been in `crypto_universe.is_active=true` since
-2026-05-05 (5 days before discovery) and had full price data through
-today (47 and 40 klines rows respectively). Yet `crypto_ml_features`
-had **zero** rows for either symbol.
-
-**Root cause (suspected, not yet root-caused).** The daily
-`mhde-crypto-predict.service` ExecStart sequence runs
-`crypto backfill-features` as step 5, which is supposed to compute
-features for every active universe symbol. Either:
-- The features computation has a filter that skips newly-added
-  symbols (e.g., a minimum-history requirement that BSBUSDT/PRLUSDT
-  hadn't accumulated when the universe entries were first seen, and
-  the per-symbol logic doesn't re-attempt later), OR
-- A separate universe-add hand-off was supposed to trigger an
-  initial feature backfill but never did.
-
-**Detection / fix path.**
-1. **Unblock (one-time):** run
-   `venv/bin/python main.py crypto backfill-features` to recompute
-   features for all symbol-dates. This is what Task 9 of the engine-
-   export plan did 2026-05-10.
-2. **Root-cause fix (deferred):** investigate
-   `crypto/ml/features.py:compute_features` filtering logic and the
-   universe-add path. Either drop the suspected filter, or wire an
-   explicit feature-backfill into universe-additions. Add a regression
-   test: a freshly-added universe symbol with N days of price data
-   gets N rows in `crypto_ml_features` after the next `backfill-
-   features` run.
-3. **Detection in the meantime:** the engine-export preflight already
-   catches this scenario loudly — the Telegram alert path on
-   `mhde-crypto-export-predictions.service` failure surfaces any
-   future recurrence within a day.
-
-**Out of scope for the engine-export contract session 2026-05-10.**
-The contract's preflight gates worked correctly; this is a separate
-upstream pipeline bug exposed by the new gates.
-
 ## Recently resolved (post-Session-7)
+
+- **KI-129 — engine-export preflight conflated stale pipeline with
+  warmup-window symbols** (opened + resolved 2026-05-10 during the
+  engine-export contract session). The strict-100% coverage gate in
+  `crypto/exports/write_daily_predictions.py:_check_freshness_and_coverage`
+  refused to emit a 48/50 file when `BSBUSDT` and `PRLUSDT` had no
+  features for `2026-05-10`. Investigation showed both symbols were
+  in their 60-day features warmup window (BSBUSDT had 47 days of
+  klines, PRLUSDT had 40; the BTCUSDT control showed features start
+  exactly `klines_first + 60 days`, matching the longest lookback
+  in `crypto/ml/features.py` — `return_60d`, `price_vs_50d_ma`,
+  etc.). The features pipeline was working correctly. The bug was
+  the preflight gate's premise: not every active universe symbol is
+  predictable on every day; symbols recently added to the universe
+  must age in. **Fix.** Loosened the preflight to staleness-only
+  (`MAX(trade_date) FROM crypto_ml_features == today UTC`); dropped
+  the per-symbol coverage check. `n_predictions` now reflects
+  whatever's predictable on the export date (48 today; 50 once
+  BSBUSDT/PRLUSDT age in around 2026-05-24/2026-05-31). INTERFACE.md
+  §3 doesn't mandate `n == universe_size`; engine validation only
+  requires `predictions` non-empty + ranks unique + consecutive.
+  See the engine-export design doc §5.5 for the corrected semantics.
+
+
 
 - **KI-127 — phase0 calibration drift detector false-fired on
   small-sample-per-bucket noise** (opened + resolved 2026-05-09 on

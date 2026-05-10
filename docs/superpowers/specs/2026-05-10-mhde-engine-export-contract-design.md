@@ -268,28 +268,51 @@ def write(conn, prediction_date: date | None = None,
           output_dir: Path = EXPORTS_DIR, dry_run: bool = False) -> dict
 ```
 
-**Preflight checks (run inside `build_predictions` before any inference)**:
+**Preflight check (run inside `build_predictions` before any inference)**:
 
-The export depends on `crypto_ml_features` having a fresh, complete row
-set for today. The hard upstream is the `backfill-features` step of
+The export depends on `crypto_ml_features` having a fresh row set for
+today. The hard upstream is the `backfill-features` step of
 `mhde-crypto-predict.service` (steps 1–5 of its `ExecStart` sequence —
 prices/funding/OI/labels/features). The `predict` step (step 6) writes
 to `crypto_ml_predictions`, which the export does NOT read; so the
 export is robust to step 6 failing but not to steps 1–5.
 
-Two gates, both raise `ExportPreflightError` on failure (CLI catches,
+**One gate**, raising `ExportPreflightError` on failure (CLI catches,
 logs to stderr, exits non-zero, leaves all output files and the
 symlink untouched):
 
-1. **Staleness gate (strict, today-only)**: `MAX(trade_date) FROM
+- **Staleness gate (strict, today-only)**: `MAX(trade_date) FROM
    crypto_ml_features` must equal `prediction_date` (default = today
    UTC). If older, raise with message naming the actual MAX and
    suggesting `mhde-crypto-predict.service` status check.
-2. **Coverage gate (100%)**: count of `(crypto_ml_features f JOIN
-   crypto_universe u ON f.symbol=u.symbol WHERE u.is_active=true AND
-   f.trade_date = prediction_date)` must equal count of active universe.
-   If any active symbol has no feature row, raise listing the missing
-   symbols.
+
+**Why no per-symbol coverage gate (corrected 2026-05-10).** The
+original design called for a 100% per-symbol coverage check on top of
+staleness. The first production run of `crypto export-predictions`
+(see KI-129, recently resolved) demonstrated the gate was over-strict.
+Newly-added universe symbols (`BSBUSDT`, `PRLUSDT` — added
+2026-05-05) were in their 60-day features warmup window: `compute_
+features` requires 60 days of klines history because the longest
+lookback feature is `return_60d`. The pipeline correctly refused to
+compute features for those symbols, which is normal for any
+recently-added entry in `crypto_universe`. A 100% gate would conflate
+"stale pipeline (real failure)" with "warmup symbols (normal)".
+
+The corrected semantics: every symbol with features for today gets a
+prediction; symbols still in warmup are silently absent. The full
+ranked list contract from INTERFACE.md §3.1 is preserved within the
+predictable subset (rank 1..N consecutive); INTERFACE.md does not
+mandate `n_predictions == universe_size`, only that the field equals
+the array length and that engine validation passes (non-empty, ranks
+unique and consecutive starting from 1). When BSBUSDT/PRLUSDT age into
+60d (≈2026-05-24/2026-05-31), `n_predictions` will rise from 48 to 50
+without any code change.
+
+**Inference-side input set**: `build_predictions` reads features for
+the prediction_date with the symbol set restricted by an INNER JOIN
+with `crypto_universe WHERE is_active=true`. Inactive universe symbols
+are filtered out even if they have features. The result is "active
+universe symbols that are predictable today".
 
 When the export aborts in preflight, `predictions_latest.json` keeps
 pointing at yesterday's file. The engine independently validates
@@ -308,9 +331,8 @@ choice.
 
 Flow of `build_predictions`:
 1. Resolve `prediction_date` → today UTC if `None`.
-1a. **Staleness gate** — raise `ExportPreflightError` if stale.
-1b. **Coverage gate** — raise `ExportPreflightError` if any active
-    symbol missing features for `prediction_date`.
+1a. **Staleness gate** — raise `ExportPreflightError` if
+    `MAX(trade_date) FROM crypto_ml_features != prediction_date`.
 2. SELECT active 10d model:
    ```sql
    SELECT model_id, horizon, model_path
@@ -462,14 +484,17 @@ After implementation + tests pass:
 - **Integration**: synthetic DB rows + synthetic joblib bundle → both
   writers produce files that re-parse and pass schema tests; symlink
   points at today's file; second run replaces silently.
-- **Preflight (write_daily_predictions)**: two negative tests —
-    1. seed temp DB with `crypto_ml_features.MAX(trade_date) =
-       today - 1 day`, assert `ExportPreflightError` with substring
+- **Preflight (write_daily_predictions)** — staleness only:
+    1. Negative: seed temp DB with `crypto_ml_features.MAX(trade_date)
+       = today - 1 day`, assert `ExportPreflightError` with substring
        "stale" and assert no file written, no symlink modified.
-    2. seed temp DB with full features for today minus one active
-       universe symbol, assert `ExportPreflightError` with substring
-       naming the missing symbol, assert no file written.
-   Plus one positive test — full coverage, today's date, succeeds.
+    2. Positive (warmup symbol): seed features for today for symbols
+       A, B, C of an active universe {A, B, C, D} (D has no features
+       at all — simulates a warmup-window symbol). Assert
+       `n_predictions == 3` (no error, D simply absent from output).
+       This pins the corrected semantics from KI-129.
+    3. Positive (full coverage): all active universe symbols have
+       features for today, succeeds with `n_predictions == |universe|`.
 - **No live-pipeline coupling**: tests use temp DuckDB and tmp_path.
 
 ## 12. Success criteria
