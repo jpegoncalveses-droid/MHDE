@@ -11,6 +11,7 @@ Before doing any work in this repo — debugging, refactoring, adding features, 
 7. `HARDENING_PLAN.md` — multi-session roadmap; check the current session number before starting work.
 8. `SESSION_LOG.md` — append-only log of what was done each session (read the most recent 3 entries at session start).
 9. `docs/PATH_TO_LIVE_PLAN.md` — canonical 5-phase plan from current state to $1000 live trading on Binance Futures. Phase 0 (calibration validation) is parallel; Phases 1A/1B (backfill + execution backtest) drive Phase 2 (execution-layer build) which gates Phase 3 (paper trading) which gates Phase 4 (live). Read before any crypto-execution / Phase 1+ work.
+10. `/home/jpcg/crypto-trading-engine/docs/INTERFACE.md` — file-based contract MHDE must respect when producing `data/exports/active_spec.json` and the daily `data/exports/predictions_YYYY-MM-DD.json` files. Both files are produced by `crypto/exports/` (see `crypto export-spec` and `crypto export-predictions` CLI commands plus the `mhde-crypto-export-predictions.timer` systemd unit). Schema or hash-canonicalization changes require a coordinated commit on both repos.
 
 These describe the deployment topology and the code layout. They override assumptions from training data.
 
