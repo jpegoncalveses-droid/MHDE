@@ -104,3 +104,8 @@ data/processed/ifrs_mapping_gap_diagnostics.csv
 data/processed/mhde_inventory.md
 data/logs/
 data/reports/
+
+# Engine export contract artifacts (operational, regenerated daily by
+# mhde-crypto-export-predictions.service; written by `crypto export-spec`
+# manually after Phase 1B re-run). See INTERFACE.md.
+data/exports/
