@@ -1747,6 +1747,66 @@ def crypto_predict(date, skip_outcomes):
         conn.close()
 
 
+@crypto.command("export-spec")
+@click.option("--dry-run", is_flag=True, help="Print the spec JSON without writing.")
+def crypto_export_spec(dry_run):
+    """Build active_spec.json from current Phase 1B winner row.
+
+    Reads crypto_backtest_summary / crypto_backtest_runs for run_id
+    pinned in crypto/exports/spec_config.py:PHASE1B_WINNER_RUN_ID.
+    Computes portfolio metrics via simulate_portfolio. Writes to
+    data/exports/active_spec.json (atomic).
+    """
+    from crypto.exports import write_active_spec
+
+    cfg, conn = _engine_setup()
+    try:
+        spec = write_active_spec.write(conn, dry_run=dry_run)
+        if not dry_run:
+            click.echo(
+                f"wrote {write_active_spec.ACTIVE_SPEC_PATH} "
+                f"(spec_hash={spec['spec_hash']})"
+            )
+    except write_active_spec.ExportSpecError as e:
+        raise click.ClickException(str(e))
+    finally:
+        conn.close()
+
+
+@crypto.command("export-predictions")
+@click.option("--date", "date_str", default=None,
+              help="Prediction date YYYY-MM-DD. Default: today UTC.")
+@click.option("--dry-run", is_flag=True,
+              help="Print the predictions JSON without writing.")
+def crypto_export_predictions(date_str, dry_run):
+    """Build predictions_YYYY-MM-DD.json (full active universe ranked)
+    and update predictions_latest.json symlink.
+
+    Strict preflight: features for prediction_date must exist for
+    every active universe symbol. Failure exits non-zero without
+    touching output files; engine handles stale symlink per
+    INTERFACE.md §5.3.
+    """
+    from datetime import date as date_cls
+    from crypto.exports import write_daily_predictions
+
+    pred_date = date_cls.fromisoformat(date_str) if date_str else None
+    cfg, conn = _engine_setup()
+    try:
+        payload = write_daily_predictions.write(
+            conn, prediction_date=pred_date, dry_run=dry_run,
+        )
+        if not dry_run:
+            click.echo(
+                f"wrote predictions_{payload['export_date']}.json "
+                f"(n={payload['n_predictions']}, model={payload['model_id']})"
+            )
+    except write_daily_predictions.ExportPreflightError as e:
+        raise click.ClickException(f"preflight failed: {e}")
+    finally:
+        conn.close()
+
+
 @crypto.command("retrain")
 def crypto_retrain():
     """Weekly retrain: recompute labels/features and retrain all horizons."""
