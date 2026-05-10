@@ -165,7 +165,10 @@ CREATE TABLE IF NOT EXISTS crypto_ml_model_runs (
     lift_over_base DOUBLE,
     feature_importance_json TEXT,
     model_path VARCHAR,
-    is_active BOOLEAN DEFAULT FALSE
+    is_active BOOLEAN DEFAULT FALSE,
+    -- Valid values: 'pending' | 'promoted' | 'promotion_blocked'
+    -- Set by the validation gate (crypto/ml/validation_gate.py) after each training run.
+    promotion_status VARCHAR DEFAULT 'pending'
 );
 """
 
