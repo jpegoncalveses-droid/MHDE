@@ -208,20 +208,36 @@ Flow of `build_spec`:
    starting_capital=1000.0, max_positions=6, deploy_fraction=0.8,
    leverage=1.0)` (signature confirmed in `crypto/execution/backtest/
    report.py:371`). Returns a `PortfolioResult` dataclass. Map fields to
-   `backtest_expectations` as follows:
+   `backtest_expectations` as follows.
+
+   **Critical units note (corrected post-implementation):** despite the
+   `*_pct` suffix, `PortfolioResult.max_drawdown_pct`,
+   `total_return_pct`, and `annualized_return_pct` are all stored as
+   **fractions** (e.g., `-0.237` for a 23.7% drawdown). Evidence:
+   `report.py:548` computes `dd_pct_series = (eq_series - peak) / peak`
+   directly as a ratio; format code at `report.py:626/628/636`
+   multiplies each value by 100 for display; the decision-criterion
+   threshold at `report.py:70` is `v > -0.25` (fraction form). INTERFACE.md
+   §2's example mixes units: `portfolio_max_dd_pct: -0.237` is a fraction,
+   but `expected_annualized_return_pct: 21.36` is a percentage value
+   (21.36 = 21.36%).
 
    | INTERFACE.md field | Source field | Unit transform |
    |---|---|---|
    | `portfolio_sharpe` | `result.sharpe_ratio` | passthrough |
-   | `portfolio_max_dd_pct` | `result.max_drawdown_pct` | divide by 100 (PortfolioResult stores percentage e.g. -23.73 → INTERFACE wants fraction -0.2373) |
-   | `expected_hit_rate` | `crypto_backtest_summary.hit_rate` | passthrough (already a fraction; PortfolioResult does not expose hit rate, summary value matches portfolio because hit rate is per-trade not per-portfolio) |
-   | `expected_annualized_return_pct` | `result.annualized_return_pct` | passthrough (INTERFACE example uses percentage form, e.g. 21.36; for `a02e15a0` this will be ≈ 2854) |
+   | `portfolio_max_dd_pct` | `result.max_drawdown_pct` | passthrough (already a fraction) |
+   | `expected_hit_rate` | `crypto_backtest_summary.hit_rate` | passthrough fraction |
+   | `expected_annualized_return_pct` | `result.annualized_return_pct` | multiply by 100 (fraction → percentage value) |
    | `expected_n_trades_per_year` | `result.n_trades_taken / result.span_days × 365` | round to int |
    | `divergence_alert_threshold_pct` | `spec_config.DIVERGENCE_ALERT_THRESHOLD_PCT = 0.20` | passthrough |
 
-   The unit transforms above are pinned in `test_active_spec_schema.py`
-   with golden expected values for the `a02e15a0` row, so any drift in
-   `simulate_portfolio` field semantics fails the test loudly.
+   Pinned in `tests/crypto/exports/test_write_active_spec.py` with
+   magnitude assertions: a regression that re-introduces `/100` on
+   `max_drawdown_pct` would shrink the seed's ≈-0.0395 drawdown to
+   ≈-0.000395 and trip `abs(dd) >= 0.01`; a regression that drops
+   `*100` on `annualized_return_pct` would shrink ≈12.0 to ≈0.12 and
+   trip `abs(annualized) >= 1.0`. Both bugs were caught and fixed in
+   commit `2d018fb` against the original implementation `4e043a3`.
 4. Read current MHDE git commit SHA via `subprocess.check_output(['git',
    'rev-parse', '--short', 'HEAD'])`. Fall back to `"unknown"` if not in
    a git workdir.

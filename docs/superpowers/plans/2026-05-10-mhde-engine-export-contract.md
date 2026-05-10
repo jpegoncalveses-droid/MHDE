@@ -795,7 +795,10 @@ def test_build_spec_backtest_expectations_pulled_from_simulate_portfolio(temp_db
     # All seeded trades are winners (+5%) → portfolio Sharpe is finite
     # and positive, max_dd_pct == 0 (no drawdown), n_trades == 10.
     assert e["portfolio_sharpe"] > 0
-    assert e["portfolio_max_dd_pct"] <= 0  # fraction (negative or zero)
+    # Magnitude floor catches a hypothetical /100 regression: a real
+    # drawdown of -0.04 would shrink to -0.0004 and trip this assert.
+    assert -1.0 <= e["portfolio_max_dd_pct"] < 0
+    assert abs(e["portfolio_max_dd_pct"]) >= 0.01
     assert e["expected_hit_rate"] == pytest.approx(0.871)
     assert e["expected_n_trades_per_year"] >= 1
     assert e["divergence_alert_threshold_pct"] == 0.20
@@ -932,11 +935,20 @@ def _backtest_expectations(conn) -> dict:
     """Map simulate_portfolio output + summary.hit_rate to the
     INTERFACE.md §2 backtest_expectations fields.
 
+    Critical units note: PortfolioResult.max_drawdown_pct,
+    total_return_pct, and annualized_return_pct are all stored as
+    FRACTIONS despite the `*_pct` suffix (see report.py:548 — dd is
+    computed as (eq-peak)/peak; lines 626/628/636 multiply by 100 for
+    display). INTERFACE.md §2 example mixes units: max_dd_pct is a
+    fraction (-0.237), but expected_annualized_return_pct is a
+    percentage value (21.36 = 21.36%).
+
     Unit transforms (pinned by tests; see spec §5.4):
       - portfolio_sharpe         ← result.sharpe_ratio (passthrough)
-      - portfolio_max_dd_pct     ← result.max_drawdown_pct / 100 (→ fraction)
+      - portfolio_max_dd_pct     ← result.max_drawdown_pct (passthrough fraction)
       - expected_hit_rate        ← summary.hit_rate (passthrough fraction)
-      - expected_annualized_return_pct ← result.annualized_return_pct (percentage)
+      - expected_annualized_return_pct ← result.annualized_return_pct * 100
+                                          (fraction → percentage value)
       - expected_n_trades_per_year     ← round(n_trades_taken / span_days × 365)
     """
     from crypto.execution.backtest.report import simulate_portfolio
@@ -963,9 +975,9 @@ def _backtest_expectations(conn) -> dict:
     )
     return {
         "portfolio_sharpe": float(result.sharpe_ratio),
-        "portfolio_max_dd_pct": float(result.max_drawdown_pct) / 100.0,
+        "portfolio_max_dd_pct": float(result.max_drawdown_pct),
         "expected_hit_rate": hit_rate_value,
-        "expected_annualized_return_pct": float(result.annualized_return_pct),
+        "expected_annualized_return_pct": float(result.annualized_return_pct) * 100.0,
         "expected_n_trades_per_year": n_trades_per_year,
         "divergence_alert_threshold_pct": spec_config.DIVERGENCE_ALERT_THRESHOLD_PCT,
     }
