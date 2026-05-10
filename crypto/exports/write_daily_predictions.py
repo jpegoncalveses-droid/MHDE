@@ -1,14 +1,18 @@
 """Build and write data/exports/predictions_YYYY-MM-DD.json + symlink
 per INTERFACE.md §3.
 
-The exporter does its OWN inference on the full active universe — it
-does NOT read crypto_ml_predictions, which is filtered/capped by
-score_universe()'s threshold logic. Two preflight gates:
+The exporter does its OWN inference on the active universe — it does
+NOT read crypto_ml_predictions, which is filtered/capped by
+score_universe()'s threshold logic. One preflight gate:
 
   1. Staleness — MAX(trade_date) FROM crypto_ml_features must equal
      prediction_date (strict today-only).
-  2. Coverage — every active universe symbol must have a feature row
-     for prediction_date.
+
+The previous per-symbol coverage check was removed in favor of letting
+build_predictions emit predictions for whatever active-universe
+symbols have features today. Newly-added universe symbols are in
+their 60-day features warmup window and have no features yet — that's
+normal, not a pipeline failure. See KI-129.
 
 Failure raises ExportPreflightError; no output files are touched.
 The engine handles the resulting stale predictions_latest.json per
@@ -66,10 +70,17 @@ def _resolve_active_10d_model(conn) -> dict:
     return {"model_id": model_id, "horizon": horizon, "model_path": model_path}
 
 
-def _check_freshness_and_coverage(conn, prediction_date: date) -> list[str]:
-    """Run the two preflight gates. Returns the list of active-universe
-    symbols (in deterministic order) on success; raises
-    ExportPreflightError otherwise."""
+def _check_freshness(conn, prediction_date: date) -> None:
+    """Strict staleness gate: MAX(trade_date) FROM crypto_ml_features
+    must equal prediction_date. Raises ExportPreflightError if not.
+
+    The per-symbol coverage check that this function used to do was
+    removed in favor of letting build_predictions emit predictions for
+    whatever active-universe symbols have features today. Newly-added
+    universe symbols are in their 60-day features warmup window and
+    have no features yet — that's normal, not a pipeline failure. See
+    KI-129.
+    """
     max_row = conn.execute(
         "SELECT MAX(trade_date) FROM crypto_ml_features"
     ).fetchone()
@@ -81,41 +92,22 @@ def _check_freshness_and_coverage(conn, prediction_date: date) -> list[str]:
             f"mhde-crypto-predict.service status."
         )
 
-    rows = conn.execute(
-        """
-        SELECT u.symbol
-        FROM crypto_universe u
-        LEFT JOIN crypto_ml_features f
-          ON f.symbol = u.symbol AND f.trade_date = ?
-        WHERE u.is_active = true AND f.symbol IS NULL
-        ORDER BY u.symbol
-        """,
-        [prediction_date],
-    ).fetchall()
-    missing = [r[0] for r in rows]
-    if missing:
-        raise ExportPreflightError(
-            f"missing features for {len(missing)} active universe "
-            f"symbol(s) on {prediction_date}: {', '.join(missing)}"
-        )
 
-    symbols = conn.execute(
-        "SELECT symbol FROM crypto_universe WHERE is_active = true ORDER BY symbol"
-    ).fetchall()
-    return [r[0] for r in symbols]
-
-
-def _load_features(conn, symbols, prediction_date: date):
+def _load_features(conn, prediction_date: date):
+    """Load features for prediction_date restricted to active universe
+    symbols. Symbols in the active universe but missing features
+    (warmup window) are silently absent — see KI-129 / spec §5.5."""
     feature_select = ", ".join(f"f.{c}" for c in FEATURE_COLS)
-    placeholders = ", ".join(["?"] * len(symbols))
     return conn.execute(
         f"""
         SELECT f.symbol, {feature_select}
         FROM crypto_ml_features f
+        JOIN crypto_universe u ON u.symbol = f.symbol
         WHERE f.trade_date = ?
-          AND f.symbol IN ({placeholders})
+          AND u.is_active = true
+        ORDER BY f.symbol
         """,
-        [prediction_date] + list(symbols),
+        [prediction_date],
     ).fetchdf()
 
 
@@ -128,17 +120,25 @@ def build_predictions(
     Steps:
       1. Resolve prediction_date (default today UTC).
       2. Resolve active 10d model.
-      3. Run preflight gates (staleness + 100% coverage).
-      4. Load features, run model + Platt calibration.
-      5. Sort descending, assign ranks 1..N.
+      3. Run preflight gate (staleness only — see KI-129).
+      4. Load features (active universe ∩ has-features-today).
+      5. Run model + Platt calibration.
+      6. Sort descending, assign ranks 1..N.
     """
     if prediction_date is None:
         prediction_date = _today_utc()
 
     model_info = _resolve_active_10d_model(conn)
-    symbols = _check_freshness_and_coverage(conn, prediction_date)
+    _check_freshness(conn, prediction_date)
 
-    features_df = _load_features(conn, symbols, prediction_date)
+    features_df = _load_features(conn, prediction_date)
+    if features_df.empty:
+        raise ExportPreflightError(
+            f"no predictable symbols for {prediction_date}: "
+            f"crypto_ml_features has rows for the date but none match "
+            f"crypto_universe.is_active=true. This indicates a universe "
+            f"or features-pipeline misconfiguration."
+        )
 
     bundle = joblib.load(model_info["model_path"])
     model = bundle["model"]

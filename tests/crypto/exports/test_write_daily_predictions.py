@@ -1,12 +1,12 @@
 """Tests for crypto.exports.write_daily_predictions.
 
-Preflight:
+Preflight (one gate, staleness-only after KI-129 correction):
   - staleness gate (MAX(trade_date) < today UTC → error)
-  - coverage gate (any active universe symbol missing → error)
-  - happy path (full coverage, today UTC → success)
+  - happy path (today UTC → success, n_predictions = predictable subset)
+  - warmup-window symbols silently absent (no error, just smaller n)
 
 Schema integration:
-  - n_predictions == count(active universe)
+  - n_predictions == count(active universe ∩ has-features-today)
   - ranks 1..N consecutive
   - probabilities sorted descending
   - all probabilities in [0, 1]
@@ -95,14 +95,20 @@ def test_preflight_fails_when_features_stale(temp_db):
         wdp.build_predictions(temp_db, prediction_date=today)
 
 
-def test_preflight_fails_when_features_missing_for_symbol(temp_db, monkeypatch):
+def test_warmup_symbols_silently_absent_from_output(temp_db, monkeypatch):
+    """Universe symbol with no features (warmup window) is silently
+    absent from the output. Pins KI-129 corrected semantics: stale
+    pipeline ≠ warmup symbols."""
     today = date(2026, 5, 10)
-    _seed_universe(temp_db, ["BTCUSDT", "ETHUSDT"])
+    _seed_universe(temp_db, ["BTCUSDT", "ETHUSDT", "NEWCOIN1USDT"])
     _seed_active_10d_model(temp_db)
-    _seed_features(temp_db, ["BTCUSDT"], today)  # ETHUSDT missing
+    # NEWCOIN1USDT has no features (warmup window simulation)
+    _seed_features(temp_db, ["BTCUSDT", "ETHUSDT"], today)
+    _mock_joblib_load(monkeypatch, [0.7, 0.5])
 
-    with pytest.raises(wdp.ExportPreflightError, match="ETHUSDT"):
-        wdp.build_predictions(temp_db, prediction_date=today)
+    out = wdp.build_predictions(temp_db, prediction_date=today)
+    assert out["n_predictions"] == 2
+    assert {p["symbol"] for p in out["predictions"]} == {"BTCUSDT", "ETHUSDT"}
 
 
 def test_preflight_passes_with_full_today_coverage(temp_db, monkeypatch):
@@ -127,7 +133,10 @@ def test_predictions_full_universe_ranked(temp_db, monkeypatch):
     _seed_universe(temp_db, syms)
     _seed_active_10d_model(temp_db)
     _seed_features(temp_db, syms, today)
-    _mock_joblib_load(monkeypatch, [0.50, 0.91, 0.30, 0.75, 0.10])
+    # _load_features ORDER BY symbol returns rows alphabetical:
+    # BNBUSDT, BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT.
+    # Per-symbol probs: BNB=0.75, BTC=0.50, ETH=0.91, SOL=0.30, XRP=0.10
+    _mock_joblib_load(monkeypatch, [0.75, 0.50, 0.91, 0.30, 0.10])
 
     out = wdp.build_predictions(temp_db, prediction_date=today)
 

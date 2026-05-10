@@ -1070,13 +1070,13 @@ Resume with **Phase 3** after operator approval.
 # tests/crypto/exports/test_write_daily_predictions.py
 """Tests for crypto.exports.write_daily_predictions.
 
-Preflight:
+Preflight (one gate, staleness-only after KI-129 correction):
   - staleness gate (MAX(trade_date) < today UTC → error)
-  - coverage gate (any active universe symbol missing → error)
-  - happy path (full coverage, today UTC → success)
+  - happy path (today UTC → success, n_predictions = predictable subset)
+  - warmup-window symbols silently absent (no error, just smaller n)
 
 Schema integration:
-  - n_predictions == count(active universe)
+  - n_predictions == count(active universe ∩ has-features-today)
   - ranks 1..N consecutive
   - probabilities sorted descending
   - all probabilities in [0, 1]
@@ -1165,14 +1165,20 @@ def test_preflight_fails_when_features_stale(temp_db):
         wdp.build_predictions(temp_db, prediction_date=today)
 
 
-def test_preflight_fails_when_features_missing_for_symbol(temp_db, monkeypatch):
+def test_warmup_symbols_silently_absent_from_output(temp_db, monkeypatch):
+    """Universe symbol with no features (warmup window) is silently
+    absent from the output. Pins KI-129 corrected semantics: stale
+    pipeline ≠ warmup symbols."""
     today = date(2026, 5, 10)
-    _seed_universe(temp_db, ["BTCUSDT", "ETHUSDT"])
+    _seed_universe(temp_db, ["BTCUSDT", "ETHUSDT", "NEWCOIN1USDT"])
     _seed_active_10d_model(temp_db)
-    _seed_features(temp_db, ["BTCUSDT"], today)  # ETHUSDT missing
+    # NEWCOIN1USDT has no features (warmup window simulation)
+    _seed_features(temp_db, ["BTCUSDT", "ETHUSDT"], today)
+    _mock_joblib_load(monkeypatch, [0.7, 0.5])
 
-    with pytest.raises(wdp.ExportPreflightError, match="ETHUSDT"):
-        wdp.build_predictions(temp_db, prediction_date=today)
+    out = wdp.build_predictions(temp_db, prediction_date=today)
+    assert out["n_predictions"] == 2
+    assert {p["symbol"] for p in out["predictions"]} == {"BTCUSDT", "ETHUSDT"}
 
 
 def test_preflight_passes_with_full_today_coverage(temp_db, monkeypatch):
@@ -1434,10 +1440,17 @@ def _resolve_active_10d_model(conn) -> dict:
     return {"model_id": model_id, "horizon": horizon, "model_path": model_path}
 
 
-def _check_freshness_and_coverage(conn, prediction_date: date) -> list[str]:
-    """Run the two preflight gates. Returns the list of active-universe
-    symbols (in deterministic order) on success; raises
-    ExportPreflightError otherwise."""
+def _check_freshness(conn, prediction_date: date) -> None:
+    """Strict staleness gate: MAX(trade_date) FROM crypto_ml_features
+    must equal prediction_date. Raises ExportPreflightError if not.
+
+    The per-symbol coverage check that this function used to do was
+    removed in favor of letting build_predictions emit predictions for
+    whatever active-universe symbols have features today. Newly-added
+    universe symbols are in their 60-day features warmup window and
+    have no features yet — that's normal, not a pipeline failure. See
+    KI-129.
+    """
     max_row = conn.execute(
         "SELECT MAX(trade_date) FROM crypto_ml_features"
     ).fetchone()
@@ -1449,41 +1462,22 @@ def _check_freshness_and_coverage(conn, prediction_date: date) -> list[str]:
             f"mhde-crypto-predict.service status."
         )
 
-    rows = conn.execute(
-        """
-        SELECT u.symbol
-        FROM crypto_universe u
-        LEFT JOIN crypto_ml_features f
-          ON f.symbol = u.symbol AND f.trade_date = ?
-        WHERE u.is_active = true AND f.symbol IS NULL
-        ORDER BY u.symbol
-        """,
-        [prediction_date],
-    ).fetchall()
-    missing = [r[0] for r in rows]
-    if missing:
-        raise ExportPreflightError(
-            f"missing features for {len(missing)} active universe "
-            f"symbol(s) on {prediction_date}: {', '.join(missing)}"
-        )
 
-    symbols = conn.execute(
-        "SELECT symbol FROM crypto_universe WHERE is_active = true ORDER BY symbol"
-    ).fetchall()
-    return [r[0] for r in symbols]
-
-
-def _load_features(conn, symbols, prediction_date: date):
+def _load_features(conn, prediction_date: date):
+    """Load features for prediction_date restricted to active universe
+    symbols. Symbols in the active universe but missing features
+    (warmup window) are silently absent — see KI-129 / spec §5.5."""
     feature_select = ", ".join(f"f.{c}" for c in FEATURE_COLS)
-    placeholders = ", ".join(["?"] * len(symbols))
     return conn.execute(
         f"""
         SELECT f.symbol, {feature_select}
         FROM crypto_ml_features f
+        JOIN crypto_universe u ON u.symbol = f.symbol
         WHERE f.trade_date = ?
-          AND f.symbol IN ({placeholders})
+          AND u.is_active = true
+        ORDER BY f.symbol
         """,
-        [prediction_date] + list(symbols),
+        [prediction_date],
     ).fetchdf()
 
 
@@ -1496,17 +1490,25 @@ def build_predictions(
     Steps:
       1. Resolve prediction_date (default today UTC).
       2. Resolve active 10d model.
-      3. Run preflight gates (staleness + 100% coverage).
-      4. Load features, run model + Platt calibration.
-      5. Sort descending, assign ranks 1..N.
+      3. Run preflight gate (staleness only — see KI-129).
+      4. Load features (active universe ∩ has-features-today).
+      5. Run model + Platt calibration.
+      6. Sort descending, assign ranks 1..N.
     """
     if prediction_date is None:
         prediction_date = _today_utc()
 
     model_info = _resolve_active_10d_model(conn)
-    symbols = _check_freshness_and_coverage(conn, prediction_date)
+    _check_freshness(conn, prediction_date)
 
-    features_df = _load_features(conn, symbols, prediction_date)
+    features_df = _load_features(conn, prediction_date)
+    if features_df.empty:
+        raise ExportPreflightError(
+            f"no predictable symbols for {prediction_date}: "
+            f"crypto_ml_features has rows for the date but none match "
+            f"crypto_universe.is_active=true. This indicates a universe "
+            f"or features-pipeline misconfiguration."
+        )
 
     bundle = joblib.load(model_info["model_path"])
     model = bundle["model"]
