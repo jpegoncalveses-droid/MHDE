@@ -12,7 +12,35 @@ for the full design and DECISIONS.md ADR-018 for the rationale.
 """
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+
+
+def expected_equity_prediction_date(now: datetime) -> date:
+    """Return the most recent Mon-Fri *strictly before* now.date().
+
+    Equity ML predict runs at 00:15 UTC and writes
+    prediction_date = "latest closed market day", which is the most
+    recent weekday before today. By 06:00 UTC of any day, that's:
+
+      Mon → Fri (Sat/Sun closed, so back to Fri)
+      Tue → Mon
+      Wed → Tue
+      Thu → Wed
+      Fri → Thu
+      Sat → Fri
+      Sun → Fri
+
+    Replaces the literal `now.date() - 1` previously used in
+    pipelines/health_check.py::_check_equity, which silently returned
+    Sat or Sun on Sun/Mon mornings — neither has equity data because
+    NYSE is closed.
+
+    `now` must be tz-aware UTC; .date() is taken in the UTC frame.
+    """
+    cur = now.date() - timedelta(days=1)
+    while cur.weekday() >= 5:  # Sat=5, Sun=6
+        cur -= timedelta(days=1)
+    return cur
 
 
 def trading_days_between(start: date, end: date) -> int:
