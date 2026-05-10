@@ -32,6 +32,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from monitoring.alert import MonitorResult, send_alert
+from pipelines.market_calendar import is_forex_closed, fx_close_floor
 
 logger = logging.getLogger("mhde.monitoring.pipeline_execution")
 
@@ -100,18 +101,33 @@ def _check_engine_pipeline(
         out["reason"] = f"{table} has no rows written by active models"
         return out
 
-    # Recency check
+    # Recency check.
     if isinstance(latest, datetime):
         latest_dt = latest if latest.tzinfo else latest.replace(tzinfo=timezone.utc)
     else:  # date
         latest_dt = datetime.combine(latest, datetime.min.time(), tzinfo=timezone.utc)
-    age = now - latest_dt
-    if age > RECENCY_BUDGET[engine]:
-        out["recency_ok"] = False
-        out["reason"] = (
-            f"latest {date_col}={latest} is {age} old, threshold "
-            f"{RECENCY_BUDGET[engine]}"
+
+    if engine == "fx" and is_forex_closed(now):
+        floor = fx_close_floor(now)
+        logger.info(
+            "fx forex-closed window — asserting latest >= %s (KI-128)",
+            floor.isoformat(),
         )
+        if latest_dt < floor:
+            out["recency_ok"] = False
+            out["reason"] = (
+                f"latest {date_col}={latest} predates forex-close floor "
+                f"{floor.isoformat()} — outage during closed window"
+            )
+        # else: fx healthy during the close; skip the 2h budget.
+    else:
+        age = now - latest_dt
+        if age > RECENCY_BUDGET[engine]:
+            out["recency_ok"] = False
+            out["reason"] = (
+                f"latest {date_col}={latest} is {age} old, threshold "
+                f"{RECENCY_BUDGET[engine]}"
+            )
 
     # Row-count check vs 14-day rolling average. Both sides filter to
     # active model_ids so the baseline reflects production scoring only

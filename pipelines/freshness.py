@@ -22,6 +22,12 @@ from typing import Optional, Union
 
 import duckdb
 
+from pipelines.market_calendar import (
+    trading_days_between,
+    is_forex_closed,
+    fx_close_floor,
+)
+
 logger = logging.getLogger("mhde.freshness")
 
 
@@ -52,19 +58,6 @@ def _format_age(age: Optional[timedelta]) -> str:
     return f"{days}d {hours}h"
 
 
-def _trading_days_between(start: date, end: date) -> int:
-    """Inclusive trading-day count (Mon-Fri) between two dates. start <= end."""
-    if start > end:
-        return 0
-    days = 0
-    cur = start
-    while cur <= end:
-        if cur.weekday() < 5:
-            days += 1
-        cur += timedelta(days=1)
-    return days
-
-
 def check_equity_freshness(
     conn: duckdb.DuckDBPyConnection,
     today: Optional[date] = None,
@@ -82,7 +75,7 @@ def check_equity_freshness(
         )
 
     age = datetime.combine(today, datetime.min.time()) - datetime.combine(latest, datetime.min.time())
-    trading_gap = _trading_days_between(latest + timedelta(days=1), today)
+    trading_gap = trading_days_between(latest + timedelta(days=1), today)
     is_fresh = trading_gap <= max_trading_days
     msg = (f"Equity prices_daily latest={latest} "
            f"({trading_gap} trading-day gap; threshold={max_trading_days})")
@@ -135,6 +128,24 @@ def check_fx_freshness(
             engine="fx", is_fresh=False, latest=None, age=None,
             age_str="n/a", threshold=f"{max_hours}h",
             message="fx_prices_hourly is empty",
+        )
+
+    # `now` enters tz-naive (the existing contract); helpers expect
+    # tz-aware UTC. Convert at the boundary, branch, then return.
+    now_aware = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+
+    if is_forex_closed(now_aware):
+        floor = fx_close_floor(now_aware).replace(tzinfo=None)
+        is_fresh = latest >= floor
+        age = now - latest
+        msg = (
+            f"FX fx_prices_hourly latest={latest} during forex-closed "
+            f"window; floor={floor} (KI-128)"
+        )
+        return FreshnessReport(
+            engine="fx", is_fresh=is_fresh, latest=latest, age=age,
+            age_str=_format_age(age), threshold=f"forex-closed floor {floor}",
+            message=msg,
         )
 
     age = now - latest

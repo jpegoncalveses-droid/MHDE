@@ -718,3 +718,79 @@ Plus three smaller decisions:
 - Engine-side coordinated changes (test fixture file, INTERFACE.md
   §2.4 path documentation, engine's `test_hash.py` update) are
   tracked separately in the engine repo.
+
+
+---
+
+## ADR-018 — Weekday/forex-closed gates for health_check + pipeline_execution
+
+**Date:** 2026-05-10
+**Session:** KI-128 fix
+**Status:** Active
+**Builds on:** ADR-015 (asymmetric pipeline_execution recency budgets)
+
+**Context.** ADR-015 widened equity's `pipeline_execution`
+RECENCY_BUDGET to 75h to absorb the Fri→Tue weekend roll. Two
+sibling code paths still tripped on weekends:
+
+- `pipelines/health_check.py::_check_equity` queried for
+  `prediction_date = (now - 1d).date()`, which silently asked for
+  Sat or Sun rows on Sun/Mon mornings — neither exists because
+  NYSE is closed.
+- `pipelines/health_check.py::_check_fx`,
+  `monitoring/pipeline_execution.py` (FX leg), and
+  `pipelines/freshness.py::check_fx_freshness` used a fixed 2h
+  budget that fails through the entire forex weekend close
+  (Fri 22:00 UTC → Sun 22:00 UTC).
+
+Result: a predictable Telegram false alert every weekend.
+
+**Decision.** Add `pipelines/market_calendar.py` as a single source
+of truth and gate the three call sites on its helpers:
+
+| Helper | Used by |
+|---|---|
+| `expected_equity_prediction_date(now)` — most recent Mon-Fri strictly before `now.date()` | `_check_equity` |
+| `is_forex_closed(now)` — True iff Fri 22:00 UTC ≤ now < Sun 22:00 UTC | `_check_fx`, `pipeline_execution` FX leg, `check_fx_freshness` |
+| `fx_close_floor(now)` — Fri 21:00 UTC of the active closure (the last bar timestamp expected before close) | same three call sites |
+| `trading_days_between(start, end)` — moved from `freshness.py` | `check_equity_freshness` |
+
+During `is_forex_closed(now)`, the gate becomes
+`latest >= fx_close_floor(now)` instead of the wall-clock budget.
+This preserves outage detection during the close (a real ingestion
+failure that started before Fri 22:00 UTC still fails the gate).
+
+**Why `fx_close_floor` returns Fri 21:00 UTC, not Fri 22:00 UTC.**
+MHDE's `fx_prices_hourly.datetime_utc` stamps each hourly bar at
+the START of the hour it covers. The bar covering 21:00–22:00 UTC
+trading has `datetime_utc = 21:00:00`, finalizing at 22:00 UTC.
+That bar is the last one that exists before forex closes. If the
+floor were the close moment (22:00 UTC), `latest >= floor` would
+make a healthy system look stale (21:00 < 22:00). Centralizing
+this offset in the helper keeps each caller comparison clean
+(`latest >= fx_close_floor(now)` with no per-caller adjustment).
+
+**Holidays remain operator-acknowledged.** Mirrors ADR-015's
+trade-off. NYSE-closed Fridays (Thanksgiving, Good Friday) and
+Mondays (MLK, Memorial Day) will produce one warn the day after
+because the helper expects a "weekday", not a "trading day". Adding
+a holiday calendar (e.g. `pandas_market_calendars`) was rejected:
+
+- Adds a runtime dependency for ~10 noise-suppressed days/year.
+- The holiday list itself drifts (markets occasionally announce
+  closures) and would need maintenance.
+- A holiday warn is informational anyway — operator notes the
+  date and moves on.
+
+**Why not raise FX `RECENCY_BUDGET` to 50h to absorb the weekend?**
+Weakens active-hours outage detection: a real FX ingestion failure
+on Tuesday wouldn't alert until Thursday. The gate-on-window
+approach keeps the active-hours budget at 2h.
+
+**Why not add `row_inserted_at TIMESTAMP` and key recency off
+write time?** Same answer as ADR-015: better long-term, requires
+schema migration, out of scope here.
+
+**Configurability.** No env var. Adding a kill-switch creates a
+"forgot to set it back" failure surface and these market hours
+don't change.

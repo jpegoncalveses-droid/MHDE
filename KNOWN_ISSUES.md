@@ -1,7 +1,7 @@
 # Known Issues
 
-**4 open observations** (KI-122, KI-123, KI-126, KI-128). KI-122/123/128
-are cosmetic; KI-126 is a future Phase 0 enhancement deferred until
+**3 open observations** (KI-122, KI-123, KI-126). KI-122/123 are
+cosmetic; KI-126 is a future Phase 0 enhancement deferred until
 weekly reliability snapshots accumulate. None requires a hot fix —
 all tracked so a future session triages deliberately rather than
 letting them rot in the working tree.
@@ -105,35 +105,6 @@ has %d, see ADR-014 for cap rationale)"`. Trivial one-liner.
 **Out of scope for the equity ingestion fix session 2026-05-09.**
 Documentation/clarity fix; no behavioral impact.
 
-### KI-128 — Health check thresholds don't account for weekend market closure
-
-**Priority.** Low (cosmetic; predictable false positives).
-
-**Symptom.** The MHDE health check (`pipelines/health_check.py`) and
-the pipeline execution monitor (`monitoring/pipeline_execution.py`)
-use fixed recency thresholds that don't account for market closures:
-
-- Equity check fails Saturday and Sunday (NYSE closed Fri close →
-  Mon open).
-- FX check fails Friday 22:00 UTC → Sunday 22:00 UTC (forex closed).
-- Crypto unaffected (24/7 market).
-
-**Root cause.** The recency thresholds are wall-clock budgets
-without a market-calendar overlay. KI-124 widened equity's budget
-to 75h to absorb the weekend roll, but the FX budget stays at 2h
-and trips during the weekly forex close; the equity widening also
-masks signal during long weekends / holidays.
-
-**Detection / fix path.** Add weekday-aware threshold computation.
-For equity, expect data only Mon-Fri (and skip US market holidays).
-For FX, expect data outside the Friday 22:00 UTC → Sunday 22:00 UTC
-window. One option captured under KI-124 — add `row_inserted_at
-TIMESTAMP` to `ml_predictions` and key recency off real write time —
-would let the budgets shrink back to single-hour multiples and make
-the calendar overlay simpler.
-
-**Mitigation until fixed.** Operator ignores weekend alerts.
-
 ## Recently resolved (post-Session-7)
 
 - **KI-129 — engine-export preflight conflated stale pipeline with
@@ -158,7 +129,30 @@ the calendar overlay simpler.
   requires `predictions` non-empty + ranks unique + consecutive.
   See the engine-export design doc §5.5 for the corrected semantics.
 
+### KI-128 — Health check thresholds don't account for weekend market closure
 
+**Resolved 2026-05-10.** Fixed via ADR-018. Added
+`pipelines/market_calendar.py` with `expected_equity_prediction_date`,
+`is_forex_closed`, and `fx_close_floor` helpers. Three callers gate
+their existing recency checks on these helpers:
+
+- `pipelines/health_check.py::_check_equity` — uses
+  `expected_equity_prediction_date(now)` instead of the literal
+  `now - 1d`. No more Sun/Mon false positives.
+- `pipelines/health_check.py::_check_fx` and
+  `monitoring/pipeline_execution.py` (FX leg) and
+  `pipelines/freshness.py::check_fx_freshness` — branch on
+  `is_forex_closed(now)`; inside the window the gate is
+  `latest >= fx_close_floor(now)` (where `fx_close_floor` returns
+  Fri 21:00 UTC, the last bar timestamp expected before close),
+  outside it's the existing 2h budget. No more Fri 22:00 UTC →
+  Sun 22:00 UTC false positives.
+
+**Accepted limitation.** US market holidays still produce one warn
+the day after (Thanksgiving Friday, MLK Monday, etc.). Mirrors
+ADR-015's trade-off — a holiday calendar adds dependency surface
+for a small noise reduction and weakens active-day outage
+detection.
 
 - **KI-127 — phase0 calibration drift detector false-fired on
   small-sample-per-bucket noise** (opened + resolved 2026-05-09 on
