@@ -107,13 +107,72 @@ def compute_spec_hash(spec_dict: dict) -> str:
 
 Byte-for-byte identical to INTERFACE.md §2.3.
 
-`test_hashing.py` covers:
-- Golden vector: a fixed minimal spec dict produces a known SHA hex (the
-  expected value computed once and pinned).
-- Idempotency: hashing a dict twice returns the same string.
-- Field substitution: `compute_spec_hash({...})` returns the same value
-  regardless of any pre-existing `spec_hash` field in the input.
+**Cross-repo hash compatibility — shared test vector fixture**:
+
+The whole purpose of this function is interop with the engine. A
+self-pinned golden vector in MHDE alone proves only that MHDE is
+self-consistent — it does not prove the engine produces the same hash
+from the same input. To enforce real compatibility:
+
+- **Single source of truth**: a JSON fixture file at
+  `<engine-repo>/tests/fixtures/specs/hash_test_vectors_v1.json`
+  containing an array of `{input, expected_hash}` pairs.
+- **Engine repo**: `engine/tests/unit/spec/test_hash.py` reads the
+  fixture and asserts `compute_spec_hash(input) == expected_hash` for
+  each pair. (Engine-repo update is out of scope for this session;
+  see §10.)
+- **MHDE repo**: `tests/crypto/exports/test_hashing.py` resolves the
+  fixture path via the `MHDE_ENGINE_REPO` environment variable
+  (default `/home/jpcg/crypto-trading-engine`), reads the same JSON,
+  asserts the same expected hashes against MHDE's `compute_spec_hash`.
+  If the engine repo is not present at the resolved path, the test
+  calls `pytest.skip(f"engine repo not found at {path}; cross-repo "
+  f"hash fixture unavailable. Set MHDE_ENGINE_REPO or check out "
+  f"the engine repo to enable this gate.")`.
+- **Path documented in INTERFACE.md §2.4** (engine-repo update — see
+  §10) so both sides have a contract-anchored reference.
+
+Fixture file format (proposed for the engine-side commit):
+
+```json
+{
+  "fixture_version": "1.0",
+  "interface_version": "1.0",
+  "vectors": [
+    {
+      "name": "minimal_spec_v1",
+      "input": { "spec_hash": "", "spec_version": "1.0.0", "x": 1 },
+      "expected_hash": "sha256:<computed once on engine side, pinned here>"
+    },
+    {
+      "name": "full_active_spec_shape",
+      "input": { /* a fully-populated spec matching INTERFACE.md §2 example */ },
+      "expected_hash": "sha256:<computed once, pinned>"
+    },
+    {
+      "name": "unicode_field",
+      "input": { "spec_hash": "", "name": "café", "spec_version": "1.0.0" },
+      "expected_hash": "sha256:<computed once, pinned>"
+    }
+  ]
+}
+```
+
+`test_hashing.py` test list:
+- **Cross-repo fixture parity** (the gate): for each vector in the
+  shared fixture, `compute_spec_hash(input) == expected_hash`. Skips
+  with clear message if engine repo not present.
+- Idempotency: hashing the same dict twice returns the same string.
+- Field substitution: `compute_spec_hash({...})` returns the same
+  value regardless of any pre-existing `spec_hash` field in the input.
 - Sensitivity: changing any non-`spec_hash` field changes the SHA.
+- Format: result starts with `sha256:` and the hex portion is 64 chars.
+
+Note: the parity test is the only one that could be silently bypassed
+in CI environments without the engine checkout. The other four are
+unconditional. So even in a CI without the engine repo, MHDE's hash
+function is verified for self-consistency; cross-repo compatibility
+is verified locally and in coordinated-CI runs that have both repos.
 
 ### 5.3 `_io.py`
 
@@ -362,6 +421,21 @@ After implementation + tests pass:
   versioning; this design implements v1.0.0 only).
 - Any DB schema migrations. The export reads existing tables; no new
   columns or tables.
+- **Engine-repo coordinated changes** — these are required for full
+  cross-repo hash gating but are NOT done in this MHDE session:
+  1. Create `crypto-trading-engine/tests/fixtures/specs/hash_test_vectors_v1.json`
+     with the format specified in §5.2.
+  2. Update `crypto-trading-engine/tests/unit/spec/test_hash.py` to
+     read the fixture and assert per-vector hash equality (replacing
+     or augmenting the current `_ref_hash` helper which only proves
+     self-consistency).
+  3. Add INTERFACE.md §2.4 documenting the fixture path and format.
+
+  Until those land, MHDE's cross-repo parity test will skip with the
+  documented "engine repo not found at $MHDE_ENGINE_REPO" message
+  (the fixture file path simply doesn't exist yet). The other four
+  hash tests in MHDE remain unconditional, so MHDE-side
+  self-consistency is still enforced.
 
 ## 11. Test strategy summary
 
