@@ -11,7 +11,11 @@ from datetime import datetime, timedelta, timezone
 
 import duckdb
 
-from pipelines.market_calendar import expected_equity_prediction_date
+from pipelines.market_calendar import (
+    expected_equity_prediction_date,
+    is_forex_closed,
+    fx_close_floor,
+)
 
 logger = logging.getLogger("mhde.health_check")
 
@@ -79,13 +83,44 @@ def _check_crypto(conn: duckdb.DuckDBPyConnection) -> CheckResult:
 
 
 def _check_fx(conn: duckdb.DuckDBPyConnection) -> CheckResult:
-    """FX predict runs hourly. Expect prediction within the last 2 hours."""
-    threshold = _today_utc() - timedelta(hours=2)
-    threshold_naive = threshold.replace(tzinfo=None)
+    """FX predict runs hourly. Outside the forex-closed window we expect
+    a prediction within the last 2 hours. Inside Fri 22:00 UTC ->
+    Sun 22:00 UTC the latest must be at or after the close floor
+    (Fri 21:00 UTC of the active closure -- the last bar timestamp
+    expected before the close) -- preserves outage detection during
+    the close. See KI-128 / ADR-018.
+    """
+    now = _today_utc()
     row = conn.execute(
         "SELECT MAX(datetime_utc) FROM fx_ml_predictions"
     ).fetchone()
     latest = row[0] if row else None
+
+    if is_forex_closed(now):
+        floor_naive = fx_close_floor(now).replace(tzinfo=None)
+        logger.info(
+            "fx forex-closed window -- asserting latest >= %s (KI-128)",
+            floor_naive,
+        )
+        if latest is not None and latest >= floor_naive:
+            sig_row = conn.execute(
+                "SELECT signal_type, datetime_utc FROM fx_signals "
+                "ORDER BY datetime_utc DESC LIMIT 1"
+            ).fetchone()
+            latest_sig = f"{sig_row[0]} @ {sig_row[1]}" if sig_row else "no signal"
+            return CheckResult(
+                "fx", True,
+                f"latest bar {latest} UTC (forex-closed; floor={floor_naive}); "
+                f"latest signal: {latest_sig}",
+            )
+        return CheckResult(
+            "fx", False,
+            f"latest prediction {latest} predates forex-close floor "
+            f"{floor_naive} -- outage during closed window",
+        )
+
+    threshold = now - timedelta(hours=2)
+    threshold_naive = threshold.replace(tzinfo=None)
     if latest is not None and latest >= threshold_naive:
         sig_row = conn.execute(
             "SELECT signal_type, datetime_utc FROM fx_signals "
