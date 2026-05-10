@@ -624,3 +624,97 @@ end-to-end.
   restart `mhde-streamlit.service` before claiming any level
   above L3. The OPERATIONS deploy matrix flags this; the
   streamlit_freshness monitor catches forgotten restarts.
+
+
+## ADR-017 — Engine-export contract: file-based, MHDE-side production
+
+**Date:** 2026-05-10
+**Status:** Accepted
+
+**Context.**
+The crypto-trading-engine (separate repo at
+`/home/jpcg/crypto-trading-engine/`) needs two inputs from MHDE for
+Phase 2/3 paper trading: a strategy spec (rare updates) and a daily
+ranked predictions list. Direct DB access from engine to MHDE was
+ruled out as too coupling-heavy. The contract — schemas, hash
+algorithm, validation rules — lives in
+`/home/jpcg/crypto-trading-engine/docs/INTERFACE.md`.
+
+**Decision.**
+A file-based contract under `data/exports/` produced by
+`crypto/exports/`. Six production-relevant choices made on the MHDE
+side this session:
+
+1. **Predictions source — re-score full universe in export script.**
+   `crypto_ml_predictions` is filtered/capped (max 15 per horizon) by
+   `score_universe()`'s adaptive-threshold logic. INTERFACE.md §3
+   requires the full ranked list of predictable candidates. Solution:
+   the export script does its own inference on the active 10d model
+   bundle. It does not write to DB; the existing prediction pipeline
+   is unchanged.
+
+2. **Backtest expectations methodology — portfolio-realistic.**
+   `report.simulate_portfolio` results (engine compares paper-trade
+   portfolio P&L against these). Sum-of-fractions metrics in
+   `crypto_backtest_summary` are docs-flagged as ranking-only and
+   inflate absolute values; using them for divergence checks would
+   compare the wrong methodology. Unit transforms pinned by tests:
+   `portfolio_max_dd_pct` is passthrough fraction (despite the
+   `*_pct` suffix in `PortfolioResult`); `expected_annualized_return_pct`
+   multiplies by 100 to match INTERFACE.md's percentage-value form.
+   Both bugs were caught by spec review during T5 and fixed in commit
+   `2d018fb`.
+
+3. **Risk envelope — adopt INTERFACE.md §2 example values for $1k
+   Phase 2 paper trading.** `max_account_drawdown_pct=0.30`,
+   `daily_loss_limit_usd=100`, `position_size_min_usd=5`,
+   `position_size_max_pct=0.20`. Revisit at Phase 3 → 4 transition
+   once paper trading shows real friction.
+
+4. **Static config home — `crypto/exports/spec_config.py`.** Phase 1B
+   winner `run_id` plus risk/sizing/runtime/universe constants live
+   here as Python constants. Phase 1B re-runs require an explicit
+   edit + commit. Git history is the audit trail.
+
+5. **Cross-repo hash compatibility — shared JSON fixture in engine
+   repo.** A single test-vector file at
+   `crypto-trading-engine/tests/fixtures/specs/hash_test_vectors_v1.json`
+   is read by both sides' tests. MHDE's parity test resolves the
+   path via `MHDE_ENGINE_REPO` (default
+   `/home/jpcg/crypto-trading-engine`) and skips with a clear message
+   when the engine repo isn't present. Engine-repo coordinated
+   changes (creating the fixture, INTERFACE.md §2.4 path
+   documentation, engine `test_hash.py` update) tracked separately.
+
+6. **Preflight gate — staleness only, not per-symbol coverage.**
+   The first design called for a strict 100% coverage gate on top
+   of staleness. The first production run (KI-129) demonstrated this
+   was over-strict: newly-added universe symbols are in their 60-day
+   features warmup window (longest lookback feature is `return_60d`)
+   and have zero feature rows by design. Loosened to staleness-only
+   in commit `ef0f12a`. `n_predictions` reflects the predictable
+   subset of the active universe; INTERFACE.md §3 doesn't mandate
+   `n == universe_size`.
+
+Plus three smaller decisions:
+- `data/exports/` gitignored (operational artifact, mirrors
+  `data/reports/` policy from commit `0f04fc5`).
+- Daily predictions timer fires 06:15 UTC, 7 days/week, between the
+  existing crypto predict timer (00:30 UTC) and the engine's 06:30
+  UTC entry phase. The export's preflight enforces freshness; systemd
+  ordering is informational.
+- Symlink replacement is atomic (write tmp + `os.replace`). Replaces
+  pre-existing files silently for initial bootstrap.
+
+**Consequences.**
+- New module `crypto/exports/`, two new CLI commands
+  (`crypto export-spec`, `crypto export-predictions`), one new
+  systemd timer (`mhde-crypto-export-predictions.timer`).
+- Phase 1B re-runs become a deliberate two-step ritual: re-run the
+  grid, then edit `spec_config.PHASE1B_WINNER_RUN_ID` and commit.
+- No DB schema changes; export reads existing tables only.
+- 42 tests under `tests/crypto/exports/` (1 skip until engine-repo
+  fixture lands).
+- Engine-side coordinated changes (test fixture file, INTERFACE.md
+  §2.4 path documentation, engine's `test_hash.py` update) are
+  tracked separately in the engine repo.
