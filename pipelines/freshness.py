@@ -22,7 +22,11 @@ from typing import Optional, Union
 
 import duckdb
 
-from pipelines.market_calendar import trading_days_between
+from pipelines.market_calendar import (
+    trading_days_between,
+    is_forex_closed,
+    fx_close_floor,
+)
 
 logger = logging.getLogger("mhde.freshness")
 
@@ -124,6 +128,28 @@ def check_fx_freshness(
             engine="fx", is_fresh=False, latest=None, age=None,
             age_str="n/a", threshold=f"{max_hours}h",
             message="fx_prices_hourly is empty",
+        )
+
+    # `now` enters tz-naive (the existing contract); helpers expect
+    # tz-aware UTC. Convert at the boundary, branch, then return.
+    now_aware = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+
+    if is_forex_closed(now_aware):
+        # fx_close_floor returns the Fri 22:00 UTC of the closure.
+        # The FX hourly pipeline writes the most recently completed hour bar,
+        # so the last valid bar before the 22:00 close is the 21:00 bar.
+        # Subtract 1h so the floor reflects the last expected bar time.
+        floor = fx_close_floor(now_aware).replace(tzinfo=None) - timedelta(hours=1)
+        is_fresh = latest >= floor
+        age = now - latest
+        msg = (
+            f"FX fx_prices_hourly latest={latest} during forex-closed "
+            f"window; floor={floor} (KI-128)"
+        )
+        return FreshnessReport(
+            engine="fx", is_fresh=is_fresh, latest=latest, age=age,
+            age_str=_format_age(age), threshold=f"forex-closed floor {floor}",
+            message=msg,
         )
 
     age = now - latest

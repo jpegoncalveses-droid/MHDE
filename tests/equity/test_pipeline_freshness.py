@@ -155,3 +155,58 @@ def test_check_all_returns_three_reports(temp_db):
     assert set(reports.keys()) == {"equity", "crypto", "fx"}
     for engine, rep in reports.items():
         assert rep.engine == engine
+
+
+# ──────────────────────────────────────────────────────────────────────
+# FX freshness — forex-closed window (KI-128)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_fx_freshness_during_close_with_pre_close_bar_is_fresh(temp_db):
+    # Sat 2026-05-16 12:00 UTC; latest bar Fri 21:55 UTC (last bar
+    # before close). is_fresh because latest >= fx_close_floor (Fri 22:00).
+    # Wait — Fri 21:55 is BEFORE Fri 22:00, but the actual last bar
+    # written at the moment of close lands at Fri 21:00 (top of
+    # hour) since the FX hourly schedule fires at :05 reading the
+    # most recent completed hour. Use Fri 21:00 as the "last bar
+    # before close".
+    from datetime import datetime as _dt
+    now = _dt(2026, 5, 16, 12, 0, 0)
+    bar = _dt(2026, 5, 15, 21, 0, 0)  # Fri 21:00 UTC
+    temp_db.execute(
+        "INSERT INTO fx_prices_hourly (datetime_utc, date, weekday, hour_utc, gbpeur_close, data_quality) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        [bar, bar.date(), bar.strftime("%A"), bar.hour, 1.18, "OK"],
+    )
+    rep = check_fx_freshness(temp_db, now=now)
+    assert rep.is_fresh, f"expected fresh during close window with pre-close bar; msg={rep.message}"
+
+
+def test_fx_freshness_during_close_with_outage_in_flight_is_stale(temp_db):
+    # Sat 12:00 UTC; latest bar Wed 10:00 UTC — outage started long
+    # before forex closed; latest is BEFORE fx_close_floor.
+    from datetime import datetime as _dt
+    now = _dt(2026, 5, 16, 12, 0, 0)
+    bar = _dt(2026, 5, 13, 10, 0, 0)  # Wed 10:00 UTC
+    temp_db.execute(
+        "INSERT INTO fx_prices_hourly (datetime_utc, date, weekday, hour_utc, gbpeur_close, data_quality) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        [bar, bar.date(), bar.strftime("%A"), bar.hour, 1.18, "OK"],
+    )
+    rep = check_fx_freshness(temp_db, now=now)
+    assert not rep.is_fresh, "outage during close window must still be flagged"
+
+
+def test_fx_freshness_post_resume_with_stale_data_is_stale(temp_db):
+    # Sun 23:00 UTC — closed window ended at Sun 22:00. 2h budget
+    # active. latest = Fri 21:00 UTC (older than 2h) → stale.
+    from datetime import datetime as _dt
+    now = _dt(2026, 5, 17, 23, 0, 0)
+    bar = _dt(2026, 5, 15, 21, 0, 0)
+    temp_db.execute(
+        "INSERT INTO fx_prices_hourly (datetime_utc, date, weekday, hour_utc, gbpeur_close, data_quality) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        [bar, bar.date(), bar.strftime("%A"), bar.hour, 1.18, "OK"],
+    )
+    rep = check_fx_freshness(temp_db, now=now)
+    assert not rep.is_fresh
