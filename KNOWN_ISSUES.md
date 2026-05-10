@@ -1,10 +1,18 @@
 # Known Issues
 
-**3 open observations** (KI-122, KI-123, KI-126). KI-122/123 are
-cosmetic; KI-126 is a future Phase 0 enhancement deferred until
-weekly reliability snapshots accumulate. None requires a hot fix —
+**4 open observations** (KI-122, KI-123, KI-126, KI-131). KI-122/123
+are cosmetic; KI-126 is a future Phase 0 enhancement deferred until
+weekly reliability snapshots accumulate; KI-131 is a low-priority
+single-day production-model row-count dip. None requires a hot fix —
 all tracked so a future session triages deliberately rather than
 letting them rot in the working tree.
+
+**KI-130** opened + resolved 2026-05-10 — DuckDB 1.5.2
+`SELECT DISTINCT col … ORDER BY col DESC LIMIT N` planner regression
+caused both dashboard date-selectors to surface only the 2 most
+recent prediction_dates instead of 30. Fix: helper
+`get_distinct_prediction_dates` using `GROUP BY` in
+`dashboard/services/queries.py`. See "Recently resolved" below.
 
 **KI-127** opened + resolved same session (Phase 0 calibration
 drift detector false-fired on small-sample-per-bucket noise; fix:
@@ -18,6 +26,17 @@ sound (38 prediction model_ids match 38 model_runs entries
 exactly; 36 walkfold model_runs all `is_active=false`); only the
 monitor false-positive was real and that was already patched. See
 "Recently resolved" below.
+
+**Walk-fold semantics — FAQ.** Walk-fold predictions
+(`crypto_{5d,10d}_walkfold_YYYY_MM`) are produced by a **one-shot
+Phase 1A backfill, not a daily pipeline**. No systemd timer runs
+`crypto/ml/backfill_walkforward.py`. Each backfill execution writes
+predictions for the test windows of every walk-forward fold and tags
+them `is_active=false` so the daily `crypto predict` pipeline and
+the production monitors ignore them. Apparent "walk-fold stopped
+writing on day X" patterns reflect the most-recent fold's test-window
+boundary — not a pipeline outage. See KI-119 below for the writer
+isolation contract.
 
 The historical record of resolved bugs lives in
 [`legacy/RESOLVED_ISSUES_ARCHIVE.md`](legacy/RESOLVED_ISSUES_ARCHIVE.md).
@@ -85,6 +104,44 @@ wire it into the weekly monitor as a fourth alert path. Tests in
 2026-05-09.** Recorded here so the future session knows the
 definition-(a) coverage today and how to extend.
 
+### KI-131 — crypto 5d model wrote 23 predictions on 2026-05-09 vs ~30 expected
+
+**Symptom.** `crypto_5d_ab428f75` produced 23 rows in
+`crypto_ml_predictions` for `prediction_date=2026-05-09`, while the
+adjacent days (2026-05-07, 2026-05-08, 2026-05-10) all wrote 15 rows
+each per active model (10d + 5d = 30 per date). The 5d total on
+2026-05-09 is `15 (10d) + 8 (5d) = 23` rather than 30. The 10d model
+wrote a normal 15 rows that day.
+
+**Why monitoring didn't fire.** `monitoring/pipeline_execution.py`'s
+14-day ratio test only flags when the latest-day row count drops
+below 50% of the 14-day average. 23/30 = 0.77 — comfortably above
+the 50% warn threshold and 20% fail threshold. The check is doing
+exactly what it was tuned for, just not tight enough to surface this
+specific gap.
+
+**Hypotheses (not yet investigated).**
+1. Partial pipeline failure mid-run: the 5d predict ran, then crashed
+   before completing all 15 universe symbols. 7 of 15 outputs were
+   lost. Check `data/logs/crypto_predict.log` for 2026-05-09 ~00:30
+   UTC for retry/exception traces.
+2. Feature warmup gap: 7 universe symbols had missing features for
+   the 5d horizon on 2026-05-09 (5d-horizon-specific feature, not
+   shared with 10d). Less likely — the universe is the same for both
+   horizons and 10d had no shortfall.
+3. Mid-run universe shift: a universe symbol was deactivated between
+   the 10d and 5d calls. Unlikely given the 30-min pipeline runtime.
+
+**Detection / fix path.** Low priority — single-day blip, both
+horizons fresh on 2026-05-10. Worth a future session reading the
+2026-05-09 predict log + tightening the 14d ratio test for the 5d
+model specifically (or per-model rather than per-engine) only if the
+pattern recurs.
+
+**Out of scope for the dashboard fix session 2026-05-10.** Flagged
+during investigation of the dashboard DISTINCT bug (Finding 1
+side-observation) and recorded for future triage.
+
 ### KI-123 — Misleading "Dev mode" log line in daily_radar.py
 
 **Symptom.** `pipelines/daily_radar.py:83` logs `"Dev mode: capped
@@ -106,6 +163,40 @@ has %d, see ADR-014 for cap rationale)"`. Trivial one-liner.
 Documentation/clarity fix; no behavioral impact.
 
 ## Recently resolved (post-Session-7)
+
+- **KI-130 — Dashboard date-selector returned only 2 dates instead
+  of 30** (opened + resolved 2026-05-10). Both prediction-tab date
+  dropdowns in `dashboard/app.py` (equity at line 117, crypto at
+  line 387) ran:
+  ```sql
+  SELECT DISTINCT prediction_date FROM <table>
+  ORDER BY prediction_date DESC LIMIT 30
+  ```
+  Against the production DuckDB file this returned only the 2 most
+  recent dates rather than 30, despite the crypto predictions table
+  containing 523 distinct prediction_dates. The same query with
+  `LIMIT 100` returned 100 rows correctly, and the
+  `GROUP BY`-shaped equivalent returned 30 rows correctly — pinning
+  the cause to a DuckDB 1.5.2 TopN-with-DISTINCT planner fusion that
+  triggers data-volume-dependently (does not reproduce in fresh
+  in-memory or file DBs even at 40k rows; only manifests on the
+  production DB's specific block layout). **Fix.** New helper
+  `dashboard.services.queries.get_distinct_prediction_dates` uses
+  `GROUP BY` + `ORDER BY` + `LIMIT`, which avoids the broken planner
+  path. Both `app.py` call sites switched to the helper. **Tests.**
+  `tests/dashboard/test_distinct_date_selector_regression.py` (5
+  tests): four contract tests verify the helper's behaviour under
+  varied data shapes; a fifth source-level anti-pattern test
+  intercepts the SQL the helper actually executes and asserts it
+  contains `GROUP BY` and not `DISTINCT` — needed because the bug is
+  not reliably reproducible in test data and source inspection is
+  the only durable guard. Smoke test
+  `.claude/local_scripts/smoke_distinct_dates.py` confirms the fix
+  returns 30 crypto dates against the production DB. FX tab
+  unaffected (uses `MAX(datetime_utc)` and `WHERE datetime_utc = ?`
+  rather than `DISTINCT + ORDER BY + LIMIT`); `filters.py`
+  unaffected (uses `GROUP BY run_id` shape, not DISTINCT on a single
+  column).
 
 - **KI-129 — engine-export preflight conflated stale pipeline with
   warmup-window symbols** (opened + resolved 2026-05-10 during the

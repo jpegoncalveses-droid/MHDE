@@ -14,6 +14,31 @@ def _connect() -> duckdb.DuckDBPyConnection:
     return duckdb.connect(db_path, read_only=True)
 
 
+def get_distinct_prediction_dates(
+    conn: duckdb.DuckDBPyConnection,
+    table: str,
+    date_col: str,
+    limit: int = 30,
+) -> list:
+    """Return the most-recent N distinct prediction dates from ``table``.
+
+    A ``SELECT DISTINCT col FROM t ORDER BY col DESC LIMIT N`` shape
+    triggers a TopN-with-distinct planner regression in DuckDB 1.5.2 that
+    silently returns far fewer rows than the table contains. Using
+    ``GROUP BY`` instead avoids the fusion. See regression test
+    ``tests/dashboard/test_distinct_date_selector_regression.py`` and
+    KNOWN_ISSUES.md (KI-119 note).
+    """
+    sql = (
+        f"SELECT {date_col} FROM {table} "
+        f"GROUP BY {date_col} "
+        f"ORDER BY {date_col} DESC "
+        f"LIMIT ?"
+    )
+    rows = conn.execute(sql, [limit]).fetchall()
+    return [r[0] for r in rows]
+
+
 def get_latest_run_id(conn: duckdb.DuckDBPyConnection) -> str | None:
     rows = conn.execute(
         "SELECT run_id FROM scores ORDER BY created_at DESC LIMIT 1"
