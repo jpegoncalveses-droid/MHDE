@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 from datetime import date
-from unittest.mock import patch
 
 import pytest
 
@@ -20,8 +19,21 @@ from crypto.execution.backtest.harness import ensure_backtest_tables
 def _seed_phase1b_winner(conn):
     """Insert the rows write_active_spec needs.
 
-    A small set of trades (10) is enough for simulate_portfolio to
-    return a non-degenerate PortfolioResult.
+    Seeds a 10-trade ledger with both winners and losers so
+    simulate_portfolio produces a measurable drawdown — required to
+    detect unit-scaling bugs in ``portfolio_max_dd_pct`` (a /100 bug or
+    a passthrough bug would each shrink dd toward zero on an
+    all-winners seed).
+
+    Sequence (entries staggered 2 days apart, each exit = entry+1 so
+    every position fully realizes before the next entry, giving
+    simulate_portfolio a clean 11-row equity curve):
+      - 5 winners (+5%)
+      - 3 losers  (-10%)  → drawdown bites mid-curve
+      - 2 winners (+5%)   → partial recovery
+    With ``starting_capital=1000`` and per-position size
+    ``1000*0.8/6 ≈ 133.33``, the curve peaks near $1033.78 and bottoms
+    near $992.98, yielding ``max_drawdown_pct ≈ -0.0395`` (a fraction).
     """
     ensure_backtest_tables(conn)
     run_id = spec_config.PHASE1B_WINNER_RUN_ID
@@ -42,24 +54,29 @@ def _seed_phase1b_winner(conn):
         ") VALUES (?, 51.2, 47.0, 6.32, -0.17, 0.871, 3.13, 3.66, 0.87)",
         [run_id],
     )
-    # Seed 10 staggered winners (entry on day i, exit on day i+1, all
-    # +5%). Distinct close-days produce a monotonically-increasing
-    # equity curve → finite positive Sharpe + zero drawdown, which the
-    # backtest_expectations assertions below depend on.
+    # 5 winners, 3 losers, 2 winners.
+    sequence = [0.05] * 5 + [-0.10] * 3 + [0.05] * 2
     from datetime import timedelta
-    for i in range(10):
-        entry = date(2025, 4, 5) + timedelta(days=i)
+    for i, pnl in enumerate(sequence):
+        entry = date(2025, 4, 5) + timedelta(days=i * 2)
         exit_d = entry + timedelta(days=1)
+        # Same symbol throughout; vary entry/exit prices to encode
+        # winners vs. losers on a 60000 entry.
+        if pnl > 0:
+            entry_price, exit_price = 60000.0, 63000.0
+        else:
+            entry_price, exit_price = 60000.0, 54000.0
         conn.execute(
             "INSERT INTO crypto_backtest_trades ("
             "  run_id, trade_id, coin, entry_date, entry_price,"
             "  exit_date, exit_price, exit_reason, holding_days,"
             "  net_pnl_pct, probability_at_entry"
             ") VALUES (?, ?, 'BTCUSDT',"
-            "  ?, 60000.0,"
-            "  ?, 63000.0, 'trailing', 1,"
-            "  0.05, 0.80)",
-            [run_id, f"t{i}", entry, exit_d],
+            "  ?, ?,"
+            "  ?, ?, 'trailing', 1,"
+            "  ?, 0.80)",
+            [run_id, f"t{i}", entry, entry_price,
+             exit_d, exit_price, pnl],
         )
 
 
@@ -120,11 +137,24 @@ def test_build_spec_backtest_expectations_pulled_from_simulate_portfolio(temp_db
     _seed_phase1b_winner(temp_db)
     spec = write_active_spec.build_spec(temp_db)
     e = spec["backtest_expectations"]
-    # All seeded trades are winners (+5%) → portfolio Sharpe is finite
-    # and positive, max_dd_pct == 0 (no drawdown), n_trades == 10.
-    assert e["portfolio_sharpe"] > 0
-    assert e["portfolio_max_dd_pct"] <= 0  # fraction (negative or zero)
+    # Sharpe is finite (not NaN) — the seed produces enough daily
+    # returns with non-zero std for sharpe to compute.
+    assert e["portfolio_sharpe"] == e["portfolio_sharpe"]  # not NaN
+    # portfolio_max_dd_pct must be a NEGATIVE FRACTION with magnitude
+    # at least 1%. The seeded losers drive the equity curve down ~3.95%
+    # from peak. A passthrough-without-conversion bug would still pass
+    # this (PortfolioResult is already a fraction), but a /100 bug
+    # would shrink dd to ~-0.0004 and fail the >= 0.01 magnitude check.
+    assert -1.0 <= e["portfolio_max_dd_pct"] < 0
+    assert abs(e["portfolio_max_dd_pct"]) >= 0.01
     assert e["expected_hit_rate"] == pytest.approx(0.871)
+    # annualized_return_pct is a percentage VALUE (e.g. 12.03 = 12.03%),
+    # not a fraction. The seed yields ~12% annualized; clamp to a wide
+    # plausibility band so the assertion stays robust if simulate_portfolio
+    # internals change. Catches both the missing *100 bug (fraction
+    # ~0.12 < 1) and any 10000x runaway.
+    assert -1000.0 <= e["expected_annualized_return_pct"] <= 100000.0
+    assert abs(e["expected_annualized_return_pct"]) >= 1.0
     assert e["expected_n_trades_per_year"] >= 1
     assert e["divergence_alert_threshold_pct"] == 0.20
 

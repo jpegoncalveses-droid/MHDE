@@ -95,11 +95,20 @@ def _backtest_expectations(conn) -> dict:
     """Map simulate_portfolio output + summary.hit_rate to the
     INTERFACE.md §2 backtest_expectations fields.
 
-    Unit transforms (pinned by tests; see spec §5.4):
+    Unit transforms (pinned by tests; see spec §5.4).
+    NOTE: Despite the ``*_pct`` suffix, ``PortfolioResult.max_drawdown_pct``,
+    ``total_return_pct`` and ``annualized_return_pct`` are stored as
+    FRACTIONS (e.g. -0.237 = -23.7% drawdown) — see report.py:548 where
+    ``dd = (eq - peak) / peak`` and the format code (lines 626/628/636)
+    multiplying by 100 for display. INTERFACE.md §2 mixes units:
+    ``portfolio_max_dd_pct`` is a fraction, but
+    ``expected_annualized_return_pct`` is a percentage value (21.36 = 21.36%).
+
       - portfolio_sharpe         ← result.sharpe_ratio (passthrough)
-      - portfolio_max_dd_pct     ← result.max_drawdown_pct / 100 (→ fraction)
+      - portfolio_max_dd_pct     ← result.max_drawdown_pct (passthrough fraction)
       - expected_hit_rate        ← summary.hit_rate (passthrough fraction)
-      - expected_annualized_return_pct ← result.annualized_return_pct (percentage)
+      - expected_annualized_return_pct ← result.annualized_return_pct * 100
+        (fraction → percentage value)
       - expected_n_trades_per_year     ← round(n_trades_taken / span_days × 365)
     """
     from crypto.execution.backtest.report import simulate_portfolio
@@ -126,9 +135,9 @@ def _backtest_expectations(conn) -> dict:
     )
     return {
         "portfolio_sharpe": float(result.sharpe_ratio),
-        "portfolio_max_dd_pct": float(result.max_drawdown_pct) / 100.0,
+        "portfolio_max_dd_pct": float(result.max_drawdown_pct),
         "expected_hit_rate": hit_rate_value,
-        "expected_annualized_return_pct": float(result.annualized_return_pct),
+        "expected_annualized_return_pct": float(result.annualized_return_pct) * 100.0,
         "expected_n_trades_per_year": n_trades_per_year,
         "divergence_alert_threshold_pct": spec_config.DIVERGENCE_ALERT_THRESHOLD_PCT,
     }
