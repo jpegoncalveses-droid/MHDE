@@ -22,6 +22,8 @@ from typing import Optional, Union
 
 import duckdb
 
+from pipelines.market_calendar import trading_days_between
+
 logger = logging.getLogger("mhde.freshness")
 
 
@@ -52,19 +54,6 @@ def _format_age(age: Optional[timedelta]) -> str:
     return f"{days}d {hours}h"
 
 
-def _trading_days_between(start: date, end: date) -> int:
-    """Inclusive trading-day count (Mon-Fri) between two dates. start <= end."""
-    if start > end:
-        return 0
-    days = 0
-    cur = start
-    while cur <= end:
-        if cur.weekday() < 5:
-            days += 1
-        cur += timedelta(days=1)
-    return days
-
-
 def check_equity_freshness(
     conn: duckdb.DuckDBPyConnection,
     today: Optional[date] = None,
@@ -82,7 +71,7 @@ def check_equity_freshness(
         )
 
     age = datetime.combine(today, datetime.min.time()) - datetime.combine(latest, datetime.min.time())
-    trading_gap = _trading_days_between(latest + timedelta(days=1), today)
+    trading_gap = trading_days_between(latest + timedelta(days=1), today)
     is_fresh = trading_gap <= max_trading_days
     msg = (f"Equity prices_daily latest={latest} "
            f"({trading_gap} trading-day gap; threshold={max_trading_days})")
