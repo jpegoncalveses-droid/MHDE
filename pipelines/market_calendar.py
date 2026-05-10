@@ -50,6 +50,7 @@ _FRIDAY = 4
 _SATURDAY = 5
 _SUNDAY = 6
 _FOREX_CLOSE_HOUR_UTC = 22
+_LAST_FX_BAR_HOUR_UTC = 21
 
 
 def is_forex_closed(now: datetime) -> bool:
@@ -68,14 +69,20 @@ def is_forex_closed(now: datetime) -> bool:
 
 
 def fx_close_floor(now: datetime) -> datetime:
-    """Return the Friday 22:00:00 UTC of the closure that contains
-    `now`. Caller is expected to pass a `now` for which
-    `is_forex_closed(now)` is True; behavior outside that window is
-    undefined.
+    """Return the timestamp of the last FX bar expected before the
+    forex close that contains `now`. Caller is expected to pass a
+    `now` for which `is_forex_closed(now)` is True; behavior outside
+    that window is undefined.
 
-    The closure floor is the lower bound the latest FX bar must
-    satisfy during the closed window for the data to count as
-    healthy (no outage during the close).
+    FX hourly bars stamp `datetime_utc` at the start of the hour they
+    cover. Forex closes at 22:00 UTC, so the bar covering 21:00-22:00
+    UTC trading has `datetime_utc = 21:00:00` and is the last bar
+    that exists before close. The floor is therefore Fri 21:00 UTC
+    of the active closure.
+
+    Used as the lower bound the latest FX bar must satisfy
+    (`latest >= fx_close_floor(now)`) during the closed window for
+    the data to count as healthy.
     """
     wd = now.weekday()
     # Days back to the most recent Friday: Fri=0, Sat=1, Sun=2.
@@ -83,7 +90,7 @@ def fx_close_floor(now: datetime) -> datetime:
     floor_date = (now - timedelta(days=days_back)).date()
     return datetime(
         floor_date.year, floor_date.month, floor_date.day,
-        _FOREX_CLOSE_HOUR_UTC, 0, 0, tzinfo=timezone.utc,
+        _LAST_FX_BAR_HOUR_UTC, 0, 0, tzinfo=timezone.utc,
     )
 
 

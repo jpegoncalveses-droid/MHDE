@@ -135,11 +135,7 @@ def check_fx_freshness(
     now_aware = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
 
     if is_forex_closed(now_aware):
-        # fx_close_floor returns the Fri 22:00 UTC of the closure.
-        # The FX hourly pipeline writes the most recently completed hour bar,
-        # so the last valid bar before the 22:00 close is the 21:00 bar.
-        # Subtract 1h so the floor reflects the last expected bar time.
-        floor = fx_close_floor(now_aware).replace(tzinfo=None) - timedelta(hours=1)
+        floor = fx_close_floor(now_aware).replace(tzinfo=None)
         is_fresh = latest >= floor
         age = now - latest
         msg = (

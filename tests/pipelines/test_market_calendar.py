@@ -106,18 +106,20 @@ def test_is_forex_closed_midweek_is_open():
     assert is_forex_closed(_utc_full(2026, 5, 13, 12, 0)) is False
 
 
-# fx_close_floor: returns the Fri 22:00 UTC of the active closure.
+# fx_close_floor: returns the Fri 21:00 UTC of the active closure
+# (the last FX hourly bar timestamp before the 22:00 close).
 
 def test_fx_close_floor_saturday():
-    # Sat 2026-05-16 12:00 → Fri 2026-05-15 22:00.
-    assert fx_close_floor(_utc_full(2026, 5, 16, 12, 0)) == _utc_full(2026, 5, 15, 22, 0)
+    # Sat 2026-05-16 12:00 → Fri 2026-05-15 21:00.
+    assert fx_close_floor(_utc_full(2026, 5, 16, 12, 0)) == _utc_full(2026, 5, 15, 21, 0)
 
 
 def test_fx_close_floor_sunday_before_resume():
-    # Sun 2026-05-17 21:59 → Fri 2026-05-15 22:00.
-    assert fx_close_floor(_utc_full(2026, 5, 17, 21, 59)) == _utc_full(2026, 5, 15, 22, 0)
+    # Sun 2026-05-17 21:59 → Fri 2026-05-15 21:00.
+    assert fx_close_floor(_utc_full(2026, 5, 17, 21, 59)) == _utc_full(2026, 5, 15, 21, 0)
 
 
 def test_fx_close_floor_friday_after_close():
-    # Fri 2026-05-15 22:30 → Fri 2026-05-15 22:00 (same day).
-    assert fx_close_floor(_utc_full(2026, 5, 15, 22, 30)) == _utc_full(2026, 5, 15, 22, 0)
+    # Fri 2026-05-15 22:30 → Fri 2026-05-15 21:00 (same day; floor is
+    # last bar timestamp, not the close moment).
+    assert fx_close_floor(_utc_full(2026, 5, 15, 22, 30)) == _utc_full(2026, 5, 15, 21, 0)
