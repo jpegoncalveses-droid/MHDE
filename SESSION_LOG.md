@@ -6,6 +6,45 @@ are at the top.
 
 ---
 
+## 2026-05-10 — KI-128 weekday-aware recency for health_check + pipeline_execution
+
+**Branch:** `ki128-weekday-aware-recency` (committed; not yet merged — pending operator approval).
+
+**Problem.** `pipelines/health_check.py::_check_equity` failed Sun/Mon mornings (the literal `now - 1d` returned Sat or Sun, neither has equity data); `_check_fx`, `monitoring/pipeline_execution.py` (FX leg), and `pipelines/freshness.py::check_fx_freshness` failed through the entire forex weekend close (Fri 22:00 UTC → Sun 22:00 UTC). Result: predictable Telegram false alerts every weekend.
+
+**Fix.** Added `pipelines/market_calendar.py` as a single source of truth for market-clock decisions. Four pure helpers:
+- `trading_days_between(start, end)` — moved from `freshness.py`.
+- `expected_equity_prediction_date(now)` — most recent Mon-Fri strictly before `now.date()`.
+- `is_forex_closed(now)` — True iff Fri 22:00 UTC ≤ now < Sun 22:00 UTC.
+- `fx_close_floor(now)` — Fri **21:00** UTC of the active closure (the last bar timestamp expected before close, since MHDE's `fx_prices_hourly.datetime_utc` stamps bars at hour-start).
+
+Three callers gate their existing recency logic on these helpers. Equity / crypto branches in `pipeline_execution` are unchanged (75h / 27h budgets per ADR-015 already cover their domains). Holidays remain operator-acknowledged per ADR-015's precedent.
+
+**Tests added (~30):** `tests/pipelines/test_market_calendar.py` (21), `tests/pipelines/test_health_check_weekend.py` (11 — 6 equity + 5 fx), `tests/regression/test_pipeline_execution_weekend.py` (4), plus 3 forex-closed cases appended to `tests/equity/test_pipeline_freshness.py`. The cross_artifact `_seed_minimal_health_data` helper was updated to be weekday-correct so `tests/equity/test_monitoring.py` stays green on any CI day.
+
+**Notable design correction during execution.** The original spec had `fx_close_floor` returning Fri 22:00 UTC (the close moment). Task 4's tests caught a semantic error: with `latest >= floor` and floor=22:00, a healthy system shows stale because the bar covering 21:00–22:00 trading has `datetime_utc=21:00:00`. Fixed in commit `0a42f40` by returning Fri 21:00 UTC and renaming the constant `_LAST_FX_BAR_HOUR_UTC = 21` (kept `_FOREX_CLOSE_HOUR_UTC = 22` for `is_forex_closed`).
+
+**Docs.** ADR-018 captures the decision and the bar-timestamp rationale (commit `44f8f59`). KI-128 → "Recently resolved" in `KNOWN_ISSUES.md`.
+
+**Commits on branch (11):**
+1. `0f15529` docs(specs): KI-128 weekday-aware recency design
+2. `10d237a` docs(plans): KI-128 weekday-aware recency TDD plan
+3. `ff1a7f5` feat(market_calendar): extract trading_days_between to shared module
+4. `60cea99` feat(market_calendar): add expected_equity_prediction_date
+5. `c6758c5` feat(market_calendar): add is_forex_closed and fx_close_floor
+6. `bcff031` fix(freshness): forex-closed window aware FX freshness check (KI-128)
+7. `0a42f40` fix(market_calendar): fx_close_floor returns last bar timestamp pre-close
+8. `059d02e` fix(health_check): weekday-aware equity recency (KI-128)
+9. `2cdd60c` fix(health_check): forex-closed window aware FX check (KI-128)
+10. `3840a36` fix(monitor): forex-closed window aware FX recency (KI-128)
+11. `44f8f59` docs(decisions,known_issues): ADR-018 + KI-128 -> resolved
+
+**Verification (L5).** 107 tests passed, 3 failed (all pre-existing `test_smoke_test_*` / `test_active_model_paths_resolve` — missing `joblib`, unrelated to this branch). Health check CLI ran against production DB: PASSED, forex-closed branch active (`latest bar 2026-05-09 20:00:00 UTC (forex-closed; floor=2026-05-08 21:00:00)`).
+
+**Pending operator action.** Review the branch and approve merge. Branch is pushed; not yet merged. Pre-existing `test_smoke_test_*` failures (missing `joblib`) are unrelated to this work and were present before the branch.
+
+---
+
 ## 2026-05-10 — Engine-export contract: MHDE-side production code
 
 **Branch:** `master`. Sixteen commits, full `tests/crypto/exports/`
