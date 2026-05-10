@@ -1,0 +1,13 @@
+[Unit]
+Description=MHDE crypto daily predictions export to data/exports/
+After=mhde-crypto-predict.service
+
+[Service]
+Type=oneshot
+User=jpcg
+WorkingDirectory=/home/jpcg/MHDE
+Environment=MHDE_DB_PATH=/home/jpcg/MHDE/data/mhde.duckdb
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto export-predictions
+StandardOutput=append:/home/jpcg/MHDE/data/logs/crypto_export_predictions.log
+StandardError=append:/home/jpcg/MHDE/data/logs/crypto_export_predictions.log
+TimeoutStartSec=300
