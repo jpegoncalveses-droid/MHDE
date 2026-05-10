@@ -19,6 +19,7 @@ from dashboard.services.maturity import (
 from dashboard.services.queries import (
     get_crypto_predictions,
     get_crypto_recent_outcomes,
+    get_distinct_prediction_dates,
     get_equity_predictions,
     get_equity_recent_outcomes,
     get_fx_recent_predictions,
@@ -114,17 +115,16 @@ with tab_equities:
                                f"Train: {row['train_start']} → {row['train_end']}")
 
         # --- Date selector ---
-        available_dates = conn.execute("""
-            SELECT DISTINCT prediction_date FROM ml_predictions
-            ORDER BY prediction_date DESC LIMIT 30
-        """).fetchdf()
+        available_dates = get_distinct_prediction_dates(
+            conn, "ml_predictions", "prediction_date", limit=30
+        )
 
-        if available_dates.empty:
+        if not available_dates:
             st.warning("No predictions yet. Run `python main.py ml predict` to generate predictions.")
         else:
             selected_date = st.selectbox(
                 "Prediction date",
-                available_dates["prediction_date"].tolist(),
+                available_dates,
                 format_func=lambda d: d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d),
             )
 
@@ -384,17 +384,16 @@ with tab_crypto:
                                f"Train: {row['train_start']} → {row['train_end']}")
 
         # --- Date selector ---
-        crypto_dates = conn.execute("""
-            SELECT DISTINCT prediction_date FROM crypto_ml_predictions
-            ORDER BY prediction_date DESC LIMIT 30
-        """).fetchdf()
+        crypto_dates = get_distinct_prediction_dates(
+            conn, "crypto_ml_predictions", "prediction_date", limit=30
+        )
 
-        if crypto_dates.empty:
+        if not crypto_dates:
             st.warning("No predictions yet. Run `python main.py crypto predict` to generate.")
         else:
             crypto_selected_date = st.selectbox(
                 "Prediction date",
-                crypto_dates["prediction_date"].tolist(),
+                crypto_dates,
                 format_func=lambda d: d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d),
                 key="crypto_date",
             )
