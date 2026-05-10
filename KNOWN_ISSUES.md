@@ -1,11 +1,15 @@
 # Known Issues
 
-**4 open observations** (KI-122, KI-123, KI-126, KI-131). KI-122/123
-are cosmetic; KI-126 is a future Phase 0 enhancement deferred until
-weekly reliability snapshots accumulate; KI-131 is a low-priority
-single-day production-model row-count dip. None requires a hot fix —
-all tracked so a future session triages deliberately rather than
-letting them rot in the working tree.
+**6 open observations** (KI-122, KI-123, KI-126, KI-131, KI-132,
+KI-134). KI-122/123 are cosmetic; KI-126 is a future Phase 0
+enhancement deferred until weekly reliability snapshots accumulate;
+KI-131 is a low-priority single-day production-model row-count dip;
+KI-132 is a dashboard-deployment-process gap (no auto-restart on
+merge); KI-134 is an alerting-signal-quality observation (operator
+missed 8 freshness alerts under weekend false-positive noise that
+KI-128 has since cleaned up). None requires a hot fix — all tracked
+so a future session triages deliberately rather than letting them
+rot in the working tree.
 
 **KI-130** opened + resolved 2026-05-10 — DuckDB 1.5.2
 `SELECT DISTINCT col … ORDER BY col DESC LIMIT N` planner regression
@@ -142,6 +146,27 @@ pattern recurs.
 during investigation of the dashboard DISTINCT bug (Finding 1
 side-observation) and recorded for future triage.
 
+### KI-132 — Streamlit dashboard not auto-restarted after dashboard merges
+
+**Symptom.** Dashboard merges that change Python imports leave streamlit serving stale code (because Python module cache keeps old objects). Manual restart required. Today's KI-130 fix went unnoticed for ~30 min after merge until user saw ImportError.
+
+**Detection / fix path.** Add post-merge hook OR auto-restart when key dashboard files change OR rely on mhde-monitor-streamlit-freshness alerting (currently broken - see KI-133).
+
+### KI-134 — Operator missed 8 streamlit-freshness alerts during today's weekend noise
+
+**Symptom.** Streamlit-freshness monitor fired hourly from 12:35 to 19:35 UTC about stale dashboard code. Telegram delivery confirmed working post-incident. Operator did not act on alerts until dashboard threw ImportError, ~7 hours of dashboard drift.
+
+**Root cause.** Signal-to-noise was already low due to weekend false-positives (now fixed in KI-128). 8 legitimate critical alerts were lost in the noise.
+
+**Mitigation already applied.** KI-128 fixes weekend false positives, restoring signal quality.
+
+**Future improvements (not implementing now).**
+- Severity-based alert routing (CRITICAL gets a different sound/channel)
+- Alert deduplication (don't repeat same alert hourly - escalate after 3 misses)
+- Acknowledgment requirement (operator must explicitly clear alert)
+
+These are real Phase E observation tasks, not pre-deployment requirements.
+
 ### KI-123 — Misleading "Dev mode" log line in daily_radar.py
 
 **Symptom.** `pipelines/daily_radar.py:83` logs `"Dev mode: capped
@@ -163,6 +188,15 @@ has %d, see ADR-014 for cap rationale)"`. Trivial one-liner.
 Documentation/clarity fix; no behavioral impact.
 
 ## Recently resolved (post-Session-7)
+
+- **KI-133 — mhde-monitor-streamlit-freshness service in failed
+  state** (opened + resolved 2026-05-10). No bug — exit 1 is the
+  intentional alert signal. The monitor is working as designed; the
+  `failed` systemd state is how it surfaces "dashboard code is
+  stale" to the operator. Re-classified from "monitor broken" to
+  "monitor fired correctly but operator missed the alerts under
+  weekend false-positive noise" — that operator-side observation now
+  tracked under KI-134.
 
 - **KI-130 — Dashboard date-selector returned only 2 dates instead
   of 30** (opened + resolved 2026-05-10). Both prediction-tab date
