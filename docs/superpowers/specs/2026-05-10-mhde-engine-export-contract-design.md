@@ -186,13 +186,56 @@ Flow of `write`:
 ### 5.5 `write_daily_predictions.py`
 
 ```python
+class ExportPreflightError(Exception): ...
+
 def build_predictions(conn, prediction_date: date | None = None) -> dict
 def write(conn, prediction_date: date | None = None,
           output_dir: Path = EXPORTS_DIR, dry_run: bool = False) -> dict
 ```
 
+**Preflight checks (run inside `build_predictions` before any inference)**:
+
+The export depends on `crypto_ml_features` having a fresh, complete row
+set for today. The hard upstream is the `backfill-features` step of
+`mhde-crypto-predict.service` (steps 1–5 of its `ExecStart` sequence —
+prices/funding/OI/labels/features). The `predict` step (step 6) writes
+to `crypto_ml_predictions`, which the export does NOT read; so the
+export is robust to step 6 failing but not to steps 1–5.
+
+Two gates, both raise `ExportPreflightError` on failure (CLI catches,
+logs to stderr, exits non-zero, leaves all output files and the
+symlink untouched):
+
+1. **Staleness gate (strict, today-only)**: `MAX(trade_date) FROM
+   crypto_ml_features` must equal `prediction_date` (default = today
+   UTC). If older, raise with message naming the actual MAX and
+   suggesting `mhde-crypto-predict.service` status check.
+2. **Coverage gate (100%)**: count of `(crypto_ml_features f JOIN
+   crypto_universe u ON f.symbol=u.symbol WHERE u.is_active=true AND
+   f.trade_date = prediction_date)` must equal count of active universe.
+   If any active symbol has no feature row, raise listing the missing
+   symbols.
+
+When the export aborts in preflight, `predictions_latest.json` keeps
+pointing at yesterday's file. The engine independently validates
+`export_date == today UTC` per INTERFACE.md §3.2 and follows §5.3
+("Predictions File Missing or Stale" → Telegram alert + skip entry
+phase). Two layers of defense.
+
+**Date semantics note**: `prediction_date` here is the date used for
+both feature inference AND `export_date` in the JSON. The convention in
+this codebase (verified empirically: `crypto_ml_features.MAX(trade_date)
+= 2026-05-10` at 06:00 UTC on 2026-05-10) is that the daily Binance
+candle for date D is ingested and `compute_features` writes a row for
+`trade_date = D` by ~00:35 UTC of D. So at 06:15 UTC export-time, the
+feature row for today exists and the strict-today gate is the natural
+choice.
+
 Flow of `build_predictions`:
 1. Resolve `prediction_date` → today UTC if `None`.
+1a. **Staleness gate** — raise `ExportPreflightError` if stale.
+1b. **Coverage gate** — raise `ExportPreflightError` if any active
+    symbol missing features for `prediction_date`.
 2. SELECT active 10d model:
    ```sql
    SELECT model_id, horizon, model_path
@@ -261,10 +304,20 @@ crypto export-predictions`. `Type=oneshot`. `User=jpcg` (system-level, per
 the equity / crypto / fx pattern).
 
 Timer: `OnCalendar=*-*-* 06:15:00 UTC`. `Persistent=true` (catch up after
-reboots). `After=mhde-crypto-predict.service` so we never race the daily
-predict pipeline (defensive — we don't actually depend on its DB writes
-since we re-score, but we shouldn't both load the same joblib bundle
-during a model swap).
+reboots). `After=mhde-crypto-predict.service`. Schedule rationale:
+`mhde-crypto-predict.timer` fires `00:30:00` UTC; the predict service
+normally completes in under five minutes; the engine entry phase reads
+the file at `06:30:00` UTC. The 5h45m buffer is generous and absorbs
+predict-side retries.
+
+**Timer ordering note**: `After=` only sequences when both units are in
+the same transaction. Since the timers are independent and 5h45m apart,
+`After=` is informational here. The actual dependency on
+`crypto_ml_features` freshness is enforced by the preflight gates in
+§5.5, NOT by systemd ordering. If `mhde-crypto-predict.service` failed
+or didn't fire, the export's staleness gate trips, the timer unit
+fails, journald shows the error, and the engine independently sees a
+stale `predictions_latest.json` and skips entry per INTERFACE.md §5.3.
 
 `active_spec.json` does NOT get a timer — manual via `crypto export-spec`
 after each Phase 1B winner re-derivation.
@@ -319,6 +372,14 @@ After implementation + tests pass:
 - **Integration**: synthetic DB rows + synthetic joblib bundle → both
   writers produce files that re-parse and pass schema tests; symlink
   points at today's file; second run replaces silently.
+- **Preflight (write_daily_predictions)**: two negative tests —
+    1. seed temp DB with `crypto_ml_features.MAX(trade_date) =
+       today - 1 day`, assert `ExportPreflightError` with substring
+       "stale" and assert no file written, no symlink modified.
+    2. seed temp DB with full features for today minus one active
+       universe symbol, assert `ExportPreflightError` with substring
+       naming the missing symbol, assert no file written.
+   Plus one positive test — full coverage, today's date, succeeds.
 - **No live-pipeline coupling**: tests use temp DuckDB and tmp_path.
 
 ## 12. Success criteria
