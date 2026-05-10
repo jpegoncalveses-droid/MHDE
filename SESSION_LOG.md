@@ -6,6 +6,51 @@ are at the top.
 
 ---
 
+## 2026-05-10 — Gap 1: crypto retrain validation gate (single-arm hit rate)
+
+**Branch:** `gap1-model-retrain-validation-gate` (committed; pending
+operator review).
+
+**Trigger.** Three-gap observability plan
+(`/home/jpcg/.claude/plans/operator-needs-three-interconnected-zazzy-brooks.md`).
+Gap 1 closes the auto-promote risk: `crypto/ml/train.py` was
+unconditionally flipping `is_active=true` on every retrain. Phase E
+paper trading would have consumed today's two new models tomorrow.
+
+**Final design (full journey in ADR-019).** Single-arm gate on label
+hit rate (`precision_at_threshold` stored at training-time CV),
+threshold new >= 0.9 * old. Originally specified as a two-arm gate
+(hit rate + walkfold trade Sharpe). The Sharpe arm was dropped after
+Task 1.3 spec review found that walkfold predictions are tagged with
+per-fold model_ids (never the production model_id), making per-model
+Sharpe queries non-functional. `crypto/ml/sharpe_sim.py` remains as
+a utility module.
+
+**Commits on branch (5).**
+1. `2a666cd` feat(crypto/ml): add promotion_status column to model_runs
+2. `70563ed` refactor(crypto/ml): extract walkfold trade Sharpe sim from local_scripts
+3. `7eca751` feat(crypto/ml): retrain validation gate (initial two-arm)
+4. `222345d` refactor(crypto/ml): drop Sharpe arm from validation gate
+5. `b584e2a` feat(crypto/ml): gate is_active promotion on validation result
+
+**Tests.** 4 schema migration tests, 6 sharpe_sim tests, 4 validation
+gate unit tests, 4 retrain-promotion-gating integration-style tests.
+Full crypto suite: 338 passed, 1 skipped.
+
+**Pending operator action.** Review the branch and merge. Then run a
+real `crypto retrain` and record the gate's `duration_sec` JSON log
+field in a follow-up SESSION_LOG entry. Per the original plan: if
+real-world duration exceeds 30 min for any horizon, propose async
+refactor; currently the gate is a single SELECT so duration should be
+sub-second — surprise duration would indicate something else has
+slowed.
+
+**Docs updated.** DECISIONS.md (ADR-019), OPERATIONS.md (Retrain
+validation gate section), KNOWN_ISSUES.md (KI-135 resolved), this
+entry.
+
+---
+
 ## 2026-05-10 — KI-130 dashboard date-selector DuckDB DISTINCT+TopN bug
 
 **Branch:** `dashboard-distinct-limit-bug` (committed; pushed; NOT

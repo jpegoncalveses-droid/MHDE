@@ -794,3 +794,109 @@ schema migration, out of scope here.
 **Configurability.** No env var. Adding a kill-switch creates a
 "forgot to set it back" failure surface and these market hours
 don't change.
+
+
+---
+
+## ADR-019 — Crypto retrain validation gate: single-arm hit-rate (post-design-revision)
+
+**Date:** 2026-05-10
+**Session:** Gap 1 — three-gap observability plan
+**Status:** Active
+**Builds on:** ADR-016 (crypto ML model lifecycle)
+
+**Context.** Before this branch, `crypto/ml/train.py` auto-flipped
+`is_active=true` on every newly-trained crypto model with zero
+validation. Today's retrain promoted `crypto_10d_7760a3f6` and
+`crypto_5d_ac900cbf`; Phase E paper trading would have used them on
+the next entry-phase fire. A regression in either model (training data
+corruption, feature pipeline issue, degenerate solution) would have
+silently degraded live trading with no alert and no rollback.
+
+**Decision.** Insert a validation gate (`crypto/ml/validation_gate.py::validate_promotion`)
+between model training and the `is_active` flip. The gate compares
+the new model's label hit rate (`precision_at_threshold` stored on
+`crypto_ml_model_runs` at training-time CV) against the
+previously-active model's, gating promotion at
+`new >= 0.9 × old`. On fail: keep old active, mark new
+`promotion_status='promotion_blocked'`, dispatch a critical-severity
+Telegram alert via `monitoring.alert.send_alert`. On pass: demote
+old, promote new with `promotion_status='promoted'`. Always emit a
+structured JSON log line (`event="retrain_validation"`) with the
+comparison metrics.
+
+**Journey (operator requested this record explicitly).**
+
+1. *Initial design:* two-arm gate — label hit rate AND walkfold trade
+   Sharpe, both at 0.9× threshold. Operator pre-approved a 10-min
+   validation timeout for the heavyweight Sharpe path, with the rule
+   "if >30 min in practice, propose async with auto-rollback."
+
+2. *Discovery during Task 1.2 (Sharpe sim extraction):*
+   `strategy_edge_analysis.py`'s headline Sharpe (5.10 in
+   `active_spec.json`) comes from `simulate_portfolio` on
+   `crypto_backtest_trades` for one specific completed backtest run
+   (`backtest_10d_D_top_n_a02e15a0`), NOT from any per-model
+   walkfold computation. The script had no walkfold-level Sharpe
+   extractor to lift.
+
+3. *Operator decision after Task 1.2:* proceed with a new
+   gross-Sharpe-from-predictions function
+   (`compute_walkfold_trade_sharpe` at `crypto/ml/sharpe_sim.py`)
+   that reads `crypto_ml_predictions` directly with the same sizing
+   constants (0.8/6 per position, top-6 daily picks). Gate would
+   compare this metric model-to-model at 0.9× threshold. Explicitly
+   NOT numerically comparable to the 5.10 in `active_spec.json` —
+   that is a portfolio metric for a locked Phase 1B strategy on one
+   specific backtest run; the gate metric would be a per-model
+   comparator decoupled from execution friction.
+
+4. *Discovery during Task 1.3 spec review:* walkfold predictions in
+   `crypto_ml_predictions` are tagged with per-fold model_ids
+   (`crypto_10d_walkfold_2024_03_*` per `model_id_for_fold(horizon,
+   test_start)` in `backfill_walkforward.py`), never with the
+   production model_id. The gate's
+   `compute_walkfold_trade_sharpe(conn, new_model_id, horizon)` query
+   returns zero rows for any production model_id; the
+   degenerate-baseline rule then trivially passes. Sharpe arm is a
+   no-op in production.
+
+5. *Operator decision after Task 1.3 spec review:* drop the Sharpe
+   arm entirely. Single-arm gate on hit rate. Reasoning: hit rate
+   catches the main failure modes (training data corruption, feature
+   pipeline issues, degenerate solutions); marginal
+   worse-Sharpe-same-hit-rate cases are hard to distinguish from
+   natural variance anyway; don't over-engineer upfront.
+
+**Final design.**
+
+- Gate: `validate_promotion(conn, new_model_id, horizon) → ValidationResult`.
+- Single SELECT against `crypto_ml_model_runs.precision_at_threshold`
+  for both old (previous `is_active=true`) and new. No backfill. No
+  timeout machinery.
+- Threshold: `new_hit_rate >= 0.9 × old_hit_rate`.
+- Bootstrap rule: no prior active → pass with
+  `reason="first_model_skip"`.
+- Degenerate rule: `old_hit_rate <= 0` → arm passes (no positive
+  baseline to defend).
+
+**Consequences.**
+
+- Catches catastrophic model failures where hit rate collapses by
+  more than 10%.
+- Does NOT catch failures where hit rate stays roughly equal but
+  trade quality / risk-adjusted return degrades.
+- `compute_walkfold_trade_sharpe` at `crypto/ml/sharpe_sim.py`
+  remains as a utility module for ad-hoc Sharpe analysis but is
+  unused by the gate.
+
+**Escape valve.** If hit-rate-alone proves too forgiving in practice
+(a bad model slips through and causes losses), add an AUC arm in a
+separate PR. `auc_roc` is also stored on `crypto_ml_model_runs`
+(training-time CV mean) and is directly comparable across models.
+AUC + hit rate at 0.9× each is the natural next-step composite gate
+if needed.
+
+**Reference commits:** `2a666cd` (schema), `70563ed` (sharpe
+utility), `7eca751` (initial two-arm gate), `222345d` (drop Sharpe
+arm), `b584e2a` (train.py wiring).

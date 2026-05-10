@@ -11,6 +11,12 @@ KI-128 has since cleaned up). None requires a hot fix — all tracked
 so a future session triages deliberately rather than letting them
 rot in the working tree.
 
+**KI-135** opened + resolved 2026-05-10 — crypto retrain
+auto-promoted new models without validation; a regressed model could
+have silently entered Phase E paper trading. Fix: validation gate in
+`crypto/ml/validation_gate.py` blocks promotion when new hit rate <
+0.9× old. See "Recently resolved" below.
+
 **KI-130** opened + resolved 2026-05-10 — DuckDB 1.5.2
 `SELECT DISTINCT col … ORDER BY col DESC LIMIT N` planner regression
 caused both dashboard date-selectors to surface only the 2 most
@@ -188,6 +194,35 @@ has %d, see ADR-014 for cap rationale)"`. Trivial one-liner.
 Documentation/clarity fix; no behavioral impact.
 
 ## Recently resolved (post-Session-7)
+
+### KI-135 — Crypto retrain auto-promoted without validation (resolved 2026-05-10)
+
+**Symptom (before fix).** `crypto/ml/train.py:244-259` unconditionally
+flipped `is_active=true` on every newly-trained model, demoting
+whichever row had been active for the horizon. Today's retrain
+promoted `crypto_10d_7760a3f6` and `crypto_5d_ac900cbf` with zero
+comparison against the prior active model. A regression in either
+(training data corruption, feature pipeline issue, degenerate
+solution) would have silently entered Phase E paper trading on the
+next entry phase.
+
+**Fix.** Branch `gap1-model-retrain-validation-gate`. New
+`crypto/ml/validation_gate.py` runs after training: gates the
+`is_active` flip on the new model's label hit rate ≥ 0.9 × previous
+active model's. On fail the new row stays `is_active=false` with
+`promotion_status='promotion_blocked'` and a critical Telegram alert
+fires; old model stays active. See ADR-019 for the full design.
+
+**Commits.** `2a666cd` (schema), `70563ed` (sharpe utility, unused by
+final gate), `7eca751` + `222345d` (gate; second commit drops Sharpe
+arm discovered to be non-functional), `b584e2a` (train.py wiring).
+
+**Escape valve.** Manual override via OPERATIONS.md "Retrain
+validation gate" section if a false positive blocks a good model.
+
+**Open follow-up.** If hit-rate-only proves too forgiving, add AUC
+arm (`auc_roc` is also stored, directly comparable). Defer until
+observed.
 
 - **KI-133 — mhde-monitor-streamlit-freshness service in failed
   state** (opened + resolved 2026-05-10). No bug — exit 1 is the
