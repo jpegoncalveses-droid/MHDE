@@ -1,10 +1,12 @@
 # Known Issues
 
-**3 open observations** (KI-122, KI-123, KI-126). KI-122/123 are
-cosmetic; KI-126 is a future Phase 0 enhancement deferred until
-weekly reliability snapshots accumulate. None requires a hot fix —
-all tracked so a future session triages deliberately rather than
-letting them rot in the working tree.
+**5 open observations** (KI-122, KI-123, KI-126, KI-128, KI-129).
+KI-122/123/128 are cosmetic; KI-126 is a future Phase 0 enhancement
+deferred until weekly reliability snapshots accumulate; KI-129 is a
+features-pipeline gap surfaced by the engine-export preflight. None
+requires a hot fix beyond a one-time backfill for KI-129 — all tracked
+so a future session triages deliberately rather than letting them rot
+in the working tree.
 
 **KI-127** opened + resolved same session (Phase 0 calibration
 drift detector false-fired on small-sample-per-bucket noise; fix:
@@ -104,6 +106,85 @@ has %d, see ADR-014 for cap rationale)"`. Trivial one-liner.
 
 **Out of scope for the equity ingestion fix session 2026-05-09.**
 Documentation/clarity fix; no behavioral impact.
+
+### KI-128 — Health check thresholds don't account for weekend market closure
+
+**Priority.** Low (cosmetic; predictable false positives).
+
+**Symptom.** The MHDE health check (`pipelines/health_check.py`) and
+the pipeline execution monitor (`monitoring/pipeline_execution.py`)
+use fixed recency thresholds that don't account for market closures:
+
+- Equity check fails Saturday and Sunday (NYSE closed Fri close →
+  Mon open).
+- FX check fails Friday 22:00 UTC → Sunday 22:00 UTC (forex closed).
+- Crypto unaffected (24/7 market).
+
+**Root cause.** The recency thresholds are wall-clock budgets
+without a market-calendar overlay. KI-124 widened equity's budget
+to 75h to absorb the weekend roll, but the FX budget stays at 2h
+and trips during the weekly forex close; the equity widening also
+masks signal during long weekends / holidays.
+
+**Detection / fix path.** Add weekday-aware threshold computation.
+For equity, expect data only Mon-Fri (and skip US market holidays).
+For FX, expect data outside the Friday 22:00 UTC → Sunday 22:00 UTC
+window. One option captured under KI-124 — add `row_inserted_at
+TIMESTAMP` to `ml_predictions` and key recency off real write time —
+would let the budgets shrink back to single-hour multiples and make
+the calendar overlay simpler.
+
+**Mitigation until fixed.** Operator ignores weekend alerts.
+
+### KI-129 — Newly-added universe symbols don't have features computed
+
+**Priority.** Medium (blocks engine-export preflight; one-shot backfill
+unblocks; root cause in features pipeline still unfixed).
+
+**Symptom.** Surfaced 2026-05-10 during the first production run of
+`crypto export-predictions` (engine-export contract Task 9). The
+strict-100% coverage preflight refused to emit a partial 48/50 file
+with the message:
+
+> preflight failed: missing features for 2 active universe symbol(s)
+> on 2026-05-10: BSBUSDT, PRLUSDT
+
+Both symbols had been in `crypto_universe.is_active=true` since
+2026-05-05 (5 days before discovery) and had full price data through
+today (47 and 40 klines rows respectively). Yet `crypto_ml_features`
+had **zero** rows for either symbol.
+
+**Root cause (suspected, not yet root-caused).** The daily
+`mhde-crypto-predict.service` ExecStart sequence runs
+`crypto backfill-features` as step 5, which is supposed to compute
+features for every active universe symbol. Either:
+- The features computation has a filter that skips newly-added
+  symbols (e.g., a minimum-history requirement that BSBUSDT/PRLUSDT
+  hadn't accumulated when the universe entries were first seen, and
+  the per-symbol logic doesn't re-attempt later), OR
+- A separate universe-add hand-off was supposed to trigger an
+  initial feature backfill but never did.
+
+**Detection / fix path.**
+1. **Unblock (one-time):** run
+   `venv/bin/python main.py crypto backfill-features` to recompute
+   features for all symbol-dates. This is what Task 9 of the engine-
+   export plan did 2026-05-10.
+2. **Root-cause fix (deferred):** investigate
+   `crypto/ml/features.py:compute_features` filtering logic and the
+   universe-add path. Either drop the suspected filter, or wire an
+   explicit feature-backfill into universe-additions. Add a regression
+   test: a freshly-added universe symbol with N days of price data
+   gets N rows in `crypto_ml_features` after the next `backfill-
+   features` run.
+3. **Detection in the meantime:** the engine-export preflight already
+   catches this scenario loudly — the Telegram alert path on
+   `mhde-crypto-export-predictions.service` failure surfaces any
+   future recurrence within a day.
+
+**Out of scope for the engine-export contract session 2026-05-10.**
+The contract's preflight gates worked correctly; this is a separate
+upstream pipeline bug exposed by the new gates.
 
 ## Recently resolved (post-Session-7)
 
