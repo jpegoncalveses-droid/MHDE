@@ -6,6 +6,153 @@ are at the top.
 
 ---
 
+## 2026-05-10 — Engine-export contract: MHDE-side production code
+
+**Branch:** `master`. Sixteen commits, full `tests/crypto/exports/`
+suite green (42 passed + 1 skipped), production export files
+produced, all docs updated.
+
+**Trigger.** The crypto-trading-engine (separate repo at
+`/home/jpcg/crypto-trading-engine/`) needs two inputs from MHDE for
+Phase 2/3 paper trading: a strategy spec (rare updates, after Phase
+1B re-runs) and a daily ranked predictions list. INTERFACE.md in the
+engine repo documents the contract. This session built the MHDE-side
+producers that emit those two files at `data/exports/`.
+
+### What was completed
+
+1. **Foundation modules** (`crypto/exports/`): `spec_config.py`
+   (static fields + `PHASE1B_WINNER_RUN_ID` constant), `hashing.py`
+   (`compute_spec_hash` byte-identical to engine reference, with
+   cross-repo parity test reading a shared fixture from the engine
+   repo), `_io.py` (atomic JSON write + atomic symlink replace).
+   ~21 tests.
+2. **Active spec writer** (`crypto/exports/write_active_spec.py`):
+   reads Phase 1B winner row from `crypto_backtest_runs`, runs
+   `report.simulate_portfolio` for portfolio-realistic metrics,
+   reads `phase0_evaluate.evaluate_all` for verdict (lowercased).
+   10 tests covering schema, hash self-consistency, missing-row
+   error, dry-run.
+3. **Daily predictions writer**
+   (`crypto/exports/write_daily_predictions.py`): full-universe
+   re-score (does NOT read filtered `crypto_ml_predictions`).
+   Preflight: staleness-only (corrected from initial 100% coverage
+   gate per KI-129). Atomic JSON write + symlink replace. 11 tests.
+4. **CLI**: `crypto export-spec` and `crypto export-predictions`
+   under the existing `crypto` Click group in `main.py`. Both with
+   `--dry-run`; `export-predictions` also has `--date`. Exception
+   types translate to `click.ClickException` for non-zero exit.
+5. **Systemd timer**:
+   `mhde-crypto-export-predictions.{service,timer}` — fires 06:15
+   UTC daily, 7 days/week, 5h45m after `mhde-crypto-predict.timer`
+   and 15 min before the engine's 06:30 UTC entry phase.
+   `systemd-analyze verify` clean. Deployment to VPS is a separate
+   operator action documented in OPERATIONS.md.
+6. **Initial production run**: produced
+   `data/exports/active_spec.json` (spec_hash
+   `f4655cd46ff691267338fad765c2febc63021f35da191214e5350af4acf927e9`,
+   Phase 1B winner `backtest_10d_D_top_n_a02e15a0`) and
+   `predictions_2026-05-10.json` (n=48, model
+   `crypto_10d_db171418`) plus the `predictions_latest.json`
+   symlink. `data/exports/` gitignored.
+7. **Doc updates**: CLAUDE.md read-first list grew from 9 to 10
+   entries (added INTERFACE.md). DECISIONS.md gained ADR-017
+   (engine-export contract). OPERATIONS.md gained an "Engine
+   exports" runbook section. Spec at
+   `docs/superpowers/specs/2026-05-10-mhde-engine-export-contract-design.md`
+   and plan at
+   `docs/superpowers/plans/2026-05-10-mhde-engine-export-contract.md`.
+
+### In-flight corrections during the session
+
+Two design bugs were caught by spec-review subagents and fixed
+before the work landed in user-visible state:
+
+1. **PortfolioResult unit transforms.** The spec said
+   `result.max_drawdown_pct` was a percentage (`-23.7`) and
+   prescribed `/100` to convert to fraction. Reading `report.py`
+   showed it's actually a fraction (`(eq - peak) / peak`). The
+   all-winner test seed produced `dd = 0`, masking the bug
+   (`0 / 100 == 0`). Fix: passthrough on `max_drawdown_pct`,
+   multiply by 100 on `annualized_return_pct` (which IS stored as
+   a fraction but INTERFACE.md wants percentage form). Magnitude
+   assertions in tests now catch regressions in either direction.
+   Commit `2d018fb`. Spec/plan docs corrected in `9571784`.
+
+2. **Preflight 100% coverage gate over-strict (KI-129).** The
+   initial preflight refused to emit a partial 48/50 file when
+   BSBUSDT/PRLUSDT had no features. Investigation showed those
+   symbols are in their 60-day features warmup window
+   (`compute_features` requires 60 days for `return_60d`); the
+   pipeline correctly refuses to compute features for them. Fix:
+   keep the staleness gate, drop the per-symbol coverage check.
+   `n_predictions` reflects the predictable subset. Commit
+   `ef0f12a` + spec/KI updates in `8eb8724`.
+
+### Verification (L5)
+
+- `tests/crypto/exports/`: 42 passed + 1 skipped (cross-repo parity
+  test, expected — engine fixture not yet created on the engine
+  side).
+- Production export ran end-to-end: `active_spec.json` (1334 bytes,
+  hash self-consistent) + `predictions_2026-05-10.json` (7145
+  bytes, ranks 1..48 consecutive, all probabilities in [0, 1]).
+- Symlink `predictions_latest.json` resolves to today's dated file.
+- Pre-commit hook (5-file pytest smoke) green on every commit.
+
+### KIs
+
+- **KI-128** opened (carried from prior dirty working tree) — health
+  check thresholds don't account for weekend market closure.
+  Cosmetic; operator ignores weekend alerts.
+- **KI-129** opened + resolved same session — engine-export preflight
+  conflated stale pipeline with warmup-window symbols. Fix: loosened
+  to staleness-only.
+- Open observations: KI-122, KI-123, KI-126, KI-128.
+
+### Files of record
+
+- `crypto/exports/` (new module: `__init__.py`, `_io.py`, `hashing.py`,
+  `spec_config.py`, `write_active_spec.py`, `write_daily_predictions.py`).
+- `tests/crypto/exports/` (new test directory: 5 test files, 43 tests).
+- `main.py` (added 2 Click commands).
+- `systemd/mhde-crypto-export-predictions.{service,timer}`.
+- `data/exports/` (operational artifacts, gitignored).
+- `CLAUDE.md`, `DECISIONS.md`, `KNOWN_ISSUES.md`, `OPERATIONS.md`
+  (read-first list extension, ADR-017, KI-128 + KI-129 lifecycle,
+  runbook section).
+
+### Pending operator deploy
+
+```bash
+sudo cp systemd/mhde-crypto-export-predictions.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now mhde-crypto-export-predictions.timer
+```
+
+Until deployed, the daily timer doesn't fire on the VPS; the export
+file already in `data/exports/` from this session's manual run is
+correct for 2026-05-10. Operator can also re-run via
+`venv/bin/python main.py crypto export-predictions` at any time.
+
+### Pending engine-side coordination
+
+The cross-repo hash parity test in MHDE is currently SKIPPED. To
+activate it, the engine repo needs three coordinated changes
+(out of scope for this MHDE-side session):
+
+1. Create `crypto-trading-engine/tests/fixtures/specs/hash_test_vectors_v1.json`
+   with 3+ vectors per the format documented in the spec.
+2. Update `crypto-trading-engine/tests/unit/spec/test_hash.py` to
+   read the fixture and assert per-vector hash equality.
+3. Add INTERFACE.md §2.4 documenting the fixture path.
+
+Once those land in the engine repo, MHDE's parity test
+(`tests/crypto/exports/test_hashing.py::test_cross_repo_parity_with_engine_fixture`)
+will activate automatically — no MHDE-side change needed.
+
+---
+
 ## 2026-05-09 — Phase 0 evaluation infrastructure
 
 **Branch:** `phase0-evaluation-infrastructure` off `master`. Six
