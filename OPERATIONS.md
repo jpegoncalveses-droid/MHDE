@@ -873,3 +873,102 @@ useful).
 Set `MONITORING_DRY_RUN=true` in the systemd Environment temporarily,
 or `systemctl --user stop mhde-monitor-X.timer`. Re-enable after the
 window closes.
+
+
+## Engine exports — `data/exports/active_spec.json` + daily predictions
+
+**Contract:** `/home/jpcg/crypto-trading-engine/docs/INTERFACE.md`.
+**Producer module:** `crypto/exports/`.
+**Decision record:** ADR-017 in `DECISIONS.md`.
+
+### When to run `crypto export-spec` (rare)
+
+After every Phase 1B re-run that changes the winner config:
+
+1. Run the new sensitivity grid; identify the new winner row.
+2. Edit `crypto/exports/spec_config.py:PHASE1B_WINNER_RUN_ID` to the
+   new `run_id`.
+3. Commit (`feat(exports): Phase 1B winner update — <reason>`).
+4. Run `venv/bin/python main.py crypto export-spec` to regenerate
+   `data/exports/active_spec.json`.
+5. Engine picks up the change on its next entry phase (hash mismatch
+   triggers reload + Telegram alert + `spec_history` insert).
+
+### Daily predictions timer
+
+`mhde-crypto-export-predictions.timer` fires at 06:15 UTC daily,
+7 days/week. The service runs `venv/bin/python main.py crypto
+export-predictions`, which:
+
+1. Resolves the active 10d model from `crypto_ml_model_runs`.
+2. **Preflight (staleness-only, KI-129 corrected)**: requires
+   `MAX(trade_date) FROM crypto_ml_features == today UTC`.
+3. Re-scores all active universe symbols that have features for
+   today, ranks 1..N, writes
+   `data/exports/predictions_YYYY-MM-DD.json` (atomic) and replaces
+   `predictions_latest.json` symlink.
+
+If preflight fails (stale features), the script exits non-zero and
+writes nothing. The engine's own validator sees `predictions_latest.
+json` pointing at yesterday's file (`export_date != today`), alerts
+via Telegram, and skips the entry phase per INTERFACE.md §5.3.
+
+**Note on `n_predictions`.** The output reflects whatever active
+universe symbols are predictable on the export date. Newly-added
+universe entries that are still in the 60-day features warmup window
+are silently absent. `n_predictions` will rise as warmup symbols age
+in. INTERFACE.md §3 does not mandate `n_predictions == universe_size`.
+
+### First-time deployment on the VPS
+
+```bash
+sudo cp /home/jpcg/MHDE/systemd/mhde-crypto-export-predictions.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now mhde-crypto-export-predictions.timer
+systemctl status mhde-crypto-export-predictions.timer
+```
+
+After enabling: tail the service log on the next firing to confirm
+output:
+
+```bash
+journalctl -u mhde-crypto-export-predictions -f
+```
+
+### Recovery — `predictions_latest.json` missing or stale
+
+If the engine pages: `[ENGINE] Predictions stale or missing`.
+
+1. Check `journalctl -u mhde-crypto-export-predictions -n 50` for the
+   most recent failure message.
+2. Common cause: `mhde-crypto-predict.service` failed earlier in the
+   day, so `crypto_ml_features` is missing today's row. Run
+   `journalctl -u mhde-crypto-predict -n 50` to confirm.
+3. Fix the upstream issue (e.g., re-run `crypto backfill-prices` /
+   `crypto backfill-features`).
+4. Once features for today exist, re-run manually:
+   `venv/bin/python main.py crypto export-predictions`.
+5. Verify with: `cat data/exports/predictions_latest.json | head -10`.
+
+### Recovery — `active_spec.json` missing
+
+This file is rarely regenerated. If missing:
+
+1. Confirm `data/exports/` exists. If not: `mkdir -p data/exports`.
+2. Run `venv/bin/python main.py crypto export-spec`.
+3. Verify the file is valid by running a small script under
+   `.claude/local_scripts/` that loads the JSON and re-computes the
+   hash via `crypto.exports.hashing.compute_spec_hash`. Project
+   rules forbid inline `python -c` invocations.
+
+### What NOT to do
+
+- Don't `git add data/exports/`. The directory is gitignored;
+  commits would be daily noise.
+- Don't edit `data/exports/active_spec.json` directly. The
+  `spec_hash` field protects against tampering — engine validation
+  will fail. Always regenerate via `crypto export-spec`.
+- Don't change `crypto/exports/hashing.py` without coordinating an
+  engine-repo commit. The cross-repo parity test in
+  `tests/crypto/exports/test_hashing.py` will catch any drift the
+  next time both repos are present in the same environment.
