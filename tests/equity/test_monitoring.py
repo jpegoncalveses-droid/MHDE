@@ -345,20 +345,27 @@ def test_dashboard_synthetic_flags_all_null_key_column(temp_db, monkeypatch):
 def _seed_minimal_health_data(temp_db):
     """Insert a minimal set of equity/crypto/fx rows so the
     health_check internals all return ok=True. Returns the
-    (yesterday, fx_dt) tuple used."""
+    (equity_date, today, fx_dt) tuple used.
+
+    Equity seed uses expected_equity_prediction_date(now) so that
+    _check_equity (which also calls that helper) returns ok=True
+    regardless of day-of-week (KI-128).
+    """
     from datetime import datetime as _dt, timedelta as _td, timezone as _tz
-    yesterday = (_dt.now(tz=_tz.utc) - _td(days=1)).date()
-    today = _dt.now(tz=_tz.utc).date()
-    fx_dt = _dt.now(tz=_tz.utc).replace(
+    from pipelines.market_calendar import expected_equity_prediction_date
+    now = _dt.now(tz=_tz.utc)
+    equity_date = expected_equity_prediction_date(now)
+    today = now.date()
+    fx_dt = now.replace(
         minute=5, second=0, microsecond=0, tzinfo=None
     )
 
-    # Equity: one prediction for yesterday.
+    # Equity: one prediction for the expected weekday date.
     temp_db.execute(
         "INSERT INTO ml_predictions (ticker, prediction_date, model_id, "
         "horizon, predicted_probability, prediction_threshold) "
         "VALUES ('AAA', ?, 'm1', '5d', 0.6, 0.05)",
-        [yesterday],
+        [equity_date],
     )
     # Crypto: one prediction for today (latest).
     temp_db.execute(
@@ -374,7 +381,7 @@ def _seed_minimal_health_data(temp_db):
         "VALUES (?, 'fx_m1', 'up', '24h', 0.6, 20)",
         [fx_dt],
     )
-    return yesterday, today, fx_dt
+    return equity_date, today, fx_dt
 
 
 def test_cross_artifact_ok_when_health_strings_agree_with_db(temp_db):
@@ -391,7 +398,7 @@ def test_cross_artifact_ok_when_health_strings_agree_with_db(temp_db):
 def test_cross_artifact_flags_equity_count_mismatch(temp_db, monkeypatch):
     """Simulate a formatter typo: detail string says 99 predictions
     but the DB has 1. cross_artifact must catch the disagreement."""
-    yesterday, _, _ = _seed_minimal_health_data(temp_db)
+    equity_date, _, _ = _seed_minimal_health_data(temp_db)
 
     from pipelines import health_check as hc
     real_check_equity = hc._check_equity
@@ -401,7 +408,7 @@ def test_cross_artifact_flags_equity_count_mismatch(temp_db, monkeypatch):
         # Inject a wrong count into the detail string.
         return type(result)(
             name=result.name, ok=result.ok,
-            detail=f"99 predictions for {yesterday}",
+            detail=f"99 predictions for {equity_date}",
         )
 
     monkeypatch.setattr(hc, "_check_equity", _typo_check_equity)

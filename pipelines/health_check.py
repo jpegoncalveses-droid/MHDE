@@ -11,6 +11,8 @@ from datetime import datetime, timedelta, timezone
 
 import duckdb
 
+from pipelines.market_calendar import expected_equity_prediction_date
+
 logger = logging.getLogger("mhde.health_check")
 
 PREDICT_SERVICES = (
@@ -33,21 +35,24 @@ def _today_utc() -> datetime:
 
 def _check_equity(conn: duckdb.DuckDBPyConnection) -> CheckResult:
     """Equity predict runs at 00:15 UTC and writes prediction_date = latest
-    closed market day. By 06:00 UTC we expect rows for yesterday (UTC)."""
-    yesterday = (_today_utc() - timedelta(days=1)).date()
+    closed market day. By 06:00 UTC we expect rows for the most recent
+    weekday strictly before today (Fri on Sat/Sun/Mon mornings; Mon on
+    Tue; etc.). See KI-128 / ADR-018 for the weekday gate.
+    """
+    expected = expected_equity_prediction_date(_today_utc())
     row = conn.execute(
         "SELECT COUNT(*) FROM ml_predictions WHERE prediction_date = ?",
-        [yesterday],
+        [expected],
     ).fetchone()
     n = row[0] if row else 0
     if n > 0:
-        return CheckResult("equity", True, f"{n} predictions for {yesterday}")
+        return CheckResult("equity", True, f"{n} predictions for {expected}")
     latest = conn.execute(
         "SELECT MAX(prediction_date) FROM ml_predictions"
     ).fetchone()[0]
     return CheckResult(
         "equity", False,
-        f"no rows for {yesterday}; latest prediction_date={latest}",
+        f"no rows for expected={expected}; latest prediction_date={latest}",
     )
 
 
