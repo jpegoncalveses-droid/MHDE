@@ -37,6 +37,9 @@ data/processed/data_inventory_summary.csv
 data/processed/mhde_gap_analysis.csv
 
 # Local diagnostic / probe / verification scripts (session artifacts)
+# New scratch scripts here are ephemeral and stay local; the explicit
+# patterns below are kept for history (already-tracked files are unaffected).
+.claude/local_scripts/
 .claude/local_scripts/check_*.py
 .claude/local_scripts/probe_*.py
 .claude/local_scripts/verify_*.py

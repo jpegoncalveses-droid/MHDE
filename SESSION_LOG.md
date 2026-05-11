@@ -76,6 +76,63 @@ directly instead of reconstructing from the `orders` join.
 
 ---
 
+## 2026-05-11 — Phase 1B sensitivity grid: post-repair re-run
+
+**Branch:** `master` (no code change). **DB:** overwrote 82 rows in
+`crypto_backtest_runs` / their `crypto_backtest_trades` / `crypto_backtest_summary`
+(force-re-run). Read-only on prediction tables. No engine-config / `active_spec.json`
+change.
+
+**Trigger.** The original Phase 1B base+sensitivity grid (2026-05-08/09) ran on
+pre-repair OHLCV; the 2026-05-07 partial-candle bug + the ~6-day hold-window
+repair shifted the canonical 10d run modestly (Sharpe 6.32→6.25, cumRet
+51.2→52.2%) per the post-parabolic-toggle session entry below — which flagged the
+full grid for a post-repair re-run.
+
+**What was done.** `.claude/local_scripts/phase1b_rerun.py`: snapshot every
+`crypto_backtest_runs` + `_summary` row to `.../phase1b_original_snapshot.json`,
+rebuild a `GridConfig` per stored run, re-run all **82** Phase 1B configs via
+`runner.run_grid(force=True, skip_existing=False)`, `apply_postparabolic_filter=False`.
+Excluded the 4 non-1B runs (2 knockout `model_id_like=kowf` paired backtests,
+2 post-parabolic-filter-ON runs — all 2026-05-11, already post-repair). 82/82
+completed, 0 failed; `n_predictions_seen` held at 16,679 for every config (walk-fold
+OOS set unchanged). Two of the 82 (`backtest_10d_D_top_n_a02e15a0` = deployed
+winner, `backtest_5d_D_top_n_5aff7b45` = 5d sibling) were already post-repair
+(re-run 2026-05-11) so they reproduced byte-for-byte. Comparison + ranking +
+portfolio re-check scripts: `phase1b_rerun_analyze.py`, `phase1b_rerun_portfolio.py`;
+full side-by-side in `phase1b_rerun_result.json`.
+
+**Result.** Uniform tiny shift, same direction the canonical run already showed:
+ΔcumRet median +0.47 pp, Δhit_rate +~0.3 pp, ΔSharpe ≈ flat (median +0.02; the
+realistic Policy-D top_n configs moved −0.03 to −0.10), ΔmaxDD ≈ 0, Δn_trades 0…+4
+(the only non-zero ΔmaxDD values are sum-of-fractions artifacts on the net-losing
+Policy-B configs). **Top-3 per horizon: set and order unchanged** — 10d
+`{d884e9f2, c06dded9, 2378c511}`, 5d `{db11de9b, 9d5b95c5, b65bbd09}`; nothing
+entered or left. Deployed winner `backtest_10d_D_top_n_a02e15a0` (Policy D, top_n=6,
+trail_pct=0.30, activation_pct=0.01, 10d): sum-of-fractions Sharpe 6.32(pre)/6.25(post),
+maxDD −17.0% unchanged, cumRet 51.2→52.2%; **portfolio metrics** (`simulate_portfolio`,
+$1000/6/80%/1×) post-repair Sharpe 5.108, maxDD −23.73% (identical to documented),
+PF 4.014, end-equity $34,259, annRet ~+3043% — **still PASSES all four Phase 1B
+gates** with the same ~1.3 pp drawdown margin. Base point `e08cf9da` still FAILS the
+25% DD gate exactly as before. The iterated multi-axis configs (`d884e9f2`,
+`c06dded9`) still out-Sharpe the winner by the same margins they always did — and
+are still outside the agreed single-axis sensitivity contract; the repair doesn't
+change that calculus (open item: KI-125 follow-up / `PHASE1B_HANDOFF.md`).
+
+**Verdict: WINNER UNCHANGED — no action required.** Policy D / top_n=6 /
+trail_pct=0.30 / activation_pct=0.01 / 10d (`PHASE1B_WINNER_RUN_ID =
+backtest_10d_D_top_n_a02e15a0`) remains optimal on corrected data. No engine
+config change, no `active_spec.json` change, no migration.
+
+**Pending (optional, operator):** `PATH_TO_LIVE_PLAN.md`'s "Phase 1B selected
+winner" block still quotes pre-repair numbers (sum-of-fractions Sharpe 6.32→6.25;
+portfolio equity $32,121.89→$34,259; PF 3.811→4.014; annRet "+2854%"→~+3043%).
+A `crypto export-spec` re-run would refresh the metrics embedded in
+`data/exports/active_spec.json` (no parameter field changes — spec-hash logic
+unaffected). Neither done here (out of task scope).
+
+---
+
 ## 2026-05-11 — Knockout label phase 2 — training + validation + paired backtest
 
 **Branch:** `feat-crypto-knockout-training` (committed + pushed; **STOPPED for
