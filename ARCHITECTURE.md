@@ -331,6 +331,11 @@ under `systemd/mhde-monitor-*`.
 | `model-performance` | daily | `monitoring/model_performance.py` | rolling 7d precision vs walk-forward baseline |
 | `data-quality` | daily | `monitoring/data_quality.py` | per-engine ticker / symbol / bar coverage vs 14d avg |
 | `smoke` | hourly | `monitoring/smoke_test.py` | DB opens, every active joblib loads, dashboard query returns |
+| `paper-trading-drift` | every 15 min | `monitoring/paper_trading_drift.py` | reads the engine DuckDB read-only (`CRYPTO_ENGINE_DB_PATH`, see ADR-020): engine liveness, stuck `*_pending` positions, closed-trade win rate + label hit rate (`crypto_ml_labels`) vs the Phase 1B walkfold bands (sample-gated). P&L-band/DD arms deferred — KI-136. |
+
+(Other monitors added since the Session 6 snapshot — `streamlit-freshness`,
+`dashboard-synthetic`, `cross-artifact`, `phase0-calibration` — are catalogued
+in full in `OPERATIONS.md` § Monitors.)
 
 Telegram routing: `monitoring/alert.py:send_alert` bottoms out in
 `fx.bot.telegram_bot.send_message`. The `MONITORING_DRY_RUN=true`

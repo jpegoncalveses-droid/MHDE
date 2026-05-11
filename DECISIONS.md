@@ -900,3 +900,54 @@ if needed.
 **Reference commits:** `2a666cd` (schema), `70563ed` (sharpe
 utility), `7eca751` (initial two-arm gate), `222345d` (drop Sharpe
 arm), `b584e2a` (train.py wiring).
+
+## ADR-020 — Monitoring may read the engine DuckDB read-only (scoped exception to INTERFACE.md)
+
+**Date:** 2026-05-11
+**Session:** Gap 2 — three-gap observability plan
+**Status:** Active
+**Builds on:** ADR-017 (engine-export contract: file-based, no DB/API coupling)
+
+**Context.** `INTERFACE.md` §1 states the MHDE↔engine contract is "two
+files … no database access, no API calls, no code coupling." Gap 2
+adds a paper-trading drift monitor (`monitoring/paper_trading_drift.py`)
+that needs the engine's runtime state — `engine_runs` (liveness),
+`positions` / `orders` (closed-trade win rate, stuck-position
+detection) — which the engine does not (and should not) re-export as a
+file. The only alternatives were (a) having the engine emit yet another
+daily summary JSON, adding a coordinated cross-repo schema, or (b)
+reading the engine's DuckDB directly.
+
+**Decision.** Option (b), as a deliberate and *narrowly scoped*
+exception: MHDE monitoring code may open the engine's DuckDB
+**read-only** (`duckdb.connect(path, read_only=True)`), path from the
+`CRYPTO_ENGINE_DB_PATH` env var (default
+`/home/jpcg/crypto-trading-engine/data/trading_engine.duckdb`).
+Constraints that keep this from becoming a real coupling:
+
+1. **Read-only, always.** Monitoring never writes to the engine's DB.
+   The engine remains the sole source of truth for its own state.
+2. **Monitoring only.** This exception covers `monitoring/` — not the
+   prediction pipeline, not exports, not the dashbord write paths. The
+   file-based contract (`active_spec.json`, `predictions_*.json`) is
+   still the *only* channel through which MHDE *influences* the engine.
+3. **Tolerant of schema drift.** Monitor queries select a minimal
+   column subset and degrade to a `warn`-severity "check errored"
+   finding rather than crashing if the engine's schema moves under
+   them. A schema change on the engine side does not require a
+   coordinated MHDE commit (unlike the file contract).
+4. **No reverse dependency.** The engine does not know the monitor
+   exists; nothing in `crypto-trading-engine` imports or references
+   MHDE.
+
+The engine repo's `docs/INTERFACE.md` §1 should carry a one-line
+back-reference to this ADR ("monitoring may read this DB read-only —
+see MHDE DECISIONS.md ADR-020") so a future reader doesn't flag the DB
+read as a contract violation. That is a doc-only edit in the *engine*
+repo and is left for a coordinated commit there; it does not block this
+MHDE change.
+
+**Consequences.** If the engine ever moves to a non-DuckDB store or a
+remote DB, this monitor's `_open_engine_db()` is the single point that
+changes. The dashboard's Gap 3 paper-trading tab is expected to take
+the same read-only-DuckDB approach under this ADR.

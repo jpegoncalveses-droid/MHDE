@@ -1,15 +1,18 @@
 # Known Issues
 
-**6 open observations** (KI-122, KI-123, KI-126, KI-131, KI-132,
-KI-134). KI-122/123 are cosmetic; KI-126 is a future Phase 0
+**7 open observations** (KI-122, KI-123, KI-126, KI-131, KI-132,
+KI-134, KI-136). KI-122/123 are cosmetic; KI-126 is a future Phase 0
 enhancement deferred until weekly reliability snapshots accumulate;
 KI-131 is a low-priority single-day production-model row-count dip;
 KI-132 is a dashboard-deployment-process gap (no auto-restart on
 merge); KI-134 is an alerting-signal-quality observation (operator
 missed 8 freshness alerts under weekend false-positive noise that
-KI-128 has since cleaned up). None requires a hot fix — all tracked
-so a future session triages deliberately rather than letting them
-rot in the working tree.
+KI-128 has since cleaned up); KI-136 is the planned "Gap 2.5"
+follow-up — the paper-trading drift monitor's P&L-band / drawdown /
+monthly arms, deferred until the engine's `daily_pnl` table starts
+filling (blocked on engine-side RECONCILE-001). None requires a hot
+fix — all tracked so a future session triages deliberately rather
+than letting them rot in the working tree.
 
 **KI-135** opened + resolved 2026-05-10 — crypto retrain
 auto-promoted new models without validation; a regressed model could
@@ -192,6 +195,55 @@ has %d, see ADR-014 for cap rationale)"`. Trivial one-liner.
 
 **Out of scope for the equity ingestion fix session 2026-05-09.**
 Documentation/clarity fix; no behavioral impact.
+
+### KI-136 — Paper-trading drift monitor: P&L-band / drawdown / monthly arms deferred ("Gap 2.5")
+
+**Context.** The Gap 2 paper-trading drift monitor
+(`monitoring/paper_trading_drift.py`, ADR-020) ships with checks A
+(engine liveness), B (stuck positions), C (closed-trade win rate — but
+see below) and D (label hit rate). Three planned arms were
+intentionally **not** built, and a fourth (C) ships but cannot compute:
+
+- **Realised-P&L band** — rolling-30-day realised P&L vs
+  `active_spec.json.backtest_expectations` (±20% `divergence_alert_threshold_pct`).
+- **Drawdown breach** — realised account drawdown vs `portfolio_max_dd_pct`.
+- **Monthly portfolio return** — rolling-21-trading-day return vs the
+  walkfold monthly band (~+27% median).
+- **Closed-trade win rate (Check C) — ships but currently uncomputable.**
+  Computing post-cost win rate needs the exit fill price. The engine
+  records market exits with `orders.price = NULL` (a market order has no
+  limit price) and the exit `order_filled` event payload carries only
+  `{qty, note}` — no price. So there is no readable exit price today;
+  Check C counts such trades under `closed_trade_no_exit_price` and
+  reports "uncomputable" (informational, not an alert). It activates
+  automatically once the engine persists a readable realized exit price /
+  P&L. (The engine's own event note — "realized_pnl_usd_approx includes
+  funding per FUNDING-001" — implies that value is computed but not yet
+  persisted in a place a reader can see; likely lands in `daily_pnl` once
+  reconcile runs, or a future `trades` table.)
+
+**Why deferred.** The P&L-band, drawdown and monthly arms need the
+engine's `daily_pnl` table, which is **empty**: the engine's
+`trading-engine-reconcile.timer` (which populates `daily_pnl`) is
+disabled on the VPS pending the engine-side RECONCILE-001 fix. Building
+those arms now would mean shipping inert code with "no P&L snapshots
+yet" placeholders — noise, not signal. Check C's blocker is the same
+family (no readable realized exit P&L) — likely resolved by the same
+engine change.
+
+**Resolution path.** Once RECONCILE-001 is resolved and `daily_pnl`
+starts accumulating (and/or the engine persists a readable per-trade
+realized exit price), add the three P&L arms as a follow-up increment
+on `monitoring/paper_trading_drift.py` (checks A–D already establish the
+module structure, the sample-gating pattern, and the `MonitorResult`
+aggregation — the new arms slot in alongside); Check C starts producing
+a real rate with no code change. No new schema or cross-repo
+coordination needed; just read the new data read-only under ADR-020.
+
+**Not blocking.** Checks A, B and D deliver real signal from real data
+today (A from the first cycle, D once positions age past the 10-day
+label-settlement horizon); the deferred arms and Check C's activation
+add coverage, not correctness.
 
 ## Recently resolved (post-Session-7)
 

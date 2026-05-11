@@ -1,0 +1,13 @@
+[Unit]
+Description=MHDE monitor: paper-trading drift + engine liveness
+After=network.target
+
+[Service]
+Type=oneshot
+User=jpcg
+WorkingDirectory=/home/jpcg/MHDE
+Environment=MHDE_DB_PATH=/home/jpcg/MHDE/data/mhde.duckdb
+Environment=CRYPTO_ENGINE_DB_PATH=/home/jpcg/crypto-trading-engine/data/trading_engine.duckdb
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py monitor paper-trading-drift
+StandardOutput=append:/home/jpcg/MHDE/data/logs/monitor_paper_trading_drift.log
+StandardError=append:/home/jpcg/MHDE/data/logs/monitor_paper_trading_drift.log

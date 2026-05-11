@@ -772,7 +772,7 @@ hard failure).
 
 ## Monitors (Session 6 + extensions)
 
-Ten runtime monitors fire Telegram alerts on detected anomalies. Source
+Eleven runtime monitors fire Telegram alerts on detected anomalies. Source
 under `monitoring/`, dispatched via `main.py monitor <name>`. Schedules
 are systemd-driven from `systemd/mhde-monitor-*.{service,timer}`.
 
@@ -790,6 +790,7 @@ are systemd-driven from `systemd/mhde-monitor-*.{service,timer}`.
 | `dashboard-synthetic` | hourly at :40 | `monitoring/dashboard_synthetic.py` | HTTP liveness on `/_stcore/health` + each `get_*_predictions` helper returns non-empty without raising. |
 | `cross-artifact` | daily 06:30 | `monitoring/cross_artifact.py` | Daily Telegram health-check formatter strings agree with direct DB queries. |
 | `phase0-calibration` | weekly Sun 06:00 | `monitoring/phase0_calibration.py` | Phase 0 interim drift (lift, precision-ratio, calibration buckets), sample-rate slowdown, and one-shot 200-sample-reached notification. See `docs/PATH_TO_LIVE_PLAN.md` § Phase 0. |
+| `paper-trading-drift` | every 15 min | `monitoring/paper_trading_drift.py` | Reads the engine DuckDB read-only (`CRYPTO_ENGINE_DB_PATH`): (A) engine liveness — monitor-phase fresh, entry-phase ran today; (B) no position stuck `*_pending` > 10 min; (C) closed-trade win rate 14d vs `[0.74, 0.99]`; (D) label hit rate (`crypto_ml_labels.label_10d_10pct`) 14d vs `[0.32, 0.62]`. C/D sample-gated at 20 trades. P&L-band/DD/monthly arms deferred (KI-136). See ADR-020. |
 
 Schedules are staggered to avoid the FX hourly :05 firing window and the
 nightly daily-analysis 23:15 lock window.
@@ -803,10 +804,11 @@ venv/bin/python main.py monitor smoke
 # Dry-run mode — compute the alert payload but never call Telegram
 MONITORING_DRY_RUN=true venv/bin/python main.py monitor smoke
 
-# All ten in sequence (useful for end-to-end exercising on a fresh deploy)
+# All eleven in sequence (useful for end-to-end exercising on a fresh deploy)
 for m in dashboard-consistency pipeline-execution config-drift \
          model-performance data-quality smoke streamlit-freshness \
-         dashboard-synthetic cross-artifact phase0-calibration; do
+         dashboard-synthetic cross-artifact phase0-calibration \
+         paper-trading-drift; do
     MONITORING_DRY_RUN=true venv/bin/python main.py monitor "$m"
 done
 ```
@@ -854,6 +856,41 @@ Exit code 0 = ok, 1 = warn or fail. The systemd unit interprets non-zero
 as "service failed" — check `journalctl --user -u mhde-monitor-X.service`
 for the alert payload that was logged.
 
+### Paper-trading drift monitor runbook
+
+Reads the crypto-trading-engine's DuckDB **read-only** (path from
+`CRYPTO_ENGINE_DB_PATH`, defaulting to
+`/home/jpcg/crypto-trading-engine/data/trading_engine.duckdb`) plus
+MHDE's `crypto_ml_labels`. See ADR-020 for why monitoring is allowed to
+read the engine DB directly.
+
+Manual run / dry-run:
+```bash
+MONITORING_DRY_RUN=true venv/bin/python main.py monitor paper-trading-drift 2>&1
+# point at a different engine DB:
+CRYPTO_ENGINE_DB_PATH=/path/to/trading_engine.duckdb \
+  MONITORING_DRY_RUN=true venv/bin/python main.py monitor paper-trading-drift
+```
+
+Interpreting an alert (the Telegram body lists every check, OK lines
+included):
+
+| Finding | Meaning | First action |
+|---|---|---|
+| `engine: last 'monitor' cycle N min ago` (warn ≥ 5, crit ≥ 20) | The engine's per-minute monitor phase has stalled. | `systemctl --user status trading-engine-monitor.timer` on the VPS; check the engine's logs under `/home/jpcg/crypto-trading-engine/data/logs/`. |
+| `engine: no successful 'entry' run today` (warn, only after 08:30 UTC) | Today's daily entry phase didn't fire (or failed). | Check `trading-engine-entry.timer` / engine logs; a missed entry day means no new positions today. |
+| `stuck positions: SYM in entry_pending/exit_pending for N min` (warn ≥ 10, crit ≥ 30) | A position's limit order is resting unfilled or an exit hasn't completed. | Look up the symbol on Binance demo; the engine's RECONCILE-001 logic auto-resolves stale `entry_pending` at 24h, but a 10-min flag is an early warning — inspect manually. |
+| `closed-trade win rate X% (… outside walkfold band)` (warn outside `[0.74, 0.99]`, crit < 0.60) | Realised post-cost trade win rate over the last 14 days has drifted from the Phase 1B expectation (~87% median). | Pull the closed trades from the engine DB, eyeball the losers' exit reasons; if the trailing-stop logic is misbehaving this is where it shows. Suppressed until 20 closed trades accumulate. |
+| `closed-trade win rate: … but the engine doesn't record exit fill prices yet — uncomputable (KI-136)` | Closed trades exist but the engine stores market-exit fills with `orders.price = NULL` and no price in the exit event, so win rate can't be computed. | None — informational. Resolves when the engine persists a readable realized exit P&L (same engine change that fills `daily_pnl`). See KI-136. |
+| `label hit rate X% (… outside walkfold band)` (warn outside `[0.32, 0.62]`, crit outside `[0.20, 0.75]`) | The model's top-K picks are clearing +10%/10d at a rate far from the ~42.5% walkfold median — i.e. the *signal* (not the execution) has drifted. | Cross-check against `monitor phase0-calibration`; a real label-hit drop should also show there. Suppressed until 20 settled-label positions accumulate. |
+| `closed-trade win rate: insufficient sample (N/20)` / `label hit rate: insufficient sample (N/20 …)` | Not enough data yet — informational, not an alert. | None. Expected for the first ~3–4 trading days of paper trading. |
+
+NOTE: the P&L-band, drawdown-breach, and monthly-return arms are **not
+implemented yet** (KI-136 / "Gap 2.5") — they're blocked on the
+engine's `daily_pnl` table filling, which is blocked on engine-side
+RECONCILE-001. Don't expect P&L drift coverage from this monitor until
+then.
+
 ### Deploying the monitors
 
 Deployed 2026-05-07 at **system level** (`/etc/systemd/system/`),
@@ -877,9 +914,14 @@ sudo systemctl enable --now \
     mhde-monitor-config-drift.timer \
     mhde-monitor-model-perf.timer \
     mhde-monitor-data-quality.timer \
-    mhde-monitor-smoke.timer
+    mhde-monitor-smoke.timer \
+    mhde-monitor-paper-trading-drift.timer
 systemctl list-timers --all | grep mhde-monitor
 ```
+
+(`mhde-monitor-paper-trading-drift` needs the engine DuckDB readable —
+its `.service` sets `Environment=CRYPTO_ENGINE_DB_PATH=…`; adjust if
+the engine repo lives elsewhere.)
 
 To trigger a one-off run (useful for verifying a fix):
 

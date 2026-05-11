@@ -6,6 +6,97 @@ are at the top.
 
 ---
 
+## 2026-05-11 — Gap 2: paper-trading drift monitor (liveness + hit-rate)
+
+**Branch:** `gap2-paper-trading-drift-monitor` (committed; **STOPPED for
+operator review before merge** — same handoff as Gap 1: PR opened via
+`gh`, operator merges via GitHub UI).
+
+**Trigger.** Three-gap observability plan
+(`~/.claude/plans/operator-needs-three-interconnected-zazzy-brooks.md`),
+Gap 2 — reworked in-session: the original plan's Gap 2 was a daily P&L /
+win-rate / label-hit monitor; the operator narrowed it to liveness +
+hit-rate only, because the engine's `daily_pnl` table is empty (its
+reconcile timer is disabled pending engine-side RECONCILE-001) so the
+P&L/DD/monthly arms would have been inert. Those arms deferred to KI-136
+("Gap 2.5").
+
+**Design doc.** `docs/superpowers/specs/2026-05-11-paper-trading-drift-monitor-design.md`
+(commit `b5fa530`). Approved by operator before implementation.
+
+**What shipped.**
+- `monitoring/paper_trading_drift.py` — `run(engine_conn, mhde_conn, now)`
+  + `main()`. Opens the engine DuckDB **read-only** via
+  `CRYPTO_ENGINE_DB_PATH` (default
+  `/home/jpcg/crypto-trading-engine/data/trading_engine.duckdb`) and
+  MHDE's `crypto_ml_labels`. Four checks → one `MonitorResult` (worst
+  severity wins) via `monitoring.alert.send_alert`:
+  - **A. engine liveness** — newest `engine_runs[phase=monitor,success]`
+    age > 5 min → warn / > 20 min → critical; after the 08:30 UTC cutoff,
+    no successful `phase=entry` run today → warn. (`reconcile` arm gated
+    off by `CHECK_RECONCILE=False` while the engine's reconcile timer is
+    disabled.)
+  - **B. stuck positions** — `entry_pending`/`exit_pending` older than
+    10 min → warn / 30 min → critical (relaxed from the originally-spec'd
+    5 min to match the 15-min monitor cadence).
+  - **C. closed-trade win rate** (rolling 14d by exit timestamp;
+    post-cost `net = (sell_vwap - entry_price)·qty - 0.0009·notional`):
+    outside `[0.74, 0.99]` → warn, < 0.60 → critical. Excludes the
+    RECONCILE-001 phantom `exit_filled`-with-NULL-`entry_price` rows.
+    **Live-data finding:** the engine records market exits with
+    `orders.price = NULL` and no price in the exit `order_filled` event,
+    so there's no readable exit price — Check C ships but currently
+    reports "uncomputable (KI-136)" and counts those trades under
+    `closed_trade_no_exit_price`. It activates with no code change once
+    the engine persists a readable realized exit P&L. (Also: the 14
+    closed trades in the engine DB right now are all manual
+    `manual_close_leverage_fix` closes, not strategy exits.)
+  - **D. label hit rate** — closed positions joined to
+    `crypto_ml_labels.label_10d_10pct`, windowed by *label settlement*
+    (entry+10d ∈ last 14d): outside `[0.32, 0.62]` → warn, outside
+    `[0.20, 0.75]` → critical.
+  - C and D are **sample-gated**: < 20 qualifying trades → status stays
+    OK, body notes "insufficient sample (N/20)".
+- `main.py` — `monitor paper-trading-drift` subcommand.
+- `systemd/mhde-monitor-paper-trading-drift.{service,timer}` —
+  `OnCalendar=*:0/15`, `User=jpcg`,
+  `Environment=CRYPTO_ENGINE_DB_PATH=…`, logs to
+  `data/logs/monitor_paper_trading_drift.log`.
+- Docs: `DECISIONS.md` ADR-020 (monitoring may read the engine DuckDB
+  read-only — scoped exception to INTERFACE.md's no-DB-access rule, with
+  the constraints that keep it from being real coupling); `KNOWN_ISSUES.md`
+  KI-136 (deferred P&L/DD/monthly arms); `OPERATIONS.md` (monitor catalog
+  row + interpretation runbook + deploy step); `ARCHITECTURE.md` (monitor
+  table row).
+
+**Tests.** `tests/monitoring/test_paper_trading_drift.py` — 23 unit
+tests, all passing. Build synthetic engine + MHDE DuckDBs; cover the four
+checks at each severity, the sample gate, phantom-position exclusion,
+out-of-window exclusion, label-unsettled exclusion, the
+`CRYPTO_ENGINE_DB_PATH` env-var path, severity aggregation, and `main()`
+exit codes.
+
+**Commits on branch (2 so far).**
+1. `b5fa530` docs: Gap 2 design spec
+2. `34dffcf` feat(monitoring): paper-trading drift monitor + CLI + systemd
+(this docs commit follows.)
+
+**Verification.** `pytest tests/monitoring/test_paper_trading_drift.py`
+→ 23 passed. Live dry-run against the real engine DB:
+`MONITORING_DRY_RUN=true venv/bin/python main.py monitor
+paper-trading-drift` — see the session for the observed result. (Pre-existing,
+unrelated: `tests/equity/test_monitoring.py` has 2 failures from `joblib`
+not being installed in `.venv` — not touched by this branch.)
+
+**Pending operator action.** Review the branch; merge the PR via GitHub
+UI; deploy the new timer on the VPS (`OPERATIONS.md` § Deploying the
+monitors — the `enable --now` list now includes
+`mhde-monitor-paper-trading-drift.timer`); optionally add a one-line
+back-reference to ADR-020 in the engine repo's `docs/INTERFACE.md` §1.
+Then: Gap 3 (`gap3-paper-trading-dashboard-tab`).
+
+---
+
 ## 2026-05-10 — Gap 1: crypto retrain validation gate (single-arm hit rate)
 
 **Branch:** `gap1-model-retrain-validation-gate` (committed; pending
