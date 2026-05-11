@@ -6,6 +6,76 @@ are at the top.
 
 ---
 
+## 2026-05-11 — KI-136: paper-trading dashboard shows real exit_price / realized_pnl
+
+**Branch:** `fix-paper-closed-trades-exit-price-ki136` (committed + pushed;
+**STOPPED for operator review** — diff only, no PR). No engine / monitor /
+predict / spec change; dashboard read-side + docs only.
+
+**Trigger.** The dashboard's "Recent closed positions" table (and its CSV
+download) showed `"uncomputable (KI-136)"` for *every* closed row even though
+the crypto-trading-engine `positions` table now carries real `exit_price` /
+`realized_pnl_usd` (engine-side EXIT-PRICE-001 + reconcile-side backfill, both
+merged on the engine repo; the 2026-05-11 manual flatten of SKYAIUSDT 576a025d
+/ TAGUSDT f25a428a / ZEREBROUSDT cb092940 populated −129.41 / −30.43 / −46.26
+USD respectively). Root cause: `dashboard/services/queries.py:get_paper_closed_trades`
+hardcoded `"exit_price": _UNCOMPUTABLE` / `"realized_pnl": _UNCOMPUTABLE` for
+all rows and never SELECTed the two columns — pure display lag behind the
+engine schema change, no caching involved.
+
+**What changed:**
+- `dashboard/services/queries.py` — `get_paper_closed_trades` now SELECTs
+  `exit_price, realized_pnl_usd` and renders them: `exit_price` verbatim,
+  `realized_pnl` `round(_, 2)` (USD → cents). Each falls back to
+  `"uncomputable (KI-136)"` **only** when its own column is NULL — handled
+  independently (a reconcile backfill can recover the SELL price but leave P&L
+  NULL if `entry_price` was NULL). Added a docstring + a comment on the
+  `_UNCOMPUTABLE` constant spelling out when it shows.
+- `dashboard/app.py` — "Recent closed positions" caption rewritten: defines the
+  two columns + the `(exit−entry)·qty` gross / FUNDING-001 framing, and that
+  `"uncomputable (KI-136)"` now means only "no exit fill recorded"
+  (pre-EXIT-PRICE-001 closes not yet backfilled, orphan auto-closes).
+- Docs: `KNOWN_ISSUES.md` KI-136 — added an "Update (2026-05-11)" block
+  (engine persists exit price now; dashboard reads it; Check C of the drift
+  monitor auto-activates off the SELL `orders.price` join, optional future
+  simplification to read `positions.realized_pnl_usd` directly; remaining
+  KI-136 scope = P&L-band/DD/monthly arms, still blocked on `daily_pnl`).
+  `OPERATIONS.md` + `ARCHITECTURE.md` Paper-Trading-tab descriptions updated.
+
+**Tests (TDD).** `tests/dashboard/test_paper_trading_queries.py`: `_engine_db`
+fixture schema + `_pos` helper gained `exit_price` / `realized_pnl_usd`;
+`test_closed_trades_exit_price_uncomputable` replaced by four cases — populated
+columns shown (exit verbatim, P&L rounded to −129.41); both NULL → placeholder;
+exit price known but P&L NULL → independent fallback; orphan `engine_only_position`
+auto-close → still placeholder + `close_reason` names it. Watched the two new
+"populated" cases fail first (`ValueError: could not convert 'uncomputable (KI-136)'`),
+then go green. `tests/dashboard` 66 passed; `tests/dashboard tests/monitoring`
+90 passed. Pre-commit: OK.
+
+**Verified against the live engine DB** (`get_paper_closed_trades(limit=30)`):
+SKYAIUSDT 2026-05-11 16:44 → exit_price 0.38288 / realized_pnl −129.41; TAGUSDT
+16:45 → 0.0013717 / −30.43; ZEREBROUSDT 16:45 → 0.04613 / −46.26; SKYAIUSDT
+2026-05-10 12:24 orphan → "uncomputable (KI-136)" (NULL entry/exit, reason
+`engine_only_position`). The older 2026-05-10 closes still read "uncomputable"
+— correct: those are pre-fix closes the reconcile backfill hasn't healed yet
+(engine `trading-engine-reconcile.timer` still disabled on the VPS; see the
+engine repo's redeploy + `systemctl enable --now` loose end).
+
+**Pre-existing dirty state set aside.** Before branching, `git stash -u` parked
+the operator's uncommitted `SESSION_LOG.md` Phase-1B-re-run entry + the untracked
+`.claude/local_scripts/*` diagnostic scripts (`stash@{0}` on `master`,
+message `pre-dashboard-fix WIP …`). Left in place per operator instruction —
+restore with `git stash pop` after this branch lands. **This means the
+Phase-1B-re-run session entry is *not* in `SESSION_LOG.md` on this branch.**
+
+**Pending (operator):** review + merge; `git stash pop` on master to restore the
+parked work; (engine repo, separate) VPS redeploy + reconcile timer re-enable so
+the older closes get backfilled. Optional follow-up: switch
+`monitoring/paper_trading_drift.py` Check C to read `positions.realized_pnl_usd`
+directly instead of reconstructing from the `orders` join.
+
+---
+
 ## 2026-05-11 — Knockout label phase 2 — training + validation + paired backtest
 
 **Branch:** `feat-crypto-knockout-training` (committed + pushed; **STOPPED for

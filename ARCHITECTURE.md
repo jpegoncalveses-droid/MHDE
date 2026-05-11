@@ -270,10 +270,11 @@ in `legacy/dashboard/pages/_legacy/`; their content was rewritten as
 tabs in `app.py` for the engines that survived (ML / crypto / FX), plus
 a **Paper Trading** tab (Gap 3) that reads the crypto-trading-engine
 DuckDB read-only via `CRYPTO_ENGINE_DB_PATH` (ADR-020) — open positions
-with the Policy-D calculated stop, recent closed positions (`exit_price`
-shown as "uncomputable" per KI-136), a rejected-entries list, and a
-drift-monitor status banner re-running `monitoring/paper_trading_drift.py`
-(cached 60 s).
+with the Policy-D calculated stop, recent closed positions (`exit_price` /
+`realized_pnl` from the engine's `positions` columns per EXIT-PRICE-001,
+"uncomputable (KI-136)" only when no exit fill was recorded), a
+rejected-entries list, and a drift-monitor status banner re-running
+`monitoring/paper_trading_drift.py` (cached 60 s).
 
 ```
 dashboard/app.py

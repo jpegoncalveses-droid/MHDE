@@ -248,6 +248,33 @@ today (A from the first cycle, D once positions age past the 10-day
 label-settlement horizon); the deferred arms and Check C's activation
 add coverage, not correctness.
 
+**Update (2026-05-11) — engine now persists exit price / realized P&L
+(engine-side EXIT-PRICE-001 + reconcile-side backfill).** The
+crypto-trading-engine `positions` table gained `exit_price` and
+`realized_pnl_usd`: `place_exit` / the exit-fill handler write the SELL
+weighted-average price and `(exit_price − entry_price)·qty`, and the
+reconcile cycle backfills both from Binance for pre-fix closes. Two
+read-side consequences in this repo:
+
+- The dashboard's "Recent closed positions" table
+  (`dashboard/services/queries.py:get_paper_closed_trades`) now shows the
+  real `exit_price` (verbatim) and `realized_pnl` (rounded to cents) read
+  straight from those columns. `"uncomputable (KI-136)"` now appears
+  **only** when a column is genuinely NULL — pre-EXIT-PRICE-001 closes the
+  reconcile backfill hasn't healed yet, and reconcile auto-closes of
+  `engine_only_position` rows (no real SELL fill, so no recoverable price).
+  Caption in `dashboard/app.py` updated accordingly.
+- Check C still computes the win rate from the SELL `orders.price` join,
+  which `place_exit` now records and the reconcile backfill repairs — so
+  it activates automatically as priced closes accumulate (still
+  sample-gated at 20). No code change to `monitoring/paper_trading_drift.py`;
+  switching it to read `positions.realized_pnl_usd` directly is an optional
+  future simplification, not required.
+
+The remaining KI-136 scope (P&L-band / drawdown / monthly drift arms) is
+unchanged — still blocked on the engine's `daily_pnl` accumulating, which
+needs the VPS redeploy + the `trading-engine-reconcile.timer` re-enable.
+
 ### KI-137 — Crypto model re-emits buy signals immediately post-parabolic-crash (model-label root cause; mitigated, not yet fixed at source)
 
 **Symptom.** The crypto prediction model fires high-conviction buy
