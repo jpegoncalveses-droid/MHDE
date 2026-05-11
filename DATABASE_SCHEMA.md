@@ -186,6 +186,22 @@ model left `is_active=false`, prior active stays live), or `NULL`
 (rows predating the gate; treated as promoted for backward
 compatibility). See ADR-019.
 
+### `crypto_signal_exclusions`
+
+Audit log of coins suppressed by the post-parabolic exclusion filter
+(`crypto/ml/postparabolic_filter.py`) at prediction-export time. One
+row per `(export_date, symbol, model_id)`; UPSERTed so a re-run of the
+export for the same date is idempotent. `dd90` = `drawdown_from_90d_high`,
+`ret60` = `return_60d` (the feature values that tripped the gate);
+`raw_probability` = the model's calibrated probability before
+suppression; `reason` = stable token (`'post_parabolic'`).
+
+PK: `(export_date, symbol, model_id)`. DDL in `crypto/schema.py:SCHEMA_CRYPTO_SIGNAL_EXCLUSIONS`.
+
+**Writer:** `crypto/exports/write_daily_predictions.py:build_predictions`.
+**Reader:** none yet (dashboard expander is a deferred phase-2 item).
+See ADR-021.
+
 ---
 
 ## FX ML — `fx_*`

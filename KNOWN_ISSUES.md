@@ -1,18 +1,21 @@
 # Known Issues
 
-**7 open observations** (KI-122, KI-123, KI-126, KI-131, KI-132,
-KI-134, KI-136). KI-122/123 are cosmetic; KI-126 is a future Phase 0
-enhancement deferred until weekly reliability snapshots accumulate;
-KI-131 is a low-priority single-day production-model row-count dip;
-KI-132 is a dashboard-deployment-process gap (no auto-restart on
-merge); KI-134 is an alerting-signal-quality observation (operator
-missed 8 freshness alerts under weekend false-positive noise that
-KI-128 has since cleaned up); KI-136 is the planned "Gap 2.5"
-follow-up — the paper-trading drift monitor's P&L-band / drawdown /
-monthly arms, deferred until the engine's `daily_pnl` table starts
-filling (blocked on engine-side RECONCILE-001). None requires a hot
-fix — all tracked so a future session triages deliberately rather
-than letting them rot in the working tree.
+**8 open observations** (KI-122, KI-123, KI-126, KI-131, KI-132,
+KI-134, KI-136, KI-137). KI-122/123 are cosmetic; KI-126 is a future
+Phase 0 enhancement deferred until weekly reliability snapshots
+accumulate; KI-131 is a low-priority single-day production-model
+row-count dip; KI-132 is a dashboard-deployment-process gap (no
+auto-restart on merge); KI-134 is an alerting-signal-quality
+observation (operator missed 8 freshness alerts under weekend
+false-positive noise that KI-128 has since cleaned up); KI-136 is the
+planned "Gap 2.5" follow-up — the paper-trading drift monitor's
+P&L-band / drawdown / monthly arms, deferred until the engine's
+`daily_pnl` table starts filling (blocked on engine-side RECONCILE-001);
+KI-137 is the crypto post-parabolic re-entry bias — *mitigated* by the
+new exclusion filter (ADR-021) but the model-label root cause is the
+open follow-up. None requires a hot fix — all tracked so a future
+session triages deliberately rather than letting them rot in the
+working tree.
 
 **KI-135** opened + resolved 2026-05-10 — crypto retrain
 auto-promoted new models without validation; a regressed model could
@@ -244,6 +247,45 @@ coordination needed; just read the new data read-only under ADR-020.
 today (A from the first cycle, D once positions age past the 10-day
 label-settlement horizon); the deferred arms and Check C's activation
 add coverage, not correctness.
+
+### KI-137 — Crypto model re-emits buy signals immediately post-parabolic-crash (model-label root cause; mitigated, not yet fixed at source)
+
+**Symptom.** The crypto prediction model fires high-conviction buy
+signals on coins right after a parabolic blow-off top. Documented case:
+SKYAIUSDT ran from ~$0.12 (Apr 12) to a $0.86 peak (May 5–6) then
+roughly halved; the model emitted probabilities 0.72–0.88 on it across
+the crash window — confirmed on *clean* data (so not the OHLCV-corruption
+artifact; that was a separate, now-fixed issue). The historical scan
+finds the broader pattern: predictions on coins that are >20% below
+their 90-day high while still up >200% on 60 days carry ~2× the realised
+max-drawdown of the rest (−25% vs −4%).
+
+**Root cause.** In the model, not the data. The `label_Nd_10pct` target
+("did the price tag +10% above today's close within N days") rewards
+volatility regardless of direction — a freshly-crashed high-vol coin
+genuinely *does* tag +10% intraday at some point — and the momentum-lag
+features (`return_60d`, `drawdown_from_90d_high`) keep reading bullish
+for weeks after a top. So the probability is "honest" w.r.t. its
+objective; the objective is just the wrong one for a risk-aware entry
+signal.
+
+**Mitigation (shipped).** Post-parabolic exclusion filter
+(`crypto/ml/postparabolic_filter.py`, branch
+`feat-crypto-postparabolic-filter`, ADR-021): a deterministic hard gate
+in the prediction-export step drops a coin from the daily export iff
+`drawdown_from_90d_high < -0.20` **and** `return_60d > 2.0`. The raw
+signal stays in `crypto_ml_predictions`; exclusions are recorded in
+`crypto_signal_exclusions` and logged. This suppresses the *symptom*
+before order entry; it does not change the model.
+
+**Open follow-up (the real fix).** A direction-aware / risk-adjusted
+crypto label (e.g. forward return net of forward max-drawdown, or a
+"closes higher in N days" target) so the model stops mistaking
+volatility for opportunity. Until then KI-137 stays open: the filter is
+a guard rail, not a cure. (Threshold retuning, if the −0.20/+2.0 pair
+proves too narrow or too wide, is just two constants in
+`crypto/config.py` — the scan supports −0.15/+1.5 as a more-aggressive
+alternative.)
 
 ## Recently resolved (post-Session-7)
 

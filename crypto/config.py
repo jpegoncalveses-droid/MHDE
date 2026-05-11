@@ -24,6 +24,17 @@ REQUEST_DELAY_S = 0.1
 INGESTION_LAG_DAYS = 1
 REFETCH_WINDOW_DAYS = 3
 
+# Post-parabolic exclusion filter (a pre-order-entry risk gate applied in the
+# prediction export step — see crypto/ml/postparabolic_filter.py and
+# crypto/ml/POSTPARABOLIC_FILTER_SPEC.md). A coin is excluded from the daily
+# export if BOTH hold: it sits more than 20% below its 90-day high
+# (``drawdown_from_90d_high < POSTPARABOLIC_DD90_THRESHOLD``) AND it is still up
+# more than 200% over 60 days (``return_60d > POSTPARABOLIC_RET60_THRESHOLD``).
+# This suppresses the documented post-parabolic re-entry bias (SKYAI) without
+# touching the model or the raw crypto_ml_predictions signal.
+POSTPARABOLIC_DD90_THRESHOLD = -0.20
+POSTPARABOLIC_RET60_THRESHOLD = 2.0
+
 FEATURE_COLS = [
     "return_1d", "return_3d", "return_5d", "return_10d", "return_20d", "return_60d",
     "rsi_14d", "drawdown_from_90d_high", "price_vs_20d_ma", "price_vs_50d_ma",

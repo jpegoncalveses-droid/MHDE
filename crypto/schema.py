@@ -183,6 +183,26 @@ CREATE TABLE IF NOT EXISTS phase0_milestones (
 );
 """
 
+# Audit log of coins suppressed by the post-parabolic exclusion filter
+# (crypto/ml/postparabolic_filter.py) at prediction-export time. One row per
+# (export_date, symbol, model_id); UPSERTed so a re-run of the export for the
+# same date is idempotent. dd90 = drawdown_from_90d_high, ret60 = return_60d
+# (the feature values that tripped the gate); raw_probability = the model's
+# calibrated probability before suppression. See ADR in DECISIONS.md.
+SCHEMA_CRYPTO_SIGNAL_EXCLUSIONS = """
+CREATE TABLE IF NOT EXISTS crypto_signal_exclusions (
+    export_date DATE NOT NULL,
+    symbol VARCHAR NOT NULL,
+    model_id VARCHAR NOT NULL,
+    raw_probability DOUBLE,
+    dd90 DOUBLE,
+    ret60 DOUBLE,
+    reason VARCHAR,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (export_date, symbol, model_id)
+);
+"""
+
 ALL_SCHEMAS = [
     SCHEMA_CRYPTO_PRICES_DAILY,
     SCHEMA_CRYPTO_FUNDING_RATES,
@@ -192,6 +212,7 @@ ALL_SCHEMAS = [
     SCHEMA_CRYPTO_ML_FEATURES,
     SCHEMA_CRYPTO_ML_PREDICTIONS,
     SCHEMA_CRYPTO_ML_MODEL_RUNS,
+    SCHEMA_CRYPTO_SIGNAL_EXCLUSIONS,
     SCHEMA_PHASE0_MILESTONES,
 ]
 
