@@ -8,6 +8,13 @@ User=jpcg
 WorkingDirectory=/home/jpcg/MHDE
 Environment=MHDE_DB_PATH=/home/jpcg/MHDE/data/mhde.duckdb
 ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto backfill-prices
+# Data-quality guard: a systemic OHLCV anomaly (the 2026-05-07 partial-candle
+# shape — most of the universe shows a volume/range/trade cliff vs its 20-day
+# median) makes this exit non-zero, which (Type=oneshot) aborts the unit and
+# every ExecStart below it — labels/features/predict never see corrupt data.
+# Per-symbol-only anomalies WARN and do not block. Bypass via a unit env var
+# MHDE_DATA_QUALITY_GUARD_OVERRIDE=1 (drop-in, then daemon-reload).
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto check-data-quality
 ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto backfill-funding
 ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto backfill-oi
 ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto backfill-labels

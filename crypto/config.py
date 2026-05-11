@@ -35,6 +35,26 @@ REFETCH_WINDOW_DAYS = 3
 POSTPARABOLIC_DD90_THRESHOLD = -0.20
 POSTPARABOLIC_RET60_THRESHOLD = 2.0
 
+# OHLCV plausibility / volume-cliff guard (pipelines/data_quality_guard.py).
+# Runs in the daily pipeline between backfill-prices and the downstream stages;
+# would have caught the 2026-05-07 partial-candle bug immediately. A symbol is
+# flagged for a day if today's value falls below the trailing-N-day median by
+# more than the cliff/collapse ratio (each check independent):
+#   * volume / trade count < {VOLUME_CLIFF_RATIO, TRADE_COUNT_CLIFF_RATIO} × median
+#   * (high − low) range    < RANGE_COLLAPSE_RATIO × median range
+# The day is *systemic* (→ block downstream, CRITICAL alert) if at least
+# SYSTEMIC_MIN_SYMBOLS symbols are evaluable and more than SYSTEMIC_FLAG_RATIO
+# of them are flagged. Per-symbol-only → WARN, no block. Thresholds tuned on a
+# 90-day clean-data scan: zero systemic false positives at any combo (clean-day
+# max ≈ 10% of universe flagged); the 2026-05-07 corruption flags ≈80–96% of
+# the universe — huge margin. See DECISIONS.md (ADR) and SESSION_LOG.md.
+OHLCV_PLAUSIBILITY_WINDOW_DAYS = 20
+VOLUME_CLIFF_RATIO = 0.10
+RANGE_COLLAPSE_RATIO = 0.20
+TRADE_COUNT_CLIFF_RATIO = 0.10
+SYSTEMIC_FLAG_RATIO = 0.30
+SYSTEMIC_MIN_SYMBOLS = 10
+
 FEATURE_COLS = [
     "return_1d", "return_3d", "return_5d", "return_10d", "return_20d", "return_60d",
     "rsi_14d", "drawdown_from_90d_high", "price_vs_20d_ma", "price_vs_50d_ma",

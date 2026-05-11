@@ -6,6 +6,77 @@ are at the top.
 
 ---
 
+## 2026-05-11 — Data-quality guard / volume-cliff detector
+
+**Branch:** `feat-crypto-data-quality-guard` (committed + pushed;
+**STOPPED for operator review/merge** — diff only, no PR).
+
+**Trigger.** The safeguard that would have caught the 2026-05-07
+partial-candle bug immediately — existing monitors only check row
+*presence*, not *plausibility*. Noted as a follow-up in the OHLCV-fix
+session entry below.
+
+**Investigation (90-day post-repair clean-data scan, 4 367 symbol-days):**
+clean 1st-percentile volume ratio ≈ 0.22, so 0.10 is safely below
+organic quiet days; grid-swept volume × range thresholds (0.05/0.10/0.20
+× 0.10/0.20/0.30) — **zero systemic false positives at every combo**
+(clean-day max ≈ 10 % of the universe flagged; systemic threshold 30 %).
+Reconstructed the 05-07…05-11 corruption (real Binance volumes + a
+~2.5 %-volume partial-candle simulation vs the clean 20-day baseline):
+flags ≈64–96 % of the universe **every day** at **every** combo →
+systemic fires on day one. Chosen pair: **volume/trade cliff 0.10,
+range collapse 0.20** (per-symbol WARN rate ≈ 0.55 %); 0.05/0.10 noted
+as a near-silent conservative alternative.
+
+**What shipped (no ingestion / model / feature change):**
+- `crypto/config.py` — `OHLCV_PLAUSIBILITY_WINDOW_DAYS = 20`,
+  `VOLUME_CLIFF_RATIO = 0.10`, `RANGE_COLLAPSE_RATIO = 0.20`,
+  `TRADE_COUNT_CLIFF_RATIO = 0.10`, `SYSTEMIC_FLAG_RATIO = 0.30`,
+  `SYSTEMIC_MIN_SYMBOLS = 10`.
+- `pipelines/data_quality_guard.py` (new) — pure
+  `check_ohlcv_plausibility(conn, target_date) -> QualityReport`
+  (per-symbol `volume_cliff` / `range_collapse` / `trade_count_cliff`
+  vs the trailing-20-day median; systemic iff ≥ 10 evaluable symbols and
+  > 30 % flagged; warmup symbols fail open; empty date → clean `ok`),
+  plus `persist_report(conn, report)` (UPSERT to the new table; clean
+  reports write nothing). No DB writes / alerts / exits in the pure path.
+- `crypto/schema.py` — new `crypto_data_quality_reports` table
+  `(date, symbol, check_name, expected, observed, flagged, severity,
+  created_at)`, PK `(date, symbol, check_name)`, in `ALL_SCHEMAS`.
+- `main.py` — new `crypto check-data-quality [--date]` command: runs the
+  check, persists, sends a Telegram alert (CRITICAL if systemic, WARN if
+  per-symbol-only), and **exits non-zero on a systemic flag** unless
+  `MHDE_DATA_QUALITY_GUARD_OVERRIDE` is set.
+- `systemd/mhde-crypto-predict.service` — new `ExecStart=` for
+  `check-data-quality` inserted right after `backfill-prices`; with
+  `Type=oneshot` a systemic anomaly aborts the unit and every step below
+  (funding/oi/labels/features/predict). **Deployed unit needs
+  `systemctl daemon-reload` after merge.**
+
+**Demonstrated catch:** integration test
+`test_simulated_partial_candle_corruption_triggers_systemic` (50 symbols,
+synthetic ~2.5 %-volume partial day → 50/50 flagged, systemic) + the
+investigation reconstruction above. Live smoke: `crypto check-data-quality`
+on the current (clean) DB → `evaluated=50 flagged=0 severity=ok rows_written=0`,
+exit 0.
+
+**Tests.** `tests/crypto/test_data_quality_guard.py` — 16 (per-symbol
+volume / range / trade-count flags fire on synthetic bad data; do NOT
+fire on noisy-but-normal data or just-above-threshold; systemic fires
+when ratio exceeded; does NOT fire on an isolated single-symbol issue or
+when too few symbols are evaluable; warmup symbols skipped; empty
+universe / no-row-on-date handled gracefully; `severity` mapping;
+`persist_report` writes flagged + systemic rows, idempotent UPSERT,
+writes nothing for a clean report; the simulated-corruption integration
+test). Full crypto suite: 381 passed, 1 skipped. Pre-commit: OK. TDD
+throughout.
+
+**Docs.** ADR-022 (DECISIONS.md), `crypto_data_quality_reports` in
+DATABASE_SCHEMA.md, this entry. **Scoped out (phase 2):** no dashboard
+view of `crypto_data_quality_reports`.
+
+---
+
 ## 2026-05-11 — Backtest the post-parabolic filter (toggle + paired runs)
 
 **Branch:** `feat-backtest-postparabolic-toggle` (committed + pushed;

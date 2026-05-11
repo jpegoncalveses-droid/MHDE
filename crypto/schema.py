@@ -172,6 +172,27 @@ CREATE TABLE IF NOT EXISTS crypto_ml_model_runs (
 );
 """
 
+# Exceptions log written by the OHLCV plausibility guard
+# (pipelines/data_quality_guard.py). One row per flagged (date, symbol,
+# check_name); a re-run for the same date UPSERTs. check_name is one of
+# 'volume_cliff' / 'range_collapse' / 'trade_count_cliff' (severity 'warn',
+# symbol = the coin), or 'systemic_corruption' (severity 'critical',
+# symbol = '__systemic__', expected = SYSTEMIC_FLAG_RATIO, observed = the
+# flagged-fraction of the evaluable universe). Clean days write nothing.
+SCHEMA_CRYPTO_DATA_QUALITY_REPORTS = """
+CREATE TABLE IF NOT EXISTS crypto_data_quality_reports (
+    date DATE NOT NULL,
+    symbol VARCHAR NOT NULL,
+    check_name VARCHAR NOT NULL,
+    expected DOUBLE,
+    observed DOUBLE,
+    flagged BOOLEAN,
+    severity VARCHAR,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (date, symbol, check_name)
+);
+"""
+
 SCHEMA_PHASE0_MILESTONES = """
 CREATE TABLE IF NOT EXISTS phase0_milestones (
     engine VARCHAR NOT NULL,
@@ -213,6 +234,7 @@ ALL_SCHEMAS = [
     SCHEMA_CRYPTO_ML_PREDICTIONS,
     SCHEMA_CRYPTO_ML_MODEL_RUNS,
     SCHEMA_CRYPTO_SIGNAL_EXCLUSIONS,
+    SCHEMA_CRYPTO_DATA_QUALITY_REPORTS,
     SCHEMA_PHASE0_MILESTONES,
 ]
 
