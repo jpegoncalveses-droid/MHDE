@@ -1,7 +1,9 @@
 """MHDE Dashboard — ML Predictions with health checks."""
 from __future__ import annotations
 
+import json
 import os
+from datetime import datetime, timezone
 
 import duckdb
 import pandas as pd
@@ -17,12 +19,17 @@ from dashboard.services.maturity import (
     time_remaining_hours,
 )
 from dashboard.services.queries import (
+    engine_db_path,
     get_crypto_predictions,
     get_crypto_recent_outcomes,
     get_distinct_prediction_dates,
     get_equity_predictions,
     get_equity_recent_outcomes,
     get_fx_recent_predictions,
+    get_paper_closed_trades,
+    get_paper_engine_runs_summary,
+    get_paper_failed_entries,
+    get_paper_open_positions,
 )
 
 st.set_page_config(
@@ -68,7 +75,9 @@ with st.expander(
                 st.warning(report.message)
 conn.close()
 
-tab_equities, tab_crypto, tab_fx = st.tabs(["Equities", "Crypto", "FX"])
+tab_equities, tab_crypto, tab_fx, tab_paper = st.tabs(
+    ["Equities", "Crypto", "FX", "Paper Trading"]
+)
 
 # ===============================================================================
 # EQUITIES TAB
@@ -853,3 +862,120 @@ with tab_fx:
             st.dataframe(fx_signals, use_container_width=True, hide_index=True)
 
 conn.close()
+
+# ===============================================================================
+#  TAB 4 — Paper Trading (crypto-trading-engine DuckDB, read-only — ADR-020)
+# ===============================================================================
+_PAPER_BADGE = {"info": "🟢", "warn": "🟡", "critical": "🔴", "error": "⚪"}
+
+
+@st.cache_data(ttl=60)
+def _paper_drift_status() -> dict:
+    """Run the Gap-2 drift monitor (read-only, no Telegram) and return its
+    result as plain types. Cached 60s so page interactions don't re-query the
+    engine DB on every rerun."""
+    try:
+        from monitoring.paper_trading_drift import run as _run_drift
+        r = _run_drift()
+        return {
+            "status": r.status, "severity": r.severity, "title": r.title,
+            "body": r.body, "metrics": dict(r.metrics),
+        }
+    except Exception as exc:  # engine DB unreadable, import error, etc.
+        return {
+            "status": "error", "severity": "error",
+            "title": "drift monitor unavailable",
+            "body": f"{type(exc).__name__}: {exc}", "metrics": {},
+        }
+
+
+def _paper_age_str(ts) -> str:
+    if ts is None:
+        return "—"
+    delta = datetime.now(timezone.utc).replace(tzinfo=None) - ts
+    mins = delta.total_seconds() / 60.0
+    if mins < 0:
+        return "just now"
+    return f"{mins:.0f} min ago" if mins < 120 else f"{mins / 60.0:.1f} h ago"
+
+
+def _paper_trail_params() -> tuple[float, float, bool]:
+    """(trail_pct, activation_pct, from_spec). Reads data/exports/active_spec.json;
+    falls back to the locked Phase-1B Policy-D defaults if it's missing/unparseable."""
+    try:
+        with open(os.path.join("data", "exports", "active_spec.json")) as fh:
+            w = json.load(fh).get("phase_1b_winner", {})
+        return float(w.get("trail_pct", 0.30)), float(w.get("activation_pct", 0.01)), True
+    except Exception:
+        return 0.30, 0.01, False
+
+
+with tab_paper:
+    st.title("Paper Trading")
+    st.caption(
+        f"Crypto-trading-engine state, read-only — `{engine_db_path()}` (ADR-020). "
+        "No live-mark / unrealised-P&L column: the engine doesn't populate "
+        "`price_snapshots` yet (PRICE-SNAPSHOTS-001)."
+    )
+
+    # --- Drift-monitor status banner (cached 60s) ---
+    _drift = _paper_drift_status()
+    _badge = _PAPER_BADGE.get(_drift.get("severity"), "⚪")
+    st.markdown(f"### {_badge} {_drift.get('title', 'drift monitor')}")
+    if _drift.get("body"):
+        with st.expander("Drift monitor — all checks", expanded=_drift.get("status") != "ok"):
+            st.text(_drift["body"])
+
+    # --- Engine connection (per render; read-only) ---
+    try:
+        _engine_conn = duckdb.connect(engine_db_path(), read_only=True)
+    except Exception as _e:
+        st.warning(
+            f"Paper-trading engine database not available at `{engine_db_path()}` "
+            f"— is the crypto-trading-engine deployed? ({type(_e).__name__}: {_e})"
+        )
+    else:
+        try:
+            _summary = get_paper_engine_runs_summary(_engine_conn)
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Engine monitor cycle", _paper_age_str(_summary["last_monitor_at"]))
+            m2.metric("Last entry phase", _paper_age_str(_summary["last_entry_at"]))
+            m3.metric("Open positions", _summary["n_open"])
+            m4.metric("Closed (last 14d)", _summary["n_closed_14d"])
+
+            _trail_pct, _activation_pct, _from_spec = _paper_trail_params()
+
+            st.subheader("Open positions")
+            _open_df = get_paper_open_positions(
+                _engine_conn, trail_pct=_trail_pct, activation_pct=_activation_pct
+            )
+            if _open_df.empty:
+                st.info("No open positions.")
+            else:
+                st.dataframe(_open_df, use_container_width=True, hide_index=True)
+            st.caption(
+                f"`calc_stop` = peak − {_trail_pct:.0%}·(peak − entry), shown once the trailing "
+                f"stop activates (peak ≥ entry·{1 + _activation_pct:.2f})"
+                + ("" if _from_spec else " — active_spec.json missing, using Phase-1B-D defaults")
+                + "."
+            )
+
+            st.subheader("Recent closed positions")
+            _closed_df = get_paper_closed_trades(_engine_conn, limit=30)
+            if _closed_df.empty:
+                st.info("No closed positions yet.")
+            else:
+                st.dataframe(_closed_df, use_container_width=True, hide_index=True)
+            st.caption(
+                "`exit_price` / `realized_pnl` show 'uncomputable' — the engine doesn't record "
+                "market-exit fill prices yet (KI-136)."
+            )
+
+            with st.expander("Rejected entries", expanded=False):
+                _failed_df = get_paper_failed_entries(_engine_conn, limit=20)
+                if _failed_df.empty:
+                    st.caption("None.")
+                else:
+                    st.dataframe(_failed_df, use_container_width=True, hide_index=True)
+        finally:
+            _engine_conn.close()

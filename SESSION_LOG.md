@@ -6,6 +6,65 @@ are at the top.
 
 ---
 
+## 2026-05-11 — Gap 3: paper-trading dashboard tab
+
+**Branch:** `gap3-paper-trading-dashboard-tab` (committed; **STOPPED for
+operator review before push** — then PR via `gh`, operator merges via
+GitHub UI).
+
+**Trigger.** Three-gap observability plan, Gap 3 — the last of the three.
+The operator has no in-product view of paper-trading state; the engine
+DuckDB lives in a separate repo.
+
+**Design doc.** `docs/superpowers/specs/2026-05-11-paper-trading-dashboard-tab-design.md`.
+Approved by operator before implementation.
+
+**What shipped.**
+- `dashboard/services/queries.py` — new read-only engine-DB query/transform
+  functions (engine DB path from `CRYPTO_ENGINE_DB_PATH`, default
+  `/home/jpcg/crypto-trading-engine/data/trading_engine.duckdb`, ADR-020):
+  `_connect_engine` / `engine_db_path`; `get_paper_open_positions` (live
+  states only; `calc_stop` = `peak − trail_pct·(peak − entry)` once the
+  trailing stop activates, else `"— (not activated)"`; NULL prices → `"—"`);
+  `get_paper_closed_trades` (newest-first, limited; `exit_price` /
+  `realized_pnl` → `"uncomputable (KI-136)"`; `close_reason` best-effort
+  from `events`); `get_paper_failed_entries`; `get_paper_engine_runs_summary`.
+  All transform logic is in pure functions for testability.
+- `dashboard/app.py` — `st.tabs(...)` gains `"Paper Trading"`; new
+  `with tab_paper:` block: a 🟢/🟡/🔴 drift banner from a
+  `@st.cache_data(ttl=60)` wrapper around `monitoring.paper_trading_drift.run()`
+  (read-only, no Telegram); engine summary metrics; open-positions table;
+  recent-closed table; rejected-entries expander. If the engine DB can't be
+  opened the tab shows a single warning and the other tabs are unaffected.
+  `trail_pct`/`activation_pct` read from `active_spec.json` (Phase-1B-D
+  defaults 0.30 / 0.01 if absent).
+- `.claude/local_scripts/test_dashboard_queries.py` — extended to exercise
+  the four `get_paper_*` functions against the real engine DB (skips if the
+  engine DB file isn't present).
+- Docs: `OPERATIONS.md` (Paper Trading tab note — `CRYPTO_ENGINE_DB_PATH`,
+  the "uncomputable" cells, smoke command); `ARCHITECTURE.md` (dashboard
+  section). No new ADR (ADR-020 already covers the read-only engine-DB
+  read); no new KI (the tab surfaces KI-136 / PRICE-SNAPSHOTS-001
+  in-product).
+
+**Tests.** `tests/dashboard/test_paper_trading_queries.py` — 11 unit tests,
+all passing (synthetic engine DuckDB; cover live-state filtering, calc-stop
+activated / not-activated / NULL-price, closed-trade ordering+limit+uncomputable,
+`close_reason` from a `reconcile_action` event, failed-entries filter, the
+engine-runs summary incl. empty case, `CRYPTO_ENGINE_DB_PATH` env path). Full
+`tests/dashboard/` suite: 63 passed. `dashboard/app.py` py_compiles. Extended
+dashboard-query smoke against the live engine DB: all paper-trading queries OK
+(7 open positions, 15 closed, 6 rejected — `binance_rejection`).
+
+**Pending operator action.** Review the branch → on approval I push + open PR
+via `gh` → I then squash-merge + `git checkout master && git pull && git log -3`
+→ operator restarts `mhde-streamlit` (no new systemd unit; ensure the unit's
+`Environment=` carries `CRYPTO_ENGINE_DB_PATH` if the engine repo isn't at the
+default path). After Gap 3: the engine-data-recording follow-up
+(exit-price persistence / PRICE-SNAPSHOTS-001 / RECONCILE-001 — KI-136).
+
+---
+
 ## 2026-05-11 — Gap 2: paper-trading drift monitor (liveness + hit-rate)
 
 **Branch:** `gap2-paper-trading-drift-monitor` (committed; **STOPPED for

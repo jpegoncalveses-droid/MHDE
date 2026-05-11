@@ -22,6 +22,11 @@ from dashboard.services.queries import (
     get_alerts,
     get_backtest_runs,
     get_latest_run_id,
+    engine_db_path,
+    get_paper_open_positions,
+    get_paper_closed_trades,
+    get_paper_failed_entries,
+    get_paper_engine_runs_summary,
 )
 
 conn = duckdb.connect("data/mhde.duckdb", read_only=True)
@@ -30,7 +35,7 @@ errors = []
 def check(label, fn):
     try:
         r = fn()
-        count = len(r) if isinstance(r, (list, dict)) else r
+        count = len(r) if hasattr(r, "__len__") else r
         print(f"  OK  {label}: {count}")
         return r
     except Exception as e:
@@ -55,6 +60,20 @@ if cands and run_id:
           lambda: get_candidate_detail(conn, cands[0]["ticker"], run_id))
 
 conn.close()
+
+# --- Paper-trading tab queries (read the engine DuckDB read-only) ---
+print("\n=== Paper-trading queries (engine DB) ===\n")
+_engine_path = engine_db_path()
+if not os.path.exists(_engine_path):
+    print(f"  SKIP paper-trading queries — engine DB not found at {_engine_path}")
+else:
+    eng = duckdb.connect(_engine_path, read_only=True)
+    check("paper_engine_runs_summary", lambda: get_paper_engine_runs_summary(eng))
+    check("paper_open_positions",
+          lambda: get_paper_open_positions(eng, trail_pct=0.30, activation_pct=0.01))
+    check("paper_closed_trades", lambda: get_paper_closed_trades(eng, limit=30))
+    check("paper_failed_entries", lambda: get_paper_failed_entries(eng, limit=20))
+    eng.close()
 
 print(f"\n{'='*40}")
 if errors:
