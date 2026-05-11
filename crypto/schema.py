@@ -190,9 +190,20 @@ CREATE TABLE IF NOT EXISTS crypto_ml_model_runs (
     is_active BOOLEAN DEFAULT FALSE,
     -- Valid values: 'pending' | 'promoted' | 'promotion_blocked'
     -- Set by the validation gate (crypto/ml/validation_gate.py) after each training run.
-    promotion_status VARCHAR DEFAULT 'pending'
+    promotion_status VARCHAR DEFAULT 'pending',
+    -- 'legacy'  → trained on label_Nd_10pct (close-based +10% tag)
+    -- 'knockout' → trained on label_Nd_knockout (triple-barrier TP/SL). Knockout
+    -- models are inserted with is_active=false and are NOT auto-gated/promoted —
+    -- promotion is an explicit operator decision. See ADR-023 / ADR-024.
+    label_kind VARCHAR DEFAULT 'legacy'
 );
 """
+
+# Idempotent migration for crypto_ml_model_runs — backfills the label_kind
+# column onto an existing table (existing rows default to 'legacy').
+_CRYPTO_ML_MODEL_RUNS_MIGRATIONS = [
+    "ALTER TABLE crypto_ml_model_runs ADD COLUMN IF NOT EXISTS label_kind VARCHAR DEFAULT 'legacy'",
+]
 
 # Exceptions log written by the OHLCV plausibility guard
 # (pipelines/data_quality_guard.py). One row per flagged (date, symbol,
@@ -265,4 +276,6 @@ def create_all_tables(conn):
     for schema in ALL_SCHEMAS:
         conn.execute(schema)
     for stmt in _CRYPTO_ML_LABELS_MIGRATIONS:
+        conn.execute(stmt)
+    for stmt in _CRYPTO_ML_MODEL_RUNS_MIGRATIONS:
         conn.execute(stmt)

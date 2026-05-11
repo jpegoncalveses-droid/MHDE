@@ -1129,3 +1129,75 @@ operator sign-off for the first one) before any `is_active` flip. Phase 1
 touches nothing downstream (no `train.py` / `predict.py` / model artifacts /
 dashboard / validation_gate change). Retuning TP/SL requires a full label
 re-backfill (same as the legacy label's implicit 0.10).
+
+---
+
+## ADR-024 — Knockout label phase 2: training path, validation methodology, and the "hold" verdict
+
+**Date:** 2026-05-11
+**Session:** knockout label, phase 2 (training + validation + paired backtest)
+**Status:** Active — methodology adopted; the trained models are **NOT promoted** (verdict below).
+**Builds on:** ADR-023 (the knockout label), the spec `crypto/ml/KNOCKOUT_LABEL_SPEC.md` §5 (promotion criteria).
+
+**Decision (training path).** `crypto/ml/train.py::train_walk_forward` gains a
+`label_kind ∈ {legacy, knockout}` parameter (and an `auto_promote` flag);
+`crypto train --label-kind knockout` trains a 5d and a 10d model on
+`label_Nd_knockout` with `auto_promote=False` — the new `crypto_ml_model_runs`
+rows are `is_active=false, promotion_status='pending', label_kind='knockout'`,
+the validation gate (`validate_promotion`) is **not** invoked, and nothing is
+flipped active. `model_id` is prefixed `crypto_{horizon}_knockout_…`; the joblib
+bundle carries `label_kind`, `knockout_tp`, `knockout_sl`. A new `label_kind`
+column on `crypto_ml_model_runs` (idempotent migration; existing rows default
+`'legacy'`). The execution-backtest harness gains a `model_id_like` parameter
+(default `'crypto_%_walkfold_%'`) so a paired A/B backtest can replay an
+alternative walk-forward set without contaminating the baseline; phase 2 wrote
+the knockout walk-forward OOS probabilities to `crypto_ml_predictions` as
+`crypto_{horizon}_kowf_{YYYY_MM}` (deliberately *not* `…_walkfold_…` so the
+default pattern excludes them). No change to `predict.py`,
+`write_daily_predictions.py`, `validation_gate.py`, the engine repo, or the
+dashboard.
+
+**Validation methodology (spec §5).** Each retrained knockout model is judged
+on: **C1** walk-forward precision-at-threshold (avg top-5% precision over folds)
+≥ 0.40 absolute floor; **C2** calibration bucket check (predicted P ≈ realized
+rate within ±0.15 per bucket with ≥10 samples); **C3** a paired execution
+backtest vs the current legacy active models (Phase-1B-winner config — Policy D,
+top_n n=6, trail 0.3 — post-parabolic filter OFF): Sharpe ≥ legacy − 0.5, max-DD
+no worse, cumulative return within ±10% (or higher); plus a bonus diagnostic —
+the fraction of each model's daily top-6 picks that trip the post-parabolic
+`should_exclude` predicate (lower = the label organically avoids the SKYAI
+profile). **The first** knockout model bypasses the auto gate and requires
+explicit operator sign-off before any `is_active` flip.
+
+**Phase-2 results & verdict — HOLD (do not promote either model).**
+- C1: 5d precision 0.428 (PASS, barely); 10d 0.394 (FAIL, barely). Knockout
+  AUC ≈ 0.55–0.57 — barely above random; the legacy label's apparent edge was
+  partly the model exploiting "volatility", which the knockout label removes by
+  design, so the new label is genuinely harder to learn with the current
+  momentum/vol-heavy 35-feature set.
+- C2: **FAIL both.** Lower probability buckets are roughly calibrated, but the
+  upper buckets are wildly over-confident — e.g. 10d bucket [0.8,0.9) predicts
+  0.84, realizes 0.30 (|diff| 0.54). The per-fold Platt fit on a 20% within-fold
+  split does not generalise to the OOS distribution for this harder label.
+- C3: **FAIL both, mixed.** 5d: Sharpe drops 6.10 → 4.39 (one 7.6× outlier
+  blows up the return std), max-DD slightly better (−9.1% → −7.9%), cumRet
+  ~+3.4 pp — net a regression. 10d: Sharpe 6.25 → **7.36** and max-DD
+  −17.0% → **−10.7%** both *improve*, but cumRet 52.2% → 44.2% (≈ −15%, outside
+  ±10%) — the 10d knockout trades a chunk of upside for materially lower risk.
+- Bonus: knockout top-6 picks trip the post-parabolic filter ~half as often
+  (5d 1.1% vs 2.2%; 10d 1.0% vs 2.4%) — the label *is* doing what it should.
+
+**Consequences / next steps.** The direction is right (organically avoids the
+post-parabolic profile; 10d risk metrics improve) but the execution isn't there:
+the calibration is broken and the raw discriminative power is weak. Recommended
+phase-3 retry before any promotion: (a) fix calibration (isotonic on a held-out
+window, or a larger / dedicated calibration set, instead of the within-fold
+20% Platt); (b) reconsider the TP/SL pair — the spec's scan showed a wider band
+(e.g. +15%/−7%) has a higher `tp` base rate and may be more learnable; (c) add
+directional features (the current set is momentum/vol-heavy, which the knockout
+label penalises); (d) re-run the paired backtest. Until then, the post-parabolic
+exclusion filter (ADR-021) remains the working symptom-guard — the knockout
+label is **not yet** a replacement. The trained models stay persisted but
+inactive; the `crypto_*_kowf_*` walk-forward predictions stay in
+`crypto_ml_predictions` as a reproducibility artifact (and can be deleted if
+they clutter the dashboard's historical view).

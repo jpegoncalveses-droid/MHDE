@@ -6,6 +6,75 @@ are at the top.
 
 ---
 
+## 2026-05-11 — Knockout label phase 2 — training + validation + paired backtest
+
+**Branch:** `feat-crypto-knockout-training` (committed + pushed; **STOPPED for
+operator review — verdict is HOLD, do not promote**; diff only, no PR).
+
+**Trigger.** Phase 2 of the knockout label (ADR-023): train knockout models,
+validate per the spec §5 criteria, paired backtest, promotion recommendation.
+
+**What shipped (no predict.py / write_daily_predictions.py / validation_gate.py /
+engine / dashboard change):**
+- `crypto/ml/train.py` — `train_walk_forward(..., label_kind="legacy", auto_promote=True)`:
+  `label_kind="knockout"` → trains on `label_Nd_knockout`, `model_id` prefixed
+  `crypto_{horizon}_knockout_…`, bundle records `label_kind`/`knockout_tp`/`knockout_sl`;
+  `auto_promote=False` → INSERT row as `is_active=false, promotion_status='pending'`
+  and **skip the validation gate entirely** (no `validate_promotion` call, no flip).
+  `_persist_and_gate` gains `label_kind` / `auto_promote` params (defaults preserve
+  legacy behaviour). `crypto train --label-kind {legacy,knockout}` CLI option;
+  `knockout` loops 5d+10d, no auto-promote.
+- `crypto/schema.py` — `crypto_ml_model_runs.label_kind VARCHAR DEFAULT 'legacy'`
+  (CREATE + idempotent `ADD COLUMN IF NOT EXISTS`).
+- `crypto/execution/backtest/harness.py` — `model_id_like` param on
+  `load_oos_predictions` / `count_predictions_below_funding_floor` / `run_backtest`
+  (default `'crypto_%_walkfold_%'`; folded into `make_run_id` only when non-default
+  so existing run_ids/parameters JSON are unchanged) — lets a paired A/B backtest
+  replay an alternative walk-forward set.
+- Tests: `tests/crypto/test_knockout_training.py` (5: `--label-kind` wiring +
+  default; knockout `train_walk_forward` persists correctly — model_id encodes
+  `knockout`, `label_kind='knockout'`, `is_active=false`, gate not called, bundle
+  has the knockout params; legacy run unchanged; `_persist_and_gate(auto_promote=False)`;
+  harness `model_id_like` filter). Full crypto suite: 412 passed, 1 skipped.
+  Full suite: 1458 passed, 1 skipped, 2 pre-existing failures (KI-105 dashboard;
+  KI-112 systemd-deploy parity). Pre-commit: OK. TDD throughout.
+
+**Trained (is_active=false, promotion_status=pending, label_kind=knockout):**
+`crypto_5d_knockout_53b91781` (precision_at_threshold 0.428, AUC 0.572, base
+0.230, lift 1.94×) and `crypto_10d_knockout_6c7754c2` (0.394 / 0.553 / 0.275 /
+1.47×), 18/18 walk-forward folds each, finals in `models/saved/crypto/`. OOS
+walk-forward probabilities persisted to `crypto_ml_predictions` as
+`crypto_{hz}_kowf_{YYYY_MM}` (20,133 rows/horizon, 2024-12 → 2026-05).
+
+**Validation (spec §5):**
+- C1 walk-forward precision ≥ 0.40: 5d 0.428 PASS; 10d 0.394 FAIL.
+- C2 calibration bucket check: **FAIL both** — lower buckets ~ok, upper buckets
+  wildly over-confident (10d [0.8,0.9): predicts 0.84, realizes 0.30). Per-fold
+  Platt on a 20% within-fold split doesn't generalise for this harder label.
+- C3 paired backtest (Phase-1B-winner config, post-parabolic filter OFF): **FAIL
+  both, mixed.** 5d Run A (legacy) Sharpe 6.10 / maxDD −9.1% / cumRet 47.5% vs
+  Run B (knockout) **4.39** / −7.9% / 51.0% (one 7.6× outlier tanks the Sharpe).
+  10d A 6.25 / −17.0% / 52.2% vs B **7.36** / **−10.7%** / **44.2%** — Sharpe &
+  maxDD *improve*, cumRet ~−15% (outside ±10%). Trade counts: knockout runs more
+  (5d 1165 vs 1054; 10d 1093 vs 932).
+- Bonus: knockout top-6 picks trip the post-parabolic filter ~half as often
+  (5d 1.1% vs 2.2%; 10d 1.0% vs 2.4%) — the label *is* organically avoiding the
+  SKYAI profile.
+
+**Verdict: HOLD — do not promote either model.** Direction right (avoids the
+post-parabolic profile; 10d risk metrics improve) but execution not there:
+calibration broken, AUC ~0.55 (barely above random — the legacy edge was partly
+"volatility", which the knockout label removes by design). Phase-3 retry needed:
+(a) fix calibration (isotonic / larger held-out cal set); (b) reconsider TP/SL
+(wider band — +15%/−7% — has a higher learnable `tp` rate per the spec scan);
+(c) add directional features; (d) re-run the paired backtest. The post-parabolic
+filter (ADR-021) stays as the working symptom-guard meanwhile. Promotion SQL is
+printed in the report for reference but **NOT executed**; `is_active` unchanged
+on all models. Docs: ADR-024, this entry. Analysis script:
+`.claude/local_scripts/knockout_phase2_run.py`.
+
+---
+
 ## 2026-05-11 — Knockout (triple-barrier) crypto label — phase 1 (label + backfill)
 
 **Branch:** `feat-crypto-knockout-label` (committed + pushed; **STOPPED for

@@ -22,7 +22,7 @@ from sklearn.model_selection import train_test_split
 from xgboost import XGBClassifier
 
 from crypto.schema import create_all_tables
-from crypto.config import FEATURE_COLS, DEFAULT_PARAMS, MODELS_DIR
+from crypto.config import FEATURE_COLS, DEFAULT_PARAMS, MODELS_DIR, KNOCKOUT_TP, KNOCKOUT_SL
 from crypto.ml.validation_gate import validate_promotion
 from monitoring.alert import MonitorResult, send_alert
 
@@ -176,10 +176,21 @@ def _train_single_fold(X_train: pd.DataFrame, y_train: pd.Series,
 
 
 def train_walk_forward(conn: duckdb.DuckDBPyConnection, label_col: str = "label_10d_10pct",
-                       horizon: str = "10d", threshold: float = 0.10) -> list[dict]:
+                       horizon: str = "10d", threshold: float = 0.10, *,
+                       label_kind: str = "legacy", auto_promote: bool = True) -> list[dict]:
+    """Walk-forward CV + final calibrated model for ``label_col`` / ``horizon``.
+
+    ``label_kind`` is recorded on the model row and in the joblib bundle
+    (``'legacy'`` → ``label_Nd_10pct``; ``'knockout'`` → ``label_Nd_knockout``);
+    when ``'knockout'`` the bundle also carries ``knockout_tp`` / ``knockout_sl``
+    and the ``model_id`` is prefixed ``crypto_{horizon}_knockout_…``.
+    ``auto_promote=False`` skips the validation gate and the ``is_active`` flip —
+    the row is inserted as ``is_active=false, promotion_status='pending'`` and
+    promotion is left to an explicit operator decision (the knockout path)."""
     create_all_tables(conn)
     folds = _build_walk_forward_folds(conn)
-    logger.info("Walk-forward CV: %d folds for %s (%s, threshold=%.2f)", len(folds), label_col, horizon, threshold)
+    logger.info("Walk-forward CV: %d folds for %s (%s, threshold=%.2f, label_kind=%s, auto_promote=%s)",
+                len(folds), label_col, horizon, threshold, label_kind, auto_promote)
 
     results = []
     for i, fold in enumerate(folds):
@@ -226,9 +237,12 @@ def train_walk_forward(conn: duckdb.DuckDBPyConnection, label_col: str = "label_
     os.makedirs(MODELS_DIR, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     model_path = os.path.join(MODELS_DIR, f"crypto_{horizon}_{label_col}_{timestamp}.joblib")
-    model_id = f"crypto_{horizon}_{uuid.uuid4().hex[:8]}"
+    if label_kind == "knockout":
+        model_id = f"crypto_{horizon}_knockout_{uuid.uuid4().hex[:8]}"
+    else:
+        model_id = f"crypto_{horizon}_{uuid.uuid4().hex[:8]}"
 
-    joblib.dump({
+    bundle = {
         "model": final["model"],
         "platt": final["platt"],
         "medians": final["medians"],
@@ -236,7 +250,12 @@ def train_walk_forward(conn: duckdb.DuckDBPyConnection, label_col: str = "label_
         "threshold": threshold,
         "horizon": horizon,
         "label_col": label_col,
-    }, model_path)
+        "label_kind": label_kind,
+    }
+    if label_kind == "knockout":
+        bundle["knockout_tp"] = KNOCKOUT_TP
+        bundle["knockout_sl"] = KNOCKOUT_SL
+    joblib.dump(bundle, model_path)
 
     avg_auc = float(np.mean([r["auc_roc"] for r in valid_results]))
     avg_lift = float(np.mean([r["lift"] for r in valid_results]))
@@ -255,6 +274,8 @@ def train_walk_forward(conn: duckdb.DuckDBPyConnection, label_col: str = "label_
         avg_precision=avg_precision,
         avg_base=avg_base,
         model_path=model_path,
+        label_kind=label_kind,
+        auto_promote=auto_promote,
     )
 
     logger.info("Final model saved: %s (AUC=%.3f, Lift=%.2fx)", model_id, avg_auc, avg_lift)
@@ -273,18 +294,23 @@ def _persist_and_gate(
     avg_precision: float,
     avg_base: float,
     model_path: str,
+    label_kind: str = "legacy",
+    auto_promote: bool = True,
 ) -> None:
-    """INSERT the new model row as pending, run the validation gate, then
-    promote or block accordingly.
+    """INSERT the new model row as pending; when ``auto_promote`` is True, run
+    the validation gate and promote/block accordingly.
 
     Flow
     ----
-    1. INSERT with ``is_active=false, promotion_status='pending'``.
-    2. Call :func:`validate_promotion` (single-arm hit-rate gate).
-    3. If passed  → demote old active rows, flip new row to promoted.
-       If blocked → leave old rows as-is, mark new row as promotion_blocked,
-                    send a critical Telegram alert.
-    4. Always emit one structured JSON log line with event='retrain_validation'.
+    1. INSERT with ``is_active=false, promotion_status='pending', label_kind=…``.
+    2. If ``auto_promote`` is False (the knockout path): log and return — the
+       model stays inactive/pending; promotion is an explicit operator step.
+    3. Otherwise call :func:`validate_promotion` (single-arm hit-rate gate):
+       - If passed  → demote old active rows, flip new row to promoted.
+       - If blocked → leave old rows as-is, mark new row as promotion_blocked,
+                      send a critical Telegram alert.
+    4. Always emit one structured JSON log line with event='retrain_validation'
+       (or 'retrain_no_autopromote' on the no-gate path).
     """
     conn.execute(
         """
@@ -294,8 +320,8 @@ def _persist_and_gate(
             n_train_samples, n_test_samples, n_positive_train, n_positive_test,
             precision_at_threshold, recall_at_threshold, f1_score, auc_roc,
             base_rate, lift_over_base, feature_importance_json,
-            model_path, is_active, promotion_status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, false, 'pending')
+            model_path, is_active, promotion_status, label_kind
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, false, 'pending', ?)
         """,
         [
             model_id, horizon, threshold, TRAIN_START, last_fold["train_end"],
@@ -303,9 +329,20 @@ def _persist_and_gate(
             final["n_train"], final["n_test"], final["n_pos_train"], final["n_pos_test"],
             avg_precision, final["recall"], final["f1"], avg_auc,
             avg_base, avg_lift, json.dumps(final["feature_importance"]),
-            model_path,
+            model_path, label_kind,
         ],
     )
+
+    if not auto_promote:
+        logger.info(json.dumps({
+            "event": "retrain_no_autopromote",
+            "model_id": model_id, "horizon": horizon, "label_kind": label_kind,
+            "note": "model persisted is_active=false, promotion_status=pending; "
+                    "promotion is an explicit operator decision",
+        }))
+        logger.info("Model %s persisted (is_active=false, pending) — no auto-promote (label_kind=%s)",
+                    model_id, label_kind)
+        return
 
     result = validate_promotion(conn, model_id, horizon)
 

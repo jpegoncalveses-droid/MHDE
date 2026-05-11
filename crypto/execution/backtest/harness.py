@@ -219,22 +219,24 @@ def load_oos_predictions(
     date_start: Optional[date] = None,
     date_end: Optional[date] = None,
     apply_funding_floor: bool = True,
+    model_id_like: str = WALKFOLD_PATTERN,
 ) -> pd.DataFrame:
     """Read walk-forward OOS predictions for ``horizon``.
 
-    Filters strictly to backfill model_ids (``model_id LIKE
-    'crypto_%_walkfold_%'``) so the live active model rows are never
-    consumed by the harness. Also applies the
-    :data:`MIN_FUNDING_DATA_DATE` floor by default — predictions whose
-    ``prediction_date < 2025-04-05`` are excluded because the
-    ``crypto_funding_rates`` table does not cover those dates and
-    including them would bias the cost model. Set
+    Filters to walk-forward model_ids via ``model_id LIKE model_id_like``
+    (default ``'crypto_%_walkfold_%'``) so the live active model rows are
+    never consumed by the harness; pass a different pattern to replay an
+    alternative walk-forward set (e.g. ``'crypto_%_kowf_%'`` for the
+    knockout-label models). Also applies the :data:`MIN_FUNDING_DATA_DATE`
+    floor by default — predictions whose ``prediction_date < 2025-04-05``
+    are excluded because the ``crypto_funding_rates`` table does not cover
+    those dates and including them would bias the cost model. Set
     ``apply_funding_floor=False`` to bypass (testing only).
 
     Returned columns: ``coin, date, horizon, model_id, probability,
     actual_max_return, actual_max_drawdown, actual_hit, outcome_filled_at``.
     """
-    sql = f"""
+    sql = """
         SELECT symbol AS coin,
                prediction_date AS date,
                horizon,
@@ -245,10 +247,10 @@ def load_oos_predictions(
                actual_hit,
                outcome_filled_at
         FROM crypto_ml_predictions
-        WHERE model_id LIKE '{WALKFOLD_PATTERN}'
+        WHERE model_id LIKE ?
           AND horizon = ?
     """
-    params: list[Any] = [horizon]
+    params: list[Any] = [model_id_like, horizon]
     if apply_funding_floor:
         sql += " AND prediction_date >= ?"
         params.append(MIN_FUNDING_DATA_DATE)
@@ -268,17 +270,18 @@ def count_predictions_below_funding_floor(
     *,
     date_start: Optional[date] = None,
     date_end: Optional[date] = None,
+    model_id_like: str = WALKFOLD_PATTERN,
 ) -> int:
     """Count walkfold predictions in the user-supplied date window that
     would be excluded by :data:`MIN_FUNDING_DATA_DATE`. Used by
     :func:`run_backtest` for visibility logging."""
-    sql = f"""
+    sql = """
         SELECT COUNT(*) FROM crypto_ml_predictions
-        WHERE model_id LIKE '{WALKFOLD_PATTERN}'
+        WHERE model_id LIKE ?
           AND horizon = ?
           AND prediction_date < ?
     """
-    params: list[Any] = [horizon, MIN_FUNDING_DATA_DATE]
+    params: list[Any] = [model_id_like, horizon, MIN_FUNDING_DATA_DATE]
     if date_start is not None:
         sql += " AND prediction_date >= ?"
         params.append(date_start)
@@ -506,6 +509,7 @@ class RunState:
     date_start: Optional[date] = None
     date_end: Optional[date] = None
     apply_postparabolic_filter: bool = False
+    model_id_like: str = WALKFOLD_PATTERN
 
     open_positions: dict[str, Position] = field(default_factory=dict)
     closed_trades: list[Position] = field(default_factory=list)
@@ -540,6 +544,7 @@ def make_run_id(
     date_start: Optional[date] = None,
     date_end: Optional[date] = None,
     apply_postparabolic_filter: bool = False,
+    model_id_like: str = WALKFOLD_PATTERN,
 ) -> str:
     """Deterministic run_id from the run's configuration. Two invocations
     with identical configuration produce the same run_id; this enables
@@ -547,10 +552,11 @@ def make_run_id(
 
     Format: ``backtest_{horizon}_{policy}_{selection}_{8-char hash}``.
 
-    ``apply_postparabolic_filter`` is folded into the hash **only when
-    True**, so existing baseline run_ids (filter off) are unchanged; a
-    filter-on run gets a distinct id, which lets paired A/B runs of the
-    same config coexist.
+    ``apply_postparabolic_filter`` and ``model_id_like`` are folded into the
+    hash **only when non-default**, so existing baseline run_ids are unchanged;
+    a filter-on run, or a run over an alternative walk-forward set (e.g. the
+    knockout-label models), gets a distinct id so paired A/B runs of the same
+    config coexist.
 
     >>> make_run_id(horizon="5d", exit_policy_id="A", selection_rule="top_n",
     ...              selection_params={"n": 6})
@@ -567,6 +573,8 @@ def make_run_id(
     }
     if apply_postparabolic_filter:
         key_dict["apply_postparabolic_filter"] = True
+    if model_id_like != WALKFOLD_PATTERN:
+        key_dict["model_id_like"] = model_id_like
     key = json.dumps(key_dict, sort_keys=True, default=str)
     digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:8]
     return (
@@ -754,6 +762,7 @@ def _run_lifecycle(
     preds = load_oos_predictions(
         conn, horizon,
         date_start=state.date_start, date_end=state.date_end,
+        model_id_like=state.model_id_like,
     )
     state.n_predictions_seen = len(preds)
     if preds.empty:
@@ -1061,6 +1070,7 @@ def run_backtest(
     date_start: Optional[date] = None,
     date_end: Optional[date] = None,
     apply_postparabolic_filter: bool = False,
+    model_id_like: str = WALKFOLD_PATTERN,
     dry_run: bool = False,
     force: bool = False,
 ) -> RunState:
@@ -1105,15 +1115,18 @@ def run_backtest(
         date_start=date_start,
         date_end=date_end,
         apply_postparabolic_filter=apply_postparabolic_filter,
+        model_id_like=model_id_like,
     )
     parameters: dict[str, Any] = {
         "selection_params": selection_params,
         "policy_params": policy_params,
     }
     if apply_postparabolic_filter:
-        # Only stamped when True so a filter-off run's parameters JSON is
-        # byte-identical to the pre-toggle baseline.
+        # Only stamped when non-default so a baseline run's parameters JSON is
+        # byte-identical to the pre-toggle / pre-knockout baseline.
         parameters["apply_postparabolic_filter"] = True
+    if model_id_like != WALKFOLD_PATTERN:
+        parameters["model_id_like"] = model_id_like
     state = RunState(
         run_id=run_id,
         horizon=horizon,
@@ -1123,10 +1136,12 @@ def run_backtest(
         date_start=date_start,
         date_end=date_end,
         apply_postparabolic_filter=apply_postparabolic_filter,
+        model_id_like=model_id_like,
     )
 
     n_below_floor = count_predictions_below_funding_floor(
         conn, horizon, date_start=date_start, date_end=date_end,
+        model_id_like=model_id_like,
     )
     if n_below_floor > 0:
         logger.info(

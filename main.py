@@ -1792,18 +1792,30 @@ def crypto_hypothesis_tests():
 
 
 @crypto.command("train")
-@click.option("--label", default="label_10d_10pct", help="Label column to train on.")
-@click.option("--horizon", default="10d", help="Prediction horizon.")
-@click.option("--threshold", default=0.10, type=float, help="Target threshold.")
-def crypto_train_cmd(label, horizon, threshold):
-    """Train crypto ML model with walk-forward CV."""
+@click.option("--label", default="label_10d_10pct", help="Label column (legacy kind only).")
+@click.option("--horizon", default="10d", help="Prediction horizon (legacy kind only).")
+@click.option("--threshold", default=0.10, type=float, help="Target threshold (legacy kind only).")
+@click.option("--label-kind", "label_kind", type=click.Choice(["legacy", "knockout"]), default="legacy",
+              help="'knockout' trains 5d AND 10d models on label_Nd_knockout; the new rows are "
+                   "is_active=false and are NOT auto-promoted (operator decides).")
+def crypto_train_cmd(label, horizon, threshold, label_kind):
+    """Train crypto ML model(s) with walk-forward CV."""
     from crypto.ml.train import train_walk_forward
     from crypto.ml.evaluate import print_walk_forward_results
 
     cfg, conn = _engine_setup()
     try:
-        results = train_walk_forward(conn, label_col=label, horizon=horizon, threshold=threshold)
-        print_walk_forward_results(results, label, horizon)
+        if label_kind == "knockout":
+            from crypto.config import KNOCKOUT_TP
+            for hz in ("5d", "10d"):
+                lc = f"label_{hz}_knockout"
+                click.echo(f"=== knockout training: horizon={hz}, label_col={lc} (is_active stays false, no auto-promote) ===")
+                results = train_walk_forward(conn, label_col=lc, horizon=hz, threshold=KNOCKOUT_TP,
+                                             label_kind="knockout", auto_promote=False)
+                print_walk_forward_results(results, lc, hz)
+        else:
+            results = train_walk_forward(conn, label_col=label, horizon=horizon, threshold=threshold)
+            print_walk_forward_results(results, label, horizon)
     finally:
         conn.close()
 
