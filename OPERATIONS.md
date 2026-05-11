@@ -390,6 +390,23 @@ systemctl --user restart mhde-streamlit-relay
 sudo docker exec homeboard-nginx-1 nginx -s reload  # last resort
 ```
 
+### Paper Trading dashboard tab
+
+The dashboard's "Paper Trading" tab (Gap 3) reads the crypto-trading-engine
+DuckDB **read-only** via `CRYPTO_ENGINE_DB_PATH` (default
+`/home/jpcg/crypto-trading-engine/data/trading_engine.duckdb`) — see ADR-020.
+The `mhde-streamlit.service` unit's `Environment=` must include
+`CRYPTO_ENGINE_DB_PATH=...` if the engine repo isn't at the default path; if
+the file is unreadable the tab shows a "engine database not available" warning
+and the rest of the dashboard is unaffected. It surfaces, not hides, the
+known engine-data gaps: closed-position `exit_price` / `realized_pnl` show
+**"uncomputable (KI-136)"** (the engine doesn't record market-exit fill
+prices), and there's no live-mark / unrealised-P&L column (`price_snapshots`
+unpopulated — PRICE-SNAPSHOTS-001). The drift-monitor banner re-runs
+`monitoring/paper_trading_drift.py`'s `run()` (read-only, no Telegram), cached
+60 s. Smoke-test the tab's queries with the dashboard-query smoke command (it
+now also exercises the four `get_paper_*` functions against the engine DB).
+
 ---
 
 ## Deploy procedures
