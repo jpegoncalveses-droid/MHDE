@@ -6,6 +6,70 @@ are at the top.
 
 ---
 
+## 2026-05-11 — Knockout (triple-barrier) crypto label — phase 1 (label + backfill)
+
+**Branch:** `feat-crypto-knockout-label` (committed + pushed; **STOPPED for
+operator review before phase 2 (training)** — diff only, no PR).
+
+**Trigger.** Root-cause fix for the SKYAI false-positive class — the legacy
+`label_Nd_10pct` (close-based, +10% "tagged at any point") is direction-agnostic
+and volatility-rewarding. Spec `crypto/ml/KNOCKOUT_LABEL_SPEC.md` written +
+operator-approved in the prior session (TP=+0.10, SL=−0.05, horizons 5d/10d,
+neither→loss, same-bar→SL-first, keep both labels / additive schema).
+
+**What shipped (phase 1 — no train.py / predict.py / model / dashboard / validation_gate change):**
+- `crypto/config.py` — `KNOCKOUT_TP = 0.10`, `KNOCKOUT_SL = -0.05` (+ docstring).
+- `crypto/ml/knockout_label.py` (new) — pure `knockout_classify(forward_highs,
+  forward_lows, entry_close, tp, sl, horizon, sl_first=True) -> (outcome, resolve_day)`;
+  `outcome ∈ {'tp','sl','neither'}`, `resolve_day` 1-indexed (None for 'neither');
+  same-bar both-touch → 'sl' when `sl_first`; NaN/None bars treated as "no touch";
+  non-positive `entry_close` / empty window → `('neither', None)`. No DB I/O.
+- `crypto/schema.py` — six new `crypto_ml_labels` columns (`label_{5d,10d}_knockout
+  BOOLEAN`, `knockout_outcome_{5d,10d} VARCHAR`, `knockout_resolve_day_{5d,10d}
+  INTEGER`) in the CREATE + idempotent `_CRYPTO_ML_LABELS_MIGRATIONS`
+  (`ADD COLUMN IF NOT EXISTS`) run by `create_all_tables`.
+- `crypto/ml/labels.py` — `compute_labels` `INSERT` changed to an explicit
+  column list (so the new columns don't break it) + a new `_compute_knockout_labels`
+  forward-walk pass (loads `crypto_prices_daily` per symbol, walks bar by bar,
+  bulk-`UPDATE`s the six columns from a registered DataFrame; the close-based
+  INSERT can't express first-touch). `label_Nd_knockout = (outcome == 'tp')`.
+
+**Backfill** (`crypto backfill-labels`, full window, 27,483 rows; sub-second):
+`label_5d_knockout` base rate **23.1%** (`tp` 23.1% / `sl` 60.0% / `neither` 16.9%);
+`label_10d_knockout` base rate **27.8%** (`tp` 27.8% / `sl` 65.5% / `neither` 6.7%)
+— vs the legacy `label_10d_10pct` 35.8% (the gap is the purged volatility-loving
+false-wins). Median resolve day: `tp` ≈ 2, `sl` ≈ 1–2. Consistency checks pass
+(`resolve_day` NULL ⇔ outcome='neither'; `label` ⇔ outcome=='tp'). Legacy
+columns untouched (0 NULLs). 5 random spot-checks recompute identically from raw
+OHLCV. **SKYAI case confirmed:** entry at the 2026-05-10 close (0.54185) → the
+2026-05-11 bar (H 0.55680 / L 0.38260) pierces the −5% barrier (0.51476) on day 1
+before the high reaches the +10% barrier (0.59604) → `outcome='sl'`, `resolve_day=1`,
+both horizons. (No `crypto_ml_labels` row for SKYAI 2026-05-10 — no forward bar in
+the DB yet; verified via the Binance 05-11 bar.)
+
+**Tests.** `tests/crypto/test_knockout_label.py` — 20 (TP-first / SL-first /
+later-bar / neither / exact-edge TP+SL inclusive / same-bar→sl / same-bar→tp option /
+gap-up-through-TP / gap-down-through-SL / partial window ± touch / empty window /
+non-positive entry / NaN bar skipped / horizon caps lookahead / negative-SL barrier
+semantics / config-constant signs / the SKYAI day-1-loss case). `tests/crypto/test_labels.py`
+— 6 new integration tests (TP win, SL loss, same-bar SL-first, neither→loss, 5d/10d
+horizon difference, legacy columns untouched). Full crypto suite: 437 passed, 1
+skipped. Pre-commit: OK. TDD throughout.
+
+**Docs.** ADR-023 (DECISIONS.md), `crypto_ml_labels` knockout-columns section in
+DATABASE_SCHEMA.md, this entry. **Phase 2 (separate task):** train a knockout
+model (`train.py --label-kind`), `fill_outcomes` knockout-aware `actual_hit`,
+`validation_gate` same-label comparison, dashboard caption, then the side-by-side
+validation against the spec §5 promotion criteria.
+
+**Note** — `tests/regression/test_systemd_units.py::test_repo_vs_deployed_unit_parity`
+fails on `master` (and therefore on this branch) — it's the still-outstanding
+deploy step from the data-quality-guard merge (the updated `mhde-crypto-predict.service`
+hasn't been copied to `/etc/systemd/system/` + `daemon-reload`ed). Not introduced
+by this branch; flagged so it isn't mistaken for a regression here.
+
+---
+
 ## 2026-05-11 — Data-quality guard / volume-cliff detector
 
 **Branch:** `feat-crypto-data-quality-guard` (committed + pushed;
