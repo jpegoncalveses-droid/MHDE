@@ -6,6 +6,64 @@ are at the top.
 
 ---
 
+## 2026-05-11 — Crypto OHLCV ingestion fix: partial-day candles
+
+**Branch:** `fix-crypto-ohlcv-partial-candle-ingestion` (committed + pushed
+to origin; **STOPPED for operator review/merge** — diff only, no PR opened).
+
+**Trigger.** Diagnostic chain (SKYAIUSDT "model keeps buying during the
+crash"): the model was being fed garbage prices. Root cause = ingestion,
+not the model. The daily `mhde-crypto-predict` timer fires 00:30 UTC;
+`crypto/ingestion/backfill_ohlcv.py` fetched klines through `date.today()`
+(the in-progress UTC day → ~30-min partial candle), inserted with
+`ON CONFLICT DO NOTHING`, and `fetch_start = max(trade_date)+1` never
+revisited. So from 2026-05-05/07 *every* symbol in `crypto_prices_daily`
+had partial-day OHLCV (verified against the Binance futures public API:
+SKYAIUSDT real 05-11 close $0.42, DB had $0.546; 5 other symbols affected
+identically; perp `status=TRADING`, not delisted).
+
+**What shipped (defense in depth, all three on `backfill_ohlcv`):**
+1. `end_date` defaults to `date.today() - INGESTION_LAG_DAYS` (=1) — only
+   fully-closed UTC days are requested.
+2. `INSERT … ON CONFLICT (symbol, trade_date) DO UPDATE SET` all OHLCV
+   columns — re-writes self-correct.
+3. per-symbol `fetch_start = max(trade_date) - (REFETCH_WINDOW_DAYS-1)`
+   (=3-day trailing window) — idempotent + self-healing with the UPSERT.
+New constants `INGESTION_LAG_DAYS` / `REFETCH_WINDOW_DAYS` in
+`crypto/config.py`.
+
+**Other ingestion paths audited (item 4):** `backfill_funding.py` — was
+`DO NOTHING` (no `max+1`/`today()` parts; funding events are final on
+publish) → switched to `DO UPDATE`, kept `end_date=today()` so same-day
+settled funding is still ingested. `backfill_oi.py` — was `DO NOTHING`;
+already re-fetches a rolling 30-day window (`limit=30`) but the newest
+point is the in-progress day, so it froze the same way → switched to
+`DO UPDATE`. `universe_builder.py` — no bug (DELETE + reinsert from 24hr
+tickers, already `DO UPDATE`); unchanged.
+
+**Tests.** `tests/crypto/test_backfill_ohlcv.py` — 6 new (the 4 specified:
+never requests today's UTC date; trailing re-fetch window spans
+`REFETCH_WINDOW_DAYS`; UPSERT overwrites on re-run; synthetic frozen
+partial candle self-heals — plus 2 audited-path: funding & OI UPSERT
+overwrite). Full suite: 1391 passed, 1 skipped, **1 pre-existing
+unrelated failure** (`tests/regression/test_dashboard_structure.py::
+test_no_module_level_connection` — KI-105, `dashboard/app.py:931`, also
+fails on master). Pre-commit (`scripts/pre-commit.sh`): OK. Files:
+`crypto/config.py` (+14), `crypto/ingestion/backfill_ohlcv.py` (+30/-4),
+`backfill_funding.py` (+7/-1), `backfill_oi.py` (+7/-1),
+`tests/crypto/test_backfill_ohlcv.py` (+183).
+
+**Explicitly NOT done (out of scope):** repairing the existing bad rows in
+`crypto_prices_daily` (separate operator task — `DELETE … WHERE trade_date
+>= '2026-05-05'` then `crypto backfill-prices`, then re-run labels →
+features → predict for that window; today's SKYAI paper entry was on bad
+data, real price ~$0.42). Nothing downstream of ingestion (features,
+labels, models, predictions, dashboard, systemd units) was touched.
+Also worth a follow-up: add a data-quality check that flags implausible
+day-over-day volume/range collapses (would have caught this on 05-07).
+
+---
+
 ## 2026-05-11 — Gap 3: paper-trading dashboard tab
 
 **Branch:** `gap3-paper-trading-dashboard-tab` (committed; **STOPPED for
