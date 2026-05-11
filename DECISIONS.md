@@ -1012,3 +1012,63 @@ root-cause model fix (a direction-aware / risk-adjusted label) remains
 the open follow-up — tracked as KI-137. If graceful degradation is
 ever wanted instead of hard exclusion, the right lever is a cap on
 concurrent post-parabolic exposure, not a per-coin haircut.
+
+---
+
+## ADR-022 — OHLCV plausibility / volume-cliff guard in the daily crypto pipeline
+
+**Date:** 2026-05-11
+**Session:** data-quality guard (after the 2026-05-07 partial-candle incident + repair)
+**Status:** Active
+
+**Context.** On 2026-05-07 the OHLCV ingestion started writing
+~30-minute *partial* candles for all 50 symbols (the bug fixed in
+`backfill_ohlcv.py` — `INGESTION_LAG_DAYS` / `REFETCH_WINDOW_DAYS`).
+The existing monitors (`monitoring/data_quality.py`, `pipelines/freshness.py`)
+only check row *presence* and `MAX(trade_date)` recency — all 50 rows
+were present and the date was current, so nothing fired; the corrupt
+data flowed into features → predictions → the engine export for four
+days. We need a check on row *plausibility*, run inline so it can
+*block* propagation, not just a passive after-the-fact monitor.
+
+**Decision.** New pure module `pipelines/data_quality_guard.py`:
+`check_ohlcv_plausibility(conn, target_date) -> QualityReport`. For each
+symbol with a row on `target_date` and a full 20-day prior window, flag
+it if today's **volume** or **trade count** is below 10 % of its
+trailing-20-day median, or its **(high − low) range** is below 20 % of
+the median range (each check independent; constants in
+`crypto/config.py`). The day is **systemic** iff ≥ 10 symbols are
+evaluable *and* more than 30 % of them are flagged. Pure: reads only,
+writes nothing, sends nothing, never exits.
+
+A new CLI command `crypto check-data-quality` wraps it: persists the
+flagged rows (UPSERT) into the new `crypto_data_quality_reports` table,
+sends a Telegram alert (CRITICAL if systemic, WARN if per-symbol-only),
+and on a systemic flag **exits non-zero**. It is inserted as the second
+`ExecStart=` in `mhde-crypto-predict.service` — right after
+`backfill-prices` — so (`Type=oneshot`) a systemic anomaly aborts the
+unit and every step below it (backfill-funding/oi/labels/features/predict).
+Per-symbol-only anomalies WARN and do not block. Escape hatch:
+`MHDE_DATA_QUALITY_GUARD_OVERRIDE=1` (unit env var) → never block.
+
+**Threshold rationale.** Tuned on a 90-day post-repair clean-data scan
+(4 367 symbol-days, 50 symbols): the clean 1st-percentile volume ratio
+is ~0.22, so a 0.10 cliff threshold sits well below organic quiet days
+(per-symbol WARN rate ≈ 0.55 %, ~1 every few days for *some* coin —
+informative, not spammy). **Zero systemic false positives at every grid
+combo** (0.05–0.20 volume × 0.10–0.30 range): the clean-day maximum is
+~10 % of the universe flagged, far under the 30 % systemic threshold. A
+reconstruction of the 2026-05-07 corruption (real Binance volumes,
+~2.5 %-volume partial candles vs the clean 20-day baseline) flags
+≈64–96 % of the universe each of 05-07…05-11 at *every* combo →
+systemic fires on day one with a large margin. So the chosen pair
+(0.10 / 0.20) catches the bug and is quiet on clean data; 0.05 / 0.10 is
+a near-silent conservative alternative.
+
+**Consequences.** A genuine multi-symbol data-source incident (e.g. an
+exchange outage affecting > 30 % of the perps for part of a day) will
+also block the pipeline that day — which is correct (don't compute
+predictions on bad data). Single-symbol thin-trading days produce WARNs
+only. Thresholds are five constants in `crypto/config.py`. A dashboard
+view of `crypto_data_quality_reports` is a deferred phase-2 item. The
+deployed unit needs `systemctl daemon-reload` after this merge.

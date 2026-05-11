@@ -6,6 +6,144 @@ are at the top.
 
 ---
 
+## 2026-05-11 — Data-quality guard / volume-cliff detector
+
+**Branch:** `feat-crypto-data-quality-guard` (committed + pushed;
+**STOPPED for operator review/merge** — diff only, no PR).
+
+**Trigger.** The safeguard that would have caught the 2026-05-07
+partial-candle bug immediately — existing monitors only check row
+*presence*, not *plausibility*. Noted as a follow-up in the OHLCV-fix
+session entry below.
+
+**Investigation (90-day post-repair clean-data scan, 4 367 symbol-days):**
+clean 1st-percentile volume ratio ≈ 0.22, so 0.10 is safely below
+organic quiet days; grid-swept volume × range thresholds (0.05/0.10/0.20
+× 0.10/0.20/0.30) — **zero systemic false positives at every combo**
+(clean-day max ≈ 10 % of the universe flagged; systemic threshold 30 %).
+Reconstructed the 05-07…05-11 corruption (real Binance volumes + a
+~2.5 %-volume partial-candle simulation vs the clean 20-day baseline):
+flags ≈64–96 % of the universe **every day** at **every** combo →
+systemic fires on day one. Chosen pair: **volume/trade cliff 0.10,
+range collapse 0.20** (per-symbol WARN rate ≈ 0.55 %); 0.05/0.10 noted
+as a near-silent conservative alternative.
+
+**What shipped (no ingestion / model / feature change):**
+- `crypto/config.py` — `OHLCV_PLAUSIBILITY_WINDOW_DAYS = 20`,
+  `VOLUME_CLIFF_RATIO = 0.10`, `RANGE_COLLAPSE_RATIO = 0.20`,
+  `TRADE_COUNT_CLIFF_RATIO = 0.10`, `SYSTEMIC_FLAG_RATIO = 0.30`,
+  `SYSTEMIC_MIN_SYMBOLS = 10`.
+- `pipelines/data_quality_guard.py` (new) — pure
+  `check_ohlcv_plausibility(conn, target_date) -> QualityReport`
+  (per-symbol `volume_cliff` / `range_collapse` / `trade_count_cliff`
+  vs the trailing-20-day median; systemic iff ≥ 10 evaluable symbols and
+  > 30 % flagged; warmup symbols fail open; empty date → clean `ok`),
+  plus `persist_report(conn, report)` (UPSERT to the new table; clean
+  reports write nothing). No DB writes / alerts / exits in the pure path.
+- `crypto/schema.py` — new `crypto_data_quality_reports` table
+  `(date, symbol, check_name, expected, observed, flagged, severity,
+  created_at)`, PK `(date, symbol, check_name)`, in `ALL_SCHEMAS`.
+- `main.py` — new `crypto check-data-quality [--date]` command: runs the
+  check, persists, sends a Telegram alert (CRITICAL if systemic, WARN if
+  per-symbol-only), and **exits non-zero on a systemic flag** unless
+  `MHDE_DATA_QUALITY_GUARD_OVERRIDE` is set.
+- `systemd/mhde-crypto-predict.service` — new `ExecStart=` for
+  `check-data-quality` inserted right after `backfill-prices`; with
+  `Type=oneshot` a systemic anomaly aborts the unit and every step below
+  (funding/oi/labels/features/predict). **Deployed unit needs
+  `systemctl daemon-reload` after merge.**
+
+**Demonstrated catch:** integration test
+`test_simulated_partial_candle_corruption_triggers_systemic` (50 symbols,
+synthetic ~2.5 %-volume partial day → 50/50 flagged, systemic) + the
+investigation reconstruction above. Live smoke: `crypto check-data-quality`
+on the current (clean) DB → `evaluated=50 flagged=0 severity=ok rows_written=0`,
+exit 0.
+
+**Tests.** `tests/crypto/test_data_quality_guard.py` — 16 (per-symbol
+volume / range / trade-count flags fire on synthetic bad data; do NOT
+fire on noisy-but-normal data or just-above-threshold; systemic fires
+when ratio exceeded; does NOT fire on an isolated single-symbol issue or
+when too few symbols are evaluable; warmup symbols skipped; empty
+universe / no-row-on-date handled gracefully; `severity` mapping;
+`persist_report` writes flagged + systemic rows, idempotent UPSERT,
+writes nothing for a clean report; the simulated-corruption integration
+test). Full crypto suite: 381 passed, 1 skipped. Pre-commit: OK. TDD
+throughout.
+
+**Docs.** ADR-022 (DECISIONS.md), `crypto_data_quality_reports` in
+DATABASE_SCHEMA.md, this entry. **Scoped out (phase 2):** no dashboard
+view of `crypto_data_quality_reports`.
+
+---
+
+## 2026-05-11 — Backtest the post-parabolic filter (toggle + paired runs)
+
+**Branch:** `feat-backtest-postparabolic-toggle` (committed + pushed;
+**STOPPED for operator review/merge** — diff only, no PR). Separate from
+`feat-crypto-postparabolic-filter` (the already-merged filter itself).
+
+**Trigger.** Validate the post-parabolic exclusion filter (KI-137 /
+ADR-021) at portfolio level before relying on it in production.
+
+**What shipped (harness toggle only — no production-pipeline change):**
+`crypto/execution/backtest/harness.py` —
+- new `load_dd90_ret60_at_entry(conn, keys)` loader (mirrors
+  `load_atr_at_entry`; reads `drawdown_from_90d_high` / `return_60d` from
+  `crypto_ml_features`; NULL → absent key → fail-open).
+- `make_run_id(...)` gains `apply_postparabolic_filter: bool = False`,
+  folded into the hash **only when True** (baseline run_ids unchanged; a
+  filter-on run gets a distinct id so paired A/B runs coexist).
+- `RunState` gains `apply_postparabolic_filter` + `n_excluded_by_postparabolic`.
+- `_run_lifecycle`: when the flag is set, drop post-parabolic candidates
+  from `preds` (via `should_exclude`) *before* `_apply_selection` —
+  exactly as the live export does (selection re-ranks the survivors).
+  `n_predictions_seen` still reflects the pre-filter universe.
+- `run_backtest(...)` gains the `apply_postparabolic_filter` kwarg
+  (threaded to `make_run_id` / `RunState` / logged; stamped into the
+  `parameters` JSON only when True so a filter-off run is byte-identical
+  to the pre-toggle baseline).
+Tests: `tests/crypto/test_backtest_postparabolic_toggle.py` — 4 (run_id
+distinctness when on; `load_dd90_ret60_at_entry`; filter-off keeps a
+post-parabolic candidate; filter-on drops it and `n_excluded_by_postparabolic`
+increments while `n_predictions_seen` is unchanged). Full crypto suite:
+365 passed, 1 skipped. Pre-commit: OK.
+
+**Paired backtests run** (write to `crypto_backtest_*` only): Phase-1B-winner
+config — Policy D, top_n n=6, trail_pct=0.3 — for 10d and 5d, filter
+OFF vs ON, over the full funding-floored window (2025-04-05 → 2026-05-07).
+Note Run A 10d re-runs the canonical `backtest_10d_D_top_n_a02e15a0`
+run_id (`force=True`); its metrics shifted slightly (Sharpe 6.32→6.25,
+cumRet 51.2%→52.2%) vs the pre-repair stored row because the recent
+OHLCV repair corrected ~6 days of hold-window prices — the new numbers
+are post-repair-correct; flag for the operator if the pre-repair row
+needs preserving / the full Phase 1B grid wants a post-repair re-run.
+
+**Result.** Filter fires on ~105 / ~16.7k walkfold predictions per
+horizon (~0.6%), clustered in frothy months (Aug/Oct/Nov 2025, Jan 2026)
+and a handful of pump-and-crash coins (MUSDT, FHEUSDT, ZEC, PENGU, DASH;
+SKYAI itself only 2). Portfolio impact ≈ zero: 10d Sharpe 6.25→6.36,
+maxDD −17.01→−16.98%, cumRet 52.23→52.48% (marginal improvement); 5d
+Sharpe 6.10→5.82, maxDD −9.13→−9.29%, cumRet 47.54→51.46%, PF 2.56→2.75
+(one big 3.4× winner survives in B and lifts mean/cumRet while denting
+Sharpe — a wash). Trade *count* barely moves (selection backfills the
+freed slot — 10d 932→941, 5d 1054→1053). The excluded set has ~2× the
+*label* max-drawdown (10d −16.6% vs −8.7%) **and** a higher *label* hit
+rate (10d 56.6% vs 35.2%) — i.e. by hit-rate the filter removes
+"winners", but Policy D's trailing stop already truncates the drawdown
+those trades would have caused, so the realized-P&L effect nets to zero.
+
+**Verdict: KEEP the current thresholds (−0.20 / +2.0).** It costs
+nothing at the portfolio level (within noise on both horizons) and
+remains a cheap tail-risk / operator-trust guard against the SKYAI class
+of trade. Widening to −0.15/+1.5 (spec-time scan: ~1.9% excluded, still
+the high-DD tail) is an optional later move if more aggressiveness is
+wanted; no evidence it's needed. No code change recommended beyond the
+already-merged filter; the toggle stays in the harness for future
+re-validation.
+
+---
+
 ## 2026-05-11 — Crypto post-parabolic exclusion filter
 
 **Branch:** `feat-crypto-postparabolic-filter` (committed + pushed to

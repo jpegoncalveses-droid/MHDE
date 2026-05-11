@@ -202,6 +202,26 @@ PK: `(export_date, symbol, model_id)`. DDL in `crypto/schema.py:SCHEMA_CRYPTO_SI
 **Reader:** none yet (dashboard expander is a deferred phase-2 item).
 See ADR-021.
 
+### `crypto_data_quality_reports`
+
+Exceptions log written by the OHLCV plausibility / volume-cliff guard
+(`pipelines/data_quality_guard.py`, via `crypto check-data-quality`).
+One row per flagged `(date, symbol, check_name)`; UPSERTed (a re-run for
+the same date is idempotent); clean days write nothing. `check_name` is
+`'volume_cliff'` / `'range_collapse'` / `'trade_count_cliff'` (severity
+`'warn'`, `symbol` = the coin, `expected` = trailing-20-day median,
+`observed` = today's value), or `'systemic_corruption'` (severity
+`'critical'`, `symbol` = `'__systemic__'`, `expected` =
+`SYSTEMIC_FLAG_RATIO`, `observed` = flagged fraction of the evaluable
+universe). A systemic row means the daily pipeline was blocked that day.
+
+PK: `(date, symbol, check_name)`. DDL in `crypto/schema.py:SCHEMA_CRYPTO_DATA_QUALITY_REPORTS`.
+
+**Writer:** `pipelines/data_quality_guard.py:persist_report` (called by the
+`crypto check-data-quality` CLI command).
+**Reader:** none yet (dashboard view is a deferred phase-2 item).
+See ADR-022.
+
 ---
 
 ## FX ML — `fx_*`

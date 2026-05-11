@@ -1648,6 +1648,84 @@ def crypto_backfill_prices():
         conn.close()
 
 
+@crypto.command("check-data-quality")
+@click.option("--date", "date_str", default=None,
+              help="Date to check (YYYY-MM-DD). Default: latest in crypto_prices_daily.")
+def crypto_check_data_quality(date_str):
+    """OHLCV plausibility / volume-cliff guard.
+
+    Runs in the daily pipeline between backfill-prices and the downstream
+    stages. On a *systemic* anomaly (more than SYSTEMIC_FLAG_RATIO of the
+    evaluable universe shows a volume/range/trade cliff vs its 20-day
+    median — the 2026-05-07 partial-candle shape) it fires a CRITICAL
+    Telegram alert and exits non-zero, which blocks the rest of the
+    systemd ExecStart chain (backfill-funding/oi/labels/features/predict).
+    Per-symbol-only anomalies fire a WARN alert and do NOT block. Escape
+    hatch: set MHDE_DATA_QUALITY_GUARD_OVERRIDE=1 to never block.
+    """
+    import os
+    import sys as _sys
+    from datetime import date as _date
+    from crypto.config import SYSTEMIC_FLAG_RATIO
+    from crypto.schema import create_all_tables
+    from pipelines.data_quality_guard import check_ohlcv_plausibility, persist_report
+    from monitoring.alert import MonitorResult, send_alert
+
+    cfg, conn = _engine_setup()
+    try:
+        create_all_tables(conn)
+        if date_str:
+            target = _date.fromisoformat(date_str)
+        else:
+            row = conn.execute("SELECT MAX(trade_date) FROM crypto_prices_daily").fetchone()
+            target = row[0] if row and row[0] else _date.today()
+
+        report = check_ohlcv_plausibility(conn, target)
+        n_written = persist_report(conn, report)
+        click.echo(
+            f"data-quality {target}: on_date={report.n_symbols_on_date} "
+            f"evaluated={report.n_evaluated} flagged={report.n_flagged} "
+            f"systemic_ratio={report.systemic_ratio:.2f} severity={report.severity} "
+            f"rows_written={n_written}"
+        )
+
+        if report.severity != "ok":
+            flagged_syms = sorted({f.symbol for f in report.per_symbol_flags})
+            body = [
+                f"date={target}  evaluated={report.n_evaluated}  flagged={report.n_flagged}  "
+                f"systemic_ratio={report.systemic_ratio:.0%} (threshold {SYSTEMIC_FLAG_RATIO:.0%})",
+            ]
+            if flagged_syms:
+                body.append("flagged: " + ", ".join(flagged_syms[:15])
+                            + (f" … (+{len(flagged_syms) - 15} more)" if len(flagged_syms) > 15 else ""))
+            if report.is_systemic:
+                body.append("→ BLOCKING downstream stages (backfill-funding/oi/labels/features/predict). "
+                            "Likely an ingestion/data-source issue; the next backfill-prices run self-heals "
+                            "via the re-fetch window. To override: MHDE_DATA_QUALITY_GUARD_OVERRIDE=1.")
+            send_alert(MonitorResult(
+                monitor="crypto_data_quality_guard",
+                status="fail" if report.is_systemic else "warn",
+                severity="critical" if report.is_systemic else "warn",
+                title=("Systemic OHLCV corruption — daily pipeline blocked"
+                       if report.is_systemic
+                       else f"OHLCV plausibility: {report.n_flagged} symbol(s) flagged"),
+                body="\n".join(body),
+                metrics={"date": str(target), "n_evaluated": report.n_evaluated,
+                         "n_flagged": report.n_flagged,
+                         "systemic_ratio": round(report.systemic_ratio, 3)},
+            ))
+
+        override = os.environ.get("MHDE_DATA_QUALITY_GUARD_OVERRIDE", "").lower() in {"1", "true", "yes"}
+        if report.is_systemic and not override:
+            click.echo("SYSTEMIC OHLCV anomaly — exiting non-zero to block downstream pipeline "
+                       "stages (set MHDE_DATA_QUALITY_GUARD_OVERRIDE=1 to bypass).", err=True)
+            _sys.exit(2)
+        if report.is_systemic and override:
+            click.echo("SYSTEMIC OHLCV anomaly — MHDE_DATA_QUALITY_GUARD_OVERRIDE set; NOT blocking.", err=True)
+    finally:
+        conn.close()
+
+
 @crypto.command("backfill-funding")
 def crypto_backfill_funding():
     """Backfill funding rate history from Binance futures."""
