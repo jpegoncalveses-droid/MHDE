@@ -10,6 +10,20 @@ BINANCE_SPOT_BASE = "https://api.binance.com"
 
 REQUEST_DELAY_S = 0.1
 
+# OHLCV ingestion safety window.
+#
+# The daily ``mhde-crypto-predict`` timer fires at 00:30 UTC. If ingestion
+# fetched klines through ``date.today()`` it would store a ~30-minute *partial*
+# candle for the in-progress UTC day; combined with an INSERT that never
+# revisited an existing row, that partial candle was frozen forever (the
+# 2026-05-05/07 SKYAIUSDT incident). Defense in depth:
+#   * INGESTION_LAG_DAYS  — never request a candle for a day this recent; only
+#     ingest fully-closed UTC days (today - INGESTION_LAG_DAYS and older).
+#   * REFETCH_WINDOW_DAYS — every run re-fetches this many trailing completed
+#     days and UPSERTs them, so any stale/partial/late-corrected row self-heals.
+INGESTION_LAG_DAYS = 1
+REFETCH_WINDOW_DAYS = 3
+
 FEATURE_COLS = [
     "return_1d", "return_3d", "return_5d", "return_10d", "return_20d", "return_60d",
     "rsi_14d", "drawdown_from_90d_high", "price_vs_20d_ma", "price_vs_50d_ma",

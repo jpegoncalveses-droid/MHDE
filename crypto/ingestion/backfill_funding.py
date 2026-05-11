@@ -52,10 +52,16 @@ def backfill_funding(conn: duckdb.DuckDBPyConnection, symbols: list[str] | None 
             continue
 
         for row in rows:
+            # UPSERT (was DO NOTHING) so a re-fetched/late-corrected settlement
+            # overwrites in place. Funding events are final once published, so
+            # unlike OHLCV there is no in-progress "partial" row to guard against
+            # and ``end_date`` can stay at ``date.today()``.
             conn.execute("""
                 INSERT INTO crypto_funding_rates (symbol, funding_time, funding_rate, mark_price)
                 VALUES (?, ?, ?, ?)
-                ON CONFLICT (symbol, funding_time) DO NOTHING
+                ON CONFLICT (symbol, funding_time) DO UPDATE SET
+                    funding_rate = excluded.funding_rate,
+                    mark_price = excluded.mark_price
             """, [row["symbol"], row["funding_time"], row["funding_rate"], row["mark_price"]])
 
         total += len(rows)

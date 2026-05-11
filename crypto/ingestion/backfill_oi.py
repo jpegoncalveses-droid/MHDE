@@ -39,10 +39,16 @@ def backfill_open_interest(conn: duckdb.DuckDBPyConnection, symbols: list[str] |
             continue
 
         for row in rows:
+            # UPSERT (was DO NOTHING). ``openInterestHist`` already re-fetches a
+            # rolling 30-day window every run, but the most-recent point is the
+            # in-progress day; without the UPSERT that partial snapshot would be
+            # frozen the same way OHLCV candles were.
             conn.execute("""
                 INSERT INTO crypto_open_interest (symbol, trade_date, open_interest, open_interest_value)
                 VALUES (?, ?, ?, ?)
-                ON CONFLICT (symbol, trade_date) DO NOTHING
+                ON CONFLICT (symbol, trade_date) DO UPDATE SET
+                    open_interest = excluded.open_interest,
+                    open_interest_value = excluded.open_interest_value
             """, [row["symbol"], row["trade_date"], row["open_interest"], row["open_interest_value"]])
 
         total += len(rows)
