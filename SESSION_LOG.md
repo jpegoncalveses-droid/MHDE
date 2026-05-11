@@ -6,6 +6,73 @@ are at the top.
 
 ---
 
+## 2026-05-11 — Crypto post-parabolic exclusion filter
+
+**Branch:** `feat-crypto-postparabolic-filter` (committed + pushed to
+origin; **STOPPED for operator review/merge** — diff only, no PR).
+
+**Trigger.** Confirmed structural bias from the SKYAI diagnostic chain:
+the crypto model re-emits buy signals on coins immediately after a
+parabolic crash (SKYAI: calibrated prob 0.72–0.88 across the crash
+window, *on clean data*). Spec `crypto/ml/POSTPARABOLIC_FILTER_SPEC.md`
+written + approved in the prior session. Step 1 was investigation; this
+is Step 2 (implementation).
+
+**What shipped (option (b) — filter at the prediction-export step):**
+- `crypto/config.py` — `POSTPARABOLIC_DD90_THRESHOLD = -0.20`,
+  `POSTPARABOLIC_RET60_THRESHOLD = 2.0` (+ docstring).
+- `crypto/ml/postparabolic_filter.py` (new) — pure
+  `should_exclude(dd90, ret60) -> (bool, reason|None)`; excludes iff
+  **both** `dd90 < -0.20` and `ret60 > 2.0` (strict); fail-open on
+  None/NaN (logs DEBUG). No DB I/O, no imports from exports/dashboard.
+- `crypto/schema.py` — new `crypto_signal_exclusions` table
+  `(export_date, symbol, model_id, raw_probability, dd90, ret60, reason,
+  created_at)`, PK `(export_date, symbol, model_id)`, added to
+  `ALL_SCHEMAS`.
+- `crypto/exports/write_daily_predictions.py::build_predictions` —
+  after Platt calibration, before ranking: reads `dd90`/`ret60` from the
+  *raw* feature row (not the median-filled `X`, so warmup symbols fail
+  open), drops excluded coins, UPSERTs each into
+  `crypto_signal_exclusions`, `logger.warning`s each one; re-ranks the
+  survivors consecutively 1..N; an all-excluded day yields an empty
+  `predictions` list with a WARNING (no crash — the engine then skips
+  entry + alerts per INTERFACE.md §3.2 / §5.3). The
+  `predictions_*.json` schema is unchanged (excluded coins simply absent
+  + ranks renumbered). `crypto_ml_predictions` writes (`score_universe`)
+  are **untouched** — the raw signal is preserved.
+
+**Explicitly NOT done (phase-2 / out of scope):** no dashboard expander,
+no `excluded_postparabolic` field in the predictions JSON, no
+crypto-trading-engine changes, no change to `crypto_ml_predictions`.
+
+**Threshold rationale (60-day historical scan, in
+POSTPARABOLIC_FILTER_SPEC.md §3):** −0.20/+2.0 fires on 0.8% of
+predictions (21 symbol-dates / 6 coins), isolating the high-drawdown
+tail (excluded avg max-DD −25% vs retained −4%); on the daily top-6 it
+never removed more than 2 picks on any day. Hard exclusion (not a
+probability haircut) — it's a risk gate, not a probability adjustment.
+Same thresholds for 5d and 10d; the engine consumes 10d only today.
+
+**Tests.** `tests/crypto/test_postparabolic_filter.py` — 11 unit tests
+(both conditions / only dd90 / only ret60 / exact-edge strictness ×2 /
+just-inside / missing dd90 / missing ret60 / NaN inputs / negative
+ret60 / stable reason token). `tests/crypto/exports/test_write_daily_predictions.py`
+— 7 new integration tests (excluded symbol dropped; exclusion row
+written with right values; UPSERT idempotent on re-run; re-rank
+consecutive after exclusion; all-excluded → empty list, no crash;
+missing-feature → not excluded). Full suite: 392 passed, 1 skipped, **1
+pre-existing unrelated failure** (`tests/regression/test_dashboard_structure.py::test_no_module_level_connection`
+— KI-105, `dashboard/app.py:931`, also fails on master). Pre-commit
+(`scripts/pre-commit.sh`): OK. TDD throughout (tests written first;
+RED on `ImportError` for the constants → behavior RED → GREEN).
+
+**Docs.** ADR-021 (DECISIONS.md), KI-137 (KNOWN_ISSUES.md — opened,
+*mitigated* by the filter; root-cause model-label fix is the open
+follow-up), `crypto_signal_exclusions` row in DATABASE_SCHEMA.md, this
+entry.
+
+---
+
 ## 2026-05-11 — Crypto OHLCV ingestion fix: partial-day candles
 
 **Branch:** `fix-crypto-ohlcv-partial-candle-ingestion` (committed + pushed

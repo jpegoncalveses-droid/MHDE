@@ -294,3 +294,154 @@ def test_build_raises_when_no_active_10d_model(temp_db):
 
     with pytest.raises(wdp.ExportPreflightError, match="active 10d model"):
         wdp.build_predictions(temp_db, prediction_date=today)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Post-parabolic exclusion filter (option (b), wired into build_predictions)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _seed_features_overrides(conn, trade_date, per_symbol_overrides):
+    """Seed crypto_ml_features rows. per_symbol_overrides maps
+    symbol -> {feature_name: value}; unspecified features default to 0.0."""
+    cols = ", ".join(FEATURE_COLS)
+    placeholders = ", ".join(["?"] * len(FEATURE_COLS))
+    for sym, overrides in per_symbol_overrides.items():
+        vals = [overrides.get(c, 0.0) for c in FEATURE_COLS]
+        conn.execute(
+            f"INSERT INTO crypto_ml_features (symbol, trade_date, {cols}) "
+            f"VALUES (?, ?, {placeholders})",
+            [sym, trade_date] + vals,
+        )
+
+
+def test_postparabolic_symbol_dropped_from_output(temp_db, monkeypatch):
+    today = date(2026, 5, 10)
+    syms = ["AUSDT", "BUSDT"]  # alphabetical: AUSDT, BUSDT
+    _seed_universe(temp_db, syms)
+    _seed_active_10d_model(temp_db)
+    _seed_features_overrides(temp_db, today, {
+        "AUSDT": {},  # clean
+        "BUSDT": {"drawdown_from_90d_high": -0.25, "return_60d": 3.0},  # post-parabolic
+    })
+    _mock_joblib_load(monkeypatch, [0.60, 0.95])  # AUSDT=0.60, BUSDT=0.95
+
+    out = wdp.build_predictions(temp_db, prediction_date=today)
+
+    assert out["n_predictions"] == 1
+    assert {p["symbol"] for p in out["predictions"]} == {"AUSDT"}
+    # the high-prob post-parabolic coin must not have leaked through
+    assert "BUSDT" not in {p["symbol"] for p in out["predictions"]}
+
+
+def test_postparabolic_exclusion_row_written(temp_db, monkeypatch):
+    today = date(2026, 5, 10)
+    syms = ["AUSDT", "BUSDT"]
+    _seed_universe(temp_db, syms)
+    _seed_active_10d_model(temp_db)
+    _seed_features_overrides(temp_db, today, {
+        "AUSDT": {},
+        "BUSDT": {"drawdown_from_90d_high": -0.25, "return_60d": 3.0},
+    })
+    _mock_joblib_load(monkeypatch, [0.60, 0.95])
+
+    wdp.build_predictions(temp_db, prediction_date=today)
+
+    rows = temp_db.execute(
+        "SELECT export_date, symbol, model_id, raw_probability, dd90, ret60, reason "
+        "FROM crypto_signal_exclusions ORDER BY symbol"
+    ).fetchall()
+    assert len(rows) == 1
+    r = rows[0]
+    assert r[0] == today
+    assert r[1] == "BUSDT"
+    assert r[2] == "crypto_10d_test"
+    assert r[3] == pytest.approx(0.95)
+    assert r[4] == pytest.approx(-0.25)
+    assert r[5] == pytest.approx(3.0)
+    assert isinstance(r[6], str) and r[6]
+
+
+def test_postparabolic_exclusion_upsert_idempotent(temp_db, monkeypatch):
+    today = date(2026, 5, 10)
+    _seed_universe(temp_db, ["BUSDT"])
+    _seed_active_10d_model(temp_db)
+    _seed_features_overrides(temp_db, today, {
+        "BUSDT": {"drawdown_from_90d_high": -0.25, "return_60d": 3.0},
+    })
+    _mock_joblib_load(monkeypatch, [0.95])
+
+    wdp.build_predictions(temp_db, prediction_date=today)
+    wdp.build_predictions(temp_db, prediction_date=today)  # re-run
+
+    n = temp_db.execute("SELECT COUNT(*) FROM crypto_signal_exclusions").fetchone()[0]
+    assert n == 1  # UPSERT, not duplicate
+
+
+def test_rerank_consecutive_after_exclusion(temp_db, monkeypatch):
+    today = date(2026, 5, 10)
+    syms = ["AUSDT", "BUSDT", "CUSDT", "DUSDT", "EUSDT"]  # alphabetical order
+    _seed_universe(temp_db, syms)
+    _seed_active_10d_model(temp_db)
+    _seed_features_overrides(temp_db, today, {
+        "AUSDT": {},
+        "BUSDT": {},
+        # CUSDT is post-parabolic and would otherwise be ranked #1 (highest prob)
+        "CUSDT": {"drawdown_from_90d_high": -0.30, "return_60d": 4.0},
+        "DUSDT": {},
+        "EUSDT": {},
+    })
+    # probs in alphabetical row order: A=0.50, B=0.60, C=0.99, D=0.40, E=0.30
+    _mock_joblib_load(monkeypatch, [0.50, 0.60, 0.99, 0.40, 0.30])
+
+    out = wdp.build_predictions(temp_db, prediction_date=today)
+
+    assert out["n_predictions"] == 4
+    preds = out["predictions"]
+    assert [p["symbol"] for p in preds] == ["BUSDT", "AUSDT", "DUSDT", "EUSDT"]
+    assert [p["rank"] for p in preds] == [1, 2, 3, 4]  # consecutive, no gap
+    probs = [p["probability"] for p in preds]
+    assert probs == sorted(probs, reverse=True)
+
+
+def test_all_excluded_empty_list_handled_gracefully(temp_db, monkeypatch):
+    today = date(2026, 5, 10)
+    syms = ["AUSDT", "BUSDT"]
+    _seed_universe(temp_db, syms)
+    _seed_active_10d_model(temp_db)
+    _seed_features_overrides(temp_db, today, {
+        "AUSDT": {"drawdown_from_90d_high": -0.25, "return_60d": 3.0},
+        "BUSDT": {"drawdown_from_90d_high": -0.40, "return_60d": 5.0},
+    })
+    _mock_joblib_load(monkeypatch, [0.80, 0.90])
+
+    out = wdp.build_predictions(temp_db, prediction_date=today)  # must NOT raise
+    assert out["n_predictions"] == 0
+    assert out["predictions"] == []
+    # both got logged to the exclusions table
+    assert temp_db.execute("SELECT COUNT(*) FROM crypto_signal_exclusions").fetchone()[0] == 2
+
+
+def test_missing_features_not_excluded_fail_open(temp_db, monkeypatch):
+    """A symbol with NULL drawdown_from_90d_high / return_60d (warmup) is
+    NOT excluded — fail-open."""
+    today = date(2026, 5, 10)
+    _seed_universe(temp_db, ["AUSDT"])
+    _seed_active_10d_model(temp_db)
+    cols = ", ".join(FEATURE_COLS)
+    placeholders = ", ".join(["?"] * len(FEATURE_COLS))
+    # NULLs for dd90 / ret60 specifically
+    idx_dd = FEATURE_COLS.index("drawdown_from_90d_high")
+    idx_ret = FEATURE_COLS.index("return_60d")
+    vals = [0.0] * len(FEATURE_COLS)
+    vals[idx_dd] = None
+    vals[idx_ret] = None
+    temp_db.execute(
+        f"INSERT INTO crypto_ml_features (symbol, trade_date, {cols}) "
+        f"VALUES (?, ?, {placeholders})", ["AUSDT", today] + vals,
+    )
+    _mock_joblib_load(monkeypatch, [0.80])
+
+    out = wdp.build_predictions(temp_db, prediction_date=today)
+    assert out["n_predictions"] == 1
+    assert temp_db.execute("SELECT COUNT(*) FROM crypto_signal_exclusions").fetchone()[0] == 0

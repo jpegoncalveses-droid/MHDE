@@ -33,6 +33,7 @@ from crypto.config import FEATURE_COLS
 from crypto.exports._io import (
     EXPORTS_DIR, atomic_write_json, atomic_replace_symlink,
 )
+from crypto.ml.postparabolic_filter import should_exclude
 
 logger = logging.getLogger("mhde.exports.predictions")
 
@@ -123,7 +124,11 @@ def build_predictions(
       3. Run preflight gate (staleness only — see KI-129).
       4. Load features (active universe ∩ has-features-today).
       5. Run model + Platt calibration.
-      6. Sort descending, assign ranks 1..N.
+      6. Apply the post-parabolic exclusion filter — drop suppressed
+         coins, record them in crypto_signal_exclusions, log each one.
+      7. Sort descending over the survivors, assign ranks 1..N
+         (consecutive). An all-excluded day yields an empty list (the
+         engine then skips entry + alerts per INTERFACE.md §3.2 / §5.3).
     """
     if prediction_date is None:
         prediction_date = _today_utc()
@@ -160,9 +165,55 @@ def build_predictions(
         prediction_date, datetime.min.time(), tzinfo=timezone.utc
     ).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    # ── Post-parabolic exclusion filter (option (b); see
+    # crypto/ml/postparabolic_filter.py and POSTPARABOLIC_FILTER_SPEC.md) ──
+    # dd90 / ret60 are read from the *raw* feature row, NOT the median-filled X,
+    # so a warmup-window symbol with NULL features fails open. A coin that trips
+    # the gate is dropped from the export and recorded in crypto_signal_exclusions;
+    # the raw probability is left untouched in crypto_ml_predictions (written
+    # separately by score_universe).
+    dd90s = features_df["drawdown_from_90d_high"].tolist()
+    ret60s = features_df["return_60d"].tolist()
     rows = []
-    for sym, prob in zip(features_df["symbol"].tolist(), cal.tolist()):
-        rows.append((sym, float(prob)))
+    n_excluded = 0
+    for sym, prob, dd90, ret60 in zip(
+        features_df["symbol"].tolist(), cal.tolist(), dd90s, ret60s
+    ):
+        excluded, reason = should_exclude(dd90, ret60)
+        if not excluded:
+            rows.append((sym, float(prob)))
+            continue
+        n_excluded += 1
+        logger.warning(
+            "postparabolic_exclude symbol=%s export_date=%s model_id=%s "
+            "drawdown_from_90d_high=%.4f return_60d=%.4f raw_probability=%.4f "
+            "reason=%s",
+            sym, prediction_date, model_info["model_id"],
+            float(dd90), float(ret60), float(prob), reason,
+        )
+        conn.execute(
+            """
+            INSERT INTO crypto_signal_exclusions
+                (export_date, symbol, model_id, raw_probability, dd90, ret60, reason)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (export_date, symbol, model_id) DO UPDATE SET
+                raw_probability = excluded.raw_probability,
+                dd90 = excluded.dd90,
+                ret60 = excluded.ret60,
+                reason = excluded.reason
+            """,
+            [prediction_date, sym, model_info["model_id"], float(prob),
+             float(dd90), float(ret60), reason],
+        )
+
+    if not rows:
+        logger.warning(
+            "postparabolic_filter excluded all %d candidate(s) for %s — "
+            "emitting an empty predictions list; the engine will skip entry "
+            "today and alert (INTERFACE.md §3.2 / §5.3)",
+            n_excluded, prediction_date,
+        )
+
     rows.sort(key=lambda x: x[1], reverse=True)
     predictions = [
         {

@@ -951,3 +951,64 @@ MHDE change.
 remote DB, this monitor's `_open_engine_db()` is the single point that
 changes. The dashboard's Gap 3 paper-trading tab is expected to take
 the same read-only-DuckDB approach under this ADR.
+
+---
+
+## ADR-021 — Post-parabolic exclusion filter at the prediction-export step
+
+**Date:** 2026-05-11
+**Session:** post-parabolic filter (after the SKYAI diagnostic + OHLCV repair)
+**Status:** Active
+**Builds on:** ADR-017 (engine-export contract: file-based, MHDE-side)
+
+**Context.** The crypto model re-emits buy signals on coins immediately
+after a parabolic crash — confirmed on clean data (SKYAI: calibrated
+probabilities 0.72–0.88 across the crash window). Root cause is in the
+model, not the data: the `label_Nd_10pct` target ("did the price tag
++10% above today's close within N days") rewards volatility regardless
+of direction, and the momentum-lag features (`return_60d`,
+`drawdown_from_90d_high`) keep reading bullish for weeks after a top.
+The model's probability is *not wrong* — such coins really do tag +10%
+— it is optimising the wrong objective for a risk-aware entry signal.
+
+**Decision.** Add a deterministic pre-order-entry **risk gate** rather
+than touch the model:
+
+1. **Where:** the MHDE prediction-export step
+   (`crypto/exports/write_daily_predictions.py::build_predictions`),
+   right after Platt calibration, before ranking. Not at emit
+   (`crypto_ml_predictions` keeps the full raw signal for
+   diagnostics/backtest — untouched), not in the engine (the file
+   interface doesn't carry the needed features, and that would be a
+   coordinated cross-repo change). Single-repo, no change to the
+   `predictions_*.json` schema (excluded coins are dropped and ranks
+   renumbered consecutively — the engine's existing validation holds).
+2. **Rule (hard exclusion, not a probability haircut):** drop a coin
+   iff **both** `drawdown_from_90d_high < -0.20` **and**
+   `return_60d > 2.0` (strict; constants `POSTPARABOLIC_DD90_THRESHOLD`
+   / `POSTPARABOLIC_RET60_THRESHOLD` in `crypto/config.py`). Hard
+   exclusion because this is a risk decision, not a probability
+   adjustment — a `0.3×` haircut would be an arbitrary multiplier that
+   interacts badly with the engine's top-N selection on thin days and
+   makes the calibration meaningless for that coin. Same thresholds for
+   5d and 10d (the bias and the two features are horizon-independent;
+   the engine consumes 10d only today). Backed by a 60-day historical
+   scan: the rule fires on 0.8% of predictions, isolating the
+   high-drawdown tail (excluded set avg max-DD −25% vs retained −4%);
+   on the daily top-6 it never removed more than 2 picks on any day.
+3. **Fail-open:** if `drawdown_from_90d_high` or `return_60d` is
+   NULL/NaN (warmup window), the coin is *not* excluded.
+4. **Observability:** every exclusion is `logger.warning`-ed and
+   UPSERTed into the new `crypto_signal_exclusions` table
+   `(export_date, symbol, model_id, raw_probability, dd90, ret60,
+   reason)`. An all-excluded day yields an empty predictions list (the
+   exporter does not crash) — the engine then skips entry + alerts per
+   INTERFACE.md §3.2 / §5.3. A dashboard expander and a cross-repo
+   `excluded_postparabolic` JSON field were scoped out (phase 2).
+
+**Consequences.** Thresholds can be retuned by editing two constants
+(the scan supports −0.15/+1.5 as a more-aggressive alternative). The
+root-cause model fix (a direction-aware / risk-adjusted label) remains
+the open follow-up — tracked as KI-137. If graceful degradation is
+ever wanted instead of hard exclusion, the right lever is a cap on
+concurrent post-parabolic exposure, not a per-coin haircut.
