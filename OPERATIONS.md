@@ -122,6 +122,75 @@ venv/bin/python main.py crypto predict
 venv/bin/python main.py crypto predict
 ```
 
+#### Retrain validation gate
+
+Every `crypto retrain` run inserts the new model with
+`is_active=false, promotion_status='pending'`, then
+`crypto/ml/validation_gate.py::validate_promotion` runs against the
+previous active row for the same horizon.
+
+- **Pass:** old model demoted (`is_active=false`); new model promoted
+  (`is_active=true, promotion_status='promoted'`).
+- **Fail:** new model stays `is_active=false,
+  promotion_status='promotion_blocked'`; old model stays active; a
+  critical-severity Telegram alert fires.
+
+Either way one structured JSON line is emitted to stdout
+(`event="retrain_validation"`) with the comparison metrics and
+`duration_sec`.
+
+**Inspecting blocked promotions.**
+
+```sql
+-- All blocked promotions ever
+SELECT model_id, horizon, created_at, promotion_status,
+       precision_at_threshold, auc_roc
+FROM crypto_ml_model_runs
+WHERE promotion_status = 'promotion_blocked'
+ORDER BY created_at DESC;
+
+-- Latest active + blocked per horizon (quick sanity view)
+SELECT horizon, model_id, is_active, promotion_status,
+       precision_at_threshold, created_at
+FROM crypto_ml_model_runs
+WHERE horizon IN ('5d', '10d')
+ORDER BY horizon, created_at DESC
+LIMIT 10;
+```
+
+**Manual override (force-promote a blocked model after operator review).**
+
+Use this only after confirming the blocked model is genuinely good
+(e.g., the gate fired on a borderline hit-rate dip that you've
+reviewed and accepted).
+
+```bash
+# 1. Inspect the blocked model and compare metrics
+#    (write a quick script rather than an inline python -c per CLAUDE.md)
+venv/bin/python .claude/local_scripts/inspect_blocked_promotion.py <MODEL_ID>
+
+# 2. Demote the currently-active row for the horizon
+#    (adjust horizon as needed: 5d or 10d)
+venv/bin/python main.py crypto db-exec \
+  "UPDATE crypto_ml_model_runs SET is_active = false WHERE horizon = '10d' AND is_active = true"
+
+# 3. Promote the blocked row
+venv/bin/python main.py crypto db-exec \
+  "UPDATE crypto_ml_model_runs SET is_active = true, promotion_status = 'promoted' WHERE model_id = '<MODEL_ID>'"
+```
+
+If `crypto db-exec` is not available, open a Python script in
+`.claude/local_scripts/` using `duckdb.connect('data/mhde.duckdb')`
+and run the two UPDATEs there — never use inline `python -c` blocks
+per CLAUDE.md.
+
+**Telegram alert.** Critical-severity. Format:
+`[!!] Promotion blocked for <model_id>` followed by a JSON-formatted
+comparison dict (old hit rate, new hit rate, threshold). Acknowledge
+by reviewing the comparison and either re-training (preferred) or
+manually promoting (escape valve above). See ADR-019 for the full
+design rationale and escape valve guidance.
+
 ### FX ML
 
 ```bash

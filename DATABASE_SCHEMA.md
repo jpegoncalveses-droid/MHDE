@@ -178,6 +178,14 @@ PK: `(symbol, prediction_date, model_id, horizon)`.
 
 Same shape as `ml_model_runs`. Models stored under `models/saved/crypto/`.
 
+**Additional column (crypto-only).** `promotion_status VARCHAR` — set
+by the retrain validation gate (`crypto/ml/validation_gate.py`).
+Values: `'pending'` (just trained, gate not yet run), `'promoted'`
+(gate passed, model is active), `'promotion_blocked'` (gate failed,
+model left `is_active=false`, prior active stays live), or `NULL`
+(rows predating the gate; treated as promoted for backward
+compatibility). See ADR-019.
+
 ---
 
 ## FX ML — `fx_*`

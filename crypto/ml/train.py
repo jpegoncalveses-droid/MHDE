@@ -23,6 +23,8 @@ from xgboost import XGBClassifier
 
 from crypto.schema import create_all_tables
 from crypto.config import FEATURE_COLS, DEFAULT_PARAMS, MODELS_DIR
+from crypto.ml.validation_gate import validate_promotion
+from monitoring.alert import MonitorResult, send_alert
 
 logger = logging.getLogger("mhde.crypto.train")
 
@@ -241,22 +243,116 @@ def train_walk_forward(conn: duckdb.DuckDBPyConnection, label_col: str = "label_
     avg_precision = float(np.mean([r["precision_top"] for r in valid_results]))
     avg_base = float(np.mean([r["base_rate"] for r in valid_results]))
 
-    conn.execute("UPDATE crypto_ml_model_runs SET is_active = false WHERE horizon = ?", [horizon])
-
-    conn.execute("""
-        INSERT INTO crypto_ml_model_runs (
-            model_id, horizon, target_threshold, train_start, train_end, test_start, test_end,
-            n_train_samples, n_test_samples, n_positive_train, n_positive_test,
-            precision_at_threshold, recall_at_threshold, f1_score, auc_roc,
-            base_rate, lift_over_base, feature_importance_json, model_path, is_active
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true)
-    """, [
-        model_id, horizon, threshold, TRAIN_START, last_fold["train_end"],
-        last_fold["test_start"], last_fold["test_end"],
-        final["n_train"], final["n_test"], final["n_pos_train"], final["n_pos_test"],
-        avg_precision, final["recall"], final["f1"], avg_auc,
-        avg_base, avg_lift, json.dumps(final["feature_importance"]), model_path,
-    ])
+    _persist_and_gate(
+        conn=conn,
+        model_id=model_id,
+        horizon=horizon,
+        threshold=threshold,
+        last_fold=last_fold,
+        final=final,
+        avg_auc=avg_auc,
+        avg_lift=avg_lift,
+        avg_precision=avg_precision,
+        avg_base=avg_base,
+        model_path=model_path,
+    )
 
     logger.info("Final model saved: %s (AUC=%.3f, Lift=%.2fx)", model_id, avg_auc, avg_lift)
     return results
+
+
+def _persist_and_gate(
+    conn: duckdb.DuckDBPyConnection,
+    model_id: str,
+    horizon: str,
+    threshold: float,
+    last_fold: dict,
+    final: dict,
+    avg_auc: float,
+    avg_lift: float,
+    avg_precision: float,
+    avg_base: float,
+    model_path: str,
+) -> None:
+    """INSERT the new model row as pending, run the validation gate, then
+    promote or block accordingly.
+
+    Flow
+    ----
+    1. INSERT with ``is_active=false, promotion_status='pending'``.
+    2. Call :func:`validate_promotion` (single-arm hit-rate gate).
+    3. If passed  → demote old active rows, flip new row to promoted.
+       If blocked → leave old rows as-is, mark new row as promotion_blocked,
+                    send a critical Telegram alert.
+    4. Always emit one structured JSON log line with event='retrain_validation'.
+    """
+    conn.execute(
+        """
+        INSERT INTO crypto_ml_model_runs (
+            model_id, horizon, target_threshold, train_start, train_end,
+            test_start, test_end,
+            n_train_samples, n_test_samples, n_positive_train, n_positive_test,
+            precision_at_threshold, recall_at_threshold, f1_score, auc_roc,
+            base_rate, lift_over_base, feature_importance_json,
+            model_path, is_active, promotion_status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, false, 'pending')
+        """,
+        [
+            model_id, horizon, threshold, TRAIN_START, last_fold["train_end"],
+            last_fold["test_start"], last_fold["test_end"],
+            final["n_train"], final["n_test"], final["n_pos_train"], final["n_pos_test"],
+            avg_precision, final["recall"], final["f1"], avg_auc,
+            avg_base, avg_lift, json.dumps(final["feature_importance"]),
+            model_path,
+        ],
+    )
+
+    result = validate_promotion(conn, model_id, horizon)
+
+    log_event = {
+        "event": "retrain_validation",
+        "model_id": model_id,
+        "horizon": horizon,
+        "passed": result.passed,
+        "duration_sec": round(result.duration_sec, 4),
+        "reason": result.reason,
+        "comparison": result.comparison,
+    }
+    logger.info(json.dumps(log_event))
+
+    if result.passed:
+        conn.execute(
+            "UPDATE crypto_ml_model_runs SET is_active = false"
+            " WHERE horizon = ? AND model_id != ?",
+            [horizon, model_id],
+        )
+        conn.execute(
+            "UPDATE crypto_ml_model_runs"
+            " SET is_active = true, promotion_status = 'promoted'"
+            " WHERE model_id = ?",
+            [model_id],
+        )
+        logger.info(
+            "Model %s promoted to active for horizon=%s (reason=%s)",
+            model_id, horizon, result.reason,
+        )
+    else:
+        conn.execute(
+            "UPDATE crypto_ml_model_runs"
+            " SET promotion_status = 'promotion_blocked'"
+            " WHERE model_id = ?",
+            [model_id],
+        )
+        body = json.dumps(result.comparison, indent=2)
+        monitor_result = MonitorResult(
+            monitor="crypto_retrain_gate",
+            status="fail",
+            severity="critical",
+            title=f"Promotion blocked for {model_id}",
+            body=body,
+        )
+        send_alert(monitor_result)
+        logger.warning(
+            "Model %s blocked from promotion for horizon=%s (reason=%s)",
+            model_id, horizon, result.reason,
+        )

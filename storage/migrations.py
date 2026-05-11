@@ -8,7 +8,7 @@ from storage.db import init_schema
 
 logger = logging.getLogger("mhde.storage.migrations")
 
-_CURRENT_VERSION = 8
+_CURRENT_VERSION = 9
 
 
 def run_migrations(conn: duckdb.DuckDBPyConnection) -> None:
@@ -135,3 +135,35 @@ def run_migrations(conn: duckdb.DuckDBPyConnection) -> None:
             "VALUES (8, 'Add move_episodes table') ON CONFLICT DO NOTHING"
         )
         logger.info("Applied migration v8: move_episodes table")
+
+    if current < 9:
+        table_exists = conn.execute(
+            "SELECT COUNT(*) FROM information_schema.tables "
+            "WHERE table_name = 'crypto_ml_model_runs'"
+        ).fetchone()[0] > 0
+        if table_exists:
+            existing_cols = {
+                r[0] for r in conn.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = 'crypto_ml_model_runs'"
+                ).fetchall()
+            }
+            if "promotion_status" not in existing_cols:
+                conn.execute(
+                    "ALTER TABLE crypto_ml_model_runs "
+                    "ADD COLUMN promotion_status VARCHAR DEFAULT 'pending'"
+                )
+                conn.execute(
+                    "UPDATE crypto_ml_model_runs "
+                    "SET promotion_status = 'promoted' WHERE is_active = true"
+                )
+                conn.execute(
+                    "UPDATE crypto_ml_model_runs "
+                    "SET promotion_status = 'pending' "
+                    "WHERE is_active = false OR is_active IS NULL"
+                )
+        conn.execute(
+            "INSERT INTO schema_version (version, description) "
+            "VALUES (9, 'Add promotion_status to crypto_ml_model_runs') ON CONFLICT DO NOTHING"
+        )
+        logger.info("Applied migration v9: promotion_status on crypto_ml_model_runs")
