@@ -31,7 +31,8 @@ def _engine_db() -> duckdb.DuckDBPyConnection:
             id VARCHAR, symbol VARCHAR, entry_date DATE, entry_price DOUBLE,
             qty DOUBLE, peak_price DOUBLE, current_state VARCHAR,
             horizon_expiry_date DATE, spec_version VARCHAR, spec_hash VARCHAR,
-            created_at TIMESTAMP, updated_at TIMESTAMP
+            created_at TIMESTAMP, updated_at TIMESTAMP,
+            exit_price DOUBLE, realized_pnl_usd DOUBLE
         )""")
     conn.execute("""
         CREATE TABLE events (
@@ -42,13 +43,14 @@ def _engine_db() -> duckdb.DuckDBPyConnection:
 
 
 def _pos(conn, id, symbol, state, *, entry_date=None, entry_price=None, qty=None,
-         peak_price=None, updated_at=None):
+         peak_price=None, updated_at=None, exit_price=None, realized_pnl_usd=None):
     conn.execute(
         "INSERT INTO positions (id, symbol, entry_date, entry_price, qty, "
-        "peak_price, current_state, created_at, updated_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?)",
+        "peak_price, current_state, created_at, updated_at, exit_price, realized_pnl_usd) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         [id, symbol, entry_date or NOW.date(), entry_price, qty, peak_price,
-         state, (updated_at or NOW) - timedelta(hours=2), updated_at or NOW],
+         state, (updated_at or NOW) - timedelta(hours=2), updated_at or NOW,
+         exit_price, realized_pnl_usd],
     )
 
 
@@ -133,13 +135,58 @@ def test_closed_trades_order_and_limit():
     assert list(df["symbol"]) == ["C0USDT", "C1USDT", "C2USDT"]
 
 
-def test_closed_trades_exit_price_uncomputable():
+def test_closed_trades_exit_price_and_pnl_from_columns():
+    # EXIT-PRICE-001 / KI-136: when positions.exit_price / realized_pnl_usd are
+    # populated (engine-recorded SELL fill or reconcile backfill), show them —
+    # exit_price verbatim, realized P&L rounded to cents.
     e = _engine_db()
-    _pos(e, "c", "CUSDT", "exit_filled", entry_price=10.0, qty=5.0, peak_price=11.0)
+    _pos(e, "c", "SKYAIUSDT", "exit_filled", entry_price=0.47512, qty=1403.0,
+         peak_price=0.47601, exit_price=0.38288, realized_pnl_usd=-129.41271999999998)
+    df = q.get_paper_closed_trades(e, limit=10)
+    row = df.iloc[0]
+    assert pytest.approx(float(row["exit_price"]), rel=1e-12) == 0.38288
+    assert pytest.approx(float(row["realized_pnl"]), abs=1e-9) == -129.41
+
+
+def test_closed_trades_null_exit_columns_show_uncomputable():
+    # Pre-EXIT-PRICE-001 closes: exit columns NULL → placeholder, not a fake 0.
+    e = _engine_db()
+    _pos(e, "c", "CUSDT", "exit_filled", entry_price=10.0, qty=5.0, peak_price=11.0,
+         exit_price=None, realized_pnl_usd=None)
     df = q.get_paper_closed_trades(e, limit=10)
     row = df.iloc[0]
     assert "uncomputable" in str(row["exit_price"]).lower()
     assert "uncomputable" in str(row["realized_pnl"]).lower()
+
+
+def test_closed_trades_exit_price_known_but_pnl_null():
+    # Reconcile backfill recovered the SELL fill price but entry_price was NULL,
+    # so realized P&L couldn't be computed — columns handled independently.
+    e = _engine_db()
+    _pos(e, "c", "CUSDT", "exit_filled", entry_price=None, qty=None, peak_price=None,
+         exit_price=0.0013717, realized_pnl_usd=None)
+    df = q.get_paper_closed_trades(e, limit=10)
+    row = df.iloc[0]
+    assert pytest.approx(float(row["exit_price"]), rel=1e-12) == 0.0013717
+    assert "uncomputable" in str(row["realized_pnl"]).lower()
+
+
+def test_closed_trades_orphan_auto_close_still_uncomputable():
+    # engine_only_position auto-closed by reconcile: no real SELL fill, so the
+    # exit columns stay NULL — still "uncomputable", and the close reason names it.
+    e = _engine_db()
+    _pos(e, "o", "SKYAIUSDT", "exit_filled", entry_date=NOW.date() - timedelta(days=1),
+         entry_price=None, qty=None, peak_price=None,
+         exit_price=None, realized_pnl_usd=None)
+    _event(e, "o", "reconcile_auto_closed",
+           {"kind": "engine_only_position",
+            "details": {"last_known_state": "entry_pending", "entry_price": None, "qty": None},
+            "note": "auto-closed by reconciliation; check Binance for cause"})
+    df = q.get_paper_closed_trades(e, limit=10)
+    row = df.iloc[0]
+    assert "uncomputable" in str(row["exit_price"]).lower()
+    assert "uncomputable" in str(row["realized_pnl"]).lower()
+    assert "engine_only_position" in str(row["close_reason"])
 
 
 def test_closed_trades_close_reason_from_event():

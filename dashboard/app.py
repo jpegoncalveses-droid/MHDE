@@ -967,8 +967,11 @@ with tab_paper:
             else:
                 st.dataframe(_closed_df, use_container_width=True, hide_index=True)
             st.caption(
-                "`exit_price` / `realized_pnl` show 'uncomputable' — the engine doesn't record "
-                "market-exit fill prices yet (KI-136)."
+                "`exit_price` = the engine-recorded SELL-fill weighted-average price; "
+                "`realized_pnl` = gross `(exit_price − entry_price)·qty` in USD (funding/fees "
+                "not subtracted — FUNDING-001). A cell reads 'uncomputable (KI-136)' only when "
+                "the engine never recorded an exit fill — pre-EXIT-PRICE-001 closes and reconcile "
+                "auto-closes of orphaned positions."
             )
 
             with st.expander("Rejected entries", expanded=False):

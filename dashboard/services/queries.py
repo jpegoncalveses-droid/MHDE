@@ -665,6 +665,10 @@ _PAPER_STATE_PRETTY = {
 # Engine event types that are mechanical noise rather than a human-readable reason.
 _PAPER_MECHANICAL_EVENTS = {"state_change", "order_placed", "order_filled", "leverage_set"}
 
+# Shown for closed positions whose exit_price / realized_pnl_usd columns are
+# genuinely NULL: pre-EXIT-PRICE-001 closes and reconcile auto-closes of
+# engine_only_position rows (no real SELL fill). Once EXIT-PRICE-001 / the
+# reconcile backfill populates those columns the real values are shown. See KI-136.
 _UNCOMPUTABLE = "uncomputable (KI-136)"
 _DASH = "—"
 
@@ -775,15 +779,27 @@ def get_paper_open_positions(
 def get_paper_closed_trades(
     engine_conn: duckdb.DuckDBPyConnection, *, limit: int = 30
 ) -> pd.DataFrame:
+    """Recent ``exit_filled`` positions, newest-first.
+
+    ``exit_price`` / ``realized_pnl`` come straight from the engine's
+    ``positions.exit_price`` / ``positions.realized_pnl_usd`` columns
+    (EXIT-PRICE-001): the recorded SELL-fill weighted-average price and the
+    gross ``(exit_price - entry_price) * qty`` P&L, the latter rounded to
+    cents. Each is shown as ``"uncomputable (KI-136)"`` only when its column
+    is genuinely NULL — pre-EXIT-PRICE-001 closes and reconcile auto-closes of
+    ``engine_only_position`` rows (no real SELL fill, hence no recoverable price).
+    """
     rows = engine_conn.execute(
-        "SELECT id, symbol, entry_date, entry_price, qty, peak_price, updated_at "
+        "SELECT id, symbol, entry_date, entry_price, qty, peak_price, updated_at, "
+        "exit_price, realized_pnl_usd "
         "FROM positions WHERE current_state = 'exit_filled' "
         "ORDER BY updated_at DESC LIMIT ?",
         [limit],
     ).fetchall()
     reasons = _reasons_by_position(engine_conn, [r[0] for r in rows])
     out = []
-    for pid, symbol, entry_date, entry_price, qty, peak_price, updated_at in rows:
+    for (pid, symbol, entry_date, entry_price, qty, peak_price, updated_at,
+         exit_price, realized_pnl_usd) in rows:
         out.append({
             "symbol": symbol,
             "entry_date": entry_date,
@@ -792,8 +808,10 @@ def get_paper_closed_trades(
             "peak_price": peak_price if peak_price is not None else _DASH,
             "closed_at": updated_at,
             "close_reason": reasons.get(pid, ""),
-            "exit_price": _UNCOMPUTABLE,
-            "realized_pnl": _UNCOMPUTABLE,
+            "exit_price": exit_price if exit_price is not None else _UNCOMPUTABLE,
+            "realized_pnl": (
+                round(realized_pnl_usd, 2) if realized_pnl_usd is not None else _UNCOMPUTABLE
+            ),
         })
     return pd.DataFrame(out, columns=[
         "symbol", "entry_date", "entry_price", "qty", "peak_price", "closed_at",

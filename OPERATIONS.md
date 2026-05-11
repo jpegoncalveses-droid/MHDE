@@ -398,11 +398,14 @@ DuckDB **read-only** via `CRYPTO_ENGINE_DB_PATH` (default
 The `mhde-streamlit.service` unit's `Environment=` must include
 `CRYPTO_ENGINE_DB_PATH=...` if the engine repo isn't at the default path; if
 the file is unreadable the tab shows a "engine database not available" warning
-and the rest of the dashboard is unaffected. It surfaces, not hides, the
-known engine-data gaps: closed-position `exit_price` / `realized_pnl` show
-**"uncomputable (KI-136)"** (the engine doesn't record market-exit fill
-prices), and there's no live-mark / unrealised-P&L column (`price_snapshots`
-unpopulated — PRICE-SNAPSHOTS-001). The drift-monitor banner re-runs
+and the rest of the dashboard is unaffected. Closed-position `exit_price` /
+`realized_pnl` read from the engine's `positions.exit_price` /
+`positions.realized_pnl_usd` columns (EXIT-PRICE-001), falling back to
+**"uncomputable (KI-136)"** only when the engine never recorded an exit fill
+— pre-EXIT-PRICE-001 closes the reconcile backfill hasn't healed yet, and
+reconcile auto-closes of orphaned positions. It still surfaces, not hides,
+the remaining gap: there's no live-mark / unrealised-P&L column
+(`price_snapshots` unpopulated — PRICE-SNAPSHOTS-001). The drift-monitor banner re-runs
 `monitoring/paper_trading_drift.py`'s `run()` (read-only, no Telegram), cached
 60 s. Smoke-test the tab's queries with the dashboard-query smoke command (it
 now also exercises the four `get_paper_*` functions against the engine DB).
