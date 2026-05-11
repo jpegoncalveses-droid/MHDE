@@ -1,15 +1,18 @@
 # Known Issues
 
-**6 open observations** (KI-122, KI-123, KI-126, KI-131, KI-132,
-KI-134). KI-122/123 are cosmetic; KI-126 is a future Phase 0
+**7 open observations** (KI-122, KI-123, KI-126, KI-131, KI-132,
+KI-134, KI-136). KI-122/123 are cosmetic; KI-126 is a future Phase 0
 enhancement deferred until weekly reliability snapshots accumulate;
 KI-131 is a low-priority single-day production-model row-count dip;
 KI-132 is a dashboard-deployment-process gap (no auto-restart on
 merge); KI-134 is an alerting-signal-quality observation (operator
 missed 8 freshness alerts under weekend false-positive noise that
-KI-128 has since cleaned up). None requires a hot fix — all tracked
-so a future session triages deliberately rather than letting them
-rot in the working tree.
+KI-128 has since cleaned up); KI-136 is the planned "Gap 2.5"
+follow-up — the paper-trading drift monitor's P&L-band / drawdown /
+monthly arms, deferred until the engine's `daily_pnl` table starts
+filling (blocked on engine-side RECONCILE-001). None requires a hot
+fix — all tracked so a future session triages deliberately rather
+than letting them rot in the working tree.
 
 **KI-135** opened + resolved 2026-05-10 — crypto retrain
 auto-promoted new models without validation; a regressed model could
@@ -192,6 +195,36 @@ has %d, see ADR-014 for cap rationale)"`. Trivial one-liner.
 
 **Out of scope for the equity ingestion fix session 2026-05-09.**
 Documentation/clarity fix; no behavioral impact.
+
+### KI-136 — Paper-trading drift monitor: P&L-band / drawdown / monthly arms deferred ("Gap 2.5")
+
+**Context.** The Gap 2 paper-trading drift monitor
+(`monitoring/paper_trading_drift.py`, ADR-020) ships with liveness +
+hit-rate checks only. Three planned arms were intentionally **not**
+built yet:
+
+- **Realised-P&L band** — rolling-30-day realised P&L vs
+  `active_spec.json.backtest_expectations` (±20% `divergence_alert_threshold_pct`).
+- **Drawdown breach** — realised account drawdown vs `portfolio_max_dd_pct`.
+- **Monthly portfolio return** — rolling-21-trading-day return vs the
+  walkfold monthly band (~+27% median).
+
+**Why deferred.** All three need the engine's `daily_pnl` table, which
+is **empty**: the engine's `trading-engine-reconcile.timer` (which
+populates `daily_pnl`) is disabled on the VPS pending the engine-side
+RECONCILE-001 fix. Building these arms now would mean shipping inert
+code with "no P&L snapshots yet" placeholders — noise, not signal.
+
+**Resolution path.** Once RECONCILE-001 is resolved on the engine
+side and `daily_pnl` starts accumulating rows, add the three arms as a
+follow-up increment on `monitoring/paper_trading_drift.py` (the four
+existing checks already establish the module structure, the
+sample-gating pattern, and the `MonitorResult` aggregation — the new
+arms slot in alongside). No new schema or cross-repo coordination
+needed; just read `daily_pnl` read-only under ADR-020.
+
+**Not blocking.** The liveness + hit-rate checks deliver real signal
+from real data today; the deferred arms add coverage, not correctness.
 
 ## Recently resolved (post-Session-7)
 
