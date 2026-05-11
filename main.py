@@ -2508,5 +2508,11 @@ def monitor_phase0_calibration():
     raise SystemExit(phase0_calibration.main())
 
 
+@monitor.command("paper-trading-drift")
+def monitor_paper_trading_drift():
+    from monitoring import paper_trading_drift
+    raise SystemExit(paper_trading_drift.main())
+
+
 if __name__ == "__main__":
     cli()
