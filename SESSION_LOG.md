@@ -6,6 +6,73 @@ are at the top.
 
 ---
 
+## 2026-05-11 — Backtest the post-parabolic filter (toggle + paired runs)
+
+**Branch:** `feat-backtest-postparabolic-toggle` (committed + pushed;
+**STOPPED for operator review/merge** — diff only, no PR). Separate from
+`feat-crypto-postparabolic-filter` (the already-merged filter itself).
+
+**Trigger.** Validate the post-parabolic exclusion filter (KI-137 /
+ADR-021) at portfolio level before relying on it in production.
+
+**What shipped (harness toggle only — no production-pipeline change):**
+`crypto/execution/backtest/harness.py` —
+- new `load_dd90_ret60_at_entry(conn, keys)` loader (mirrors
+  `load_atr_at_entry`; reads `drawdown_from_90d_high` / `return_60d` from
+  `crypto_ml_features`; NULL → absent key → fail-open).
+- `make_run_id(...)` gains `apply_postparabolic_filter: bool = False`,
+  folded into the hash **only when True** (baseline run_ids unchanged; a
+  filter-on run gets a distinct id so paired A/B runs coexist).
+- `RunState` gains `apply_postparabolic_filter` + `n_excluded_by_postparabolic`.
+- `_run_lifecycle`: when the flag is set, drop post-parabolic candidates
+  from `preds` (via `should_exclude`) *before* `_apply_selection` —
+  exactly as the live export does (selection re-ranks the survivors).
+  `n_predictions_seen` still reflects the pre-filter universe.
+- `run_backtest(...)` gains the `apply_postparabolic_filter` kwarg
+  (threaded to `make_run_id` / `RunState` / logged; stamped into the
+  `parameters` JSON only when True so a filter-off run is byte-identical
+  to the pre-toggle baseline).
+Tests: `tests/crypto/test_backtest_postparabolic_toggle.py` — 4 (run_id
+distinctness when on; `load_dd90_ret60_at_entry`; filter-off keeps a
+post-parabolic candidate; filter-on drops it and `n_excluded_by_postparabolic`
+increments while `n_predictions_seen` is unchanged). Full crypto suite:
+365 passed, 1 skipped. Pre-commit: OK.
+
+**Paired backtests run** (write to `crypto_backtest_*` only): Phase-1B-winner
+config — Policy D, top_n n=6, trail_pct=0.3 — for 10d and 5d, filter
+OFF vs ON, over the full funding-floored window (2025-04-05 → 2026-05-07).
+Note Run A 10d re-runs the canonical `backtest_10d_D_top_n_a02e15a0`
+run_id (`force=True`); its metrics shifted slightly (Sharpe 6.32→6.25,
+cumRet 51.2%→52.2%) vs the pre-repair stored row because the recent
+OHLCV repair corrected ~6 days of hold-window prices — the new numbers
+are post-repair-correct; flag for the operator if the pre-repair row
+needs preserving / the full Phase 1B grid wants a post-repair re-run.
+
+**Result.** Filter fires on ~105 / ~16.7k walkfold predictions per
+horizon (~0.6%), clustered in frothy months (Aug/Oct/Nov 2025, Jan 2026)
+and a handful of pump-and-crash coins (MUSDT, FHEUSDT, ZEC, PENGU, DASH;
+SKYAI itself only 2). Portfolio impact ≈ zero: 10d Sharpe 6.25→6.36,
+maxDD −17.01→−16.98%, cumRet 52.23→52.48% (marginal improvement); 5d
+Sharpe 6.10→5.82, maxDD −9.13→−9.29%, cumRet 47.54→51.46%, PF 2.56→2.75
+(one big 3.4× winner survives in B and lifts mean/cumRet while denting
+Sharpe — a wash). Trade *count* barely moves (selection backfills the
+freed slot — 10d 932→941, 5d 1054→1053). The excluded set has ~2× the
+*label* max-drawdown (10d −16.6% vs −8.7%) **and** a higher *label* hit
+rate (10d 56.6% vs 35.2%) — i.e. by hit-rate the filter removes
+"winners", but Policy D's trailing stop already truncates the drawdown
+those trades would have caused, so the realized-P&L effect nets to zero.
+
+**Verdict: KEEP the current thresholds (−0.20 / +2.0).** It costs
+nothing at the portfolio level (within noise on both horizons) and
+remains a cheap tail-risk / operator-trust guard against the SKYAI class
+of trade. Widening to −0.15/+1.5 (spec-time scan: ~1.9% excluded, still
+the high-DD tail) is an optional later move if more aggressiveness is
+wanted; no evidence it's needed. No code change recommended beyond the
+already-merged filter; the toggle stays in the harness for future
+re-validation.
+
+---
+
 ## 2026-05-11 — Crypto post-parabolic exclusion filter
 
 **Branch:** `feat-crypto-postparabolic-filter` (committed + pushed to

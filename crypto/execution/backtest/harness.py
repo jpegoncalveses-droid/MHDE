@@ -76,6 +76,7 @@ from crypto.execution.backtest.selection import (
     select_threshold,
     select_top_n,
 )
+from crypto.ml.postparabolic_filter import should_exclude
 
 logger = logging.getLogger("mhde.crypto.backtest.harness")
 
@@ -375,6 +376,40 @@ def load_atr_at_entry(
     return {(s, d): float(a) for s, d, a in rows}
 
 
+def load_dd90_ret60_at_entry(
+    conn: duckdb.DuckDBPyConnection,
+    keys: list[tuple[str, date]],
+) -> dict[tuple[str, date], tuple[float, float]]:
+    """Read ``(drawdown_from_90d_high, return_60d)`` from
+    ``crypto_ml_features`` for the given ``(symbol, trade_date)`` keys.
+
+    Used only by the post-parabolic filter toggle. Returns a dict keyed
+    by the same tuples; a key with no feature row, or whose row has NULL
+    in either column, is absent (the caller's ``should_exclude`` fails
+    open on a missing value, so an absent key means "not excluded").
+    """
+    if not keys:
+        return {}
+    view = pd.DataFrame(list(set(keys)), columns=["symbol", "trade_date"])
+    view_name = f"_pp_keys_{id(view):x}"
+    conn.register(view_name, view)
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT v.symbol, v.trade_date,
+                   f.drawdown_from_90d_high, f.return_60d
+            FROM {view_name} v
+            LEFT JOIN crypto_ml_features f
+              ON f.symbol = v.symbol AND f.trade_date = v.trade_date
+            WHERE f.drawdown_from_90d_high IS NOT NULL
+              AND f.return_60d IS NOT NULL
+            """
+        ).fetchall()
+    finally:
+        conn.unregister(view_name)
+    return {(s, d): (float(dd), float(ret)) for s, d, dd, ret in rows}
+
+
 def compute_volume_ranks(
     conn: duckdb.DuckDBPyConnection,
     *,
@@ -470,6 +505,7 @@ class RunState:
     parameters: dict[str, Any]
     date_start: Optional[date] = None
     date_end: Optional[date] = None
+    apply_postparabolic_filter: bool = False
 
     open_positions: dict[str, Position] = field(default_factory=dict)
     closed_trades: list[Position] = field(default_factory=list)
@@ -479,6 +515,7 @@ class RunState:
     n_data_gap_exits: int = 0
     n_skipped_duplicates: int = 0
     n_excluded_by_funding_floor: int = 0
+    n_excluded_by_postparabolic: int = 0
     n_missing_funding_warnings: int = 0
     # Actual prediction-date range observed in the data after the funding
     # floor + user date bounds. Populated by _run_lifecycle. Persisted into
@@ -502,6 +539,7 @@ def make_run_id(
     policy_params: Optional[dict[str, Any]] = None,
     date_start: Optional[date] = None,
     date_end: Optional[date] = None,
+    apply_postparabolic_filter: bool = False,
 ) -> str:
     """Deterministic run_id from the run's configuration. Two invocations
     with identical configuration produce the same run_id; this enables
@@ -509,23 +547,27 @@ def make_run_id(
 
     Format: ``backtest_{horizon}_{policy}_{selection}_{8-char hash}``.
 
+    ``apply_postparabolic_filter`` is folded into the hash **only when
+    True**, so existing baseline run_ids (filter off) are unchanged; a
+    filter-on run gets a distinct id, which lets paired A/B runs of the
+    same config coexist.
+
     >>> make_run_id(horizon="5d", exit_policy_id="A", selection_rule="top_n",
     ...              selection_params={"n": 6})
     'backtest_5d_A_top_n_...'  # last segment is sha1[:8] of the canonical key
     """
-    key = json.dumps(
-        {
-            "horizon": horizon,
-            "exit_policy_id": exit_policy_id.upper(),
-            "selection_rule": selection_rule,
-            "selection_params": selection_params or {},
-            "policy_params": policy_params or {},
-            "date_start": str(date_start) if date_start else None,
-            "date_end": str(date_end) if date_end else None,
-        },
-        sort_keys=True,
-        default=str,
-    )
+    key_dict: dict[str, Any] = {
+        "horizon": horizon,
+        "exit_policy_id": exit_policy_id.upper(),
+        "selection_rule": selection_rule,
+        "selection_params": selection_params or {},
+        "policy_params": policy_params or {},
+        "date_start": str(date_start) if date_start else None,
+        "date_end": str(date_end) if date_end else None,
+    }
+    if apply_postparabolic_filter:
+        key_dict["apply_postparabolic_filter"] = True
+    key = json.dumps(key_dict, sort_keys=True, default=str)
     digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:8]
     return (
         f"backtest_{horizon}_{exit_policy_id.upper()}_"
@@ -722,6 +764,28 @@ def _run_lifecycle(
     # for metrics.py to compute annualized return.
     state.effective_date_start = _coerce_date(preds["date"].min())
     state.effective_date_end = _coerce_date(preds["date"].max())
+
+    # Post-parabolic exclusion filter (off by default). Mirrors the live
+    # export: drop suppressed coins from the daily batch *before* selection,
+    # so top-N re-ranks the survivors and the next-best fills the slot.
+    # dd90 / ret60 are read from crypto_ml_features at the prediction date;
+    # should_exclude fails open on a missing value (absent key).
+    if state.apply_postparabolic_filter:
+        pred_keys = [(c, _coerce_date(d))
+                     for c, d in zip(preds["coin"], preds["date"])]
+        feats = load_dd90_ret60_at_entry(conn, pred_keys)
+        excluded_mask = [
+            should_exclude(*feats.get(k, (None, None)))[0] for k in pred_keys
+        ]
+        state.n_excluded_by_postparabolic = int(sum(excluded_mask))
+        if state.n_excluded_by_postparabolic:
+            preds = preds.loc[[not e for e in excluded_mask]].reset_index(drop=True)
+            logger.info(
+                "post-parabolic filter: excluded %d of %d predictions",
+                state.n_excluded_by_postparabolic, state.n_predictions_seen,
+            )
+        if preds.empty:
+            return state
 
     # Selection.
     candidates = _apply_selection(preds, state.selection_rule, selection_params)
@@ -996,6 +1060,7 @@ def run_backtest(
     policy_params: Optional[dict[str, Any]] = None,
     date_start: Optional[date] = None,
     date_end: Optional[date] = None,
+    apply_postparabolic_filter: bool = False,
     dry_run: bool = False,
     force: bool = False,
 ) -> RunState:
@@ -1015,6 +1080,13 @@ def run_backtest(
         selection_params / policy_params: forwarded to the respective module.
         date_start / date_end: inclusive prediction-date bounds (the
             funding-data floor is applied on top of these).
+        apply_postparabolic_filter: if True, drop post-parabolic
+            candidates (``crypto/ml/postparabolic_filter.should_exclude``
+            against ``crypto_ml_features`` dd90 / ret60) from each daily
+            batch before selection — exactly as the live export does.
+            Default ``False`` preserves baseline behaviour and produces
+            the same ``run_id`` as before; a filter-on run gets a
+            distinct ``run_id`` so paired A/B runs can coexist.
         dry_run: if True, skip persistence — useful for ad-hoc inspection.
         force: if True, overwrite an existing ``run_id`` (deletes prior
             rows from both tables first). Default raises on collision.
@@ -1032,18 +1104,25 @@ def run_backtest(
         policy_params=policy_params,
         date_start=date_start,
         date_end=date_end,
+        apply_postparabolic_filter=apply_postparabolic_filter,
     )
+    parameters: dict[str, Any] = {
+        "selection_params": selection_params,
+        "policy_params": policy_params,
+    }
+    if apply_postparabolic_filter:
+        # Only stamped when True so a filter-off run's parameters JSON is
+        # byte-identical to the pre-toggle baseline.
+        parameters["apply_postparabolic_filter"] = True
     state = RunState(
         run_id=run_id,
         horizon=horizon,
         exit_policy_id=exit_policy_id.upper(),
         selection_rule=selection_rule,
-        parameters={
-            "selection_params": selection_params,
-            "policy_params": policy_params,
-        },
+        parameters=parameters,
         date_start=date_start,
         date_end=date_end,
+        apply_postparabolic_filter=apply_postparabolic_filter,
     )
 
     n_below_floor = count_predictions_below_funding_floor(
@@ -1059,9 +1138,9 @@ def run_backtest(
 
     logger.info(
         "run_backtest start: run_id=%s horizon=%s policy=%s selection=%s "
-        "selection_params=%s policy_params=%s",
+        "selection_params=%s policy_params=%s postparabolic_filter=%s",
         run_id, horizon, exit_policy_id, selection_rule,
-        selection_params, policy_params,
+        selection_params, policy_params, apply_postparabolic_filter,
     )
 
     state = _run_lifecycle(
