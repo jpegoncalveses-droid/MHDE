@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
-from datetime import date, timedelta
+import os
+from collections import defaultdict
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import duckdb
@@ -9,7 +11,6 @@ import pandas as pd
 
 
 def _connect() -> duckdb.DuckDBPyConnection:
-    import os
     db_path = os.environ.get("MHDE_DB_PATH", "data/mhde.duckdb")
     return duckdb.connect(db_path, read_only=True)
 
@@ -638,3 +639,207 @@ def get_fx_recent_predictions(
         LIMIT ?
     """
     return conn.execute(sql, [limit]).fetchdf()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Paper-trading tab (Gap 3) — reads the crypto-trading-engine DuckDB
+# read-only via CRYPTO_ENGINE_DB_PATH. See DECISIONS.md ADR-020.
+# ──────────────────────────────────────────────────────────────────────
+
+_DEFAULT_ENGINE_DB = "/home/jpcg/crypto-trading-engine/data/trading_engine.duckdb"
+ENGINE_DB_ENV = "CRYPTO_ENGINE_DB_PATH"
+
+# Position states that mean "still in the market" (not exit_filled / failed / candidate).
+_PAPER_LIVE_STATES = ("entry_pending", "entry_filled", "trailing_active", "exit_pending")
+
+_PAPER_STATE_PRETTY = {
+    "entry_pending": "Entry pending",
+    "entry_filled": "Entry filled",
+    "trailing_active": "Trailing active",
+    "exit_pending": "Exit pending",
+    "exit_filled": "Exit filled",
+    "failed": "Failed",
+    "candidate": "Candidate",
+}
+
+# Engine event types that are mechanical noise rather than a human-readable reason.
+_PAPER_MECHANICAL_EVENTS = {"state_change", "order_placed", "order_filled", "leverage_set"}
+
+_UNCOMPUTABLE = "uncomputable (KI-136)"
+_DASH = "—"
+
+
+def engine_db_path() -> str:
+    """Path to the crypto-trading-engine DuckDB (env-overridable)."""
+    return os.environ.get(ENGINE_DB_ENV, _DEFAULT_ENGINE_DB)
+
+
+def _connect_engine() -> duckdb.DuckDBPyConnection:
+    """Fresh read-only connection to the engine DuckDB.
+
+    Raises whatever ``duckdb.connect`` raises if the file is missing / locked
+    / corrupt — the caller (the Streamlit tab) is responsible for catching
+    that and degrading gracefully without breaking the rest of the page.
+    """
+    return duckdb.connect(engine_db_path(), read_only=True)
+
+
+def _utcnow_naive() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _calc_stop(entry_price, peak_price, trail_pct: float, activation_pct: float):
+    """Policy-D trailing stop: peak − trail_pct·(peak − entry), once activated.
+
+    Returns a float when the trailing stop is active, else an explanatory
+    string ("—" if prices are missing, "— (not activated)" if the peak hasn't
+    cleared the activation threshold yet).
+    """
+    if entry_price is None or peak_price is None:
+        return _DASH
+    if peak_price < entry_price * (1.0 + activation_pct):
+        return f"{_DASH} (not activated)"
+    return peak_price - trail_pct * (peak_price - entry_price)
+
+
+def _latest_reason(events: list[tuple[str, str]]) -> str:
+    """Best-effort human-readable reason from a position's events.
+
+    ``events`` is a time-ordered list of ``(event_type, payload_json)``. Scans
+    newest-first for the first payload key that reads like a reason
+    (operator_reason, action, exit_reason≠"none", kind, reason, note, error);
+    falls back to the most recent non-mechanical event type; else "".
+    """
+    for event_type, payload in reversed(events):
+        try:
+            data = json.loads(payload) if isinstance(payload, str) else (payload or {})
+        except (ValueError, TypeError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        for key in ("operator_reason", "action", "kind", "reason", "note", "error"):
+            val = data.get(key)
+            if val:
+                return str(val)
+        exit_reason = data.get("exit_reason")
+        if exit_reason and str(exit_reason).lower() != "none":
+            return f"exit: {exit_reason}"
+        if event_type not in _PAPER_MECHANICAL_EVENTS:
+            return event_type
+    return ""
+
+
+def _reasons_by_position(
+    engine_conn: duckdb.DuckDBPyConnection, position_ids: list
+) -> dict:
+    if not position_ids:
+        return {}
+    placeholders = ",".join("?" for _ in position_ids)
+    rows = engine_conn.execute(
+        f"SELECT position_id, event_type, payload, timestamp FROM events "
+        f"WHERE position_id IN ({placeholders}) ORDER BY timestamp",
+        position_ids,
+    ).fetchall()
+    grouped: dict = defaultdict(list)
+    for pid, event_type, payload, _ts in rows:
+        grouped[pid].append((event_type, payload))
+    return {pid: _latest_reason(evs) for pid, evs in grouped.items()}
+
+
+def get_paper_open_positions(
+    engine_conn: duckdb.DuckDBPyConnection, *, trail_pct: float, activation_pct: float
+) -> pd.DataFrame:
+    placeholders = ",".join("?" for _ in _PAPER_LIVE_STATES)
+    rows = engine_conn.execute(
+        f"SELECT symbol, current_state, entry_date, entry_price, qty, peak_price "
+        f"FROM positions WHERE current_state IN ({placeholders}) "
+        f"ORDER BY entry_date DESC, symbol",
+        list(_PAPER_LIVE_STATES),
+    ).fetchall()
+    out = []
+    for symbol, state, entry_date, entry_price, qty, peak_price in rows:
+        out.append({
+            "symbol": symbol,
+            "state": _PAPER_STATE_PRETTY.get(state, state),
+            "entry_date": entry_date,
+            "entry_price": entry_price if entry_price is not None else _DASH,
+            "qty": qty if qty is not None else _DASH,
+            "peak_price": peak_price if peak_price is not None else _DASH,
+            "calc_stop": _calc_stop(entry_price, peak_price, trail_pct, activation_pct),
+        })
+    return pd.DataFrame(out, columns=[
+        "symbol", "state", "entry_date", "entry_price", "qty", "peak_price", "calc_stop",
+    ])
+
+
+def get_paper_closed_trades(
+    engine_conn: duckdb.DuckDBPyConnection, *, limit: int = 30
+) -> pd.DataFrame:
+    rows = engine_conn.execute(
+        "SELECT id, symbol, entry_date, entry_price, qty, peak_price, updated_at "
+        "FROM positions WHERE current_state = 'exit_filled' "
+        "ORDER BY updated_at DESC LIMIT ?",
+        [limit],
+    ).fetchall()
+    reasons = _reasons_by_position(engine_conn, [r[0] for r in rows])
+    out = []
+    for pid, symbol, entry_date, entry_price, qty, peak_price, updated_at in rows:
+        out.append({
+            "symbol": symbol,
+            "entry_date": entry_date,
+            "entry_price": entry_price if entry_price is not None else _DASH,
+            "qty": qty if qty is not None else _DASH,
+            "peak_price": peak_price if peak_price is not None else _DASH,
+            "closed_at": updated_at,
+            "close_reason": reasons.get(pid, ""),
+            "exit_price": _UNCOMPUTABLE,
+            "realized_pnl": _UNCOMPUTABLE,
+        })
+    return pd.DataFrame(out, columns=[
+        "symbol", "entry_date", "entry_price", "qty", "peak_price", "closed_at",
+        "close_reason", "exit_price", "realized_pnl",
+    ])
+
+
+def get_paper_failed_entries(
+    engine_conn: duckdb.DuckDBPyConnection, *, limit: int = 20
+) -> pd.DataFrame:
+    rows = engine_conn.execute(
+        "SELECT id, symbol, entry_date FROM positions WHERE current_state = 'failed' "
+        "ORDER BY updated_at DESC LIMIT ?",
+        [limit],
+    ).fetchall()
+    reasons = _reasons_by_position(engine_conn, [r[0] for r in rows])
+    out = [{
+        "symbol": symbol,
+        "entry_date": entry_date,
+        "reason": reasons.get(pid, ""),
+    } for pid, symbol, entry_date in rows]
+    return pd.DataFrame(out, columns=["symbol", "entry_date", "reason"])
+
+
+def get_paper_engine_runs_summary(
+    engine_conn: duckdb.DuckDBPyConnection, *, now: datetime | None = None
+) -> dict:
+    now = now or _utcnow_naive()
+    last_monitor = engine_conn.execute(
+        "SELECT max(started_at) FROM engine_runs WHERE phase = 'monitor' AND success = true"
+    ).fetchone()[0]
+    last_entry = engine_conn.execute(
+        "SELECT max(started_at) FROM engine_runs WHERE phase = 'entry' AND success = true"
+    ).fetchone()[0]
+    placeholders = ",".join("?" for _ in _PAPER_LIVE_STATES)
+    n_open = engine_conn.execute(
+        f"SELECT count(*) FROM positions WHERE current_state IN ({placeholders})",
+        list(_PAPER_LIVE_STATES),
+    ).fetchone()[0]
+    n_closed_14d = engine_conn.execute(
+        "SELECT count(*) FROM positions WHERE current_state = 'exit_filled' AND updated_at >= ?",
+        [now - timedelta(days=14)],
+    ).fetchone()[0]
+    return {
+        "last_monitor_at": last_monitor,
+        "last_entry_at": last_entry,
+        "n_open": int(n_open),
+        "n_closed_14d": int(n_closed_14d),
+    }
