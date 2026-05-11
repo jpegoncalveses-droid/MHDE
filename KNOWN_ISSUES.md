@@ -199,32 +199,51 @@ Documentation/clarity fix; no behavioral impact.
 ### KI-136 — Paper-trading drift monitor: P&L-band / drawdown / monthly arms deferred ("Gap 2.5")
 
 **Context.** The Gap 2 paper-trading drift monitor
-(`monitoring/paper_trading_drift.py`, ADR-020) ships with liveness +
-hit-rate checks only. Three planned arms were intentionally **not**
-built yet:
+(`monitoring/paper_trading_drift.py`, ADR-020) ships with checks A
+(engine liveness), B (stuck positions), C (closed-trade win rate — but
+see below) and D (label hit rate). Three planned arms were
+intentionally **not** built, and a fourth (C) ships but cannot compute:
 
 - **Realised-P&L band** — rolling-30-day realised P&L vs
   `active_spec.json.backtest_expectations` (±20% `divergence_alert_threshold_pct`).
 - **Drawdown breach** — realised account drawdown vs `portfolio_max_dd_pct`.
 - **Monthly portfolio return** — rolling-21-trading-day return vs the
   walkfold monthly band (~+27% median).
+- **Closed-trade win rate (Check C) — ships but currently uncomputable.**
+  Computing post-cost win rate needs the exit fill price. The engine
+  records market exits with `orders.price = NULL` (a market order has no
+  limit price) and the exit `order_filled` event payload carries only
+  `{qty, note}` — no price. So there is no readable exit price today;
+  Check C counts such trades under `closed_trade_no_exit_price` and
+  reports "uncomputable" (informational, not an alert). It activates
+  automatically once the engine persists a readable realized exit price /
+  P&L. (The engine's own event note — "realized_pnl_usd_approx includes
+  funding per FUNDING-001" — implies that value is computed but not yet
+  persisted in a place a reader can see; likely lands in `daily_pnl` once
+  reconcile runs, or a future `trades` table.)
 
-**Why deferred.** All three need the engine's `daily_pnl` table, which
-is **empty**: the engine's `trading-engine-reconcile.timer` (which
-populates `daily_pnl`) is disabled on the VPS pending the engine-side
-RECONCILE-001 fix. Building these arms now would mean shipping inert
-code with "no P&L snapshots yet" placeholders — noise, not signal.
+**Why deferred.** The P&L-band, drawdown and monthly arms need the
+engine's `daily_pnl` table, which is **empty**: the engine's
+`trading-engine-reconcile.timer` (which populates `daily_pnl`) is
+disabled on the VPS pending the engine-side RECONCILE-001 fix. Building
+those arms now would mean shipping inert code with "no P&L snapshots
+yet" placeholders — noise, not signal. Check C's blocker is the same
+family (no readable realized exit P&L) — likely resolved by the same
+engine change.
 
-**Resolution path.** Once RECONCILE-001 is resolved on the engine
-side and `daily_pnl` starts accumulating rows, add the three arms as a
-follow-up increment on `monitoring/paper_trading_drift.py` (the four
-existing checks already establish the module structure, the
-sample-gating pattern, and the `MonitorResult` aggregation — the new
-arms slot in alongside). No new schema or cross-repo coordination
-needed; just read `daily_pnl` read-only under ADR-020.
+**Resolution path.** Once RECONCILE-001 is resolved and `daily_pnl`
+starts accumulating (and/or the engine persists a readable per-trade
+realized exit price), add the three P&L arms as a follow-up increment
+on `monitoring/paper_trading_drift.py` (checks A–D already establish the
+module structure, the sample-gating pattern, and the `MonitorResult`
+aggregation — the new arms slot in alongside); Check C starts producing
+a real rate with no code change. No new schema or cross-repo
+coordination needed; just read the new data read-only under ADR-020.
 
-**Not blocking.** The liveness + hit-rate checks deliver real signal
-from real data today; the deferred arms add coverage, not correctness.
+**Not blocking.** Checks A, B and D deliver real signal from real data
+today (A from the first cycle, D once positions age past the 10-day
+label-settlement horizon); the deferred arms and Check C's activation
+add coverage, not correctness.
 
 ## Recently resolved (post-Session-7)
 

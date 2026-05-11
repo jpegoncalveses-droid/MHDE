@@ -43,6 +43,14 @@ P&L/DD/monthly arms would have been inert. Those arms deferred to KI-136
     post-cost `net = (sell_vwap - entry_price)·qty - 0.0009·notional`):
     outside `[0.74, 0.99]` → warn, < 0.60 → critical. Excludes the
     RECONCILE-001 phantom `exit_filled`-with-NULL-`entry_price` rows.
+    **Live-data finding:** the engine records market exits with
+    `orders.price = NULL` and no price in the exit `order_filled` event,
+    so there's no readable exit price — Check C ships but currently
+    reports "uncomputable (KI-136)" and counts those trades under
+    `closed_trade_no_exit_price`. It activates with no code change once
+    the engine persists a readable realized exit P&L. (Also: the 14
+    closed trades in the engine DB right now are all manual
+    `manual_close_leverage_fix` closes, not strategy exits.)
   - **D. label hit rate** — closed positions joined to
     `crypto_ml_labels.label_10d_10pct`, windowed by *label settlement*
     (entry+10d ∈ last 14d): outside `[0.32, 0.62]` → warn, outside

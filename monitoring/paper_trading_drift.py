@@ -7,7 +7,11 @@ checks:
   A. Engine liveness  — the monitor phase is ticking; the entry phase ran today.
   B. Stuck positions  — nothing wedged in ``entry_pending`` / ``exit_pending``.
   C. Closed-trade win rate (rolling 14d, post-cost P&L > 0) vs the Phase 1B
-     walkfold band.  Sample-gated.
+     walkfold band.  Sample-gated.  NOTE: the engine does not yet persist
+     exit fill prices for market exits (``orders.price`` is NULL; the exit
+     ``order_filled`` event has no price), so this arm currently reports
+     "uncomputable" — it activates once the engine persists realized P&L.
+     See KI-136.
   D. Label hit rate (top-K reaching +10% within 10d, rolling 14d by *label
      settlement date*) vs the walkfold band.  Sample-gated.
 
@@ -179,6 +183,16 @@ def _check_stuck_positions(eng, now: datetime, metrics: dict) -> list[_Finding]:
 
 # ── Check C — closed-trade win rate ──────────────────────────────────
 def _check_closed_win_rate(eng, now: datetime, metrics: dict) -> list[_Finding]:
+    """Win rate over closed trades in the last ROLLING_WINDOW_DAYS.
+
+    Needs the exit fill price. The engine records market exits with
+    ``orders.price = NULL`` (no limit price) and the ``order_filled`` exit
+    event payload carries no price either, so today the only readable exit
+    price is a non-NULL ``orders.price`` (e.g. a limit exit) — currently
+    zero of those. Trades with no readable exit price are counted under
+    ``closed_trade_no_exit_price`` and the arm reports that it cannot
+    compute the rate yet (informational, not an alert; see KI-136).
+    """
     cutoff_ts = now - timedelta(days=ROLLING_WINDOW_DAYS)
     rows = eng.execute(
         """
@@ -188,18 +202,22 @@ def _check_closed_win_rate(eng, now: datetime, metrics: dict) -> list[_Finding]:
         FROM positions p
         JOIN orders o
           ON o.position_id = p.id
-         AND o.side = 'SELL' AND o.order_type = 'MARKET' AND o.status = 'FILLED'
+         AND o.side = 'SELL' AND o.status = 'FILLED'
         WHERE p.current_state = 'exit_filled' AND p.entry_price IS NOT NULL
         GROUP BY p.id, p.entry_price, p.qty
         """
     ).fetchall()
 
     winners = 0
-    n = 0
+    n = 0                 # closed trades in-window WITH a readable exit price
+    n_no_exit_price = 0   # closed trades in-window with exit price not recorded
     for entry_price, qty, sell_vwap, exit_ts in rows:
         if exit_ts is None or exit_ts < cutoff_ts:
             continue
-        if entry_price is None or qty is None or sell_vwap is None:
+        if entry_price is None or qty is None:
+            continue
+        if sell_vwap is None:
+            n_no_exit_price += 1
             continue
         n += 1
         notional = entry_price * qty
@@ -208,15 +226,23 @@ def _check_closed_win_rate(eng, now: datetime, metrics: dict) -> list[_Finding]:
             winners += 1
 
     metrics["closed_trade_n"] = n
+    metrics["closed_trade_no_exit_price"] = n_no_exit_price
+    np_note = (f"; {n_no_exit_price} more closed but exit price not recorded by the engine (KI-136)"
+               if n_no_exit_price else "")
+
     if n < MIN_CLOSED_FOR_HITRATE:
         metrics["closed_trade_win_rate"] = None
+        if n == 0 and n_no_exit_price:
+            return [_Finding("ok",
+                f"closed-trade win rate: {n_no_exit_price} closed trade(s) in last {ROLLING_WINDOW_DAYS}d "
+                f"but the engine doesn't record exit fill prices yet — uncomputable (KI-136)")]
         return [_Finding("ok",
-            f"closed-trade win rate: insufficient sample ({n}/{MIN_CLOSED_FOR_HITRATE} in last {ROLLING_WINDOW_DAYS}d)")]
+            f"closed-trade win rate: insufficient sample ({n}/{MIN_CLOSED_FOR_HITRATE} priced in last {ROLLING_WINDOW_DAYS}d{np_note})")]
 
     rate = winners / n
     metrics["closed_trade_win_rate"] = round(rate, 4)
     lo, hi = TRADE_WIN_RATE_WARN
-    detail = f"{rate:.1%} ({winners}/{n}, last {ROLLING_WINDOW_DAYS}d; expected {lo:.0%}–{hi:.0%})"
+    detail = f"{rate:.1%} ({winners}/{n}, last {ROLLING_WINDOW_DAYS}d; expected {lo:.0%}–{hi:.0%}{np_note})"
     if rate < TRADE_WIN_RATE_CRIT_FLOOR:
         return [_Finding("critical", f"closed-trade win rate {detail} — below {TRADE_WIN_RATE_CRIT_FLOOR:.0%} critical floor")]
     if rate < lo or rate > hi:

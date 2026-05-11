@@ -284,6 +284,29 @@ def test_phantom_autoclosed_position_excluded_from_denominator(temp_db):
     assert res.metrics.get("closed_trade_n") == 22
 
 
+def test_closed_trade_without_exit_price_is_reported_uncomputable(temp_db):
+    eng = _new_engine_db()
+    _healthy_engine(eng)
+    # a real entry + a FILLED market SELL, but the engine recorded price=NULL
+    eng.execute(
+        "INSERT INTO positions (id, symbol, entry_date, entry_price, qty, "
+        "current_state, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
+        ["px", "NOPXUSDT", (NOW - timedelta(days=3)).date(), 100.0, 10.0,
+         "exit_filled", NOW - timedelta(days=2, hours=3), NOW - timedelta(days=2)],
+    )
+    eng.execute(
+        "INSERT INTO orders (id, position_id, order_type, side, price, qty, "
+        "status, filled_at) VALUES (?,?,?,?,?,?,?,?)",
+        ["sell-px", "px", "MARKET", "SELL", None, 10.0, "FILLED",
+         NOW - timedelta(days=2)],
+    )
+    res = _run(eng, temp_db)
+    assert res.status == "ok"
+    assert "exit fill price" in res.body.lower() or "uncomputable" in res.body.lower()
+    assert res.metrics.get("closed_trade_n") == 0
+    assert res.metrics.get("closed_trade_no_exit_price") == 1
+
+
 def test_old_closed_trades_outside_window_excluded(temp_db):
     eng = _new_engine_db()
     _healthy_engine(eng)
