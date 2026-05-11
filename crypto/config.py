@@ -55,6 +55,19 @@ TRADE_COUNT_CLIFF_RATIO = 0.10
 SYSTEMIC_FLAG_RATIO = 0.30
 SYSTEMIC_MIN_SYMBOLS = 10
 
+# Knockout (triple-barrier) label parameters (crypto/ml/knockout_label.py,
+# populated by crypto/ml/labels.py). A trade entered at close C is a WIN
+# (label_Nd_knockout = True) iff, walking forward bar by bar over N trading
+# days, the intraday HIGH reaches C·(1 + KNOCKOUT_TP) before the intraday LOW
+# reaches C·(1 + KNOCKOUT_SL) (KNOCKOUT_SL is negative). Same-bar both-touch
+# resolves SL-first (pessimistic); a window with no barrier touch ("neither")
+# is classified as a LOSS. Horizons mirror the legacy labels (5d, 10d). The
+# legacy label_Nd_10pct columns are kept alongside (backward compat). Retuning
+# TP/SL requires a full label re-backfill. See crypto/ml/KNOCKOUT_LABEL_SPEC.md
+# and DECISIONS.md (ADR).
+KNOCKOUT_TP = 0.10
+KNOCKOUT_SL = -0.05
+
 FEATURE_COLS = [
     "return_1d", "return_3d", "return_5d", "return_10d", "return_20d", "return_60d",
     "rsi_14d", "drawdown_from_90d_high", "price_vs_20d_ma", "price_vs_50d_ma",

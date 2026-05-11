@@ -79,9 +79,31 @@ CREATE TABLE IF NOT EXISTS crypto_ml_labels (
     label_10d_10pct BOOLEAN,
     label_10d_15pct BOOLEAN,
     label_10d_20pct BOOLEAN,
+    -- Knockout (triple-barrier) label — see crypto/ml/knockout_label.py and
+    -- crypto/ml/KNOCKOUT_LABEL_SPEC.md. label_Nd_knockout = (knockout_outcome_Nd == 'tp');
+    -- knockout_outcome_Nd ∈ {'tp','sl','neither'}; knockout_resolve_day_Nd is the
+    -- 1-indexed forward bar a barrier was touched (NULL for 'neither').
+    label_5d_knockout BOOLEAN,
+    label_10d_knockout BOOLEAN,
+    knockout_outcome_5d VARCHAR,
+    knockout_outcome_10d VARCHAR,
+    knockout_resolve_day_5d INTEGER,
+    knockout_resolve_day_10d INTEGER,
     PRIMARY KEY (symbol, trade_date)
 );
 """
+
+# Idempotent migrations for crypto_ml_labels — applied after the CREATE so an
+# existing live table (predating the knockout columns) gains them without
+# losing data; all no-ops on a freshly-created table.
+_CRYPTO_ML_LABELS_MIGRATIONS = [
+    "ALTER TABLE crypto_ml_labels ADD COLUMN IF NOT EXISTS label_5d_knockout BOOLEAN",
+    "ALTER TABLE crypto_ml_labels ADD COLUMN IF NOT EXISTS label_10d_knockout BOOLEAN",
+    "ALTER TABLE crypto_ml_labels ADD COLUMN IF NOT EXISTS knockout_outcome_5d VARCHAR",
+    "ALTER TABLE crypto_ml_labels ADD COLUMN IF NOT EXISTS knockout_outcome_10d VARCHAR",
+    "ALTER TABLE crypto_ml_labels ADD COLUMN IF NOT EXISTS knockout_resolve_day_5d INTEGER",
+    "ALTER TABLE crypto_ml_labels ADD COLUMN IF NOT EXISTS knockout_resolve_day_10d INTEGER",
+]
 
 SCHEMA_CRYPTO_ML_FEATURES = """
 CREATE TABLE IF NOT EXISTS crypto_ml_features (
@@ -242,3 +264,5 @@ ALL_SCHEMAS = [
 def create_all_tables(conn):
     for schema in ALL_SCHEMAS:
         conn.execute(schema)
+    for stmt in _CRYPTO_ML_LABELS_MIGRATIONS:
+        conn.execute(stmt)

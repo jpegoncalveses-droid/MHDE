@@ -145,12 +145,26 @@ is_active, added_date, removed_date, created_at.
 ### `crypto_ml_labels`
 
 Forward returns and hit-rate labels at 1d/3d/5d/10d horizons. Threshold
-levels are wider than equity (5/10/15/20%) reflecting crypto vol.
+levels are wider than equity (5/10/15/20%) reflecting crypto vol. All the
+`fwd_*` and `label_Nd_Xpct` columns are **close-based** (forward daily
+closes).
+
+**Knockout (triple-barrier) columns** (added 2026-05-11, ADR-023, populated
+by a forward-walk pass in `compute_labels` — see `crypto/ml/knockout_label.py`
+and `crypto/ml/KNOCKOUT_LABEL_SPEC.md`): `label_{5d,10d}_knockout BOOLEAN` —
+True iff over the next N trading days the **intraday high** reaches
+`close·(1 + KNOCKOUT_TP)` before the intraday low reaches `close·(1 + KNOCKOUT_SL)`
+(TP=+0.10, SL=−0.05; same-bar both-touch resolves SL-first; "neither" → False);
+`knockout_outcome_{5d,10d} VARCHAR` ∈ `'tp'|'sl'|'neither'`;
+`knockout_resolve_day_{5d,10d} INTEGER` — 1-indexed forward bar a barrier was
+touched (NULL for `'neither'`). The legacy `label_Nd_10pct` columns are kept
+alongside for backward compat. Idempotent `ADD COLUMN IF NOT EXISTS`
+migrations in `crypto/schema.py:_CRYPTO_ML_LABELS_MIGRATIONS`.
 
 PK: `(symbol, trade_date)`. Full column list in `crypto/schema.py:SCHEMA_CRYPTO_ML_LABELS`.
 
 **Writer:** `crypto/ml/labels.py` (called by `crypto backfill-labels`).
-**Reader:** `crypto/ml/train.py`, `crypto/ml/predict.py:fill_outcomes`.
+**Reader:** `crypto/ml/train.py`, `crypto/ml/predict.py:fill_outcomes` (legacy columns; the knockout columns become a training target in phase 2).
 
 ### `crypto_ml_features`
 

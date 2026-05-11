@@ -1072,3 +1072,60 @@ predictions on bad data). Single-symbol thin-trading days produce WARNs
 only. Thresholds are five constants in `crypto/config.py`. A dashboard
 view of `crypto_data_quality_reports` is a deferred phase-2 item. The
 deployed unit needs `systemctl daemon-reload` after this merge.
+
+---
+
+## ADR-023 — Knockout (triple-barrier) crypto label (phase 1: label + backfill, additive)
+
+**Date:** 2026-05-11
+**Session:** knockout label, phase 1 (after the post-parabolic filter / data-quality guard)
+**Status:** Active — phase 1 (label code, schema, backfill). Phase 2 (training a knockout model, the validation/promotion path) is a separate task.
+**Spec:** `crypto/ml/KNOCKOUT_LABEL_SPEC.md` (operator-approved 2026-05-11).
+
+**Context.** The legacy crypto label `label_Nd_10pct = (max forward daily
+close / close − 1) ≥ 0.10` is direction-agnostic and volatility-rewarding —
+a coin in freefall still "wins" because it tags +10 % at *some* point — which
+is the root cause of the SKYAI false-positive class (probabilities honest
+w.r.t. the label, useless as risk-aware entry signals; mitigated by the
+post-parabolic filter, ADR-021, which is the *symptom* guard). A knockout
+(triple-barrier) label scores what a trader cares about: take-profit hit
+*before* stop-loss, within the horizon.
+
+**Decision (phase 1).** Add a knockout label alongside (not replacing) the
+legacy one. `crypto/ml/knockout_label.py` — pure
+`knockout_classify(forward_highs, forward_lows, entry_close, tp, sl, horizon,
+sl_first=True) -> (outcome, resolve_day)`: walk forward bar by bar over up to
+`horizon` bars; intraday HIGH ≥ `C·(1+tp)` first → `"tp"` (WIN); intraday LOW
+≤ `C·(1+sl)` first → `"sl"` (LOSS, `sl` < 0); both in one bar → `sl_first`
+tiebreak; no touch within `horizon` → `"neither"` → classified as a LOSS.
+Parameters (operator-approved): **TP = +0.10, SL = −0.05** (same for both
+horizons), horizons **5d and 10d**, **neither → loss**, **same-bar → SL-first
+(pessimistic)** — constants `KNOCKOUT_TP` / `KNOCKOUT_SL` in `crypto/config.py`.
+`crypto/ml/labels.py::compute_labels` gains a forward-walk pass
+(`_compute_knockout_labels`) — the existing close-based INSERT can't express
+first-touch ordering — that populates six new `crypto_ml_labels` columns:
+`label_{5d,10d}_knockout BOOLEAN` (= `outcome == 'tp'`),
+`knockout_outcome_{5d,10d} VARCHAR` (`'tp'|'sl'|'neither'`),
+`knockout_resolve_day_{5d,10d} INTEGER` (1-indexed, NULL for `'neither'`).
+Additive `ALTER TABLE … ADD COLUMN IF NOT EXISTS` migrations; the
+`INSERT INTO crypto_ml_labels` is changed to an explicit column list so the
+new columns don't break it. Backfill runs in the existing `crypto backfill-labels`
+step (no new pipeline stage, no systemd change) in ~sub-second.
+
+**Backfill result (full window, 27,483 label rows):** label base rates —
+`label_5d_knockout` 23.1 % (`tp` 23.1 % / `sl` 60.0 % / `neither` 16.9 %),
+`label_10d_knockout` 27.8 % (`tp` 27.8 % / `sl` 65.5 % / `neither` 6.7 %) —
+vs the legacy `label_10d_10pct` 35.8 %; the gap is the volatility-loving
+false-wins the knockout label purges. Median resolve day: `tp` ≈ 2, `sl` ≈ 1–2.
+The SKYAI 2026-05-10-close entry classifies as `'sl'` on day 1 (the
+2026-05-11 low pierces the −5 % barrier before the high reaches +10 %).
+
+**Consequences.** The legacy `label_Nd_10pct` columns are kept (trained
+models, `fill_outcomes`, the dashboard accuracy panel, `phase0_evaluate` still
+read them) — keeping both enables an A/B transition: phase 2 trains a knockout
+model, runs it side-by-side, and gates it on the promotion criteria in the
+spec §5 (walk-forward precision floor, calibration, a backtest verdict,
+operator sign-off for the first one) before any `is_active` flip. Phase 1
+touches nothing downstream (no `train.py` / `predict.py` / model artifacts /
+dashboard / validation_gate change). Retuning TP/SL requires a full label
+re-backfill (same as the legacy label's implicit 0.10).
