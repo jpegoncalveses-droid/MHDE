@@ -1,8 +1,8 @@
 [Unit]
-Description=MHDE crypto daily predictions export timer (06:15 UTC daily, 7 days/week)
+Description=MHDE crypto daily predictions export timer (00:40 UTC daily, 7 days/week — right after mhde-crypto-predict.service at 00:30)
 
 [Timer]
-OnCalendar=*-*-* 06:15:00
+OnCalendar=*-*-* 00:40:00
 Persistent=true
 
 [Install]

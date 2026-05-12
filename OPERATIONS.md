@@ -833,7 +833,7 @@ and no positions were placed — invisible for ~24h). Full reference:
 
 | Unit | Schedule (UTC) | Command | Checks |
 |---|---|---|---|
-| `mhde-crypto-pipeline-monitor.{service,timer}` | daily 06:40 | `monitor crypto-pipeline` | 9 steps: OHLCV → data-quality guard → funding/OI → features → predictions → outcome tagging → predictions export → engine ingest → engine entry/positions (steps 8–9 read the engine DuckDB read-only, ADR-020). Sends green or red. |
+| `mhde-crypto-pipeline-monitor.{service,timer}` | daily 00:50 | `monitor crypto-pipeline` | 9 steps: OHLCV → data-quality guard → funding/OI → features → predictions → outcome tagging → predictions export → engine ingest → engine entry/positions (steps 8–9 read the engine DuckDB read-only, ADR-020). Sends green or red. Fires after the 00:30 predict → 00:40 export → ~00:45 engine entry chain (ADR-027). |
 | `mhde-equity-pipeline-monitor.{service,timer}` | daily 01:00 | `monitor equity-pipeline` | 4 steps: equity ingestion → features → predictions → dashboard-data refresh. Sends green or red. |
 | `mhde-fx-pipeline-monitor.{service,timer}` | daily 12:10 | `monitor fx-pipeline` | 2 steps: FX bar ingestion (freshness, KI-128-aware) → signal generation. Sends green or red. |
 | `mhde-continuous-monitor.{service,timer}` | every 30 min (`*:0/30`) | `monitor continuous` | FX hourly-bar freshness; engine monitor-timer liveness; engine entry-timer ran today (after 08:00 UTC). **Silent when all green**, one message when any red. |
@@ -1057,9 +1057,11 @@ After every Phase 1B re-run that changes the winner config:
 
 ### Daily predictions timer
 
-`mhde-crypto-export-predictions.timer` fires at 06:15 UTC daily,
-7 days/week. The service runs `venv/bin/python main.py crypto
-export-predictions`, which:
+`mhde-crypto-export-predictions.timer` fires at **00:40 UTC daily**,
+7 days/week — ~10 min after `mhde-crypto-predict.service` (00:30) so the
+export, the engine entry (00:45) and the pipeline monitor (00:50) all run as
+a tight chain right after prediction (ADR-027). The service runs
+`venv/bin/python main.py crypto export-predictions`, which:
 
 1. Resolves the active 10d model from `crypto_ml_model_runs`.
 2. **Preflight (staleness-only, KI-129 corrected)**: requires

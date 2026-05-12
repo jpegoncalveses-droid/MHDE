@@ -35,12 +35,14 @@ Exit status: 0 if green, 1 if any step red.
 
 ## What each monitor checks
 
-### Crypto pipeline — `main.py monitor crypto-pipeline`, daily 06:40 UTC
+### Crypto pipeline — `main.py monitor crypto-pipeline`, daily 00:50 UTC
 
-Fires after the 00:30 predict chain, the 06:15 prediction export, and the
-~06:30 engine entry. Date conventions: under cap-at-today-1 (ADR-022) OHLCV /
-features / `prediction_date` are all `today-1`; the export's `export_date` is
-`today` and `features_as_of_date` is `today-1` (ADR-025).
+Fires after the tight chain: 00:30 predict → 00:40 prediction export → ~00:45
+engine entry (ADR-027 — the export and entry timers were moved up from 06:15 /
+06:30 to close the ~6h gap between prediction and entry). Date conventions:
+under cap-at-today-1 (ADR-022) OHLCV / features / `prediction_date` are all
+`today-1`; the export's `export_date` is `today` and `features_as_of_date` is
+`today-1` (ADR-025).
 
 | # | Step | Green when |
 |---|---|---|
@@ -104,7 +106,7 @@ and read-only.
 
 | Unit | Schedule (UTC) | Command |
 |---|---|---|
-| `mhde-crypto-pipeline-monitor.{service,timer}` | daily 06:40 | `monitor crypto-pipeline` |
+| `mhde-crypto-pipeline-monitor.{service,timer}` | daily 00:50 | `monitor crypto-pipeline` |
 | `mhde-equity-pipeline-monitor.{service,timer}` | daily 01:00 | `monitor equity-pipeline` |
 | `mhde-fx-pipeline-monitor.{service,timer}` | daily 12:10 | `monitor fx-pipeline` |
 | `mhde-continuous-monitor.{service,timer}` | every 30 min (`*:0/30`) | `monitor continuous` |
