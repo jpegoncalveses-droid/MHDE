@@ -6,6 +6,81 @@ are at the top.
 
 ---
 
+## 2026-05-12 — Move the crypto daily chain (export / engine entry / pipeline monitor) up to 00:40–00:50 UTC, right after predict (ADR-027)
+
+**Branch:** `fix-pipeline-timers-early-fire` (committed; **STOPPED — branch
+ready for operator review/merge/deploy**). MHDE side: two `.timer` OnCalendar
+changes + docs. The matching engine-side change (`trading-engine-entry.timer`
+06:30 → 00:45) is on the crypto-trading-engine branch `fix-entry-timer-early-fire`.
+No code change, no migration, no schema change.
+
+**Trigger.** `mhde-crypto-predict.service` fires at 00:30 and reliably finishes
+in ~2 min (observed 2:05–2:40/day this week, +30s on a write-lock retry), but
+the downstream steps were left at their pre-00:30-era times: predictions export
+06:15, engine `entry` 06:30, crypto pipeline monitor 06:40. ⇒ a built-in ~6h
+gap between fresh predictions and the engine acting on them, and a 6h-late
+surfacing of any overnight predict breakage. Operator asked to collapse it.
+
+**Change (MHDE).** `systemd/mhde-crypto-export-predictions.timer`
+`06:15:00 → 00:40:00`; `systemd/mhde-crypto-pipeline-monitor.timer`
+`06:40:00 → 00:50:00`. Both keep `Persistent=true`; the export `.service` keeps
+`After=mhde-crypto-predict.service`. Buffers ≈ 2× the worst observed duration of
+the preceding step: predict ~2–3 min → export at +10 min; export ~30–60s →
+engine entry at +5 min; engine entry ~1–30s → monitor at +5 min. Target chain:
+00:30 predict → 00:40 export → 00:45 engine entry → 00:50 monitor. Rationale,
+duration evidence and the deploy-ordering constraint recorded in ADR-027.
+
+**Not changed.** `active_spec.json` / `crypto/exports/spec_config.py` still
+carry `runtime.entry_time_utc: "06:30"` — loaded into the engine's
+`RuntimeConfig` but never read by engine code (documentation only); editing it
+changes the spec hash and forces a coordinated spec-reload + re-ack on the
+engine, for no functional gain. Stale-metadata note left in ADR-027; correct it
+in a future routine spec bump. The predict timer (00:30) is unchanged.
+
+**Verification (L4).**
+- `systemd-analyze verify systemd/mhde-crypto-export-predictions.timer
+  systemd/mhde-crypto-pipeline-monitor.timer` → clean;
+  `systemd-analyze calendar '*-*-* 00:40:00'` / `'*-*-* 00:50:00'` → normalize
+  as expected (system TZ is UTC).
+- `venv/bin/python -m pytest tests/monitoring tests/regression
+  tests/test_session2_infra_smoke.py -q` → all green **except** the two
+  pre-existing failures unrelated to this work
+  (`test_dashboard_structure.py::test_no_module_level_connection` —
+  `dashboard/app.py:931`; `test_systemd_units.py::test_repo_vs_deployed_unit_parity`
+  — now also lists `mhde-crypto-export-predictions.timer` as repo-vs-deployed
+  drift, which is **expected** until the operator deploys the new timer; the
+  monitor timer isn't deployed yet so it's still skipped by that test).
+- pre-commit hook (py_compile + smoke pytest + lint) → OK on commit.
+
+**Files of record.** `systemd/mhde-crypto-export-predictions.timer`,
+`systemd/mhde-crypto-pipeline-monitor.timer`, `DECISIONS.md` (ADR-027),
+`OPERATIONS.md`, `ARCHITECTURE.md`, `docs/PIPELINE_MONITORING.md`, this log.
+
+**Pending operator action (deploy — ORDER MATTERS).**
+1. **MHDE export timer first.** Merge this branch.
+   `sudo cp systemd/mhde-crypto-export-predictions.timer /etc/systemd/system/` →
+   `sudo systemctl daemon-reload` →
+   `sudo systemctl restart mhde-crypto-export-predictions.timer` →
+   `systemctl list-timers mhde-crypto-export-predictions.timer` (confirm next
+   elapse = tomorrow 00:40). Optionally fire once now and confirm
+   `data/exports/predictions_latest.json` has today's `export_date`.
+2. **Engine entry timer second** (only after step 1 is live). Merge the
+   crypto-trading-engine `fix-entry-timer-early-fire` branch.
+   `sudo cp systemd/trading-engine-entry.timer /etc/systemd/system/` →
+   `sudo systemctl daemon-reload` →
+   `sudo systemctl restart trading-engine-entry.timer` →
+   `systemctl list-timers trading-engine-entry.timer` (confirm 00:45).
+   *Critical:* doing this before step 1 means the 00:45 entry reads
+   yesterday's stale export and skips entry that day.
+3. **Monitor timer third.** `sudo cp systemd/mhde-crypto-pipeline-monitor.timer
+   /etc/systemd/system/` → `daemon-reload` → `restart` (only if the
+   pipeline-monitor units have already been deployed at all — see the earlier
+   ADR-026 session entry; if not yet deployed, just include the new time when
+   you do).
+4. Watch the next morning's 00:50 Telegram message (should be all-green) and
+   `journalctl -u trading-engine-entry.service -n 50` (entry ran ~00:45 on a
+   fresh file).
+
 ## 2026-05-12 — Pipeline monitor: one Telegram message per pipeline, outcome-based step checks (ADR-026)
 
 **Branch:** `feat-pipeline-monitoring` (committed; **STOPPED — branch ready

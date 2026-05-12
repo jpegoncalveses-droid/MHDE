@@ -357,8 +357,10 @@ engine timers stalled. Every check is **outcome-based** (reads the DB / a file:
 — never exit-code-based, because the regression that motivated it (KI-138) had
 every script exit 0. The crypto monitor and the continuous monitor read the
 crypto-trading-engine DuckDB read-only (`CRYPTO_ENGINE_DB_PATH`, ADR-020). New
-units `mhde-{crypto,equity,fx}-pipeline-monitor` (daily 06:40 / 01:00 / 12:10
-UTC) and `mhde-continuous-monitor` (`*:0/30`). CLI:
+units `mhde-{crypto,equity,fx}-pipeline-monitor` (daily 00:50 / 01:00 / 12:10
+UTC — the crypto one fires right after the 00:30 predict → 00:40 export →
+~00:45 engine entry chain, ADR-027) and `mhde-continuous-monitor` (`*:0/30`).
+CLI:
 `main.py monitor {crypto,equity,fx}-pipeline` and `main.py monitor continuous`.
 Full reference: `docs/PIPELINE_MONITORING.md`.
 

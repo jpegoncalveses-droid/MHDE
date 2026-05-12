@@ -1,8 +1,8 @@
 [Unit]
-Description=MHDE crypto pipeline monitor — daily 06:40 UTC (after the 06:15 export and the ~06:30 engine entry)
+Description=MHDE crypto pipeline monitor — daily 00:50 UTC (after the 00:40 export and the ~00:45 engine entry)
 
 [Timer]
-OnCalendar=*-*-* 06:40:00
+OnCalendar=*-*-* 00:50:00
 Persistent=true
 
 [Install]

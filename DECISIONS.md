@@ -1352,3 +1352,66 @@ machine-readable reason is reported RED-with-note (the engine DB carries no
 (KI-139). The engine `reconcile` timer is not checked (disabled pending
 RECONCILE-001; a `CHECK_ENGINE_RECONCILE` flag flips it on). No schema change,
 no migration, no engine-repo change, no change to any existing pipeline step.
+
+## ADR-027 — Crypto daily chain (predict → export → engine entry → pipeline monitor) fires as a tight block at 00:30–00:50 UTC, not spread to 06:xx
+
+**Status:** accepted 2026-05-12. Implemented in `systemd/mhde-crypto-export-predictions.timer`
+(MHDE) and `systemd/trading-engine-entry.timer` (crypto-trading-engine);
+`mhde-crypto-pipeline-monitor.timer` moved to match. No code change.
+
+**Context.** The crypto daily pipeline had a built-in ~6h operational gap:
+`mhde-crypto-predict.service` runs at **00:30 UTC** (and reliably completes in
+~2 min — observed 2:05–2:40 over the last week, with the occasional +30s DuckDB
+write-lock retry), but the downstream steps fired hours later — predictions
+export at 06:15, engine `entry` at 06:30, and (since ADR-026) the pipeline
+monitor at 06:40. So fresh predictions sat unused for ~6h, and any
+overnight breakage in predict surfaced six hours late. The 06:xx times were
+historical (chosen before the predict timer was moved to 00:30) with no
+remaining reason to keep them.
+
+**Decision.** Move the three downstream timers up so they run immediately after
+predict completes, as a chain with generous buffers (≈2× the worst observed
+duration of the preceding step, not the theoretical minimum):
+
+| Step | Unit | Old (UTC) | New (UTC) | Buffer over the step before it |
+|---|---|---|---|---|
+| predict (6-step backfill chain → `crypto predict`) | `mhde-crypto-predict.service` | 00:30 | 00:30 (unchanged) | — |
+| predictions export → `data/exports/predictions_latest.json` | `mhde-crypto-export-predictions.timer` | 06:15 | **00:40** | 10 min over predict's ~2–3 min run |
+| engine `entry` phase (reads the export, places orders) | `trading-engine-entry.timer` (engine repo) | 06:30 | **00:45** | 5 min over export's ~30–60s run |
+| crypto pipeline monitor (verifies the whole chain) | `mhde-crypto-pipeline-monitor.timer` | 06:40 | **00:50** | 5 min over the engine entry's ~1–30s run |
+
+All four keep `Persistent=true` (catch-up after downtime); `mhde-crypto-export-predictions.service`
+keeps `After=mhde-crypto-predict.service` so a boot-time catch-up still orders
+export after predict.
+
+**Deploy ordering is load-bearing.** The export must be redeployed **before**
+the engine entry timer. If entry moves to 00:45 while the export is still at
+06:15, the 00:45 entry finds yesterday's `predictions_latest.json`
+(`export_date` mismatch / `generated_at` older than the 4h staleness window per
+INTERFACE.md §3.2) and skips entry for the day — exactly the failure shape the
+engine's stale-predictions guard is meant to catch, but self-inflicted. Correct
+order: (1) deploy + activate the new MHDE export timer, confirm it has run and
+written today's file; (2) deploy + activate the new engine entry timer; (3)
+deploy the new monitor timer. The reverse window (export at 00:40, entry still
+at 06:30) is harmless — entry just reads a 5h-old-but-correct file at 06:30
+until its timer is updated.
+
+**Not changed.** `active_spec.json` / `crypto/exports/spec_config.py` still
+carry `runtime.entry_time_utc: "06:30"` — that field is loaded into the engine's
+`RuntimeConfig` but never read by any engine code path (it's documentation), and
+editing it changes the spec hash, which forces a coordinated spec-reload +
+re-ack on the engine side (INTERFACE.md §4) for no functional gain. It can be
+corrected to `"00:45"` in a future routine spec bump; until then treat it as
+stale metadata. The predict timer itself (00:30) is unchanged. No change to the
+predict / export / entry logic, only their fire times.
+
+**Consequences.** Positions are opened ~5h45m earlier each day, so
+trailing-stop monitoring (engine `monitor` phase, runs every minute regardless)
+starts on the day's new positions ~6h sooner. A breakage anywhere in
+predict→export→entry now surfaces in the 00:50 Telegram message instead of
+06:40. Downside: less wall-clock slack if predict ever runs pathologically long
+(>10 min) — but `mhde-crypto-predict.service` has `TimeoutStartSec=1800` and a
+run that slow is itself an incident the monitor will flag (stale export at
+00:50). The export and entry now run while the FX hourly :05 chain and other
+:0X jobs are quieter than 06:xx, so DuckDB write-lock contention is, if
+anything, slightly lower.
