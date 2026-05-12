@@ -1,16 +1,21 @@
 """Tests for crypto.exports.write_daily_predictions.
 
-Preflight (one gate, staleness-only after KI-129 correction):
-  - staleness gate (MAX(trade_date) < today UTC → error)
-  - happy path (today UTC → success, n_predictions = predictable subset)
+Preflight (one gate, staleness-only after KI-129 correction; tolerance
+widened to today-or-today-1 after KI-138 / the cap-at-today-1 ingestion
+fix in commit 8f9d707):
+  - staleness gate accepts MAX(trade_date) == export_date
+  - staleness gate accepts MAX(trade_date) == export_date - 1 (the
+    structural normal under cap-at-today-1 ingestion)
+  - staleness gate still fails MAX(trade_date) == export_date - 2
   - warmup-window symbols silently absent (no error, just smaller n)
 
 Schema integration:
-  - n_predictions == count(active universe ∩ has-features-today)
+  - n_predictions == count(active universe ∩ has-features-on-features-date)
   - ranks 1..N consecutive
   - probabilities sorted descending
   - all probabilities in [0, 1]
-  - export_date matches prediction_date
+  - export_date == today UTC (the date the predictions drive trades)
+  - features_as_of_date == MAX(trade_date) used for inference
   - symlink points at the dated file
 
 Joblib bundle is mocked via monkeypatch (same pattern as
@@ -19,7 +24,7 @@ tests/crypto/test_predict.py).
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -83,16 +88,72 @@ def _mock_joblib_load(monkeypatch, probs_per_call):
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_preflight_fails_when_features_stale(temp_db):
-    """MAX(trade_date) = yesterday → ExportPreflightError('stale')."""
+def test_preflight_fails_when_features_two_days_stale(temp_db):
+    """MAX(trade_date) == export_date - 2 → ExportPreflightError('stale').
+
+    today-1 is the structural normal under the cap-at-today-1 ingestion
+    fix (commit 8f9d707), so the gate must only fire once features fall
+    *behind* that — genuine pipeline staleness.
+    """
+    today = date(2026, 5, 10)
+    two_days_ago = date(2026, 5, 8)
+    _seed_universe(temp_db, ["BTCUSDT", "ETHUSDT"])
+    _seed_active_10d_model(temp_db)
+    _seed_features(temp_db, ["BTCUSDT", "ETHUSDT"], two_days_ago)
+
+    with pytest.raises(wdp.ExportPreflightError, match="stale"):
+        wdp.build_predictions(temp_db, prediction_date=today)
+
+
+def test_preflight_accepts_features_one_day_old(temp_db, monkeypatch):
+    """MAX(trade_date) == export_date - 1 → success (cap-at-today-1
+    ingestion semantics; KI-138). Inference runs on yesterday's closed
+    candles; the export still drives *today's* trades."""
     today = date(2026, 5, 10)
     yesterday = date(2026, 5, 9)
     _seed_universe(temp_db, ["BTCUSDT", "ETHUSDT"])
     _seed_active_10d_model(temp_db)
     _seed_features(temp_db, ["BTCUSDT", "ETHUSDT"], yesterday)
+    _mock_joblib_load(monkeypatch, [0.7, 0.6])
 
-    with pytest.raises(wdp.ExportPreflightError, match="stale"):
-        wdp.build_predictions(temp_db, prediction_date=today)
+    out = wdp.build_predictions(temp_db, prediction_date=today)
+    assert out["n_predictions"] == 2
+    assert out["export_date"] == today.isoformat()
+    assert out["features_as_of_date"] == yesterday.isoformat()
+
+
+def test_export_date_is_today_utc_and_features_as_of_is_yesterday(
+    temp_db, monkeypatch
+):
+    """No prediction_date passed → export_date == today UTC; under the
+    cap-at-today-1 ingestion fix features_as_of_date == today - 1."""
+    today = date(2026, 5, 10)
+    yesterday = date(2026, 5, 9)
+    monkeypatch.setattr(wdp, "_today_utc", lambda: today)
+    _seed_universe(temp_db, ["BTCUSDT", "ETHUSDT"])
+    _seed_active_10d_model(temp_db)
+    _seed_features(temp_db, ["BTCUSDT", "ETHUSDT"], yesterday)
+    _mock_joblib_load(monkeypatch, [0.7, 0.6])
+
+    out = wdp.build_predictions(temp_db)
+    assert out["export_date"] == today.isoformat()
+    assert out["features_as_of_date"] == yesterday.isoformat()
+
+
+def test_features_as_of_date_equals_max_trade_date_when_same_day(
+    temp_db, monkeypatch
+):
+    """When the day's candle is already ingested by export time
+    (e.g. a manual late-UTC re-run), features_as_of_date == export_date."""
+    today = date(2026, 5, 10)
+    _seed_universe(temp_db, ["BTCUSDT", "ETHUSDT"])
+    _seed_active_10d_model(temp_db)
+    _seed_features(temp_db, ["BTCUSDT", "ETHUSDT"], today)
+    _mock_joblib_load(monkeypatch, [0.7, 0.6])
+
+    out = wdp.build_predictions(temp_db, prediction_date=today)
+    assert out["export_date"] == today.isoformat()
+    assert out["features_as_of_date"] == today.isoformat()
 
 
 def test_warmup_symbols_silently_absent_from_output(temp_db, monkeypatch):
@@ -260,30 +321,30 @@ def test_write_dry_run_does_not_create_files(
 def test_write_does_not_touch_files_on_preflight_failure(
     temp_db, monkeypatch, tmp_path
 ):
-    """Stale features → ExportPreflightError → no file written, no
-    symlink modified. Pre-existing symlink (yesterday's) is intact."""
-    today = date(2026, 5, 10)
-    yesterday = date(2026, 5, 9)
+    """Stale features (≥2 days behind) → ExportPreflightError → no file
+    written, no symlink modified. Pre-existing symlink is intact."""
+    day0 = date(2026, 5, 9)
+    day2 = date(2026, 5, 11)  # two days ahead of the only features we have
     syms = ["BTCUSDT"]
     _seed_universe(temp_db, syms)
     _seed_active_10d_model(temp_db)
-    _seed_features(temp_db, syms, yesterday)
+    _seed_features(temp_db, syms, day0)
     _mock_joblib_load(monkeypatch, [0.7])
 
-    # Day 1: write yesterday's file
-    wdp.write(temp_db, prediction_date=yesterday, output_dir=tmp_path)
-    yesterday_file = tmp_path / "predictions_2026-05-09.json"
+    # Day 0: write that day's file (features == export_date)
+    wdp.write(temp_db, prediction_date=day0, output_dir=tmp_path)
+    day0_file = tmp_path / "predictions_2026-05-09.json"
     latest = tmp_path / "predictions_latest.json"
-    assert yesterday_file.exists()
+    assert day0_file.exists()
     assert latest.readlink() == Path("predictions_2026-05-09.json")
 
-    # Day 2: try to write today's file but features are stale
+    # Day 2: try to write — features are now 2 days stale
     with pytest.raises(wdp.ExportPreflightError, match="stale"):
-        wdp.write(temp_db, prediction_date=today, output_dir=tmp_path)
+        wdp.write(temp_db, prediction_date=day2, output_dir=tmp_path)
 
-    # Symlink unchanged, no today-file written
+    # Symlink unchanged, no day-2 file written
     assert latest.readlink() == Path("predictions_2026-05-09.json")
-    assert not (tmp_path / "predictions_2026-05-10.json").exists()
+    assert not (tmp_path / "predictions_2026-05-11.json").exists()
 
 
 def test_build_raises_when_no_active_10d_model(temp_db):

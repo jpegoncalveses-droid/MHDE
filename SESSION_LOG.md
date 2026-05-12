@@ -6,6 +6,75 @@ are at the top.
 
 ---
 
+## 2026-05-12 — KI-138: cap-at-today-1 ingestion broke the prediction-export staleness gate (option A)
+
+**Branch:** `fix-export-preflight-cap-at-today-1` (committed; **STOPPED —
+branch ready for operator merge**). MHDE-side only: `crypto/exports/write_daily_predictions.py`
++ its tests + docs. No engine repo change, no systemd change, no migration.
+
+**Trigger.** Since commit `8f9d707` ("stop freezing partial-day OHLCV
+candles", ADR-022) landed on 2026-05-11, `crypto export-predictions` aborted
+every day with `ExportPreflightError("features stale: MAX(trade_date)=…-1,
+expected …")`. The ingestion fix caps OHLCV at `today - 1` (only fully-closed
+UTC days), so `MAX(trade_date)` in `crypto_ml_features` is structurally
+`today-1`, but `_check_freshness` required it to equal `today`. Result:
+`data/exports/predictions_latest.json` froze at the last pre-`8f9d707` file,
+the engine rejected it on `export_date != today_utc` (INTERFACE.md §3.2), and
+no positions were placed.
+
+**Fix (option A).** In `crypto/exports/write_daily_predictions.py`:
+- `_check_freshness(conn, export_date)` now accepts `MAX(trade_date) ==
+  export_date` **or** `== export_date - 1`, returns the validated
+  features-as-of date, and still raises for anything older (≥2 days = genuine
+  staleness).
+- `build_predictions` loads features for that returned features-as-of date
+  (not blindly for `export_date`); the empty-symbols error message names both
+  dates.
+- JSON `export_date` is unambiguously `today` UTC (the trading date —
+  INTERFACE.md §3.1 / engine §3.2 validation).
+- New informational JSON field `features_as_of_date` (= the `MAX(trade_date)`
+  used for inference; `export_date - 1` on a normal cap-at-today-1 run).
+  Engine loader unchanged; doesn't read it.
+- `crypto_signal_exclusions.export_date` and `predicted_at` still use the
+  trading date — unchanged. Module / function docstrings updated.
+
+**What was NOT done (deliberate).** Option B — aligning
+`crypto_ml_predictions.prediction_date` (written by `score_universe`,
+= `MAX(trade_date)` = `today-1`, semantically the features/entry date) with
+the export's trading date — is left as a deferred follow-up (schema change;
+touches predict, outcome-fill, dashboard, tests). The exporter does its own
+inference and never reads `crypto_ml_predictions`, so there's no operational
+conflict. Flagged in KI-138 + ADR-025.
+
+**Verification (L5).**
+- `venv/bin/python -m pytest tests/crypto/exports/test_write_daily_predictions.py`
+  → 20 passed (3 new: `test_preflight_accepts_features_one_day_old`,
+  `test_export_date_is_today_utc_and_features_as_of_is_yesterday`,
+  `test_features_as_of_date_equals_max_trade_date_when_same_day`; 1 renamed/
+  retargeted: `test_preflight_fails_when_features_two_days_stale`;
+  `test_write_does_not_touch_files_on_preflight_failure` updated for the new
+  tolerance).
+- `venv/bin/python -m pytest tests/crypto/` → 415 passed, 1 skipped.
+- `venv/bin/python -m py_compile crypto/exports/write_daily_predictions.py main.py` → clean.
+
+**Files of record.** `crypto/exports/write_daily_predictions.py`,
+`tests/crypto/exports/test_write_daily_predictions.py`, `KNOWN_ISSUES.md`
+(KI-138, intro), `DECISIONS.md` (ADR-025), this log.
+
+**Pending operator action (post-merge).**
+1. Merge the branch.
+2. One-off regenerate today's file: `venv/bin/python main.py crypto export-predictions`
+   (confirm `predictions_latest.json` now has `export_date` = today,
+   `features_as_of_date` = today-1, non-empty `predictions`).
+3. Trigger a manual entry-timer fire on the engine side; confirm it accepts
+   the fresh file and opens positions.
+
+**Pending doc follow-up.** Update `/home/jpcg/crypto-trading-engine/docs/INTERFACE.md`
+§3 to document the new optional `features_as_of_date` field (coordinated, but
+non-breaking — the daily predictions file isn't hash-canonicalised).
+
+**Pending engineering follow-up.** Option B (see KI-138 / ADR-025).
+
 ## 2026-05-11 — KI-136: paper-trading dashboard shows real exit_price / realized_pnl
 
 **Branch:** `fix-paper-closed-trades-exit-price-ki136` (committed + pushed;

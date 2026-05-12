@@ -5,14 +5,29 @@ The exporter does its OWN inference on the active universe — it does
 NOT read crypto_ml_predictions, which is filtered/capped by
 score_universe()'s threshold logic. One preflight gate:
 
-  1. Staleness — MAX(trade_date) FROM crypto_ml_features must equal
-     prediction_date (strict today-only).
+  1. Staleness — MAX(trade_date) FROM crypto_ml_features must be the
+     export date OR the export date minus one day. The cap-at-today-1
+     OHLCV ingestion fix (commit 8f9d707) means the daily pipeline only
+     ever ingests fully-closed UTC days, so on a normal run
+     MAX(trade_date) is structurally export_date - 1: today's export is
+     driven by yesterday's closed candles and intended to drive *today's*
+     trades. We still accept export_date itself for the rarer case where
+     the day's candle is already ingested by export time (e.g. a manual
+     late-UTC re-run). Anything older than export_date - 1 is genuine
+     pipeline staleness and aborts the export. See KI-138.
 
 The previous per-symbol coverage check was removed in favor of letting
 build_predictions emit predictions for whatever active-universe
-symbols have features today. Newly-added universe symbols are in
-their 60-day features warmup window and have no features yet — that's
-normal, not a pipeline failure. See KI-129.
+symbols have features on the features-as-of date. Newly-added universe
+symbols are in their 60-day features warmup window and have no features
+yet — that's normal, not a pipeline failure. See KI-129.
+
+The JSON carries two dates: `export_date` (= today UTC — the trading
+date the predictions drive, per INTERFACE.md §3.1) and the informational
+`features_as_of_date` (= MAX(trade_date) used for inference; today-1 on
+a normal cap-at-today-1 run). The engine validates only `export_date`
+against today UTC; `features_as_of_date` is for downstream consumers /
+debugging.
 
 Failure raises ExportPreflightError; no output files are touched.
 The engine handles the resulting stale predictions_latest.json per
@@ -22,7 +37,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import duckdb
@@ -71,32 +86,43 @@ def _resolve_active_10d_model(conn) -> dict:
     return {"model_id": model_id, "horizon": horizon, "model_path": model_path}
 
 
-def _check_freshness(conn, prediction_date: date) -> None:
-    """Strict staleness gate: MAX(trade_date) FROM crypto_ml_features
-    must equal prediction_date. Raises ExportPreflightError if not.
+def _check_freshness(conn, export_date: date) -> date:
+    """Staleness gate. Returns the features-as-of date — MAX(trade_date)
+    FROM crypto_ml_features — after validating it is either `export_date`
+    or `export_date - 1`. Raises ExportPreflightError otherwise.
+
+    `export_date - 1` is the structural normal: the cap-at-today-1 OHLCV
+    ingestion fix (commit 8f9d707) only ever ingests fully-closed UTC
+    days, so when the daily exporter runs at ~00:30 UTC the freshest
+    features are for yesterday. We still accept `export_date` itself for
+    the rarer case where the day's candle is already ingested by export
+    time (a manual late-UTC re-run). Anything older than `export_date - 1`
+    is genuine pipeline staleness. See KI-138.
 
     The per-symbol coverage check that this function used to do was
     removed in favor of letting build_predictions emit predictions for
-    whatever active-universe symbols have features today. Newly-added
-    universe symbols are in their 60-day features warmup window and
-    have no features yet — that's normal, not a pipeline failure. See
-    KI-129.
+    whatever active-universe symbols have features on the features-as-of
+    date. Newly-added universe symbols are in their 60-day features
+    warmup window and have no features yet — that's normal, not a
+    pipeline failure. See KI-129.
     """
     max_row = conn.execute(
         "SELECT MAX(trade_date) FROM crypto_ml_features"
     ).fetchone()
     max_trade_date = max_row[0] if max_row else None
-    if max_trade_date != prediction_date:
+    if max_trade_date not in (export_date, export_date - timedelta(days=1)):
         raise ExportPreflightError(
-            f"features stale: MAX(trade_date)={max_trade_date}, "
-            f"expected {prediction_date}. Check "
+            f"features stale: MAX(trade_date)={max_trade_date}, expected "
+            f"{export_date} or {export_date - timedelta(days=1)} "
+            f"(cap-at-today-1 ingestion). Check "
             f"mhde-crypto-predict.service status."
         )
+    return max_trade_date
 
 
-def _load_features(conn, prediction_date: date):
-    """Load features for prediction_date restricted to active universe
-    symbols. Symbols in the active universe but missing features
+def _load_features(conn, features_as_of_date: date):
+    """Load features for `features_as_of_date` restricted to active
+    universe symbols. Symbols in the active universe but missing features
     (warmup window) are silently absent — see KI-129 / spec §5.5."""
     feature_select = ", ".join(f"f.{c}" for c in FEATURE_COLS)
     return conn.execute(
@@ -108,7 +134,7 @@ def _load_features(conn, prediction_date: date):
           AND u.is_active = true
         ORDER BY f.symbol
         """,
-        [prediction_date],
+        [features_as_of_date],
     ).fetchdf()
 
 
@@ -118,11 +144,19 @@ def build_predictions(
 ) -> dict:
     """Construct the predictions dict per INTERFACE.md §3.
 
+    `prediction_date` is the *export date* — the trading date these
+    predictions drive (default today UTC). Inference itself runs on the
+    freshest features, which under the cap-at-today-1 ingestion fix is
+    `prediction_date - 1`; that date is carried back to the caller as
+    `features_as_of_date`. See KI-138.
+
     Steps:
-      1. Resolve prediction_date (default today UTC).
+      1. Resolve the export date (default today UTC).
       2. Resolve active 10d model.
-      3. Run preflight gate (staleness only — see KI-129).
-      4. Load features (active universe ∩ has-features-today).
+      3. Run preflight gate (staleness only — see KI-129) → it returns
+         the features-as-of date (export_date or export_date - 1).
+      4. Load features for the features-as-of date (active universe ∩
+         has-features-on-that-date).
       5. Run model + Platt calibration.
       6. Apply the post-parabolic exclusion filter — drop suppressed
          coins, record them in crypto_signal_exclusions, log each one.
@@ -134,15 +168,15 @@ def build_predictions(
         prediction_date = _today_utc()
 
     model_info = _resolve_active_10d_model(conn)
-    _check_freshness(conn, prediction_date)
+    features_as_of_date = _check_freshness(conn, prediction_date)
 
-    features_df = _load_features(conn, prediction_date)
+    features_df = _load_features(conn, features_as_of_date)
     if features_df.empty:
         raise ExportPreflightError(
-            f"no predictable symbols for {prediction_date}: "
-            f"crypto_ml_features has rows for the date but none match "
-            f"crypto_universe.is_active=true. This indicates a universe "
-            f"or features-pipeline misconfiguration."
+            f"no predictable symbols for features date {features_as_of_date} "
+            f"(export_date {prediction_date}): crypto_ml_features has rows "
+            f"for the date but none match crypto_universe.is_active=true. "
+            f"This indicates a universe or features-pipeline misconfiguration."
         )
 
     bundle = joblib.load(model_info["model_path"])
@@ -227,6 +261,11 @@ def build_predictions(
 
     return {
         "export_date": prediction_date.isoformat(),
+        # Informational: the MAX(trade_date) in crypto_ml_features used
+        # for inference. Under the cap-at-today-1 ingestion fix this is
+        # export_date - 1 on a normal run. The engine doesn't validate
+        # this field; it's for downstream consumers / debugging (KI-138).
+        "features_as_of_date": features_as_of_date.isoformat(),
         "generated_at": datetime.now(tz=timezone.utc).strftime(
             "%Y-%m-%dT%H:%M:%SZ"
         ),
