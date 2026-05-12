@@ -161,8 +161,13 @@ def run_continuous(*, mhde_conn=None, engine_conn=None, now: Optional[datetime] 
 
 def main() -> int:
     result = run_continuous()
+    message = render_telegram_message(result)
+    # Echo the rendered message to stdout so it lands in the systemd journal
+    # and is visible on a manual / MONITORING_DRY_RUN=true invocation. The
+    # Telegram send still only happens on red (silent-when-green by design).
+    print(message)
     if result.has_red:
-        alert.send_text(render_telegram_message(result))
+        alert.send_text(message)
         logger.warning("continuous monitor — RED, alert sent")
         return 1
     logger.info("continuous monitor — all green, no alert sent")

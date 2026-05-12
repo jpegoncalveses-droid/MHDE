@@ -133,6 +133,10 @@ def run_pipeline(
 
 def main(pipeline: str) -> int:
     result = run_pipeline(pipeline)
-    alert.send_text(render_telegram_message(result))
+    message = render_telegram_message(result)
+    # Echo the rendered message to stdout so it lands in the systemd journal
+    # and is visible on a manual / MONITORING_DRY_RUN=true invocation.
+    print(message)
+    alert.send_text(message)
     logger.info("pipeline monitor %s — %s", result.pipeline, result.overall.name)
     return 0 if not result.has_red else 1

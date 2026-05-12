@@ -838,8 +838,9 @@ and no positions were placed — invisible for ~24h). Full reference:
 | `mhde-fx-pipeline-monitor.{service,timer}` | daily 12:10 | `monitor fx-pipeline` | 2 steps: FX bar ingestion (freshness, KI-128-aware) → signal generation. Sends green or red. |
 | `mhde-continuous-monitor.{service,timer}` | every 30 min (`*:0/30`) | `monitor continuous` | FX hourly-bar freshness; engine monitor-timer liveness; engine entry-timer ran today (after 08:00 UTC). **Silent when all green**, one message when any red. |
 
-`MONITORING_DRY_RUN=true` suppresses the real Telegram send (computes the
-payload, logs it). The crypto and continuous units carry `CRYPTO_ENGINE_DB_PATH`
+`MONITORING_DRY_RUN=true` suppresses the real Telegram send — the rendered
+message is still printed to stdout (and logged) so you can verify it. The
+crypto and continuous units carry `CRYPTO_ENGINE_DB_PATH`
 in the unit file. Logs: `data/logs/pipeline_monitor_{crypto,equity,fx,continuous}.log`.
 Deploy like the other monitors (copy units, `daemon-reload`, `enable --now` the
 `.timer`s). v1 limitations tracked in KI-139.

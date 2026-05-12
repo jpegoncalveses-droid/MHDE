@@ -27,8 +27,11 @@ Source: `monitoring/pipeline_monitor/` (`core.py`, `checks/{crypto,equity,fx}.py
 ```
 
 The header is 🔴 iff any step is 🔴. The daily monitors send this message
-**every run, green or red** (a daily green heartbeat). Exit status: 0 if green,
-1 if any step red.
+**every run, green or red** (a daily green heartbeat). The rendered message is
+also printed to **stdout** (so it lands in the systemd journal, and is visible
+on a manual or `MONITORING_DRY_RUN=true` invocation) — the continuous monitor
+prints it too even when all green; only the Telegram *send* is suppressed.
+Exit status: 0 if green, 1 if any step red.
 
 ## What each monitor checks
 
