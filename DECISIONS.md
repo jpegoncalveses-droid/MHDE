@@ -1201,3 +1201,66 @@ label is **not yet** a replacement. The trained models stay persisted but
 inactive; the `crypto_*_kowf_*` walk-forward predictions stay in
 `crypto_ml_predictions` as a reproducibility artifact (and can be deleted if
 they clutter the dashboard's historical view).
+
+---
+
+## ADR-025 — Prediction export decouples "trading date" from "features-as-of date" (option A); schema-level unification deferred (option B)
+
+**Date:** 2026-05-12
+**Session:** export-preflight regression fix after the cap-at-today-1 ingestion change
+**Status:** Active (option A shipped); option B deferred
+**Builds on:** ADR-022 (the cap-at-today-1 ingestion fix, commit `8f9d707`), ADR-010 (freshness guards), KI-138, INTERFACE.md §3.
+
+**Context.** ADR-022's ingestion fix made `MAX(trade_date)` in
+`crypto_prices_daily` / `crypto_ml_features` structurally `today - 1`
+(only fully-closed UTC days are ingested). The prediction exporter
+(`crypto/exports/write_daily_predictions.py`) had a single date,
+`prediction_date` (default `today` UTC), doing double duty: the
+freshness gate required `MAX(trade_date) == prediction_date`, and the
+JSON `export_date` was set to `prediction_date`. Post-`8f9d707` the gate
+could never pass on a normal day, so `crypto export-predictions` aborted
+daily, `predictions_latest.json` went stale, and the engine rejected it
+(`export_date != today_utc`, INTERFACE.md §3.2). No positions were
+placed. See KI-138.
+
+**Decision (option A — shipped).** Separate the two notions explicitly
+in the exporter:
+- **Trading date** = `export_date` in the JSON = `today` UTC (unchanged
+  meaning per INTERFACE.md §3.1: "the trading date these predictions
+  apply to"). This is what the engine validates.
+- **Features-as-of date** = `MAX(trade_date)` in `crypto_ml_features`,
+  validated by `_check_freshness` to be `export_date` **or**
+  `export_date - 1` (the cap-at-today-1 normal). Anything older still
+  aborts — that's genuine pipeline staleness. `_check_freshness` returns
+  this date; `build_predictions` loads features for it.
+- The JSON gains an informational `features_as_of_date` field for
+  downstream consumers / debugging. The engine loader is **unchanged**
+  and does not read it; adding an optional field to the daily
+  predictions file (which, unlike `active_spec.json`, is not
+  hash-canonicalised) is backward-compatible. INTERFACE.md §3 should be
+  updated to document the new optional field — tracked as a doc
+  follow-up.
+- `crypto_signal_exclusions.export_date` and the per-prediction
+  `predicted_at` continue to use the trading date — unchanged.
+
+**Why option A and not option B now.** `crypto_ml_predictions.prediction_date`
+(written by `crypto/ml/predict.py:score_universe`, = `MAX(trade_date)` =
+`today - 1`) is semantically the *features / entry* date, used as such
+by the outcome-fill join (`pred.prediction_date = entry.trade_date`). It
+now differs from the export's `export_date` by a day. The exporter does
+its own inference and never reads `crypto_ml_predictions`, so there is no
+operational conflict — the engine gets a correct, fresh file. Fixing the
+`prediction_date` dual-meaning properly means a schema change (carry both
+dates, or rename), touching the predict pipeline, outcome-fill, the
+dashboard, and the regression tests around them — out of proportion to
+this incident, which option A fully resolves. Deferred as option B
+(KI-138 open follow-up).
+
+**Consequences.** On a normal day the predictions file now reports
+`export_date` one day ahead of `features_as_of_date`; consumers that
+assumed they were equal must read the right field. The freshness gate is
+one day more lenient — a pipeline that silently stopped *exactly* one day
+ago will no longer be caught by this gate alone (it is still caught by
+`pipelines/freshness.py` recency budgets and the daily data-quality
+guard, ADR-022). A pipeline ≥2 days stale still aborts the export. No
+systemd / engine / dashboard changes; no migration.

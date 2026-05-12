@@ -17,6 +17,19 @@ open follow-up. None requires a hot fix — all tracked so a future
 session triages deliberately rather than letting them rot in the
 working tree.
 
+**KI-138** opened + resolved (option A) 2026-05-12 — the cap-at-today-1
+OHLCV ingestion fix (commit 8f9d707) made `MAX(trade_date)` in
+`crypto_ml_features` structurally `today-1`, but the export's staleness
+gate required it to equal `today`, so `crypto export-predictions` aborted
+every day, `predictions_latest.json` went stale, the engine rejected on
+`export_date != today_utc`, and no positions were placed. Fix (option A):
+widen the gate to accept `today` or `today-1`, set `export_date` in the
+JSON to today UTC (the trading date), add an informational
+`features_as_of_date` field. Option B — aligning
+`crypto_ml_predictions.prediction_date` semantics with the features-as-of
+date vs the trade date — is the deferred follow-up. See "Recently
+resolved" below and ADR-025.
+
 **KI-135** opened + resolved 2026-05-10 — crypto retrain
 auto-promoted new models without validation; a regressed model could
 have silently entered Phase E paper trading. Fix: validation gate in
@@ -315,6 +328,71 @@ proves too narrow or too wide, is just two constants in
 alternative.)
 
 ## Recently resolved (post-Session-7)
+
+### KI-138 — Cap-at-today-1 OHLCV ingestion broke the prediction-export staleness gate (option A resolved 2026-05-12)
+
+**Symptom (before fix).** Commit `8f9d707` ("stop freezing partial-day
+OHLCV candles") changed `backfill_ohlcv` to ingest only fully-closed UTC
+days (`end_date = today - INGESTION_LAG_DAYS`, =1). Downstream,
+`MAX(trade_date)` in `crypto_prices_daily` — and therefore in
+`crypto_ml_features` — became structurally `today - 1`. But
+`crypto/exports/write_daily_predictions.py:_check_freshness` required
+`MAX(trade_date) == prediction_date` where `prediction_date` defaulted
+to `today` UTC. So the daily `crypto export-predictions` run (the
+`mhde-crypto-export-predictions.timer`) aborted with `ExportPreflightError("features stale: MAX(trade_date)=…-1, expected …")`
+every day; `data/exports/predictions_latest.json` stayed pinned to the
+last good pre-`8f9d707` file; and the engine — which validates
+`export_date == today_utc` per INTERFACE.md §3.2 — rejected it and
+skipped the entry phase. Net effect: no positions placed since
+`8f9d707` landed (2026-05-11).
+
+**Root cause.** Two coupled assumptions in the exporter that the
+ingestion fix invalidated: (1) `_check_freshness` treated "freshest
+features are for today" as the only healthy state; (2) the JSON
+`export_date` was set to `prediction_date`, which was being used both as
+"the features date" and "the trading date these predictions drive" —
+fine when those coincided, wrong once ingestion lags a day.
+
+**Fix (option A — this branch `fix-export-preflight-cap-at-today-1`).**
+- `_check_freshness(conn, export_date)` now accepts `MAX(trade_date) ==
+  export_date` **or** `== export_date - 1` and returns the validated
+  features-as-of date; anything older still raises `ExportPreflightError`
+  (genuine pipeline staleness — e.g. ≥2 days behind).
+- `build_predictions` loads features for that returned features-as-of
+  date (not blindly for `export_date`).
+- JSON `export_date` is now unambiguously today UTC — the trading date,
+  matching INTERFACE.md §3.1 and the engine's §3.2 validation.
+- New informational JSON field `features_as_of_date` (= the
+  `MAX(trade_date)` used for inference; `export_date - 1` on a normal
+  cap-at-today-1 run) for downstream consumers / debugging. The engine
+  loader is unchanged and does not validate this field.
+- Post-parabolic exclusion rows (`crypto_signal_exclusions.export_date`)
+  and `predicted_at` continue to use the export date — unchanged.
+
+**Regression tests.**
+`tests/crypto/exports/test_write_daily_predictions.py`:
+`test_preflight_accepts_features_one_day_old`,
+`test_preflight_fails_when_features_two_days_stale`,
+`test_export_date_is_today_utc_and_features_as_of_is_yesterday`,
+`test_features_as_of_date_equals_max_trade_date_when_same_day`.
+
+**Operator follow-up (post-merge).** Run a one-off
+`venv/bin/python main.py crypto export-predictions` to regenerate
+today's `predictions_latest.json`, then trigger a manual entry-timer
+fire on the engine side to confirm it picks up the fresh file and opens
+positions.
+
+**Open follow-up (option B — deferred).** `crypto_ml_predictions.prediction_date`
+(written by `crypto/ml/predict.py:score_universe`, defaulting to
+`MAX(trade_date)` = `today - 1`) is semantically the *features / entry*
+date, while the export's `export_date` is the *trading* date (`today`).
+The two now differ by a day. The exporter does its own inference and
+never reads `crypto_ml_predictions`, so this is not an operational
+conflict today, but the dual meaning of "prediction_date" is a latent
+trap for outcome-fill and any future consumer that joins the two. Option
+B is to make the schema carry both dates explicitly (or rename) so
+"signal generated from day X-1 features, traded on day X" is
+unambiguous. Schema change → deferred until prioritised. See ADR-025.
 
 ### KI-135 — Crypto retrain auto-promoted without validation (resolved 2026-05-10)
 
