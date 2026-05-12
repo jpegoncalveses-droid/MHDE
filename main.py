@@ -2604,5 +2604,33 @@ def monitor_paper_trading_drift():
     raise SystemExit(paper_trading_drift.main())
 
 
+@monitor.command("crypto-pipeline")
+def monitor_crypto_pipeline():
+    """Daily crypto-pipeline monitor — one Telegram message, every step green/red/skipped."""
+    from monitoring.pipeline_monitor import daily_runner
+    raise SystemExit(daily_runner.main("crypto"))
+
+
+@monitor.command("equity-pipeline")
+def monitor_equity_pipeline():
+    """Daily equity-pipeline monitor — one Telegram message, every step green/red/skipped."""
+    from monitoring.pipeline_monitor import daily_runner
+    raise SystemExit(daily_runner.main("equity"))
+
+
+@monitor.command("fx-pipeline")
+def monitor_fx_pipeline():
+    """Daily FX-pipeline monitor — one Telegram message, every step green/red/skipped."""
+    from monitoring.pipeline_monitor import daily_runner
+    raise SystemExit(daily_runner.main("fx"))
+
+
+@monitor.command("continuous")
+def monitor_continuous():
+    """Continuous monitor (FX bar freshness + crypto engine timers); alerts on red only."""
+    from monitoring.pipeline_monitor import continuous_runner
+    raise SystemExit(continuous_runner.main())
+
+
 if __name__ == "__main__":
     cli()

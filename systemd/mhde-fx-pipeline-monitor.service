@@ -1,0 +1,13 @@
+[Unit]
+Description=MHDE FX pipeline monitor — one Telegram message, every step (bar ingestion → signal generation)
+After=network.target
+
+[Service]
+Type=oneshot
+User=jpcg
+WorkingDirectory=/home/jpcg/MHDE
+Environment=MHDE_DB_PATH=/home/jpcg/MHDE/data/mhde.duckdb
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py monitor fx-pipeline
+StandardOutput=append:/home/jpcg/MHDE/data/logs/pipeline_monitor_fx.log
+StandardError=append:/home/jpcg/MHDE/data/logs/pipeline_monitor_fx.log
+TimeoutStartSec=120

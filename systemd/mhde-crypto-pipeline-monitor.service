@@ -1,0 +1,14 @@
+[Unit]
+Description=MHDE crypto pipeline monitor — one Telegram message, every step (OHLCV → engine entry)
+After=network.target mhde-crypto-export-predictions.service
+
+[Service]
+Type=oneshot
+User=jpcg
+WorkingDirectory=/home/jpcg/MHDE
+Environment=MHDE_DB_PATH=/home/jpcg/MHDE/data/mhde.duckdb
+Environment=CRYPTO_ENGINE_DB_PATH=/home/jpcg/crypto-trading-engine/data/trading_engine.duckdb
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py monitor crypto-pipeline
+StandardOutput=append:/home/jpcg/MHDE/data/logs/pipeline_monitor_crypto.log
+StandardError=append:/home/jpcg/MHDE/data/logs/pipeline_monitor_crypto.log
+TimeoutStartSec=120

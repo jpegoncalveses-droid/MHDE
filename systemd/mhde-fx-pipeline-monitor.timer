@@ -1,0 +1,9 @@
+[Unit]
+Description=MHDE FX pipeline monitor — daily 12:10 UTC (mid-day snapshot, after an :05 fx predict run)
+
+[Timer]
+OnCalendar=*-*-* 12:10:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
