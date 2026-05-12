@@ -86,3 +86,28 @@ def send_alert(result: MonitorResult) -> bool:
 
     msg_id = send_message(payload)
     return msg_id is not None
+
+
+def send_text(text: str) -> bool:
+    """Send a pre-formatted plain-text message to Telegram unconditionally.
+
+    Unlike :func:`send_alert` (which suppresses OK results), this always
+    attempts to send — used by the pipeline monitor, which posts a status
+    message every run (green or red). Still respects ``MONITORING_DRY_RUN``
+    and always logs the payload at INFO level. Returns True if a message was
+    actually sent.
+    """
+    logger.info("MONITOR MESSAGE\n%s", text)
+
+    if _is_dry_run():
+        logger.info("MONITORING_DRY_RUN=true — skipping real Telegram send")
+        return False
+
+    try:
+        from fx.bot.telegram_bot import send_message
+    except ImportError:
+        logger.error("fx.bot.telegram_bot.send_message not importable")
+        return False
+
+    msg_id = send_message(text)
+    return msg_id is not None

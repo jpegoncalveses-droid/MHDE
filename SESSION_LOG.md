@@ -6,6 +6,138 @@ are at the top.
 
 ---
 
+## 2026-05-12 — Pipeline monitor: one Telegram message per pipeline, outcome-based step checks (ADR-026)
+
+**Branch:** `feat-pipeline-monitoring` (committed; **STOPPED — branch ready
+for operator review/merge/deploy**). MHDE-side only: new
+`monitoring/pipeline_monitor/` package + tests + 4 systemd unit pairs + 4 CLI
+commands + docs. No engine repo change, no migration, no DATABASE_SCHEMA
+change (every check reads existing tables; no new tables).
+
+**Trigger.** Operator-approved design after KI-138: a regression where every
+script exited 0, the crypto predictions export froze, the engine rejected the
+stale file, and no positions were placed — invisible for ~24h to the existing
+health-check and `pipeline-execution` monitors. Need a second observability
+layer that verifies *today's* run produced the right outputs all the way
+through to engine entry, by **reading the DB/files** rather than trusting exit
+codes.
+
+**What was built.**
+- `monitoring/pipeline_monitor/core.py` — `Status` enum (GREEN/RED/SKIPPED),
+  `StepResult` / `PipelineResult` dataclasses, `evaluate_steps()` (linear
+  cascade — first RED ⇒ remaining steps SKIPPED ⚪, SKIPPED never makes the
+  pipeline RED, exceptions ⇒ RED), `render_telegram_message()`
+  (`🟢/🔴 <Pipeline> Pipeline <date> <HH:MM UTC>` header — 🔴 iff any step
+  red — then one `🟢/🔴/⚪ <step> — <detail>` line per step).
+- `checks/crypto.py` — 9 outcome checks: OHLCV ingestion (`MAX(trade_date)` in
+  `crypto_prices_daily` ≥ today-1 under cap-at-today-1/ADR-022), data-quality
+  guard (no `systemic_corruption` row in `crypto_data_quality_reports` for the
+  last 2 days), funding/OI ingestion (`crypto_funding_rates.funding_time` &
+  `crypto_open_interest.trade_date` ≥ today-1), feature pipeline
+  (`crypto_ml_features` rows for `MAX(trade_date)`), model predictions
+  (`crypto_ml_predictions` active-model rows for `prediction_date`), outcome
+  tagging (no matured active-model prediction, forward window closed ≥ 2 days
+  ago, still has `actual_hit` NULL), export predictions
+  (`data/exports/predictions_latest.json` resolves to a file with
+  `export_date == today` and ≥ 1 prediction — this is the KI-138 catch),
+  engine ingest (engine `engine_runs` has a successful `entry` phase today,
+  read-only), engine entry/positions (≥ 1 `positions` row with
+  `entry_date == today`, or 0 and the book is already at `max_concurrent` from
+  `active_spec.json`).
+- `checks/equity.py` — 4 checks against the equity tables (ingestion /
+  features / predictions for the most recent closed market day via
+  `pipelines.market_calendar.expected_equity_prediction_date`; dashboard-data
+  refresh = `data/processed/prediction_vs_actual_rows.csv` mtime within 4
+  days).
+- `checks/fx.py` — 2 checks: bar ingestion (reuses
+  `pipelines.freshness.check_fx_freshness`, forex-closed-window aware/KI-128;
+  fed a naive-UTC `now`), signal generation (`MAX(datetime_utc)` in
+  `fx_signals` ≥ `MAX(datetime_utc)` in `fx_prices_hourly`).
+- `daily_runner.py` — `run_pipeline(pipeline, …)` opens the MHDE DuckDB
+  read-only (and, for crypto, the engine DuckDB read-only via
+  `CRYPTO_ENGINE_DB_PATH`; failure ⇒ `engine_conn=None`, the engine steps go
+  red but don't block the message), runs `evaluate_steps`, returns a
+  `PipelineResult`. `main(pipeline)` sends one Telegram message every run
+  (green heartbeat or red), exit 0/1. Dependencies/paths are injectable for
+  tests.
+- `continuous_runner.py` — `run_continuous()` runs 3 independent checks (no
+  cascade): FX hourly-bar freshness, engine `monitor`-timer liveness (RED if
+  no success in > 15 min), engine `entry`-timer ran today (RED only after
+  08:00 UTC). `main()` is **silent when all green**, sends one message listing
+  every check when any is red. The engine `reconcile` timer is **not** checked
+  (`CHECK_ENGINE_RECONCILE = False` — disabled pending RECONCILE-001).
+- `monitoring/alert.py` — new `send_text(text)` (logs payload at INFO,
+  respects `MONITORING_DRY_RUN`, bottoms out in `fx.bot.telegram_bot.send_message`).
+- `main.py` — 4 new commands under the `monitor` group:
+  `crypto-pipeline` / `equity-pipeline` / `fx-pipeline` / `continuous`.
+- 4 systemd unit pairs (Type=oneshot, `User=jpcg`, system-level pattern,
+  `TimeoutStartSec=120`, log to `data/logs/pipeline_monitor_*.log`):
+  `mhde-crypto-pipeline-monitor` (06:40 UTC daily, After
+  `mhde-crypto-export-predictions.service`, has `CRYPTO_ENGINE_DB_PATH`),
+  `mhde-equity-pipeline-monitor` (01:00 UTC daily, After `mhde-predict.service`),
+  `mhde-fx-pipeline-monitor` (12:10 UTC daily),
+  `mhde-continuous-monitor` (`*:0/30`, has `CRYPTO_ENGINE_DB_PATH`).
+  Not deployed — operator deploys (copy → `daemon-reload` → `enable --now`).
+
+**Adapted to engine-DB reality (vs. the original spec wording).** The engine
+DB has no `entry_complete` event type and no machine-readable "why 0 positions"
+field, so crypto step 9 counts `positions` rows with `entry_date == today` and
+softens 0 → green only when the book is at `max_concurrent`.
+`crypto_data_quality_reports` has no `is_systemic` column, so step 2 keys on
+the `systemic_corruption` check-name row. `mhde-predict.timer` actually fires
+00:15 UTC (ARCHITECTURE.md's "21:00" is stale), so the equity monitor is at
+01:00. All recorded in KI-139 / ADR-026.
+
+**Verification (L5).**
+- `venv/bin/python -m pytest tests/monitoring/ -q` → **114 passed** (90 new
+  pipeline-monitor tests across `test_core.py` 13, `test_checks_crypto.py` 38,
+  `test_checks_equity.py` 16, `test_checks_fx.py` 9, `test_daily_runner.py` 8,
+  `test_continuous_runner.py` 6; + the 24 pre-existing `paper-trading-drift`).
+- `venv/bin/python -m pytest tests/monitoring tests/pipelines tests/regression
+  tests/test_session2_infra_smoke.py -q` → 181 passed, **2 pre-existing
+  failures unrelated to this work** (`test_dashboard_structure.py::test_no_module_level_connection`
+  — `dashboard/app.py:931`; `test_systemd_units.py::test_repo_vs_deployed_unit_parity`
+  — `mhde-crypto-predict.service` deployed-copy drift; both fail identically on
+  the branch base `51903b5`). The two regression tests that *did* relate
+  (`test_no_untracked_systemd_units`, `test_no_production_py_imports_untracked_module`)
+  pass once the new files are `git add`-ed.
+- `venv/bin/python -m py_compile` on all new/modified `.py` → clean.
+- `systemd-analyze verify` on all 8 unit files → clean.
+- `venv/bin/python main.py monitor --help` → the 4 new commands listed.
+- Demo (`.claude/local_scripts/demo_pipeline_monitor.py`, gitignored): against
+  the **live** DB all three daily pipelines render all-green and the continuous
+  monitor is green; simulating the KI-138 shape (stale `predictions_latest.json`
+  → `export_date='2026-05-10'`) ⇒ the crypto pipeline header goes 🔴, step 7
+  "Export predictions" is 🔴 ("…export_date='2026-05-10' — expected 2026-05-12;
+  predictions export is stale (engine will reject it)"), and steps 8–9 cascade
+  to ⚪. The regression *would* have been caught the same morning.
+
+**Files of record.** `monitoring/pipeline_monitor/{__init__.py,core.py,
+daily_runner.py,continuous_runner.py,checks/{__init__.py,crypto.py,equity.py,fx.py}}`,
+`tests/monitoring/pipeline_monitor/*`, `monitoring/alert.py`, `main.py`,
+`systemd/mhde-{crypto,equity,fx}-pipeline-monitor.{service,timer}`,
+`systemd/mhde-continuous-monitor.{service,timer}`, `docs/PIPELINE_MONITORING.md`,
+`DECISIONS.md` (ADR-026), `KNOWN_ISSUES.md` (KI-139), `ARCHITECTURE.md`,
+`OPERATIONS.md`, this log.
+
+**Pending operator action (post-merge).**
+1. Merge the branch.
+2. Deploy the 4 unit pairs at system level (`/etc/systemd/system/`), parallel
+   to the existing monitor units: copy files → `systemctl daemon-reload` →
+   `systemctl enable --now mhde-{crypto,equity,fx}-pipeline-monitor.timer
+   mhde-continuous-monitor.timer`. The crypto + continuous units need
+   `CRYPTO_ENGINE_DB_PATH` (already in the unit files).
+3. Add the 4 new timers to the `config-drift` monitor's expectation set if it
+   enumerates units explicitly.
+4. Sanity-fire once with `MONITORING_DRY_RUN=true` to see the payloads in the
+   journal before letting the real Telegram sends go live.
+
+**Pending engineering follow-up.** KI-139 limitations — no auto-remediation,
+no dashboard view, coarse equity dashboard-mtime check, "0 positions" → red
+with a note (no precise reason from the engine DB), engine `reconcile` timer
+not checked (flip `CHECK_ENGINE_RECONCILE` when RECONCILE-001 re-enables it).
+
+
 ## 2026-05-12 — KI-138: cap-at-today-1 ingestion broke the prediction-export staleness gate (option A)
 
 **Branch:** `fix-export-preflight-cap-at-today-1` (committed; **STOPPED —

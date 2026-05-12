@@ -344,8 +344,27 @@ under `systemd/mhde-monitor-*`.
 `dashboard-synthetic`, `cross-artifact`, `phase0-calibration` — are catalogued
 in full in `OPERATIONS.md` § Monitors.)
 
-Telegram routing: `monitoring/alert.py:send_alert` bottoms out in
-`fx.bot.telegram_bot.send_message`. The `MONITORING_DRY_RUN=true`
+**Pipeline monitor (2026-05-12, ADR-026).** A second layer in
+`monitoring/pipeline_monitor/` posts **one Telegram message per pipeline** —
+crypto / equity / fx — enumerating every step's outcome 🟢 / 🔴 / ⚪ (the
+header is 🔴 if any step is 🔴; ⚪ = skipped because an earlier step failed,
+since the pipelines are sequential), plus a continuous (every-30-min) monitor
+(`monitor continuous`) that's silent unless an FX bar is stale or the crypto
+engine timers stalled. Every check is **outcome-based** (reads the DB / a file:
+"`MAX(trade_date)` advanced", "rows exist for the expected date",
+"`actual_hit` non-NULL for matured predictions", "`predictions_latest.json`'s
+`export_date == today`", "the engine ran `entry` today and opened positions")
+— never exit-code-based, because the regression that motivated it (KI-138) had
+every script exit 0. The crypto monitor and the continuous monitor read the
+crypto-trading-engine DuckDB read-only (`CRYPTO_ENGINE_DB_PATH`, ADR-020). New
+units `mhde-{crypto,equity,fx}-pipeline-monitor` (daily 06:40 / 01:00 / 12:10
+UTC) and `mhde-continuous-monitor` (`*:0/30`). CLI:
+`main.py monitor {crypto,equity,fx}-pipeline` and `main.py monitor continuous`.
+Full reference: `docs/PIPELINE_MONITORING.md`.
+
+Telegram routing: `monitoring/alert.py:send_alert` (anomaly monitors) and
+`monitoring/alert.py:send_text` (pipeline monitor, which posts every run) both
+bottom out in `fx.bot.telegram_bot.send_message`. The `MONITORING_DRY_RUN=true`
 env var suppresses real sends — useful for local testing and
 manual one-off runs.
 

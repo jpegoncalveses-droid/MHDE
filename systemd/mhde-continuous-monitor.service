@@ -1,0 +1,14 @@
+[Unit]
+Description=MHDE continuous monitor — FX bar freshness + crypto engine timers; Telegram alert on red only
+After=network.target
+
+[Service]
+Type=oneshot
+User=jpcg
+WorkingDirectory=/home/jpcg/MHDE
+Environment=MHDE_DB_PATH=/home/jpcg/MHDE/data/mhde.duckdb
+Environment=CRYPTO_ENGINE_DB_PATH=/home/jpcg/crypto-trading-engine/data/trading_engine.duckdb
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py monitor continuous
+StandardOutput=append:/home/jpcg/MHDE/data/logs/pipeline_monitor_continuous.log
+StandardError=append:/home/jpcg/MHDE/data/logs/pipeline_monitor_continuous.log
+TimeoutStartSec=120

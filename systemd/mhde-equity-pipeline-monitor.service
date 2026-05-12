@@ -1,0 +1,13 @@
+[Unit]
+Description=MHDE equity pipeline monitor — one Telegram message, every step (ingestion → features → predictions → dashboard)
+After=network.target mhde-predict.service
+
+[Service]
+Type=oneshot
+User=jpcg
+WorkingDirectory=/home/jpcg/MHDE
+Environment=MHDE_DB_PATH=/home/jpcg/MHDE/data/mhde.duckdb
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py monitor equity-pipeline
+StandardOutput=append:/home/jpcg/MHDE/data/logs/pipeline_monitor_equity.log
+StandardError=append:/home/jpcg/MHDE/data/logs/pipeline_monitor_equity.log
+TimeoutStartSec=120

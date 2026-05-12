@@ -796,6 +796,10 @@ Eleven runtime monitors fire Telegram alerts on detected anomalies. Source
 under `monitoring/`, dispatched via `main.py monitor <name>`. Schedules
 are systemd-driven from `systemd/mhde-monitor-*.{service,timer}`.
 
+A separate **pipeline-monitor layer** (ADR-026, `monitoring/pipeline_monitor/`)
+posts one Telegram message per pipeline showing every step 🟢/🔴/⚪ — see
+`### Pipeline-monitor layer` below and `docs/PIPELINE_MONITORING.md`.
+
 ### Monitor catalog
 
 | Monitor | Schedule (UTC) | Module | What it checks |
@@ -814,6 +818,32 @@ are systemd-driven from `systemd/mhde-monitor-*.{service,timer}`.
 
 Schedules are staggered to avoid the FX hourly :05 firing window and the
 nightly daily-analysis 23:15 lock window.
+
+### Pipeline-monitor layer (ADR-026)
+
+A second observability layer (`monitoring/pipeline_monitor/`) that answers
+*"did today's run produce the right outputs all the way through?"* rather than
+*"is the system running"* (health-check) or *"are the row counts roughly right"*
+(`pipeline-execution`). One Telegram message per pipeline, every step shown
+🟢 ok / 🔴 failed / ⚪ skipped-because-an-earlier-step-failed; every check is
+**outcome-based** (reads the DB / a file), never exit-code-based. Built after
+KI-138 (a regression where every script exited 0 but the crypto export froze
+and no positions were placed — invisible for ~24h). Full reference:
+`docs/PIPELINE_MONITORING.md`.
+
+| Unit | Schedule (UTC) | Command | Checks |
+|---|---|---|---|
+| `mhde-crypto-pipeline-monitor.{service,timer}` | daily 06:40 | `monitor crypto-pipeline` | 9 steps: OHLCV → data-quality guard → funding/OI → features → predictions → outcome tagging → predictions export → engine ingest → engine entry/positions (steps 8–9 read the engine DuckDB read-only, ADR-020). Sends green or red. |
+| `mhde-equity-pipeline-monitor.{service,timer}` | daily 01:00 | `monitor equity-pipeline` | 4 steps: equity ingestion → features → predictions → dashboard-data refresh. Sends green or red. |
+| `mhde-fx-pipeline-monitor.{service,timer}` | daily 12:10 | `monitor fx-pipeline` | 2 steps: FX bar ingestion (freshness, KI-128-aware) → signal generation. Sends green or red. |
+| `mhde-continuous-monitor.{service,timer}` | every 30 min (`*:0/30`) | `monitor continuous` | FX hourly-bar freshness; engine monitor-timer liveness; engine entry-timer ran today (after 08:00 UTC). **Silent when all green**, one message when any red. |
+
+`MONITORING_DRY_RUN=true` suppresses the real Telegram send — the rendered
+message is still printed to stdout (and logged) so you can verify it. The
+crypto and continuous units carry `CRYPTO_ENGINE_DB_PATH`
+in the unit file. Logs: `data/logs/pipeline_monitor_{crypto,equity,fx,continuous}.log`.
+Deploy like the other monitors (copy units, `daemon-reload`, `enable --now` the
+`.timer`s). v1 limitations tracked in KI-139.
 
 ### Manual invocation
 

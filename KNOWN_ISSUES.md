@@ -1,7 +1,7 @@
 # Known Issues
 
-**8 open observations** (KI-122, KI-123, KI-126, KI-131, KI-132,
-KI-134, KI-136, KI-137). KI-122/123 are cosmetic; KI-126 is a future
+**9 open observations** (KI-122, KI-123, KI-126, KI-131, KI-132,
+KI-134, KI-136, KI-137, KI-139). KI-122/123 are cosmetic; KI-126 is a future
 Phase 0 enhancement deferred until weekly reliability snapshots
 accumulate; KI-131 is a low-priority single-day production-model
 row-count dip; KI-132 is a dashboard-deployment-process gap (no
@@ -13,9 +13,11 @@ P&L-band / drawdown / monthly arms, deferred until the engine's
 `daily_pnl` table starts filling (blocked on engine-side RECONCILE-001);
 KI-137 is the crypto post-parabolic re-entry bias — *mitigated* by the
 new exclusion filter (ADR-021) but the model-label root cause is the
-open follow-up. None requires a hot fix — all tracked so a future
-session triages deliberately rather than letting them rot in the
-working tree.
+open follow-up; KI-139 catalogs the per-pipeline monitor's v1 scope cuts
+(no auto-remediation, coarse equity-dashboard mtime check, no engine-side
+"why 0 positions" reason, reconcile timer unchecked — ADR-026). None
+requires a hot fix — all tracked so a future session triages deliberately
+rather than letting them rot in the working tree.
 
 **KI-138** opened + resolved (option A) 2026-05-12 — the cap-at-today-1
 OHLCV ingestion fix (commit 8f9d707) made `MAX(trade_date)` in
@@ -326,6 +328,44 @@ a guard rail, not a cure. (Threshold retuning, if the −0.20/+2.0 pair
 proves too narrow or too wide, is just two constants in
 `crypto/config.py` — the scan supports −0.15/+1.5 as a more-aggressive
 alternative.)
+
+### KI-139 — Pipeline monitor v1 limitations (no auto-remediation, coarse equity dashboard check, no "why 0 positions", reconcile timer unchecked)
+
+**Context.** The per-pipeline monitor (`monitoring/pipeline_monitor/`,
+`feat-pipeline-monitoring`, ADR-026) ships with deliberate v1 scope cuts —
+none is a bug, all are tracked so a later session tightens them on purpose.
+
+1. **No auto-remediation.** The monitor reports 🟢/🔴/⚪ to Telegram; the
+   operator acts. (By design — re-running a pipeline step from a monitor is
+   the kind of thing that should be an explicit decision.)
+2. **No dashboard view.** Telegram only in v1. A "pipeline status" dashboard
+   tab is a possible v2.
+3. **Equity "dashboard data refresh" step is coarse.** It checks the mtime of
+   one daily-analysis output file (`data/processed/prediction_vs_actual_rows.csv`)
+   with a 4-day tolerance — wide enough to absorb a Friday→Tuesday weekend plus
+   a market holiday (the 23:15 daily-analysis path runs Mon-Fri only). A
+   3-day-stale dashboard on a normal week is therefore *not* flagged by this
+   step alone. A multi-day outage is still caught by it and by the existing
+   health-check / `pipeline-execution` monitor; tightening would need a
+   trading-calendar-aware expected-mtime instead of a flat day count.
+4. **"0 positions opened today" → 🔴 with a note, not a precise diagnosis.**
+   The engine DuckDB carries no machine-readable "why did entry place 0" field
+   (no `entry_complete` event with a reason), so the crypto monitor's step 9
+   reports 🔴 with a note telling the operator to check the engine entry log
+   (all top-N filtered? predictions file rejected? max_concurrent reached?).
+   It is softened to 🟢 only when the book is already at `max_concurrent`
+   (read from `active_spec.json`). A clean fix needs an engine-side change to
+   record the entry outcome reason — out of scope (don't modify the engine
+   repo) and tracked alongside the engine-data-recording follow-ups.
+5. **Engine `reconcile` timer not checked.** The continuous monitor checks the
+   engine `monitor` and `entry` timers but not `reconcile` — that timer is
+   disabled pending RECONCILE-001, and a permanently-red check would be noise.
+   A `CHECK_ENGINE_RECONCILE` flag in `continuous_runner.py` flips it on once
+   RECONCILE-001 lands.
+
+**Status.** Open observation, low priority. Resolve item-by-item as the
+underlying constraints (trading-calendar helper, engine entry-reason recording,
+RECONCILE-001) are addressed.
 
 ## Recently resolved (post-Session-7)
 

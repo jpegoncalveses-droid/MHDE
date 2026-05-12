@@ -1264,3 +1264,91 @@ ago will no longer be caught by this gate alone (it is still caught by
 `pipelines/freshness.py` recency budgets and the daily data-quality
 guard, ADR-022). A pipeline ≥2 days stale still aborts the export. No
 systemd / engine / dashboard changes; no migration.
+
+---
+
+## ADR-026 — Per-pipeline monitor: one Telegram message, outcome-based step checks, cross-DB reads, separate timers
+
+**Date:** 2026-05-12
+**Session:** pipeline-monitoring build (`feat-pipeline-monitoring`)
+**Status:** Active
+**Builds on:** ADR-020 (read-only cross-repo engine-DB access), ADR-022 (cap-at-today-1 ingestion), ADR-025 / KI-138 (the regression that motivated this), the Session-6 monitor framework (`monitoring/alert.py`).
+
+**Context.** On 2026-05-11/12 the prediction-export staleness gate broke
+(KI-138): every step of the crypto pipeline exited 0, `crypto export-predictions`
+failed (or, depending on the day, the engine's entry phase ran cleanly and just
+placed nothing), `predictions_latest.json` froze, the engine rejected it on
+`export_date != today_utc`, and no positions were opened. None of the existing
+monitors caught it for ~24h: the daily health-check is once-a-day and the
+`pipeline-execution` monitor checks row counts, not "did today's export point at
+today's file" or "did the engine actually enter". The operator wanted a single
+daily message per pipeline that shows *every* step's outcome at a glance —
+🟢 / 🔴 / ⚪ — so a regression of this shape is obvious the next morning, plus
+a continuous (every-30-min) monitor for the things that can't wait a day.
+
+**Decision.**
+- **New package `monitoring/pipeline_monitor/`.** `core.py` defines `Status`
+  (`GREEN`/`RED`/`SKIPPED`), `StepResult`, `PipelineResult`, `evaluate_steps`
+  (runs `(name, callable)` checks; a raise → RED; `stop_on_red` short-circuits),
+  and `render_telegram_message`. `checks/{crypto,equity,fx}.py` hold one check
+  function per step. `daily_runner.py` runs one pipeline's checks and posts one
+  message; `continuous_runner.py` runs the continuous checks and posts only if
+  any is red.
+- **Outcome-based, never exit-code-based.** Every check reads the DB / a file
+  directly — `MAX(trade_date)` advanced, rows exist for the expected date,
+  `actual_hit` non-NULL for matured predictions, `predictions_latest.json`'s
+  `export_date == today`, the engine's `entry` phase ran today and positions
+  exist with `entry_date == today`. The 2026-05-11/12 regression had every
+  script exit 0; only an outcome check catches it.
+- **Date conventions baked into the checks (not re-derived per call site).**
+  Crypto OHLCV / features / predictions are produced for `today - 1` under
+  cap-at-today-1 (ADR-022); the export's `export_date` is `today` and
+  `features_as_of_date` is `today - 1` (ADR-025). Equity uses
+  `pipelines.market_calendar.expected_equity_prediction_date(now)` (weekend-rolling
+  "most recent closed market day"). FX reuses `pipelines.freshness.check_fx_freshness`
+  (forex-closed-window aware, KI-128).
+- **Strict linear cascade in the daily runner.** The production pipelines are
+  sequential ("each step's output is the next step's input" — ARCHITECTURE.md),
+  so the first RED short-circuits: every later step is reported ⚪ ("skipped — an
+  earlier step failed") without being evaluated. The continuous monitor's checks
+  are independent → no cascade.
+- **Cross-repo engine-DB read, read-only.** The crypto daily monitor and the
+  continuous monitor read the crypto-trading-engine DuckDB (`CRYPTO_ENGINE_DB_PATH`,
+  default `/home/jpcg/crypto-trading-engine/data/trading_engine.duckdb`) read-only —
+  the same scoped exception to INTERFACE.md's "no cross-system DB access" that
+  ADR-020 made for the paper-trading-drift monitor and the dashboard's Paper-Trading
+  tab. The engine repo is **not** modified.
+- **Reuse the `monitoring/alert.py` Telegram bridge.** A new `alert.send_text(text)`
+  sends a pre-formatted message unconditionally (the daily monitor posts every run,
+  green or red, unlike `send_alert` which suppresses OK); it still respects
+  `MONITORING_DRY_RUN` and logs the payload. Telegram still bottoms out in
+  `fx.bot.telegram_bot.send_message`.
+- **Separate `.service`/`.timer` per pipeline, not one mega-monitor.** Each
+  pipeline finishes at a different time (crypto entry ~06:30 → monitor 06:40 UTC;
+  equity predict 00:15 → monitor 01:00 UTC; FX hourly → a daily 12:10 UTC
+  snapshot) and a failure in one shouldn't blur the picture for another. The
+  continuous monitor is its own `*:0/30` timer. New units:
+  `mhde-crypto-pipeline-monitor`, `mhde-equity-pipeline-monitor`,
+  `mhde-fx-pipeline-monitor`, `mhde-continuous-monitor`. New CLI:
+  `main.py monitor {crypto,equity,fx}-pipeline` and `main.py monitor continuous`.
+- **No auto-remediation, no dashboard view in v1.** The monitor reports; the
+  operator acts. (KI-139 tracks the v1 limitations.)
+
+**Why not extend the existing `pipeline-execution` monitor.** That monitor is a
+recency + row-count drift detector that returns a single `MonitorResult` and only
+alerts on anomaly. The operator's ask is the inverse shape: a positive daily
+confirmation enumerating every step, with a per-step ⚪ cascade and a cross-repo
+view of engine entry. Different output contract, different cadence, different
+data sources — a new layer alongside, not a rewrite of, the Session-6 monitors.
+
+**Consequences.** Five new always-on facts per day (one Telegram message per
+pipeline + a continuous monitor that's silent unless red); the operator gets a
+daily green heartbeat per engine. The equity "dashboard data refresh" step is a
+coarse mtime check on a daily-analysis output file with a 4-day tolerance (spans
+a weekend + a market holiday) — a 3-day-stale dashboard on a normal week is
+*not* flagged by this step alone (KI-139). "0 positions opened today" with no
+machine-readable reason is reported RED-with-note (the engine DB carries no
+"why" field) — softened to GREEN only when the book is already at `max_concurrent`
+(KI-139). The engine `reconcile` timer is not checked (disabled pending
+RECONCILE-001; a `CHECK_ENGINE_RECONCILE` flag flips it on). No schema change,
+no migration, no engine-repo change, no change to any existing pipeline step.
