@@ -37,12 +37,60 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 from monitoring.alert import MonitorResult, send_alert
 
 logger = logging.getLogger("mhde.monitoring.paper_trading_drift")
+
+_MONITORING_YAML = Path(__file__).resolve().parent.parent / "config" / "monitoring.yaml"
+
+
+def _load_monitoring_config() -> dict:
+    """Read ``config/monitoring.yaml``; returns ``{}`` if absent or unreadable.
+
+    Kept module-level so tests can monkey-patch a fixture dict in without
+    touching the real config file.
+    """
+    try:
+        import yaml
+        if not _MONITORING_YAML.exists():
+            return {}
+        return yaml.safe_load(_MONITORING_YAML.read_text()) or {}
+    except Exception:
+        logger.exception("paper_trading_drift: failed to load %s", _MONITORING_YAML)
+        return {}
+
+
+def _latest_baseline_date() -> Optional[date]:
+    """Return the most-recent ``strategy_baselines[*].date`` or ``None``.
+
+    Schema (config/monitoring.yaml):
+        paper_trading_drift:
+          strategy_baselines:
+            - date: "2026-05-12"
+              reason: "..."
+
+    Bad rows are skipped; trades before the latest valid date are excluded
+    from Check C (closed win rate) and Check D (label hit rate).
+    """
+    cfg = _load_monitoring_config()
+    items = (cfg.get("paper_trading_drift") or {}).get("strategy_baselines") or []
+    parsed: list[date] = []
+    for item in items:
+        raw = item.get("date") if isinstance(item, dict) else None
+        if isinstance(raw, date) and not isinstance(raw, datetime):
+            parsed.append(raw)
+        elif isinstance(raw, str):
+            try:
+                parsed.append(datetime.strptime(raw, "%Y-%m-%d").date())
+            except ValueError:
+                logger.warning(
+                    "paper_trading_drift: skipping invalid baseline date %r", raw
+                )
+    return max(parsed) if parsed else None
 
 # ── config ───────────────────────────────────────────────────────────
 DEFAULT_ENGINE_DB = "/home/jpcg/crypto-trading-engine/data/trading_engine.duckdb"
@@ -193,7 +241,18 @@ def _check_closed_win_rate(eng, now: datetime, metrics: dict) -> list[_Finding]:
     ``closed_trade_no_exit_price`` and the arm reports that it cannot
     compute the rate yet (informational, not an alert; see KI-136).
     """
-    cutoff_ts = now - timedelta(days=ROLLING_WINDOW_DAYS)
+    rolling_cutoff_ts = now - timedelta(days=ROLLING_WINDOW_DAYS)
+    baseline = _latest_baseline_date()
+    baseline_ts = (datetime.combine(baseline, time.min)
+                   if baseline is not None else None)
+    # Floor = the later of the rolling window and the strategy baseline.
+    effective_cutoff_ts = (max(rolling_cutoff_ts, baseline_ts)
+                           if baseline_ts is not None else rolling_cutoff_ts)
+    metrics["active_strategy_baseline_date"] = (
+        baseline.isoformat() if baseline is not None else None
+    )
+    metrics["effective_window_start"] = effective_cutoff_ts.date().isoformat()
+
     rows = eng.execute(
         """
         SELECT p.entry_price, p.qty,
@@ -211,8 +270,14 @@ def _check_closed_win_rate(eng, now: datetime, metrics: dict) -> list[_Finding]:
     winners = 0
     n = 0                 # closed trades in-window WITH a readable exit price
     n_no_exit_price = 0   # closed trades in-window with exit price not recorded
+    n_excluded_pre_baseline = 0
     for entry_price, qty, sell_vwap, exit_ts in rows:
-        if exit_ts is None or exit_ts < cutoff_ts:
+        if exit_ts is None:
+            continue
+        if exit_ts < rolling_cutoff_ts:
+            continue  # outside the 14d window — same as before
+        if baseline_ts is not None and exit_ts < baseline_ts:
+            n_excluded_pre_baseline += 1
             continue
         if entry_price is None or qty is None:
             continue
@@ -227,6 +292,7 @@ def _check_closed_win_rate(eng, now: datetime, metrics: dict) -> list[_Finding]:
 
     metrics["closed_trade_n"] = n
     metrics["closed_trade_no_exit_price"] = n_no_exit_price
+    metrics["closed_trade_n_excluded_pre_baseline"] = n_excluded_pre_baseline
     np_note = (f"; {n_no_exit_price} more closed but exit price not recorded by the engine (KI-136)"
                if n_no_exit_price else "")
 
@@ -256,8 +322,10 @@ def _check_label_hit_rate(eng, mhde, now: datetime, metrics: dict) -> list[_Find
     # qualifying = closed positions whose label settled within the last window:
     #   settle = entry_date + LABEL_SETTLE_DAYS  ∈  [today - WINDOW, today]
     #   ⇔ entry_date ∈ [today - (WINDOW + SETTLE), today - SETTLE]
-    entry_lo = today - timedelta(days=ROLLING_WINDOW_DAYS + LABEL_SETTLE_DAYS)
+    rolling_entry_lo = today - timedelta(days=ROLLING_WINDOW_DAYS + LABEL_SETTLE_DAYS)
     entry_hi = today - timedelta(days=LABEL_SETTLE_DAYS)
+    baseline = _latest_baseline_date()
+    entry_lo = max(rolling_entry_lo, baseline) if baseline is not None else rolling_entry_lo
 
     pos_rows = eng.execute(
         "SELECT symbol, entry_date FROM positions "

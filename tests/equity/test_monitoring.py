@@ -26,12 +26,28 @@ def force_dry_run(monkeypatch):
 
 
 def test_monitor_result_to_telegram_text_includes_severity_prefix():
+    """Severity prefix is a spelled-out token, not ambiguous bang glyphs.
+
+    Pre-fix the prefixes were ``[i]`` / ``[!]`` / ``[!!]`` — operators read
+    ``[!]`` as "error" even though it was the warn class, and the visual
+    delta to ``[!!]`` critical was easy to miss in a mobile Telegram client.
+    """
     r = MonitorResult(monitor="x", status="warn", severity="warn",
                        title="t", body="b")
     text = r.to_telegram_text()
-    assert "[!] MHDE monitor: x" in text
+    assert "WARN • MHDE monitor: x" in text
     assert "t" in text
     assert "b" in text
+
+
+def test_monitor_result_to_telegram_text_renders_info_prefix():
+    r = MonitorResult(monitor="x", status="ok", severity="info", title="t")
+    assert r.to_telegram_text().startswith("INFO • MHDE monitor: x")
+
+
+def test_monitor_result_to_telegram_text_renders_critical_prefix():
+    r = MonitorResult(monitor="x", status="fail", severity="critical", title="t")
+    assert r.to_telegram_text().startswith("CRITICAL • MHDE monitor: x")
 
 
 def test_send_alert_skips_ok_results(mock_telegram):

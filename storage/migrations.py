@@ -8,7 +8,7 @@ from storage.db import init_schema
 
 logger = logging.getLogger("mhde.storage.migrations")
 
-_CURRENT_VERSION = 9
+_CURRENT_VERSION = 10
 
 
 def run_migrations(conn: duckdb.DuckDBPyConnection) -> None:
@@ -167,3 +167,19 @@ def run_migrations(conn: duckdb.DuckDBPyConnection) -> None:
             "VALUES (9, 'Add promotion_status to crypto_ml_model_runs') ON CONFLICT DO NOTHING"
         )
         logger.info("Applied migration v9: promotion_status on crypto_ml_model_runs")
+
+    if current < 10:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS monitor_alert_state (
+                monitor          TEXT PRIMARY KEY,
+                last_payload_sha TEXT,
+                last_severity    TEXT,
+                last_sent_at     TIMESTAMP
+            )
+        """)
+        conn.execute(
+            "INSERT INTO schema_version (version, description) "
+            "VALUES (10, 'Add monitor_alert_state for throttle/dedup of monitor alerts') "
+            "ON CONFLICT DO NOTHING"
+        )
+        logger.info("Applied migration v10: monitor_alert_state table")
