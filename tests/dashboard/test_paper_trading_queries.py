@@ -39,7 +39,30 @@ def _engine_db() -> duckdb.DuckDBPyConnection:
             id VARCHAR, timestamp TIMESTAMP, position_id VARCHAR,
             event_type VARCHAR, payload JSON
         )""")
+    # Mirrors crypto-trading-engine/engine/state/schema.sql:46-55. NOT NULL
+    # on every column except spec_version, so test inserts must supply them.
+    conn.execute("""
+        CREATE TABLE daily_pnl (
+            date                       DATE PRIMARY KEY,
+            realized_pnl_usd           DOUBLE NOT NULL,
+            unrealized_pnl_usd         DOUBLE NOT NULL,
+            account_equity_usd         DOUBLE NOT NULL,
+            num_open                   INTEGER NOT NULL,
+            num_closed                 INTEGER NOT NULL,
+            num_skipped_below_minimum  INTEGER NOT NULL,
+            spec_version               VARCHAR
+        )""")
     return conn
+
+
+def _daily(conn, on_date, equity, realized=0.0, unrealized=0.0):
+    """Insert one daily_pnl row with defaults for unused columns."""
+    conn.execute(
+        "INSERT INTO daily_pnl (date, realized_pnl_usd, unrealized_pnl_usd, "
+        "account_equity_usd, num_open, num_closed, num_skipped_below_minimum) "
+        "VALUES (?, ?, ?, ?, 0, 0, 0)",
+        [on_date, realized, unrealized, equity],
+    )
 
 
 def _pos(conn, id, symbol, state, *, entry_date=None, entry_price=None, qty=None,
@@ -241,3 +264,145 @@ def test_engine_runs_summary_empty():
     assert s["last_entry_at"] is None
     assert s["n_open"] == 0
     assert s["n_closed_14d"] == 0
+
+
+# ── get_daily_balance_since_baseline + paper_baseline_date ───────────
+# The Paper Trading tab puts a "daily balance" table at the top so the
+# operator can read the equity curve since the 2026-05-12 strategy reset
+# without scrolling. Source: crypto-trading-engine's daily_pnl table
+# (ADR-020, read-only).
+
+from datetime import date
+
+
+def test_paper_baseline_date_reads_config(tmp_path, monkeypatch):
+    """When config/monitoring.yaml declares a baseline, that wins over the
+    hardcoded fallback."""
+    cfg_text = (
+        "paper_trading_drift:\n"
+        "  strategy_baselines:\n"
+        "    - date: \"2026-04-01\"\n"
+        "      reason: \"earlier\"\n"
+        "    - date: \"2026-05-12\"\n"
+        "      reason: \"KI-138 OHLCV repair\"\n"
+    )
+    cfg_path = tmp_path / "monitoring.yaml"
+    cfg_path.write_text(cfg_text)
+    import yaml
+    monkeypatch.setattr(
+        q, "_load_monitoring_config",
+        lambda: yaml.safe_load(cfg_path.read_text()),
+    )
+    assert q.paper_baseline_date() == date(2026, 5, 12)
+
+
+def test_paper_baseline_date_falls_back_to_hardcoded(monkeypatch):
+    """No config / empty baselines list → the hardcoded 2026-05-12 anchor
+    is returned so the dashboard never breaks if monitoring.yaml is absent."""
+    monkeypatch.setattr(q, "_load_monitoring_config", lambda: {})
+    assert q.paper_baseline_date() == date(2026, 5, 12)
+
+
+def test_daily_balance_columns_and_first_row(monkeypatch):
+    """Schema, ordering, and first-row sentinels.
+
+    daily_delta is None on the earliest in-window row (no prior to diff
+    against). cumulative_delta is anchored to the earliest in-window
+    equity, so the first row's cumulative is exactly 0.0."""
+    e = _engine_db()
+    _daily(e, date(2026, 5, 12), equity=1000.0)
+    _daily(e, date(2026, 5, 13), equity=1020.0)
+    _daily(e, date(2026, 5, 14), equity=1015.0)
+
+    df = q.get_daily_balance_since_baseline(e, since=date(2026, 5, 12))
+    assert list(df.columns) == ["date", "equity", "daily_delta", "cumulative_delta"]
+    assert len(df) == 3
+    assert df.iloc[0]["date"] == date(2026, 5, 12)
+    assert df.iloc[0]["equity"] == 1000.0
+    # First-row daily_delta has no prior to diff against — None from the
+    # query becomes NaN in the float column, which is what Streamlit
+    # renders as an empty cell.
+    import pandas as _pd
+    assert _pd.isna(df.iloc[0]["daily_delta"])
+    assert df.iloc[0]["cumulative_delta"] == 0.0
+    assert df.iloc[1]["daily_delta"] == pytest.approx(20.0)
+    assert df.iloc[1]["cumulative_delta"] == pytest.approx(20.0)
+    assert df.iloc[2]["daily_delta"] == pytest.approx(-5.0)
+    assert df.iloc[2]["cumulative_delta"] == pytest.approx(15.0)
+
+
+def test_daily_balance_excludes_pre_baseline_rows():
+    e = _engine_db()
+    # Pre-baseline rows that must be filtered out.
+    _daily(e, date(2026, 5, 9), equity=950.0)
+    _daily(e, date(2026, 5, 11), equity=975.0)
+    # Post-baseline rows that count.
+    _daily(e, date(2026, 5, 12), equity=1000.0)
+    _daily(e, date(2026, 5, 13), equity=1010.0)
+
+    df = q.get_daily_balance_since_baseline(e, since=date(2026, 5, 12))
+    assert list(df["date"]) == [date(2026, 5, 12), date(2026, 5, 13)]
+    # cumulative_delta anchored to 5/12 — the pre-baseline 975 is invisible.
+    assert df.iloc[1]["cumulative_delta"] == pytest.approx(10.0)
+
+
+def test_daily_balance_empty_table_returns_empty_dataframe():
+    """Pre-RECONCILE-001 reality: daily_pnl is empty. The query must return
+    an empty DataFrame (correct schema, zero rows) so the tab renders an
+    "no data" branch without crashing."""
+    e = _engine_db()
+    df = q.get_daily_balance_since_baseline(e, since=date(2026, 5, 12))
+    assert df.empty
+    assert list(df.columns) == ["date", "equity", "daily_delta", "cumulative_delta"]
+
+
+def test_daily_balance_handles_negative_streak():
+    """Equity drops — daily_delta and cumulative_delta both go negative,
+    no special handling required."""
+    e = _engine_db()
+    _daily(e, date(2026, 5, 12), equity=1000.0)
+    _daily(e, date(2026, 5, 13), equity=990.0)
+    _daily(e, date(2026, 5, 14), equity=975.0)
+    df = q.get_daily_balance_since_baseline(e, since=date(2026, 5, 12))
+    assert df.iloc[1]["daily_delta"] == pytest.approx(-10.0)
+    assert df.iloc[2]["daily_delta"] == pytest.approx(-15.0)
+    assert df.iloc[2]["cumulative_delta"] == pytest.approx(-25.0)
+
+
+def test_daily_balance_preserves_gaps():
+    """If the engine's reconcile timer skipped a day, the resulting row gap
+    is preserved as-is — the query doesn't backfill. Daily Δ on the row
+    after a gap is the raw difference against the previous *present* row,
+    not against the missing day."""
+    e = _engine_db()
+    _daily(e, date(2026, 5, 12), equity=1000.0)
+    # 5/13 missing (reconcile skipped)
+    _daily(e, date(2026, 5, 14), equity=1030.0)
+    df = q.get_daily_balance_since_baseline(e, since=date(2026, 5, 12))
+    assert list(df["date"]) == [date(2026, 5, 12), date(2026, 5, 14)]
+    assert df.iloc[1]["daily_delta"] == pytest.approx(30.0)
+
+
+def test_daily_balance_orders_by_date_ascending():
+    """Whatever insertion order the engine used, the dashboard reads
+    oldest-first — that is the natural reading order for a balance table."""
+    e = _engine_db()
+    _daily(e, date(2026, 5, 14), equity=1015.0)
+    _daily(e, date(2026, 5, 12), equity=1000.0)
+    _daily(e, date(2026, 5, 13), equity=1010.0)
+    df = q.get_daily_balance_since_baseline(e, since=date(2026, 5, 12))
+    assert list(df["date"]) == [
+        date(2026, 5, 12), date(2026, 5, 13), date(2026, 5, 14),
+    ]
+
+
+def test_daily_balance_since_override_takes_precedence():
+    """The ``since`` argument is mandatory and authoritative — callers pass
+    the baseline they want, the function does not silently default."""
+    e = _engine_db()
+    _daily(e, date(2026, 5, 12), equity=1000.0)
+    _daily(e, date(2026, 5, 13), equity=1010.0)
+    df = q.get_daily_balance_since_baseline(e, since=date(2026, 5, 13))
+    assert len(df) == 1
+    assert df.iloc[0]["date"] == date(2026, 5, 13)
+    assert df.iloc[0]["cumulative_delta"] == 0.0
