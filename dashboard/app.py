@@ -22,6 +22,7 @@ from dashboard.services.queries import (
     engine_db_path,
     get_crypto_predictions,
     get_crypto_recent_outcomes,
+    get_daily_balance_since_baseline,
     get_distinct_prediction_dates,
     get_equity_predictions,
     get_equity_recent_outcomes,
@@ -30,6 +31,7 @@ from dashboard.services.queries import (
     get_paper_engine_runs_summary,
     get_paper_failed_entries,
     get_paper_open_positions,
+    paper_baseline_date,
 )
 
 st.set_page_config(
@@ -936,6 +938,25 @@ with tab_paper:
         )
     else:
         try:
+            _baseline = paper_baseline_date()
+            st.subheader(f"Daily balance (since {_baseline.isoformat()})")
+            _balance_df = get_daily_balance_since_baseline(_engine_conn, since=_baseline)
+            if _balance_df.empty:
+                st.info(
+                    "No `daily_pnl` rows yet — the engine's reconcile timer is "
+                    "disabled pending RECONCILE-001; the table populates once "
+                    "the engine starts writing end-of-day equity."
+                )
+            else:
+                st.dataframe(_balance_df, use_container_width=True, hide_index=True)
+            st.caption(
+                "Source: crypto-trading-engine `daily_pnl.account_equity_usd` "
+                "(ADR-020). `daily Δ` = today − prior present row; "
+                "`cumulative Δ` is anchored to the baseline date — the day "
+                "after the KI-138 OHLCV repair landed, so pre-baseline "
+                "equity readings (mixed with corrupted prices) are excluded."
+            )
+
             _summary = get_paper_engine_runs_summary(_engine_conn)
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Engine monitor cycle", _paper_age_str(_summary["last_monitor_at"]))

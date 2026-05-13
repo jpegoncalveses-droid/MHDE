@@ -861,3 +861,105 @@ def get_paper_engine_runs_summary(
         "n_open": int(n_open),
         "n_closed_14d": int(n_closed_14d),
     }
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Daily balance (top-of-tab strip on Paper Trading)
+#
+# Source: crypto-trading-engine's ``daily_pnl`` table (read-only — ADR-020).
+# The strategy was effectively re-anchored on 2026-05-12 when the KI-138
+# OHLCV repair landed; pre-baseline equity readings are mixed with corrupted
+# prices, so the table never shows them. The baseline date is read from
+# ``config/monitoring.yaml`` (latest ``strategy_baselines[*].date``) with a
+# hardcoded ``2026-05-12`` fallback so the dashboard never breaks if the
+# config file is absent.
+# ──────────────────────────────────────────────────────────────────────
+
+_DEFAULT_PAPER_BASELINE = date(2026, 5, 12)
+_MONITORING_YAML = Path(__file__).resolve().parent.parent.parent / "config" / "monitoring.yaml"
+
+
+def _load_monitoring_config() -> dict:
+    """Read ``config/monitoring.yaml``; returns ``{}`` if absent or unreadable.
+
+    Module-level so tests can monkey-patch a fixture dict in without touching
+    the live config file.
+    """
+    try:
+        import yaml
+        if not _MONITORING_YAML.exists():
+            return {}
+        return yaml.safe_load(_MONITORING_YAML.read_text()) or {}
+    except Exception:
+        return {}
+
+
+def paper_baseline_date() -> date:
+    """Most-recent ``strategy_baselines[*].date`` from config, or the
+    hardcoded ``2026-05-12`` anchor as a fallback.
+
+    Shared with the drift monitor so the dashboard's daily-balance table
+    and the drift monitor's rolling window agree on what counts as "since
+    the reset".
+    """
+    cfg = _load_monitoring_config()
+    items = (cfg.get("paper_trading_drift") or {}).get("strategy_baselines") or []
+    parsed: list[date] = []
+    for item in items:
+        raw = item.get("date") if isinstance(item, dict) else None
+        if isinstance(raw, date) and not isinstance(raw, datetime):
+            parsed.append(raw)
+        elif isinstance(raw, str):
+            try:
+                parsed.append(datetime.strptime(raw, "%Y-%m-%d").date())
+            except ValueError:
+                continue
+    return max(parsed) if parsed else _DEFAULT_PAPER_BASELINE
+
+
+def get_daily_balance_since_baseline(
+    engine_conn: duckdb.DuckDBPyConnection, *, since: date
+) -> pd.DataFrame:
+    """Daily account-equity strip for the Paper Trading tab.
+
+    Columns (always present, even when empty):
+        date              — settlement date of the daily_pnl row
+        equity            — account_equity_usd at end-of-day
+        daily_delta       — equity − equity_of_prior_present_row;
+                            ``None`` for the first in-window row
+        cumulative_delta  — equity − equity_of_first_in_window_row;
+                            ``0.0`` for the first row
+
+    Pre-baseline rows are excluded. Date gaps (if reconcile skipped a day)
+    are preserved as-is — ``daily_delta`` on the row after a gap is the
+    raw difference against the previous *present* row, which is the
+    honest representation of the equity path the operator actually
+    observed.
+
+    Empty input (the pre-RECONCILE-001 reality on the live engine DB)
+    yields an empty DataFrame with the correct schema so the caller can
+    render an "no data" branch without conditional column handling.
+    """
+    columns = ["date", "equity", "daily_delta", "cumulative_delta"]
+    rows = engine_conn.execute(
+        "SELECT date, account_equity_usd FROM daily_pnl "
+        "WHERE date >= ? ORDER BY date ASC",
+        [since],
+    ).fetchall()
+    if not rows:
+        return pd.DataFrame(columns=columns)
+
+    anchor = float(rows[0][1])
+    out = []
+    prev: float | None = None
+    for d, equity in rows:
+        equity = float(equity)
+        daily_delta = None if prev is None else equity - prev
+        out.append({
+            "date": d,
+            "equity": equity,
+            "daily_delta": daily_delta,
+            "cumulative_delta": equity - anchor,
+        })
+        prev = equity
+    return pd.DataFrame(out, columns=columns)
