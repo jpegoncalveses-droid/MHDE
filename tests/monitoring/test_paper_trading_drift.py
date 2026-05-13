@@ -27,6 +27,14 @@ def _force_dry_run(monkeypatch):
     monkeypatch.setenv("MONITORING_DRY_RUN", "true")
 
 
+@pytest.fixture(autouse=True)
+def _no_strategy_baseline(monkeypatch):
+    """Existing scenarios pre-date config/monitoring.yaml; pin to "no baseline"
+    so production config never leaks into these unit tests. Tests that
+    exercise baselines live in test_paper_trading_drift_baselines.py."""
+    monkeypatch.setattr(ptd, "_latest_baseline_date", lambda: None)
+
+
 def _new_engine_db(path: str | None = None) -> duckdb.DuckDBPyConnection:
     """A minimal engine DuckDB: just the columns the monitor reads."""
     conn = duckdb.connect(path if path else ":memory:")

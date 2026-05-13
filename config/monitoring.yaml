@@ -1,0 +1,27 @@
+# Monitoring configuration — strategy baselines + alert throttle.
+#
+# Layout:
+#   paper_trading_drift.strategy_baselines: append-only list. The most-recent
+#     ``date`` is used as the floor for the drift monitor's rolling-window
+#     calculations (Check C closed win rate, Check D label hit rate). Trades
+#     before that date are excluded from the denominator. History is preserved
+#     so future readers can see why each baseline was set.
+#
+#   alert_throttle: gates noisy re-sends of identical monitor results across
+#     the 15-min systemd cadence. See monitoring/alert.py for the rules.
+#     - enabled: false bypasses the throttle entirely (every alert-worthy
+#       result fires Telegram, the pre-throttle behavior).
+#     - cooldown_hours: reserved (per-payload flap window); not currently used
+#       in the throttle decision.
+#     - heartbeat_hours: maximum silence while the same problem is firing —
+#       after this much time we re-send even if the payload is unchanged.
+
+paper_trading_drift:
+  strategy_baselines:
+    - date: "2026-05-12"
+      reason: "KI-138 OHLCV repair landed 2026-05-11; pre-baseline trades used corrupted prices"
+
+alert_throttle:
+  enabled: true
+  cooldown_hours: 4
+  heartbeat_hours: 24
