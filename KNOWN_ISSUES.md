@@ -1,8 +1,8 @@
 # Known Issues
 
-**16 open observations** (KI-122, KI-123, KI-126, KI-131, KI-132,
+**18 open observations** (KI-122, KI-123, KI-126, KI-131, KI-132,
 KI-134, KI-136, KI-137, KI-139, KI-140, KI-141, KI-144, KI-145,
-KI-146, KI-147, KI-148). KI-122/123 are cosmetic; KI-126 is a future
+KI-146, KI-147, KI-148, KI-149, KI-150). KI-122/123 are cosmetic; KI-126 is a future
 Phase 0 enhancement deferred until weekly reliability snapshots
 accumulate; KI-131 is a low-priority single-day production-model
 row-count dip; KI-132 is a dashboard-deployment-process gap (no
@@ -40,7 +40,20 @@ deployed-spec-vs-kill-switch gap surfaced by the same workstream —
 same config is -31.9%, which already exceeds the -30% engine kill
 switch (no production trip yet because no F2-shaped regime under
 filter-ON live, but the envelope is misstated and the switch is
-calibrated against the wrong number). None requires a hot fix — all
+calibrated against the wrong number); KI-149 is the equity pipeline's
+silent T-2 skip — a three-layer defect chain (Polygon free-tier 403
+on current-day grouped, row-count-blind freshness check in
+`pipelines/freshness.py:67`, and no scoring-date cross-check in
+`ml/predict.py:93-95`) that ships predictions two trading days behind
+every weekday while every component reports OK; KI-150 is the
+companion observation that the three equity monitor services that
+would normally catch KI-149-class defects are themselves broken
+(`mhde-equity-pipeline-monitor` exit-1 daily,
+`mhde-monitor-data-quality` + `mhde-monitor-pipeline` both bypass
+their alert path with DuckDB write-lock errors) — the alerting layer
+is dead. KI-149 + KI-150 are tracked together in
+`docs/EQUITY_WORKSTREAM_PAUSED.md` as the equity workstream's
+resumption queue (steps 3 and 4). None requires a hot fix — all
 tracked so a future session triages deliberately rather than letting
 them rot in the working tree.
 
@@ -828,6 +841,226 @@ to deployed; this KI is the durable tracker for resolution.
   execution applies the post-parabolic filter.
 - `data/exports/active_spec.json` — `risk.max_account_drawdown_pct
   = 0.30` and `backtest_expectations.portfolio_max_dd_pct = -23.7%`.
+
+### KI-149 — Equity ML pipeline silently ships T-2 predictions every weekday — layered defect chain
+
+**Severity: high — recurring every weekday since at least 2026-05-12,
+not transient.** Filed 2026-05-14 from the same investigation that
+produced `data/processed/finding3_ml_pipeline_gap_root_cause.md`.
+
+**Symptom.** The equity ML pipeline reports "Freshness OK" and "OK"
+exit code every daily run, but the predictions it writes carry a
+`prediction_date` two trading days behind today rather than T-1. On
+2026-05-13 00:20 the predict service logged
+`Freshness OK: Equity prices_daily latest=2026-05-12 (1 trading-day
+gap; threshold=2)` followed immediately by
+`Scoring universe for 2026-05-11`; on 2026-05-14 00:20 it logged
+`latest=2026-05-13` followed by `Scoring universe for 2026-05-12`. In
+both cases the "latest" prices_daily row count for the named date was
+**4** (vs ~520 normal) — fallback-source noise — but the pipeline
+treated `MAX(trade_date)` as sufficient and proceeded to score the
+previous trading day. `ml_predictions` for 2026-05-13 does not exist;
+the May 14 run rewrote `2026-05-12` predictions (idempotent UPSERT)
+and exited 0. `trading-engine-entry.timer` at 00:45 then consumed
+predictions whose `prediction_date` is two trading days stale relative
+to the live market.
+
+**Root cause is layered, not single-point.** Three defects compound:
+
+1. *External: Polygon free-tier blocks current-day grouped endpoint.*
+   `adapters/polygon.py` documents recent_daily_prices as "Last 5
+   days OHLCV available on free tier", but the `grouped` endpoint for
+   `date == today` (and often T-1) returns HTTP 403. The
+   `daily_analysis_2026-05-13.log` records
+   `Polygon grouped 2026-05-13: HTTP 403` and at T+1 still
+   `2026-05-13: {'grouped_status': 403, 'in_universe': 0,
+   'fallback_inserted': 0}`. Free-tier policy unlocks the date only
+   at ~T+2. Treated by the orchestrator as a generic `WARNING` rolled
+   into "1 failed" out of 11 sources.
+2. *Freshness check is row-count-blind.* `pipelines/freshness.py:67`
+   computes `SELECT MAX(trade_date) FROM prices_daily` and compares
+   `trading_days_between(latest, today) <= 2`. Four rows of
+   fallback-OTC data for 2026-05-13 (`HTHIY`, `IFNNY`, `RSHGY`,
+   `SUNB`) raise `MAX(trade_date)` to 2026-05-13, the trading_gap
+   becomes 1, and the check passes despite ~99% missing universe
+   coverage for that date.
+3. *Scoring-date selector cross-checks nothing.* `ml/predict.py:93-95`
+   reads `SELECT MAX(trade_date) FROM ml_features` as the default
+   prediction_date. `ml_features` for 2026-05-13 has zero rows (the
+   feature compute saw no in-universe prices_daily rows for that
+   date), so the selector returns 2026-05-12. The pipeline never
+   compares `MAX(ml_features.trade_date)` against
+   `MAX(prices_daily.trade_date)`; the only signal of the
+   regression is an `INFO Scoring universe for 2026-05-12` log line
+   in `data/logs/equity_predict.log`, which no alerting consumer
+   reads.
+
+Without an alerting layer to surface the divergence, the gap recurs
+every weekday silently. The would-be alerting layer
+(`mhde-equity-pipeline-monitor.service`) is itself broken — see
+[[KI-150]].
+
+**Architectural direction (committed; not for re-debate as part of
+this KI).** The equity workstream's pause-state doc
+`docs/EQUITY_WORKSTREAM_PAUSED.md` records the decision: **T-2
+honest**. The free-tier Polygon constraint is accepted; the system
+should be made truthful about its T-2 cadence rather than upgraded to
+paid Polygon (~$29–79/mo) at this stage. Paper trading does not
+require T-0 freshness; the gap is in honest labelling and silent
+skipping, not in data-source budget. Live execution would re-open the
+question.
+
+**Resolution paths.**
+
+1. *Tighten `pipelines/freshness.py:67` to require coverage, not just
+   `MAX(trade_date)`.* Replace the bare MAX with a query that selects
+   the most recent date whose row count is at least some fraction
+   (e.g. 0.5) of the ML universe size. Four-row "today" coverage will
+   then fail freshness and `ml predict` will return
+   `{"skipped": "stale_data"}` — visible upstream and alertable. Low
+   blast radius; mirrors the row-count guard already used in the
+   pipeline-execution monitor (`monitor pipeline-execution`).
+2. *Cross-check predict scoring-date in `ml/predict.py:93-95`.* If
+   `MAX(ml_features.trade_date) < MAX(prices_daily.trade_date)`,
+   log `WARNING` (or refuse to score, behind a flag). Either signals
+   the divergence in `data/logs/equity_predict.log` so external
+   monitors can flag it. Compatible with the T-2 honest decision —
+   the warning labels the prediction as stale, doesn't change which
+   date is scored.
+3. *Make the Polygon adapter explicit about the free-tier delay.* If
+   `grouped_status=403` and `in_universe=0`, the orchestrator should
+   classify the affected date as missing rather than rolling it into
+   the generic warning bucket. Pairs with (1) by making the upstream
+   signal less ambiguous.
+4. *Operator-facing labelling.* Once the silent skip is fixed,
+   downstream consumers (dashboard, trading-engine-entry input
+   contract, monthly P&L reports) should advertise the T-2 cadence
+   explicitly. Pause-state doc step "Update dashboard to advertise
+   T-2 honestly".
+
+The smallest fix that closes the silent-skip is (1) + (2). The
+dashboard / labelling change is a separate workstream tracked in the
+pause doc, downstream of this KI shipping.
+
+**References.**
+
+- `data/processed/finding3_ml_pipeline_gap_root_cause.md` — full
+  investigation with smoking-gun evidence, log excerpts, and the
+  three-defect breakdown.
+- `pipelines/freshness.py:67` — `MAX(trade_date)`-only freshness
+  check.
+- `ml/predict.py:93-95` — silent scoring-date fallback.
+- `adapters/polygon.py` — current 403-as-WARNING handling.
+- `data/logs/equity_predict.log` — May 13 (line ~631) and May 14
+  (~731) "Scoring universe for [T-2]" lines.
+- `data/logs/daily_analysis_2026-05-13.log` — Polygon 403 on
+  current-day grouped.
+- [[KI-150]] — broken monitor that would have caught this gap on day
+  one.
+- `docs/EQUITY_WORKSTREAM_PAUSED.md` — architectural direction
+  (T-2 honest) and resumption queue placement (step 3).
+
+### KI-150 — Equity monitoring services failing silently — three units broken simultaneously
+
+**Severity: critical — the alerting layer that should catch defects
+like [[KI-149]] is itself dead.** Filed 2026-05-14 from the same
+investigation that produced
+`data/processed/finding3_ml_pipeline_gap_root_cause.md`.
+
+**Symptom.** Three monitor services have been emitting no alerts
+despite the pipeline gaps they exist to detect:
+
+1. `mhde-equity-pipeline-monitor.service` — exit-code **1** every
+   daily fire since 2026-05-14 01:00:09 UTC. `systemctl status`
+   reports `Active: failed (Result: exit-code)`. The service is the
+   per-step "one Telegram message, every step" monitor for the
+   equity pipeline (ingestion → features → predictions → dashboard);
+   when it crashes there is no Telegram message at all.
+2. `mhde-monitor-data-quality.service` — exit-code **0** every daily
+   fire, but the service's own log (`data/logs/monitor_data_quality.log`)
+   shows a repeating
+   `_duckdb.IOException: IO Error: Could not set lock on file
+   "/home/jpcg/MHDE/data/mhde.duckdb": Conflicting lock is held in
+   /usr/bin/python3.12 (PID ...)` followed by
+   `alert: could not open MHDE DB — bypassing throttle`. The service
+   exits 0 but emits no alert because the alert path (which goes
+   through DuckDB to record an alert-state row) can't take its
+   write-lock.
+3. `mhde-monitor-pipeline.service` — exit-code **0** every hourly
+   fire, same DuckDB-lock pattern as (2) in
+   `data/logs/monitor_pipeline.log`. Effectively no-op'd on every
+   run.
+
+The compound effect: a defect that any one of these monitors would
+normally have flagged (e.g. [[KI-149]]'s silent T-2 skip, or
+[[KI-138]]'s previous predictions-export gate) goes unalerted. The
+operator only sees the gap if they manually audit predictions, which
+is how Finding 3 came to light.
+
+**Likely root causes.**
+
+1. *(equity-pipeline-monitor)* — exit-1 most likely from
+   `main.py monitor equity-pipeline` raising. No journal entries
+   visible without sudo, but the consistent exit-1 across every fire
+   for >15h strongly suggests a deterministic failure (import error,
+   schema query against a renamed column, Telegram-bot env var
+   missing) rather than transient. Investigation path: run
+   `main.py monitor equity-pipeline` interactively, capture
+   traceback, fix.
+2. *(data-quality, pipeline)* — DuckDB write-lock contention with
+   the in-process predict service or with `daily-analysis`. The
+   monitor opens a writable connection (via
+   `monitoring/alert.py:115:_open_default_conn`) to record alert
+   throttling state. While a writable connection is required by the
+   current `_open_default_conn` shape, DuckDB at file scope only
+   permits one writer at a time, so the lock blocks the alert path
+   whenever any other writer is active. Fix paths: open a *read-only*
+   connection for monitors that only read tables (data-quality and
+   pipeline both fit this), and move the alert-throttling state to
+   a separate sidecar file (or use a non-DuckDB throttle store like
+   a JSON state file on disk). Related to the pre-existing
+   [[KI-105]] cluster of DuckDB-concurrency observations.
+
+**Resolution paths.**
+
+1. *Equity-pipeline-monitor exit-1.* Reproduce, capture the
+   traceback, ship a one-line fix or a small set if multiple call
+   sites raise. Once green, the cross-asset freshness check shipped
+   in `feat-cross-asset-ingestion` (`53faccc`) becomes the alert
+   path for [[KI-149]] and the Finding 1 gap.
+2. *Read-only monitor connections.* Touch `monitoring/alert.py:115`
+   and the call sites that read-only monitors invoke. Open the
+   connection with `read_only=True`. Move
+   `monitor_alert_state` writes to an external state file (a
+   `.json` in `data/processed/`) so the throttle path doesn't need
+   DuckDB. Verify each monitor's exit-0 path still emits Telegram
+   alerts when it actually has a real condition (not just a
+   bypassed-throttle no-op).
+3. *Timing adjustment.* Less invasive than (2) but doesn't fix the
+   root cause: shift the affected monitor timers to run when no
+   predict / daily-analysis / backtest is writing
+   (`mhde-predict.service` finishes ~00:25, `daily-analysis`
+   finishes ~00:10). Pure scheduling change, no code.
+
+Pause-state doc lists this as resumption queue step 4 (effort: 2–4
+hr depending on root cause).
+
+**References.**
+
+- `data/processed/finding3_ml_pipeline_gap_root_cause.md` — surfaced
+  the broken-monitor pattern as part of "why didn't anyone notice".
+- `monitoring/alert.py:115` — `_open_default_conn` writable
+  connection.
+- `data/logs/monitor_data_quality.log` and
+  `data/logs/monitor_pipeline.log` — repeating lock-contention
+  trace.
+- `systemctl status mhde-equity-pipeline-monitor.service` —
+  `failed` since 2026-05-14 01:00:09 UTC.
+- [[KI-105]] — pre-existing DuckDB-concurrency observations, same
+  root failure mode.
+- [[KI-149]] — the silent-skip defect this layer was supposed to
+  catch.
+- `docs/EQUITY_WORKSTREAM_PAUSED.md` — resumption queue step 4.
 
 ## Recently resolved (post-Session-7)
 
