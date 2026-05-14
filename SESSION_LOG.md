@@ -6,6 +6,146 @@ are at the top.
 
 ---
 
+## 2026-05-14 — Equity universe-tier sort fix: ORDER BY DESC restores 99 displaced ML-universe tickers (ADR-031 / KI-143)
+
+**Branch:** `fix-equity-orchestrator-tier-sort` (committed +
+pushed; **STOPPED for operator review/merge** — push-only per
+branch-handoff pattern, operator opens the PR). Single-repo
+(MHDE), no engine repo change, no schema change.
+
+**Trigger.** Read-only investigation A from the prior session traced
+the ml_features 411 → 312 drop on 2026-05-04 to the orchestrator's
+universe sort + dev-mode cap. Operator confirmed Option A (one-character
+SQL fix) + asked me to flag scope; I identified the same SELECT
+duplicated in `pipelines/daily_radar.py:77` (the call site that
+actually reaches production — it passes its result to
+`ingestion.orchestrator.run_all` as `tickers_override`, short-
+circuiting the orchestrator's own SELECT). Operator chose Option 1
+of the scope question (fix both files; track helper-extraction as a
+follow-up KI). Branch carries the production-effective fix.
+
+**Decision.** Add `DESC` to the ORDER BY in both files:
+```sql
+SELECT ticker FROM companies WHERE is_active = true
+ORDER BY universe_tier DESC, ticker
+```
+`'primary'` > `'extended'` alphabetically, so DESC puts the 504
+primary-tier tickers in positions 0-503 of the sorted list. The
+520-slot `max_symbols` cap now fills as 504 primary + first 16
+extended, exactly matching the production intent. ADR-031 records
+the rationale and four alternatives considered (two-pass selection,
+remove cap entirely → KI-145, shared helper → KI-144, no-op).
+
+**What shipped.**
+- `ingestion/orchestrator.py` — line 75 ORDER BY clause now
+  `universe_tier DESC, ticker`. Inline block comment cites ADR-031
+  + KI-143 + KI-144 (helper follow-up) so a future reader doesn't
+  remove `DESC` without re-reading the rationale.
+- `pipelines/daily_radar.py` — line 77 identical change. Inline
+  comment cross-references the orchestrator ADR rationale and notes
+  this is the call site that reaches production.
+- `tests/equity/test_orchestrator_universe_sort.py` (NEW) — 5
+  pinned regressions:
+  1. `test_primary_tier_fills_cap_first` — behavioural pin: 500
+     primary + 174 extended seeded; first 520 slots after the
+     fixed sort contain all 500 primary + 20 extended.
+  2. `test_full_universe_returned_when_below_cap` — edge case:
+     small universe (4 tickers) returns full set regardless of
+     cap.
+  3. `test_inactive_tickers_excluded` — sanity pin: the
+     `is_active = true` filter remains intact.
+  4. `test_orchestrator_uses_primary_first_sort` — duplication-pin
+     A: reads orchestrator source, asserts the fixed ORDER BY
+     clause is present and the buggy form is not.
+  5. `test_daily_radar_uses_primary_first_sort` — duplication-pin
+     B: same on daily_radar source. Both fail-loud if either file
+     drifts.
+- `DECISIONS.md` — ADR-031: context (latent-buggy from inception,
+  triggered by extended-tier population on 2026-05-01/02),
+  decision, three alternatives considered with rationale per
+  rejection (two-pass selection, remove cap, shared helper),
+  trade-off accepted (158 extended-tier tickers no longer ingested
+  but they don't flow through to ml_features anyway per KI-122),
+  files of record, reversibility.
+- `KNOWN_ISSUES.md` — KI-143 added (opened + resolved 2026-05-14,
+  full entry in "Recently resolved"), KI-144 opened (shared helper
+  extraction follow-up), KI-145 opened (`max_symbols` cap removal
+  follow-up). KI-122 amended to note the displacement-side-effect
+  is now mitigated. Header observation count updated 11 → 13.
+
+**Verification (L5).**
+- RED: `.venv/bin/python -m pytest
+  tests/equity/test_orchestrator_universe_sort.py` before fix → 2
+  of 5 tests fail (the duplication-pins) with the expected
+  "must contain 'ORDER BY universe_tier DESC, ticker'" messages.
+  The 3 behavioural tests pass under both code paths because they
+  exercise SQL semantics (identical pre/post on the test seed)
+  and the cap intent (only differs at scale, caught by the
+  duplication-pins).
+- GREEN (post-fix): same command → **5 passed**.
+- Full equity suite (`.venv/bin/python -m pytest tests/equity/
+  --ignore=tests/equity/test_ml_predict.py -q`) → **775 passed,
+  2 failed**. The 2 failures
+  (`test_smoke_test_fails_without_active_models`,
+  `test_smoke_test_flags_missing_joblib`) are pre-existing
+  `joblib`-import failures in `monitoring/smoke_test.py`,
+  unrelated to this branch (confirmed identically failing on
+  master in the prior session via `git stash` baseline).
+- Live verification against current `data/mhde.duckdb` via
+  `.claude/local_scripts/diag_post_fix_universe.py` (gitignored,
+  re-runnable):
+  ```
+  Companies:  primary 504, extended 174
+  ML universe size: 416, Cap = 520
+  Pre-fix sort:  312 ML-universe tickers in cap
+  Post-fix sort: 416 ML-universe tickers in cap
+  Recovered:     104  e.g. ['ODFL', 'OKE', 'ON', 'ORCL', 'ORLY', 'OTIS', 'OXY', 'PANW']
+  Newly excluded: 0
+  Tier composition: primary 504 + extended 16 = 520
+  ```
+  Full ML universe recovered. Zero regressions.
+
+**Files of record.** `ingestion/orchestrator.py` (line 75 + block
+comment), `pipelines/daily_radar.py` (line 77 + block comment),
+`tests/equity/test_orchestrator_universe_sort.py` (new, 5 tests),
+`DECISIONS.md` (ADR-031), `KNOWN_ISSUES.md` (KI-143 opened+resolved,
+KI-144 + KI-145 opened, KI-122 amended), this log. No CLAUDE.md
+change. No CHANGELOG.md in repo. Diagnostic script
+`.claude/local_scripts/diag_post_fix_universe.py` is gitignored.
+
+**Pending operator action.**
+1. Review the branch + ADR-031 (especially the alternatives
+   considered).
+2. Merge `fix-equity-orchestrator-tier-sort`. No deploy step
+   needed — the next `mhde-daily-analysis.service` fire (23:15 UTC)
+   picks up the new code automatically.
+3. Watch the 23:15 UTC daily-radar log: ingestion phase should
+   process all 504 primary tickers (vs ~346 pre-fix). The next
+   00:15 UTC `mhde-predict.service` should compute features for
+   ~411 ML-universe tickers (vs 311 pre-fix; the remaining 5 gaps
+   are the IPO ingestion holes — UBER, TXT, PTC, TYL, PSKY —
+   tracked separately, not addressed here). The 01:00 UTC equity
+   pipeline-monitor should flip 🟢 on the features step.
+4. Historical T-2 prediction rows for 2026-05-04 → 2026-05-14
+   are not retroactively rewritten. Coverage advances cleanly
+   from the next predict run forward.
+
+**Open follow-ups carried.**
+- **KI-144 (new)** — extract the duplicated universe SELECT to a
+  shared helper. The duplication is what let the bug slip through
+  code review; eliminating it makes future drift impossible.
+- **KI-145 (new)** — remove `max_symbols=520` cap entirely. After
+  the 2026-05-09 grouped-daily switch (commit `473b92a`) it
+  rate-limits nothing and is structurally vestigial. Removing it
+  would moot the KI-143 displacement class permanently and
+  auto-extend ML coverage to any future S&P additions.
+- **KI-122 (amended)** — extended-tier reconciliation leak: the
+  *displacement* side-effect is now neutralized by ADR-031, but
+  the underlying reconciliation gap (174 stale extended-tier rows
+  marked `is_active=true`) remains.
+
+---
+
 ## 2026-05-14 — Equity Stooq freshness fix: today-exact match restores T-1 features after the Polygon grouped-daily switch (ADR-030 / KI-142)
 
 **Branch:** `fix-equity-stooq-freshness` (committed + pushed;

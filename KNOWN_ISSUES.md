@@ -1,7 +1,7 @@
 # Known Issues
 
-**11 open observations** (KI-122, KI-123, KI-126, KI-131, KI-132,
-KI-134, KI-136, KI-137, KI-139, KI-140, KI-141). KI-122/123 are cosmetic; KI-126 is a future
+**13 open observations** (KI-122, KI-123, KI-126, KI-131, KI-132,
+KI-134, KI-136, KI-137, KI-139, KI-140, KI-141, KI-144, KI-145). KI-122/123 are cosmetic; KI-126 is a future
 Phase 0 enhancement deferred until weekly reliability snapshots
 accumulate; KI-131 is a low-priority single-day production-model
 row-count dip; KI-132 is a dashboard-deployment-process gap (no
@@ -22,7 +22,12 @@ characterized but not addressable by the current `should_exclude` shape
 add a true run-time timestamp column to `crypto_ml_predictions` so the
 pipeline_execution monitor can detect a single missed fire (the
 ADR-029 budget bump fixed the false-positive but trades sensitivity
-for truthfulness). None requires a hot fix — all tracked so a future
+for truthfulness); KI-144 is the shared-helper extraction follow-up
+to ADR-031 (the universe-tier sort lives in two byte-identical SELECTs
+and any future drift would silently re-introduce the KI-143 bug class);
+KI-145 is the `max_symbols=520` cap removal — vestigial after the
+2026-05-09 Polygon grouped-daily switch and would moot the KI-143
+displacement entirely. None requires a hot fix — all tracked so a future
 session triages deliberately rather than letting them rot in the
 working tree.
 
@@ -53,6 +58,21 @@ universe ended each daily-radar run without T-0 prices,
 data semantic). Pinned by 4 regression tests including an
 orchestration-shape integration test. See "Recently resolved" below
 and ADR-030.
+
+**KI-143** opened + resolved 2026-05-14 — the equity orchestrator's
+universe sort `ORDER BY universe_tier, ticker` combined with
+`max_symbols=520` displaced 99 ML-universe primary-tier tickers
+(ORCL, WMT, XOM, PLTR, UNH, …) every nightly run because `'extended'`
+sorts alphabetically before `'primary'`, and the 174 extended-tier
+rows populated 2026-05-01/02 consumed the first 174 slots of the cap.
+ML feature coverage dropped 411 → 312 on 2026-05-04 and stayed there
+two weeks (caught by the per-pipeline equity monitor's T-1 vs T-2
+flag). Fix: add `DESC` to both call sites (`ingestion/orchestrator.py`
++ `pipelines/daily_radar.py`) so primary fills the cap first. Live
+verification: 312 → 416 ML-universe tickers in the cap (full
+recovery, +104 tickers including all the displaced names). Pinned
+by 5 regression tests including duplication-pins for both call sites.
+See "Recently resolved" below and ADR-031.
 
 **KI-135** opened + resolved 2026-05-10 — crypto retrain
 auto-promoted new models without validation; a regressed model could
@@ -123,6 +143,20 @@ or `ml_predictions` (the predict/features stages don't carry
 extended-tier tickers in practice — confirmed in the cap audit),
 so no production data quality impact today. Tracking for a future
 universe-cleanup session.
+
+**2026-05-14 update (related fix landed).** ADR-031 / KI-143
+addressed the *displacement* side-effect of the 174 stale extended
+rows: under the old `ORDER BY universe_tier, ticker` they were
+sorted before primary and consumed the first 174 slots of the
+`max_symbols=520` cap, displacing 99 ML-universe primary tickers.
+The sort change (added `DESC`) puts primary first so the 174 stale
+rows no longer cost ML-universe coverage. KI-122 itself remains
+open: the reconciliation that should mark those 174 rows
+`is_active=false` is still not implemented; this just removes the
+production-impact urgency. KI-145 (`max_symbols` cap removal,
+post-grouped-daily) is a complementary follow-up that would moot
+the displacement entirely.
+
 
 ### KI-126 — Phase 0 calibration drift definition (b) week-over-week relative not yet implemented
 
@@ -502,7 +536,166 @@ none is a bug, all are tracked so a later session tightens them on purpose.
 underlying constraints (trading-calendar helper, engine entry-reason recording,
 RECONCILE-001) are addressed.
 
+### KI-144 — Universe-tier sort SQL is duplicated in two files; extract to a shared helper
+
+**Symptom.** The same SELECT — `SELECT ticker FROM companies WHERE
+is_active = true ORDER BY universe_tier DESC, ticker` — appears
+byte-identically in `ingestion/orchestrator.py:75` and
+`pipelines/daily_radar.py:77`. Both apply the same `max_symbols`
+cap. Originally the duplication wasn't load-bearing, but the
+ADR-031 / KI-143 fix had to be applied in lock-step to both files
+because daily-radar passes its result as `tickers_override` and
+short-circuits the orchestrator's own SELECT at runtime. A future
+change to the universe-selection contract that touches only one
+file will silently drift the two paths.
+
+**Detection / fix path.** Extract a single helper, e.g.
+`universe/active_tickers.py:get_active_tickers_for_ingest(conn,
+max_symbols=None) -> list[str]`. Replace both call sites. Add a
+test asserting both call sites import the helper and that the
+helper's tier-aware behaviour matches the existing duplication-pin
+tests in `tests/equity/test_orchestrator_universe_sort.py`. Once
+the helper lands, the duplication-pins can either be retired or
+refactored to assert "no SELECT in either file uses the universe
+table directly."
+
+**Out of scope for the ADR-031 / KI-143 universe-drop fix.** The
+duplication was the pattern that let the bug slip past code review
+in the first place; this KI is the durable structural fix. ADR-031
+explicitly defers the refactor so the immediate one-character ML-
+universe recovery could ship without bundling.
+
+### KI-145 — `max_symbols=520` ingest cap is a pre-grouped-daily artifact and no longer rate-limits anything
+
+**Symptom (no current production impact, post-KI-143).** The
+`universe.max_symbols` config (default 520 in production) was
+introduced when `ingestion/ingest_prices.py` looped per-ticker
+against Polygon's rate-limited per-ticker endpoint
+(`/v2/aggs/ticker/.../range/...`) and 504 universe tickers took
+~50 minutes to ingest under the free-tier ~5 req/min budget. After
+the 2026-05-09 grouped-daily switch (commit `473b92a`, ADR pending)
+Polygon serves the entire ~12k US stock list in one HTTP call
+regardless of universe size. The cap therefore no longer
+rate-limits anything and only exists to keep Stooq / Yahoo per-
+ticker calls bounded — both of which are themselves bounded by
+their own ingestor logic (`_BATCH_SIZE=50` + `_REQUEST_DELAY=0.15s`
+in Stooq; per-ticker calls in Yahoo are fallback-only).
+
+**Why open it now.** ADR-031 / KI-143 made the ML-universe
+recovery work *under* the cap by changing sort order, but the cap
+itself is structurally vestigial. Removing it would (a) auto-extend
+ML coverage to any future S&P additions without intervention,
+(b) eliminate the displacement risk if the extended tier ever
+exceeds 16 rows, and (c) close the architectural debt that made
+KI-143 possible.
+
+**Detection / fix path.** Remove `universe.max_symbols` from the
+default config; remove the corresponding `[:max_symbols]` slice in
+both `ingestion/orchestrator.py` and `pipelines/daily_radar.py`
+(or refactor to the helper from KI-144 first and remove from one
+place). Audit downstream consumers that may have assumed
+`len(tickers) ≤ 520` (most likely none — none have been
+identified). Update `pipelines/daily_radar.py:83` log line to drop
+the "Dev mode" framing.
+
+**Out of scope for ADR-031.** Larger blast radius; needs a separate
+investigation pass to confirm no consumer depends on the cap. KI-143
+is the single-day fix; KI-145 is the structural cleanup.
+
 ## Recently resolved (post-Session-7)
+
+### KI-143 — Universe-tier sort displaced 99 ML-universe primary tickers under the dev-mode cap (resolved 2026-05-14)
+
+**Symptom (before fix).** ML feature coverage dropped from 411 →
+312 tickers between trade_date 2026-05-01 and 2026-05-04 and
+persisted at ~311 for two weeks. The displaced 99 tickers included
+major large-caps: ORCL ($494B), WMT ($450B), XOM ($638B), PLTR
+($345B), UNH ($334B), PFE, PM, PG, PEP, TXN, WFC, ODFL through XYL
+alphabetically. They had clean state in `companies` (active,
+non-ETF, sectored, ≥$10B market cap) but zero `prices_daily` rows
+for any date on or after 2026-05-04. The drop was invisible in
+service logs (every component exited cleanly) and was eventually
+caught by the per-pipeline equity monitor (deployed 2026-05-12,
+ADR-026) flagging the downstream ml_predictions T-1 → T-2
+prediction_date lag.
+
+**Root cause.** Both `ingestion/orchestrator.py:75` and
+`pipelines/daily_radar.py:77` selected the universe with `ORDER BY
+universe_tier, ticker` and sliced to `max_symbols=520`. In SQL,
+`'extended'` sorts alphabetically before `'primary'`, so the 174
+extended-tier rows (populated 2026-05-01 09:51 → 2026-05-02 09:02
+per `companies.created_at`) consumed positions 0-173 of the cap,
+pushing 153 primary-tier tickers (positions 520-672, alphabetical
+ODFL → XYL) out of the ingest list. 99 of those passed the ML
+universe filter (≥$10B, non-ETF, sectored). Pre-2026-05-01 the
+universe was 504 active companies (all primary, no extended), all
+of which fit under the 520 cap — the sort was latent-buggy from
+inception and the extended-tier population on 2026-05-01/02 was
+the trigger.
+
+**Fix.** Add `DESC` to the ORDER BY in both call sites:
+```sql
+ORDER BY universe_tier DESC, ticker
+```
+`'primary'` > `'extended'` alphabetically, so DESC puts the 504
+primary-tier tickers in positions 0-503 of the sorted list. The
+520-slot cap now fills as 504 primary + first 16 extended.
+
+**Pinned by.** 5 regressions in
+`tests/equity/test_orchestrator_universe_sort.py`:
+- `test_primary_tier_fills_cap_first` — behavioural pin: with 500
+  primary + 174 extended seeded and a 520-slot cap, all 500 primary
+  tickers are in the cap.
+- `test_full_universe_returned_when_below_cap` — edge case: small
+  universe (4 tickers) returns full set.
+- `test_inactive_tickers_excluded` — sanity pin: the
+  `is_active = true` filter remains intact under the new sort.
+- `test_orchestrator_uses_primary_first_sort` — duplication-pin A:
+  reads `ingestion/orchestrator.py` source, asserts the fixed
+  ORDER BY clause is present and the buggy form is not.
+- `test_daily_radar_uses_primary_first_sort` — duplication-pin B:
+  same on `pipelines/daily_radar.py`. Both fail-loud if either
+  file drifts.
+
+**Verification.**
+- RED: `.venv/bin/python -m pytest tests/equity/test_orchestrator_universe_sort.py`
+  before fix → 2 of 5 tests fail (the duplication-pins) with the
+  expected "must contain 'ORDER BY universe_tier DESC, ticker'"
+  messages. The 3 behavioural tests pass under both code paths
+  because they exercise SQL semantics (which is identical pre/post
+  on the test seed) and the cap intent (which only differs at
+  scale — caught by the duplication-pins).
+- GREEN (post-fix): same command → **5 passed**.
+- Full equity suite (`.venv/bin/python -m pytest tests/equity/
+  --ignore=tests/equity/test_ml_predict.py -q`) → **775 passed,
+  2 failed** (both `joblib`-import failures pre-existing on master,
+  unrelated to this branch).
+- Live verification against current `data/mhde.duckdb` via
+  `.claude/local_scripts/diag_post_fix_universe.py`: pre-fix sort
+  yields 312 ML-universe tickers in the cap; post-fix sort yields
+  416 (full ML universe recovered, +104 tickers including all
+  displaced names — ORCL, WMT, XOM, PLTR, UNH visible in the first
+  8). Zero ML-universe tickers are newly excluded. Tier composition
+  under the post-fix cap: 504 primary + 16 extended = 520.
+
+**Operator follow-up (post-merge).** No deploy step beyond the
+merge. The next `mhde-daily-analysis.service` fire (23:15 UTC)
+will ingest all 504 primary tickers (vs ~346 pre-fix). The next
+morning's `mhde-predict.service` (00:15 UTC) will compute features
+for the full ~411 ML-universe coverage (vs 311 pre-fix, with the
+remaining 5 gaps being the IPO ingestion holes — UBER, TXT, PTC,
+TYL, PSKY — flagged in the assessment but unrelated to this fix).
+The 01:00 UTC equity pipeline-monitor should flip 🟢 on the
+features step. The historical T-2 prediction surface is not
+retroactively rewritten — coverage advances cleanly going forward.
+
+**Open follow-ups.** KI-122 (extended-tier reconciliation leak)
+amended above to note the displacement-side-effect is now
+mitigated, but the underlying reconciliation gap remains.
+KI-144 (shared helper to eliminate the parallel-query
+duplication) and KI-145 (`max_symbols` cap removal post-grouped-
+daily) are the structural follow-ups; ADR-031 explicitly defers
+both.
 
 ### KI-142 — Stooq freshness window short-circuited T-0 fill after the Polygon grouped-daily switch (resolved 2026-05-14)
 
