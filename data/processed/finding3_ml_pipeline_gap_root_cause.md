@@ -257,7 +257,11 @@ Smallest change that closes the gap, in order of priority:
   (user unit, Mon–Fri 23:15 UTC)
 - `pipelines/freshness.py:67` — `MAX(trade_date)`-only freshness check
 - `ml/predict.py:93-95` — silent scoring-date fallback
-- `adapters/polygon.py` — handles 403 as warning
+- `ingestion/ingest_prices.py` (`PricesIngestor.ingest_dates`) —
+  handles 403 as warning. (Corrected 2026-05-14: an earlier version
+  of this doc named `adapters/polygon.py`, which is the
+  source-validation scorer, not the ingestor. The 403-handling code
+  is in the grouped-daily ingestor at `ingestion/ingest_prices.py:238`.)
 - `data/logs/equity_predict.log:631` (May 13 run) and `:731` (May 14
   run) — the smoking-gun "Scoring universe for…" lines
 - `data/logs/daily_analysis_2026-05-13.log` — the Polygon 403 on the

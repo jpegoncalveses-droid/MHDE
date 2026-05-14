@@ -1,8 +1,8 @@
 # Known Issues
 
-**18 open observations** (KI-122, KI-123, KI-126, KI-131, KI-132,
+**19 open observations** (KI-122, KI-123, KI-126, KI-131, KI-132,
 KI-134, KI-136, KI-137, KI-139, KI-141, KI-144, KI-145,
-KI-146, KI-147, KI-148, KI-149, KI-150, KI-151). KI-122/123 are cosmetic; KI-126 is a future
+KI-146, KI-147, KI-148, KI-149, KI-151, KI-152, KI-153). KI-122/123 are cosmetic; KI-126 is a future
 Phase 0 enhancement deferred until weekly reliability snapshots
 accumulate; KI-131 is a low-priority single-day production-model
 row-count dip; KI-132 is a dashboard-deployment-process gap (no
@@ -43,21 +43,22 @@ silent T-2 skip — a three-layer defect chain (Polygon free-tier 403
 on current-day grouped, row-count-blind freshness check in
 `pipelines/freshness.py:67`, and no scoring-date cross-check in
 `ml/predict.py:93-95`) that ships predictions two trading days behind
-every weekday while every component reports OK; KI-150 is the
-companion observation that the three equity monitor services that
-would normally catch KI-149-class defects are themselves broken
-(`mhde-equity-pipeline-monitor` exit-1 daily,
-`mhde-monitor-data-quality` + `mhde-monitor-pipeline` both bypass
-their alert path with DuckDB write-lock errors) — the alerting layer
-is dead. KI-149 + KI-150 are tracked together in
-`docs/EQUITY_WORKSTREAM_PAUSED.md` as the equity workstream's
-resumption queue (steps 3 and 4). None requires a hot fix — all
-tracked so a future session triages deliberately rather than letting
-them rot in the working tree. KI-151 is the "Other"-class characterization
-follow-up to KI-140's closure — 47% of deep losers fit a "late-stage
-uptrend reversal" profile that is describable (AUC 0.74) but not filterable
-without unacceptable winner-rejection cost; productive paths are
-non-exclusion (probability haircut / direction-aware label).
+every weekday while every component reports OK. KI-151 is the
+"Other"-class characterization follow-up to KI-140's closure — 47% of
+deep losers fit a "late-stage uptrend reversal" profile that is
+describable (AUC 0.74) but not filterable without unacceptable
+winner-rejection cost; productive paths are non-exclusion (probability
+haircut / direction-aware label). KI-152 is the alert-channel
+signal-to-noise observation surfaced during today's GBPEUR_C001 reset
+— operational monitoring alerts and trading signals share a single
+Telegram channel, the EXIT_TARGET alert was buried in ops chatter, and
+channel/severity separation is the unscoped fix. KI-153 is the
+operational observability gap surfaced by the KI-150 Phase 1
+investigation — `*-pipeline-monitor.service` units exit 1 by design
+when the pipeline they monitor is red, which `systemctl status`
+reports as `Active: failed (Result: exit-code)` and is
+indistinguishable from a real monitor crash; the initial KI-150
+diagnosis confused the two and prescribed a fix for a non-bug.
 
 **KI-138** opened + resolved (option A) 2026-05-12 — the cap-at-today-1
 OHLCV ingestion fix (commit 8f9d707) made `MAX(trade_date)` in
@@ -914,108 +915,6 @@ pause doc, downstream of this KI shipping.
 - `docs/EQUITY_WORKSTREAM_PAUSED.md` — architectural direction
   (T-2 honest) and resumption queue placement (step 3).
 
-### KI-150 — Equity monitoring services failing silently — three units broken simultaneously
-
-**Severity: critical — the alerting layer that should catch defects
-like [[KI-149]] is itself dead.** Filed 2026-05-14 from the same
-investigation that produced
-`data/processed/finding3_ml_pipeline_gap_root_cause.md`.
-
-**Symptom.** Three monitor services have been emitting no alerts
-despite the pipeline gaps they exist to detect:
-
-1. `mhde-equity-pipeline-monitor.service` — exit-code **1** every
-   daily fire since 2026-05-14 01:00:09 UTC. `systemctl status`
-   reports `Active: failed (Result: exit-code)`. The service is the
-   per-step "one Telegram message, every step" monitor for the
-   equity pipeline (ingestion → features → predictions → dashboard);
-   when it crashes there is no Telegram message at all.
-2. `mhde-monitor-data-quality.service` — exit-code **0** every daily
-   fire, but the service's own log (`data/logs/monitor_data_quality.log`)
-   shows a repeating
-   `_duckdb.IOException: IO Error: Could not set lock on file
-   "/home/jpcg/MHDE/data/mhde.duckdb": Conflicting lock is held in
-   /usr/bin/python3.12 (PID ...)` followed by
-   `alert: could not open MHDE DB — bypassing throttle`. The service
-   exits 0 but emits no alert because the alert path (which goes
-   through DuckDB to record an alert-state row) can't take its
-   write-lock.
-3. `mhde-monitor-pipeline.service` — exit-code **0** every hourly
-   fire, same DuckDB-lock pattern as (2) in
-   `data/logs/monitor_pipeline.log`. Effectively no-op'd on every
-   run.
-
-The compound effect: a defect that any one of these monitors would
-normally have flagged (e.g. [[KI-149]]'s silent T-2 skip, or
-[[KI-138]]'s previous predictions-export gate) goes unalerted. The
-operator only sees the gap if they manually audit predictions, which
-is how Finding 3 came to light.
-
-**Likely root causes.**
-
-1. *(equity-pipeline-monitor)* — exit-1 most likely from
-   `main.py monitor equity-pipeline` raising. No journal entries
-   visible without sudo, but the consistent exit-1 across every fire
-   for >15h strongly suggests a deterministic failure (import error,
-   schema query against a renamed column, Telegram-bot env var
-   missing) rather than transient. Investigation path: run
-   `main.py monitor equity-pipeline` interactively, capture
-   traceback, fix.
-2. *(data-quality, pipeline)* — DuckDB write-lock contention with
-   the in-process predict service or with `daily-analysis`. The
-   monitor opens a writable connection (via
-   `monitoring/alert.py:115:_open_default_conn`) to record alert
-   throttling state. While a writable connection is required by the
-   current `_open_default_conn` shape, DuckDB at file scope only
-   permits one writer at a time, so the lock blocks the alert path
-   whenever any other writer is active. Fix paths: open a *read-only*
-   connection for monitors that only read tables (data-quality and
-   pipeline both fit this), and move the alert-throttling state to
-   a separate sidecar file (or use a non-DuckDB throttle store like
-   a JSON state file on disk). Related to the pre-existing
-   [[KI-105]] cluster of DuckDB-concurrency observations.
-
-**Resolution paths.**
-
-1. *Equity-pipeline-monitor exit-1.* Reproduce, capture the
-   traceback, ship a one-line fix or a small set if multiple call
-   sites raise. Once green, the cross-asset freshness check shipped
-   in `feat-cross-asset-ingestion` (`53faccc`) becomes the alert
-   path for [[KI-149]] and the Finding 1 gap.
-2. *Read-only monitor connections.* Touch `monitoring/alert.py:115`
-   and the call sites that read-only monitors invoke. Open the
-   connection with `read_only=True`. Move
-   `monitor_alert_state` writes to an external state file (a
-   `.json` in `data/processed/`) so the throttle path doesn't need
-   DuckDB. Verify each monitor's exit-0 path still emits Telegram
-   alerts when it actually has a real condition (not just a
-   bypassed-throttle no-op).
-3. *Timing adjustment.* Less invasive than (2) but doesn't fix the
-   root cause: shift the affected monitor timers to run when no
-   predict / daily-analysis / backtest is writing
-   (`mhde-predict.service` finishes ~00:25, `daily-analysis`
-   finishes ~00:10). Pure scheduling change, no code.
-
-Pause-state doc lists this as resumption queue step 4 (effort: 2–4
-hr depending on root cause).
-
-**References.**
-
-- `data/processed/finding3_ml_pipeline_gap_root_cause.md` — surfaced
-  the broken-monitor pattern as part of "why didn't anyone notice".
-- `monitoring/alert.py:115` — `_open_default_conn` writable
-  connection.
-- `data/logs/monitor_data_quality.log` and
-  `data/logs/monitor_pipeline.log` — repeating lock-contention
-  trace.
-- `systemctl status mhde-equity-pipeline-monitor.service` —
-  `failed` since 2026-05-14 01:00:09 UTC.
-- [[KI-105]] — pre-existing DuckDB-concurrency observations, same
-  root failure mode.
-- [[KI-149]] — the silent-skip defect this layer was supposed to
-  catch.
-- `docs/EQUITY_WORKSTREAM_PAUSED.md` — resumption queue step 4.
-
 ### KI-151 — "Other"-class deep losers (47% of deep losers) characterized as "late-stage uptrend reversal" but not filterable
 
 **Symptom.** After KI-140's exclusion-rule closure, 47% of deep losers
@@ -1099,7 +998,223 @@ ADR-028 Variant E rejection: the broader cohort exhibits the same
 - `DECISIONS.md` ADR-028 — the SWARMSUSDT-class exclusion rule that
   addressed the third 30% of deep losers.
 
+### KI-152 — Operational monitoring alerts drowning out trading signals — channel separation needed
+
+**Symptom (alerting signal-to-noise observation, not a production
+bug).** All MHDE alerts — operational monitoring AND trading signals —
+flow through the same Telegram channel via the ATSRP Ops Bot. With 18
+tracked observations and multiple monitoring layers active
+(`streamlit_freshness`, `paper_trading_drift`, `pipeline_execution`,
+`data_quality`, the per-pipeline checks under
+`monitoring/pipeline_monitor/`, and so on), operational alerts
+significantly outnumber trading signals (FX cycle exits, crypto/equity
+predictions, position management). Time-sensitive trading signals get
+lost in operational noise.
+
+**Specific incident (2026-05-14).** The GBPEUR_C001 EXIT_TARGET alert
+fired at 17:00 UTC (signal rate 1.1484, −1.00% from entry) and was
+delivered to the operator's Telegram at 18:11 UTC. The operator did
+not notice until manual review of the alert thread later in the
+session, by which time the rate had already moved. Today's session
+generated 10+ operational alerts in the same channel; the trading
+signal was buried in monitoring chatter. This is the same operator-
+attention failure mode as [[KI-134]] (operator missed 8
+streamlit-freshness alerts under weekend false-positive noise) but
+inverted: there the noise was *false-positive* monitoring; here the
+noise is *true-positive but operationally routine* monitoring.
+
+**Implications.**
+
+- Missed trading signals = missed execution windows = missed return,
+  in a regime where the strategy's edge is small per-trade and depends
+  on operator response inside a ~hour-scale window.
+- Alert fatigue reduces operator response quality to *all* alerts,
+  including legitimate critical ones (e.g. the equity pipeline silent
+  T-2 skip in [[KI-149]] / [[KI-150]] went undetected for an unknown
+  number of weekdays partly because the alerting layer was itself
+  failing silently — the symptoms are different but the operator-
+  attention budget is the shared resource).
+- Today's severity prefix (INFO / WARN / CRITICAL) and sha-based
+  throttle (`cooldown_hours=4`, shipped today in `monitoring/alert.py`)
+  reduce *frequency* of repeats but do not solve volume or
+  signal-to-noise; a CRITICAL FX signal and an INFO streamlit-freshness
+  hiccup still land in the same chat with the same notification
+  weight.
+
+**Resolution paths (none scoped).**
+
+1. **Separate Telegram channels.** `trading-signals` (push,
+   always-notify) vs `ops-alerts` (silent or daily digest). Cleanest
+   separation; requires a new chat ID and routing config in
+   `monitoring.yaml`.
+2. **Severity-based routing within single channel.** Only CRITICAL
+   pushes immediately; WARN/INFO accumulate into a daily digest.
+   Lowest-effort but operator still has to disambiguate signal type
+   from prefix.
+3. **Trading-signals as a distinct alert category in
+   `config/monitoring.yaml`** that bypasses the ops throttle and gets
+   priority routing (e.g. its own channel ID, retry policy, no
+   cooldown). Composable with paths 1 and 2.
+4. **Separate bots.** ATSRP Signals Bot (trading) + ATSRP Ops Bot
+   (operational) — distinct channels, distinct visual identity (icon,
+   name). Highest operator-clarity; highest setup cost.
+
+No path is selected. The operator-attention failure today is the
+prompt; the design decision is deferred.
+
+**Effort.** Medium (~1–2 days). Design the routing schema, implement
+channel separation in the alert dispatcher, migrate existing alert
+categories to the new routing keys, test that severity / category
+filtering works end-to-end without breaking idempotency or throttle.
+
+**References.**
+
+- `monitoring/alert.py` — severity prefix + sha-based throttle (shipped
+  today; reduces repeat frequency, not category mixing).
+- `config/monitoring.yaml` — where channel routing would be configured.
+- [[KI-134]] — the prior alert-quality observation (false-positive
+  noise variant); same operator-attention failure mode.
+- [[KI-149]], [[KI-150]] — the equity workstream's alerting-layer
+  failure; complementary failure mode (alerts that should fire don't).
+- ATSRP `research/gbpeur_personal_fx/ledger.json` — the 2026-05-14
+  GBPEUR_A002 EXIT_TARGET alert whose burial in operational noise is
+  the immediate prompt for this observation.
+
+### KI-153 — Monitor-service exit codes conflate "reports RED" with "crashed"
+
+**Severity: low–medium (operational clarity, not data correctness).**
+Surfaced 2026-05-14 during the KI-150 Phase 1 investigation.
+
+**Symptom.** `*-pipeline-monitor.service` units (the per-pipeline
+"one Telegram message, every step green/red/skipped" monitors —
+crypto, equity, fx) exit **1** by design when any monitored step is
+red. `monitoring/pipeline_monitor/daily_runner.py:142`:
+
+```python
+return 0 if not result.has_red else 1
+```
+
+`systemctl status` reports this as
+`Active: failed (Result: exit-code)`, which is **indistinguishable
+from a real monitor crash** (import error, traceback, env var missing,
+etc.). The initial KI-150 diagnosis confused the two — "the monitor
+itself is broken" — and prescribed a fix for the equity-pipeline
+monitor that wasn't actually broken; the monitor was correctly
+flagging the underlying [[KI-149]] silent-T-2-skip defect.
+
+**Implications.**
+
+- Operator can't tell from `systemctl status` whether the *monitor*
+  needs attention or the *system it monitors* needs attention.
+- Future "broken monitor service" audits risk the same misdiagnosis.
+- Delayed correct response in today's KI-150 triage (the equity-
+  pipeline-monitor exit-1 was diagnosed as a service bug when it was
+  the alert).
+
+**Resolution paths (none chosen).**
+
+1. Reserve exit 1 for "monitor reports red", use a different exit
+   code (2 or 3) for actual monitor crashes / unexpected exceptions.
+   `daily_runner.main` would `try/except` the Telegram + state path
+   and return 2 on the exception branch.
+2. Use `sd_notify` (or the `STATUS=` notify protocol) to communicate
+   pipeline RED state separately from process exit, so systemd can
+   distinguish "monitor process succeeded; pipeline state is red"
+   from "monitor process failed".
+3. Wrapper script around each monitor that catches the exit code,
+   logs the disposition, and surfaces "red" via a different signal
+   (e.g. a `.failed` marker file the operator can read).
+4. Documentation only — accept the conflation, label
+   `pipeline_monitor_*.log` with explicit "exit 1 = pipeline red"
+   notes, document the convention in `OPERATIONS.md`. Cheapest, but
+   doesn't solve the operator-mental-model problem.
+
+**Effort.** Low–medium depending on path. Path 1 is ~30 min and is
+the most operator-friendly. Path 2 requires a sd_notify dependency
+and per-unit `Type=notify` change.
+
+**Why not in scope for KI-150's branch.** The KI-150 branch fixes a
+real data path (DuckDB write-lock contention bypass). This is a
+separate operational-clarity defect; folding it in would broaden the
+blast radius of a freshly-tested fix.
+
+**References.**
+
+- `monitoring/pipeline_monitor/daily_runner.py:142` — the by-design
+  exit semantics.
+- `systemd/mhde-equity-pipeline-monitor.service` — the unit whose
+  `failed` status the initial KI-150 diagnosis misread.
+- [[KI-150]] — the misdiagnosis that surfaced this observation.
+
 ## Recently resolved (post-Session-7)
+
+### KI-150 — Equity monitoring services failing silently — resolved 2026-05-14 (parts 2 + 3 fixed; part 1 was misdiagnosis)
+
+**Original symptom (kept for archival).** Three monitor services were
+reported as emitting no alerts despite pipeline gaps:
+
+1. `mhde-equity-pipeline-monitor.service` — exit-code **1** every
+   daily fire.
+2. `mhde-monitor-data-quality.service` — exit-code **0** but
+   `data/logs/monitor_data_quality.log` showed repeating
+   `_duckdb.IOException: Could not set lock on file …mhde.duckdb` +
+   `alert: could not open MHDE DB — bypassing throttle`.
+3. `mhde-monitor-pipeline.service` — exit-code **0** but same
+   DuckDB-lock pattern.
+
+**Resolution by branch `fix-ki150-monitor-services` (2026-05-14).**
+
+*Part 1 — misdiagnosis.* `mhde-equity-pipeline-monitor.service` was
+**not broken.** Per `monitoring/pipeline_monitor/daily_runner.py:142`,
+the service returns 1 by design when any monitored step is red. The
+RED condition it was flagging was the underlying [[KI-149]] silent
+T-2 skip (feature pipeline lagging prices by 1 day), now fixed in
+the `fix-ki149-honest-equity-freshness` branch. The "exit 1 ⇒ crash"
+reading was the misdiagnosis. Local dry-run reproduces the
+production output verbatim — the monitor runs, Telegram fires, exit
+1. Once `ml_features` backfills for 2026-05-13/14 (out-of-scope
+backfill task), the monitor returns 0 and `systemctl` goes green.
+The systemic operator-clarity gap surfaced by this misreading is
+filed as [[KI-153]].
+
+*Parts 2 + 3 — DuckDB write-lock contention.* Both monitors' own
+queries already used `read_only=True`
+(`monitoring/data_quality.py:92`, `monitoring/pipeline_execution.py:192`).
+The failing path was the shared throttle-state writer in
+`monitoring/alert.py:_open_default_conn` (opened a *writable* DuckDB
+conn to persist `monitor_alert_state` — contention with predict /
+daily-analysis writers caused IOException, which `send_alert`
+swallowed and bypassed throttle state). Fixed by moving throttle
+state from the DuckDB `monitor_alert_state` table to a JSON sidecar
+(`monitoring/alert_state_store.py`, fcntl.flock-serialized
+read-modify-write at `data/monitor_alert_state.json`). `send_alert`
+no longer opens a DuckDB connection; the alert path is now
+DuckDB-write-lock-independent. 10 throttle tests refactored + 1
+regression test added (`test_send_alert_persists_state_while_
+duckdb_writer_lock_is_held` reproduces the original failure mode
+under a real lock and verifies state persists + Telegram fires).
+
+**Residue.** The DuckDB `monitor_alert_state` table is left in place
+(migration v10) as harmless residue — no readers, no writers. A
+follow-up migration to drop it could be filed if cleanup matters,
+but the cost of leaving it is zero.
+
+**References.**
+
+- Commit on branch `fix-ki150-monitor-services` (2026-05-14) —
+  `monitoring/alert_state_store.py` (new), `monitoring/alert.py`
+  (refactor — drop `_open_default_conn`, drop `conn` from
+  `send_alert` signature), `tests/monitoring/test_alert_state_store.py`
+  (new, 8 tests incl. concurrent-writers), `tests/monitoring/test_alert_throttle.py`
+  (refactored to JSON store + new lock-contention regression).
+- [[KI-149]] — the silent-skip defect this layer should have caught;
+  fixed separately in `fix-ki149-honest-equity-freshness`.
+- [[KI-153]] — the exit-code-conflation observability gap surfaced by
+  the misdiagnosis of part 1.
+- `data/processed/finding3_ml_pipeline_gap_root_cause.md` — the
+  audit that surfaced the original three-services observation.
+
+
 
 ### KI-140 — 4USDT-class deep-drawdown failure pattern (closed; describable but not addressable by exclusion or entry-conditional-horizon rules; resolved 2026-05-14)
 
