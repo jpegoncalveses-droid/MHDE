@@ -1621,3 +1621,133 @@ tests fail-loud if the constant is moved back below 48h+grace; that is
 the intended guardrail against accidental reversion. To genuinely
 revisit (e.g. once a run-time column ships), update the tests
 alongside the constant and link the new ADR.
+
+---
+
+## ADR-030 — Stooq freshness check is today-exact, not "within last N days"
+
+**Status:** accepted 2026-05-14. Implemented on branch
+`fix-equity-stooq-freshness`. Tightens
+`ingestion/ingest_stooq.py:_tickers_needing_prices` from a 2-day
+window to an exact-day match against today's UTC date. No schema
+change, no orchestrator change.
+
+**Context.** `StooqPricesIngestor` is the second equity price source
+in the daily-radar ingest chain (`ingestion/orchestrator.py`,
+position 2 after Polygon). Its job is to fill today's quote for
+universe tickers whose prices Polygon couldn't deliver. The
+`_tickers_needing_prices(conn, tickers)` method decides which
+tickers actually need a Stooq fetch.
+
+The pre-fix implementation flagged a ticker as needing prices if it
+had **no row with `trade_date >= today - 2 days`** in
+`prices_daily`. That window dates back to when Polygon was being
+called per-ticker against `/v2/aggs/ticker/.../range/...` and
+free-tier rate limits (~5 req/min) meant many universe tickers
+ended a 23:15 UTC daily-radar run still without yesterday's price;
+Stooq's broad sweep then patched today over the gap, letting the
+next morning's `ml backfill-features` advance to T-1.
+
+Commit `473b92a` (2026-05-09) replaced the per-ticker Polygon path
+with the bulk grouped-daily endpoint
+(`/v2/aggs/grouped/locale/us/market/stocks/{date}`). The grouped
+endpoint reliably serves T-1 at 23:15 UTC (Polygon publishes it the
+following Eastern morning, well before the next daily-radar fire),
+and 403s on T-0 (Polygon hasn't published the same day's data yet).
+Net effect on `prices_daily` immediately after Polygon's pass:
+**every universe ticker has a T-1 row, none has T-0.**
+
+That state silently broke the Stooq fallback. With T-1 rows present
+and the threshold at `today - 2 days`, every universe ticker was
+"fresh" and `_tickers_needing_prices` returned at most a handful of
+ADRs missing from Polygon's grouped feed — not the universe. The
+production logs caught it cleanly (KI-142):
+
+```
+Stooq: 517 rows inserted for 517/520 tickers   (2026-05-11, pre-grouped)
+Stooq: 2   rows inserted for 2/3   tickers     (2026-05-12, post-grouped)
+Stooq: 6   rows inserted for 6/6   tickers     (2026-05-13)
+```
+
+Downstream, `prices_daily` for T-0 had only ~4 rows (foreign ADRs
+the grouped feed missed); `ml backfill-features` couldn't write
+features for T-0 (no universe prices for that date); `ml predict`
+fell back to `MAX(trade_date)` = T-1 in `ml_features` and scored
+`prediction_date` = T-1. The shift from T-0 features to T-1 features
+manifested as a one-trading-day lag in the prediction surface and a
+sustained 🔴 from the new pipeline monitor's
+`check_feature_pipeline` step (deployed 2026-05-12 per ADR-026).
+
+**Decision.** Replace the 2-day window with an exact-day match:
+
+```python
+today = date.today().isoformat()
+existing = {r[0] for r in conn.execute(
+    "SELECT DISTINCT ticker FROM prices_daily WHERE trade_date = ?",
+    [today],
+).fetchall()}
+return [t for t in tickers if t not in existing]
+```
+
+Rationale: the Stooq `/q/l/` endpoint, by construction, returns
+*today's* quote. Aligning the freshness check with what Stooq
+actually writes makes the contract honest — a ticker is "fresh"
+iff it already has the row Stooq would write. Yesterday's polygon
+row, however valid for other purposes, no longer counts as "having
+today's price."
+
+**Alternatives considered.**
+- *Add a same-day pass to the Polygon ingestor* using the per-ticker
+  `/v2/aggs/ticker/.../range/{today}/{today}` endpoint. Polygon's
+  free-tier ~5 req/min means a 416-ticker universe takes ~84 minutes
+  — incompatible with the 23:15 UTC daily-radar slot and the rate
+  limit that motivated the grouped-daily switch in the first place.
+  Rejected.
+- *Move daily-radar to ~10:00 UTC the next morning* so Polygon's
+  grouped endpoint serves T-0 in one call. Operationally invasive
+  (breaks the `mhde-predict.timer` 00:15 UTC ordering, the dashboard
+  artifact mtime checks, and the catalyst queue's same-evening
+  cadence). Rejected for a freshness-filter bug.
+- *Adjust the pipeline monitor to expect T-2 features* instead of
+  T-1 (`expected_equity_prediction_date(now) - 1`). Hides the
+  regression in the monitor rather than restoring the data
+  contract; the underlying T-1 → T-2 shift in `ml_predictions`
+  remains a real one-day quality regression. Rejected.
+- *Keep the 2-day window but switch to per-ticker MAX(trade_date)*
+  (i.e. `HAVING MAX(trade_date) >= today`). Equivalent to the
+  chosen fix in steady state on weekdays and slightly more
+  permissive on weekends. The exact-day form is easier to read and
+  matches Stooq's data semantic 1:1; the per-ticker form adds no
+  capability. Rejected as cosmetically different but no better.
+
+**Trade-off accepted.** Stooq is now called for every universe
+ticker that doesn't yet have today's row — restoring the pre-2026-05-09
+HTTP load (~10 batches of 50 tickers, ~1.5s of inter-batch sleep,
+~504 universe calls per nightly run). That is the load Stooq
+sustained without issue from system inception through 2026-05-08.
+On weekends and US-holiday weekdays, every universe ticker remains
+"missing today" and is fetched; Stooq's `/q/l/` returns the most
+recent close (Friday's), which `INSERT … ON CONFLICT DO NOTHING`
+deduplicates against existing Friday rows — a no-op under steady
+state. Polygon's `(ticker, trade_date)` PK on `prices_daily`
+continues to protect Polygon-sourced rows from being overwritten
+by Stooq when both sources happen to write the same day.
+
+**Files of record.** `ingestion/ingest_stooq.py` (`_tickers_needing_prices`
+rewritten, `_FRESHNESS_DAYS` constant deleted, `timedelta` import
+dropped, body comment cites ADR-030 + KI-142),
+`tests/equity/test_ingest_stooq.py` (3 new pinned regressions:
+`test_tickers_needing_prices_returns_universe_when_only_yesterday_in_db`,
+`test_ingest_fetches_today_when_universe_has_only_yesterday`,
+`test_polygon_t1_does_not_short_circuit_stooq_t0`; 1 forward-pin
+`test_tickers_needing_prices_skips_when_today_already_present`;
+`test_polygon_prices_not_overwritten_by_stooq` re-seeded to use
+today's date so it remains a meaningful guard against PK
+overwrites under the new contract). `KNOWN_ISSUES.md` adds KI-142
+opened-and-resolved 2026-05-14.
+
+**Reversibility.** Single-method revert. The four pinned tests
+fail-loud if the freshness check is widened past today, which is
+the intended guardrail. The orchestrator-shape integration test
+(`test_polygon_t1_does_not_short_circuit_stooq_t0`) double-pins
+the failure mode that originally let this slip through.
