@@ -948,13 +948,23 @@ with tab_paper:
                     "the engine starts writing end-of-day equity."
                 )
             else:
-                st.dataframe(_balance_df, use_container_width=True, hide_index=True)
+                _display_df = _balance_df.copy()
+                _display_df["date"] = [
+                    f"{d.isoformat()} (preliminary)" if prelim else d.isoformat()
+                    for d, prelim in zip(_display_df["date"], _display_df["is_preliminary"])
+                ]
+                _display_df = _display_df.drop(columns=["is_preliminary"])
+                st.dataframe(_display_df, use_container_width=True, hide_index=True)
             st.caption(
-                "Source: crypto-trading-engine `daily_pnl.account_equity_usd` "
-                "(ADR-020). `daily Δ` = today − prior present row; "
-                "`cumulative Δ` is anchored to the baseline date — the day "
-                "after the KI-138 OHLCV repair landed, so pre-baseline "
-                "equity readings (mixed with corrupted prices) are excluded."
+                "Source: crypto-trading-engine `daily_pnl` (ADR-020, read-only). "
+                "`daily Δ` = equity − prior present row; `cumulative Δ` is "
+                "anchored to the baseline date. Today's row is synthesized "
+                "in-process (equity = previous reconciled equity + today's "
+                "realized P&L; unrealized P&L mark-to-market from engine "
+                "`price_snapshots`, ~60 s freshness) and updates live on each "
+                "page refresh until reconcile fires at 23:00 UTC. Funding "
+                "and fees are not subtracted — the drift vs the eventual "
+                "reconciled wallet balance is small and acceptable."
             )
 
             _summary = get_paper_engine_runs_summary(_engine_conn)

@@ -52,6 +52,12 @@ def _engine_db() -> duckdb.DuckDBPyConnection:
             num_skipped_below_minimum  INTEGER NOT NULL,
             spec_version               VARCHAR
         )""")
+    conn.execute("""
+        CREATE TABLE price_snapshots (
+            position_id VARCHAR NOT NULL,
+            timestamp   TIMESTAMP NOT NULL,
+            price       DOUBLE NOT NULL
+        )""")
     return conn
 
 
@@ -90,6 +96,14 @@ def _run(conn, phase, started_at, success=True):
     conn.execute("INSERT INTO engine_runs (id, phase, started_at, success) "
                  "VALUES (?,?,?,?)",
                  [f"r-{phase}-{started_at}", phase, started_at, success])
+
+
+def _snap(conn, position_id, price, ts=None):
+    conn.execute(
+        "INSERT INTO price_snapshots (position_id, timestamp, price) "
+        "VALUES (?, ?, ?)",
+        [position_id, ts or NOW, price],
+    )
 
 
 # ── _connect_engine ──────────────────────────────────────────────────
@@ -308,14 +322,23 @@ def test_daily_balance_columns_and_first_row(monkeypatch):
 
     daily_delta is None on the earliest in-window row (no prior to diff
     against). cumulative_delta is anchored to the earliest in-window
-    equity, so the first row's cumulative is exactly 0.0."""
+    equity, so the first row's cumulative is exactly 0.0.
+
+    ``today`` is pinned to the last reconciled date so no preliminary
+    row is synthesized — this test exercises the historical-only path.
+    """
     e = _engine_db()
     _daily(e, date(2026, 5, 12), equity=1000.0)
     _daily(e, date(2026, 5, 13), equity=1020.0)
     _daily(e, date(2026, 5, 14), equity=1015.0)
 
-    df = q.get_daily_balance_since_baseline(e, since=date(2026, 5, 12))
-    assert list(df.columns) == ["date", "equity", "daily_delta", "cumulative_delta"]
+    df = q.get_daily_balance_since_baseline(
+        e, since=date(2026, 5, 12), today=date(2026, 5, 14)
+    )
+    assert list(df.columns) == [
+        "date", "equity", "realized_pnl_usd", "unrealized_pnl_usd",
+        "daily_delta", "cumulative_delta", "is_preliminary",
+    ]
     assert len(df) == 3
     assert df.iloc[0]["date"] == date(2026, 5, 12)
     assert df.iloc[0]["equity"] == 1000.0
@@ -329,6 +352,8 @@ def test_daily_balance_columns_and_first_row(monkeypatch):
     assert df.iloc[1]["cumulative_delta"] == pytest.approx(20.0)
     assert df.iloc[2]["daily_delta"] == pytest.approx(-5.0)
     assert df.iloc[2]["cumulative_delta"] == pytest.approx(15.0)
+    # No preliminary row — today (5/14) is already reconciled.
+    assert not df["is_preliminary"].any()
 
 
 def test_daily_balance_excludes_pre_baseline_rows():
@@ -340,20 +365,31 @@ def test_daily_balance_excludes_pre_baseline_rows():
     _daily(e, date(2026, 5, 12), equity=1000.0)
     _daily(e, date(2026, 5, 13), equity=1010.0)
 
-    df = q.get_daily_balance_since_baseline(e, since=date(2026, 5, 12))
+    df = q.get_daily_balance_since_baseline(
+        e, since=date(2026, 5, 12), today=date(2026, 5, 13)
+    )
     assert list(df["date"]) == [date(2026, 5, 12), date(2026, 5, 13)]
     # cumulative_delta anchored to 5/12 — the pre-baseline 975 is invisible.
     assert df.iloc[1]["cumulative_delta"] == pytest.approx(10.0)
 
 
 def test_daily_balance_empty_table_returns_empty_dataframe():
-    """Pre-RECONCILE-001 reality: daily_pnl is empty. The query must return
-    an empty DataFrame (correct schema, zero rows) so the tab renders an
-    "no data" branch without crashing."""
+    """No daily_pnl rows AND today is earlier than ``since`` → no rows
+    to render and no preliminary row to synthesize. Returns the
+    empty-schema DataFrame.
+
+    The "daily_pnl empty AND today >= since" case is covered separately
+    (synthesizes a single preliminary row with NaN equity).
+    """
     e = _engine_db()
-    df = q.get_daily_balance_since_baseline(e, since=date(2026, 5, 12))
+    df = q.get_daily_balance_since_baseline(
+        e, since=date(2026, 5, 12), today=date(2026, 5, 11)
+    )
     assert df.empty
-    assert list(df.columns) == ["date", "equity", "daily_delta", "cumulative_delta"]
+    assert list(df.columns) == [
+        "date", "equity", "realized_pnl_usd", "unrealized_pnl_usd",
+        "daily_delta", "cumulative_delta", "is_preliminary",
+    ]
 
 
 def test_daily_balance_handles_negative_streak():
@@ -363,7 +399,9 @@ def test_daily_balance_handles_negative_streak():
     _daily(e, date(2026, 5, 12), equity=1000.0)
     _daily(e, date(2026, 5, 13), equity=990.0)
     _daily(e, date(2026, 5, 14), equity=975.0)
-    df = q.get_daily_balance_since_baseline(e, since=date(2026, 5, 12))
+    df = q.get_daily_balance_since_baseline(
+        e, since=date(2026, 5, 12), today=date(2026, 5, 14)
+    )
     assert df.iloc[1]["daily_delta"] == pytest.approx(-10.0)
     assert df.iloc[2]["daily_delta"] == pytest.approx(-15.0)
     assert df.iloc[2]["cumulative_delta"] == pytest.approx(-25.0)
@@ -378,7 +416,9 @@ def test_daily_balance_preserves_gaps():
     _daily(e, date(2026, 5, 12), equity=1000.0)
     # 5/13 missing (reconcile skipped)
     _daily(e, date(2026, 5, 14), equity=1030.0)
-    df = q.get_daily_balance_since_baseline(e, since=date(2026, 5, 12))
+    df = q.get_daily_balance_since_baseline(
+        e, since=date(2026, 5, 12), today=date(2026, 5, 14)
+    )
     assert list(df["date"]) == [date(2026, 5, 12), date(2026, 5, 14)]
     assert df.iloc[1]["daily_delta"] == pytest.approx(30.0)
 
@@ -390,7 +430,9 @@ def test_daily_balance_orders_by_date_ascending():
     _daily(e, date(2026, 5, 14), equity=1015.0)
     _daily(e, date(2026, 5, 12), equity=1000.0)
     _daily(e, date(2026, 5, 13), equity=1010.0)
-    df = q.get_daily_balance_since_baseline(e, since=date(2026, 5, 12))
+    df = q.get_daily_balance_since_baseline(
+        e, since=date(2026, 5, 12), today=date(2026, 5, 14)
+    )
     assert list(df["date"]) == [
         date(2026, 5, 12), date(2026, 5, 13), date(2026, 5, 14),
     ]
@@ -402,7 +444,212 @@ def test_daily_balance_since_override_takes_precedence():
     e = _engine_db()
     _daily(e, date(2026, 5, 12), equity=1000.0)
     _daily(e, date(2026, 5, 13), equity=1010.0)
-    df = q.get_daily_balance_since_baseline(e, since=date(2026, 5, 13))
+    df = q.get_daily_balance_since_baseline(
+        e, since=date(2026, 5, 13), today=date(2026, 5, 13)
+    )
     assert len(df) == 1
     assert df.iloc[0]["date"] == date(2026, 5, 13)
     assert df.iloc[0]["cumulative_delta"] == 0.0
+
+
+# ── Daily balance: realized/unrealized columns + today-row synthesis ──
+# The dashboard surfaces today's preliminary balance in-day so the operator
+# doesn't have to wait until 23:00 UTC reconcile to see progress. Two new
+# columns are added regardless of synthesis (sourced from daily_pnl for
+# reconciled rows). When today's row is missing from daily_pnl, it is
+# synthesized in-process from the engine's positions + price_snapshots
+# tables — no Binance API call, per ADR-020 / INTERFACE.md.
+
+
+def test_daily_balance_includes_realized_and_unrealized_columns():
+    """Reconciled rows pull realized_pnl_usd and unrealized_pnl_usd
+    straight from daily_pnl. No synthesis involved."""
+    e = _engine_db()
+    _daily(e, date(2026, 5, 12), equity=1000.0, realized=50.0, unrealized=10.0)
+    _daily(e, date(2026, 5, 13), equity=1020.0, realized=70.0, unrealized=5.0)
+    df = q.get_daily_balance_since_baseline(
+        e, since=date(2026, 5, 12), today=date(2026, 5, 13)
+    )
+    assert df.iloc[0]["realized_pnl_usd"] == pytest.approx(50.0)
+    assert df.iloc[0]["unrealized_pnl_usd"] == pytest.approx(10.0)
+    assert df.iloc[1]["realized_pnl_usd"] == pytest.approx(70.0)
+    assert df.iloc[1]["unrealized_pnl_usd"] == pytest.approx(5.0)
+    assert not df["is_preliminary"].any()
+
+
+def test_daily_balance_synthesizes_today_when_missing():
+    """daily_pnl has 5/12 and 5/13; today is 5/14, missing. A single
+    preliminary row is appended with equity = prev + today_realized,
+    today_realized from positions exit-filled today, today_unrealized
+    from open positions' latest price snapshots."""
+    e = _engine_db()
+    _daily(e, date(2026, 5, 12), equity=1000.0)
+    _daily(e, date(2026, 5, 13), equity=1010.0, realized=10.0, unrealized=0.0)
+    # Closed today: realized 5 + 3 = 8. Closed yesterday: ignored.
+    today_ts = datetime(2026, 5, 14, 9, 0, 0)
+    _pos(e, "x", "XUSDT", "exit_filled", entry_price=10.0, qty=5.0,
+         peak_price=11.0, exit_price=11.0, realized_pnl_usd=5.0,
+         updated_at=today_ts)
+    _pos(e, "y", "YUSDT", "exit_filled", entry_price=10.0, qty=2.0,
+         peak_price=12.0, exit_price=11.5, realized_pnl_usd=3.0,
+         updated_at=today_ts)
+    _pos(e, "yest", "ZUSDT", "exit_filled", entry_price=10.0, qty=1.0,
+         peak_price=11.0, exit_price=11.0, realized_pnl_usd=1.0,
+         updated_at=datetime(2026, 5, 13, 9, 0, 0))
+    # One open position: entry 100, latest snapshot 110, qty 2 → +20 unrealized.
+    _pos(e, "open1", "OPEN1USDT", "entry_filled", entry_price=100.0, qty=2.0,
+         peak_price=110.0, updated_at=today_ts)
+    _snap(e, "open1", 110.0, ts=today_ts)
+
+    df = q.get_daily_balance_since_baseline(
+        e, since=date(2026, 5, 12), today=date(2026, 5, 14)
+    )
+    assert len(df) == 3
+    today_row = df.iloc[-1]
+    assert today_row["date"] == date(2026, 5, 14)
+    assert today_row["is_preliminary"] is True or bool(today_row["is_preliminary"]) is True
+    assert today_row["equity"] == pytest.approx(1018.0)  # 1010 + 8
+    assert today_row["realized_pnl_usd"] == pytest.approx(8.0)
+    assert today_row["unrealized_pnl_usd"] == pytest.approx(20.0)
+    assert today_row["daily_delta"] == pytest.approx(8.0)  # 1018 - 1010
+    assert today_row["cumulative_delta"] == pytest.approx(18.0)  # 1018 - 1000
+
+
+def test_daily_balance_no_synthesis_when_today_already_reconciled():
+    """If today is already in daily_pnl, the existing reconciled row is
+    used verbatim — no synthesis, is_preliminary stays False."""
+    e = _engine_db()
+    _daily(e, date(2026, 5, 12), equity=1000.0)
+    _daily(e, date(2026, 5, 13), equity=1050.0, realized=50.0, unrealized=0.0)
+    # Position closed today; if synthesis fired it would double-count.
+    _pos(e, "x", "XUSDT", "exit_filled", entry_price=10.0, qty=5.0,
+         peak_price=11.0, exit_price=11.0, realized_pnl_usd=99.0,
+         updated_at=datetime(2026, 5, 13, 9, 0, 0))
+    df = q.get_daily_balance_since_baseline(
+        e, since=date(2026, 5, 12), today=date(2026, 5, 13)
+    )
+    assert len(df) == 2
+    assert not df["is_preliminary"].any()
+    # Reconciled equity, not double-counted.
+    assert df.iloc[1]["equity"] == pytest.approx(1050.0)
+    assert df.iloc[1]["realized_pnl_usd"] == pytest.approx(50.0)
+
+
+def test_daily_balance_synthesized_today_with_no_closed_positions():
+    """No exit_filled positions today → today_realized = 0.0 (not NaN);
+    the preliminary row equity equals the previous reconciled equity."""
+    e = _engine_db()
+    _daily(e, date(2026, 5, 13), equity=1010.0)
+    df = q.get_daily_balance_since_baseline(
+        e, since=date(2026, 5, 12), today=date(2026, 5, 14)
+    )
+    today_row = df.iloc[-1]
+    assert today_row["is_preliminary"] is True or bool(today_row["is_preliminary"]) is True
+    assert today_row["realized_pnl_usd"] == 0.0
+    assert today_row["equity"] == pytest.approx(1010.0)
+    assert today_row["unrealized_pnl_usd"] == 0.0
+
+
+def test_daily_balance_synthesized_today_when_daily_pnl_empty():
+    """Bootstrap edge case: no daily_pnl rows, but today >= since.
+    A single preliminary row is shown with equity = NaN (no anchor) so
+    the operator sees today's realized/unrealized numbers without a
+    misleading made-up wallet balance."""
+    import pandas as _pd
+    e = _engine_db()
+    today_ts = datetime(2026, 5, 14, 9, 0, 0)
+    _pos(e, "x", "XUSDT", "exit_filled", entry_price=10.0, qty=5.0,
+         peak_price=11.0, exit_price=11.0, realized_pnl_usd=5.0,
+         updated_at=today_ts)
+    df = q.get_daily_balance_since_baseline(
+        e, since=date(2026, 5, 12), today=date(2026, 5, 14)
+    )
+    assert len(df) == 1
+    row = df.iloc[0]
+    assert row["date"] == date(2026, 5, 14)
+    assert row["is_preliminary"] is True or bool(row["is_preliminary"]) is True
+    assert _pd.isna(row["equity"])  # no prior anchor — equity unknown
+    assert row["realized_pnl_usd"] == pytest.approx(5.0)
+    assert _pd.isna(row["daily_delta"])
+    assert _pd.isna(row["cumulative_delta"])
+
+
+def test_daily_balance_is_preliminary_flag_correct():
+    """Mixed: two reconciled rows + one synthesized row → flag mirrors
+    the row's provenance."""
+    e = _engine_db()
+    _daily(e, date(2026, 5, 12), equity=1000.0)
+    _daily(e, date(2026, 5, 13), equity=1010.0)
+    df = q.get_daily_balance_since_baseline(
+        e, since=date(2026, 5, 12), today=date(2026, 5, 14)
+    )
+    assert list(df["is_preliminary"]) == [False, False, True]
+
+
+# ── get_open_positions_unrealized_pnl_usd ────────────────────────────
+# Live (~60s freshness) open-exposure read used to synthesize today's
+# unrealized_pnl_usd. SUM((latest_price - entry_price) * qty) joined per
+# position_id against the most-recent price_snapshots row. Positions
+# without a snapshot are skipped (they contribute 0).
+
+
+def test_unrealized_pnl_zero_when_no_open_positions():
+    e = _engine_db()
+    assert q.get_open_positions_unrealized_pnl_usd(e) == 0.0
+
+
+def test_unrealized_pnl_sums_open_positions_with_latest_snapshot():
+    e = _engine_db()
+    _pos(e, "a", "AUSDT", "entry_filled", entry_price=100.0, qty=2.0, peak_price=110.0)
+    _pos(e, "b", "BUSDT", "trailing_active", entry_price=50.0, qty=4.0, peak_price=55.0)
+    _snap(e, "a", 110.0)
+    _snap(e, "b", 55.0)
+    # 'trailing_active' is technically "open" but the helper's filter
+    # is documented as entry_filled / entry_pending only (per spec). It
+    # should NOT contribute. Adjust below if spec widens.
+    val = q.get_open_positions_unrealized_pnl_usd(e)
+    assert val == pytest.approx((110 - 100) * 2)  # 20.0
+
+
+def test_unrealized_pnl_uses_latest_snapshot_per_position():
+    e = _engine_db()
+    _pos(e, "a", "AUSDT", "entry_filled", entry_price=100.0, qty=2.0, peak_price=120.0)
+    _snap(e, "a", 110.0, ts=datetime(2026, 5, 14, 8, 0))
+    _snap(e, "a", 120.0, ts=datetime(2026, 5, 14, 9, 0))  # latest
+    _snap(e, "a", 115.0, ts=datetime(2026, 5, 14, 8, 30))
+    val = q.get_open_positions_unrealized_pnl_usd(e)
+    assert val == pytest.approx((120 - 100) * 2)  # 40.0
+
+
+def test_unrealized_pnl_excludes_closed_positions():
+    e = _engine_db()
+    _pos(e, "c", "CUSDT", "exit_filled", entry_price=100.0, qty=2.0, peak_price=120.0)
+    _snap(e, "c", 120.0)
+    assert q.get_open_positions_unrealized_pnl_usd(e) == 0.0
+
+
+def test_unrealized_pnl_excludes_positions_without_snapshots():
+    """Open position with no price_snapshots row → JOIN drops it, the
+    function returns 0.0 (not NaN, not a crash)."""
+    e = _engine_db()
+    _pos(e, "a", "AUSDT", "entry_filled", entry_price=100.0, qty=2.0, peak_price=100.0)
+    assert q.get_open_positions_unrealized_pnl_usd(e) == 0.0
+
+
+def test_unrealized_pnl_handles_negative_drawdown():
+    e = _engine_db()
+    _pos(e, "a", "AUSDT", "entry_filled", entry_price=100.0, qty=3.0, peak_price=100.0)
+    _snap(e, "a", 95.0)
+    val = q.get_open_positions_unrealized_pnl_usd(e)
+    assert val == pytest.approx((95 - 100) * 3)  # -15.0
+
+
+def test_unrealized_pnl_includes_entry_pending():
+    """entry_pending positions have an intended limit price as entry_price;
+    they count toward today's open exposure until the order fills or
+    cancels."""
+    e = _engine_db()
+    _pos(e, "p", "PUSDT", "entry_pending", entry_price=100.0, qty=1.0, peak_price=100.0)
+    _snap(e, "p", 105.0)
+    val = q.get_open_positions_unrealized_pnl_usd(e)
+    assert val == pytest.approx(5.0)

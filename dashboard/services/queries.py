@@ -917,49 +917,163 @@ def paper_baseline_date() -> date:
     return max(parsed) if parsed else _DEFAULT_PAPER_BASELINE
 
 
+_DAILY_BALANCE_COLUMNS = [
+    "date",
+    "equity",
+    "realized_pnl_usd",
+    "unrealized_pnl_usd",
+    "daily_delta",
+    "cumulative_delta",
+    "is_preliminary",
+]
+
+
+def get_open_positions_unrealized_pnl_usd(
+    engine_conn: duckdb.DuckDBPyConnection,
+) -> float:
+    """Live mark-to-market unrealized P&L across currently-open positions.
+
+    ``SUM((latest_price − entry_price) × qty)`` joined per-``position_id``
+    against the most-recent ``price_snapshots`` row. Open positions are
+    those with ``current_state IN ('entry_filled', 'entry_pending')`` —
+    deliberately narrower than the engine's full open-state set (which
+    also includes ``trailing_active`` / ``exit_pending`` / ``expired``);
+    broaden the filter if the operator wants those bucketed in too.
+
+    Returns ``0.0`` when no open positions have snapshots — never raises,
+    never returns NaN. The engine's monitor service writes a snapshot
+    each minute, so this read is fresh within ~60 seconds.
+    """
+    row = engine_conn.execute(
+        """
+        SELECT COALESCE(SUM((latest.price - p.entry_price) * p.qty), 0.0)
+        FROM positions p
+        JOIN (
+            SELECT position_id, price
+            FROM price_snapshots ps
+            WHERE (position_id, timestamp) IN (
+                SELECT position_id, MAX(timestamp)
+                FROM price_snapshots
+                GROUP BY position_id
+            )
+        ) latest ON latest.position_id = p.id
+        WHERE p.current_state IN ('entry_filled', 'entry_pending')
+        """
+    ).fetchone()
+    return float(row[0]) if row and row[0] is not None else 0.0
+
+
 def get_daily_balance_since_baseline(
-    engine_conn: duckdb.DuckDBPyConnection, *, since: date
+    engine_conn: duckdb.DuckDBPyConnection,
+    *,
+    since: date,
+    today: date | None = None,
 ) -> pd.DataFrame:
     """Daily account-equity strip for the Paper Trading tab.
 
     Columns (always present, even when empty):
-        date              — settlement date of the daily_pnl row
-        equity            — account_equity_usd at end-of-day
-        daily_delta       — equity − equity_of_prior_present_row;
-                            ``None`` for the first in-window row
-        cumulative_delta  — equity − equity_of_first_in_window_row;
-                            ``0.0`` for the first row
+        date                — settlement date of the row
+        equity              — account_equity_usd at end-of-day (wallet
+                              balance; excludes unrealized P&L, matching
+                              ``daily_pnl.account_equity_usd`` semantics)
+        realized_pnl_usd    — realized P&L attributed to the row's date
+        unrealized_pnl_usd  — open-position mark-to-market at row time
+        daily_delta         — equity − equity_of_prior_present_row;
+                              ``None`` for the first in-window row
+        cumulative_delta    — equity − equity_of_first_in_window_row;
+                              ``0.0`` for the first row
+        is_preliminary      — ``False`` for reconciled rows pulled from
+                              daily_pnl, ``True`` for today's synthesized
+                              in-day row
 
-    Pre-baseline rows are excluded. Date gaps (if reconcile skipped a day)
-    are preserved as-is — ``daily_delta`` on the row after a gap is the
-    raw difference against the previous *present* row, which is the
-    honest representation of the equity path the operator actually
-    observed.
+    Pre-baseline rows are excluded. Date gaps (if reconcile skipped a
+    day) are preserved as-is — ``daily_delta`` on the row after a gap is
+    the raw difference against the previous *present* row.
 
-    Empty input (the pre-RECONCILE-001 reality on the live engine DB)
-    yields an empty DataFrame with the correct schema so the caller can
-    render an "no data" branch without conditional column handling.
+    Today-row synthesis (when ``today >= since`` and today is missing
+    from ``daily_pnl``): the reconcile timer fires at 23:00 UTC, so for
+    most of the UTC day today's row does not exist yet. To keep the
+    operator's equity curve continuous, a single preliminary row is
+    appended:
+
+        equity            = prev_present_equity + today_realized
+        realized_pnl_usd  = SUM(positions.realized_pnl_usd) over
+                            ``current_state = 'exit_filled' AND
+                              CAST(updated_at AS DATE) = today``
+        unrealized_pnl_usd = ``get_open_positions_unrealized_pnl_usd()``
+
+    No Binance API call: equity is anchored to the last reconciled wallet
+    balance + today's realized — funding/fees are not subtracted (the
+    engine does not track them granularly; the drift is small enough to
+    accept per the operator's call). When ``daily_pnl`` is empty there is
+    no prior anchor, so the synthesized row has ``equity = NaN`` and
+    ``daily_delta`` / ``cumulative_delta`` ``NaN`` — only realized and
+    unrealized columns carry meaning until the first reconcile fires.
+
+    Empty input AND ``today < since`` yields an empty DataFrame with the
+    correct schema so the caller can render an "no data" banner.
     """
-    columns = ["date", "equity", "daily_delta", "cumulative_delta"]
+    if today is None:
+        today = datetime.now(timezone.utc).date()
+
     rows = engine_conn.execute(
-        "SELECT date, account_equity_usd FROM daily_pnl "
-        "WHERE date >= ? ORDER BY date ASC",
+        "SELECT date, account_equity_usd, realized_pnl_usd, unrealized_pnl_usd "
+        "FROM daily_pnl WHERE date >= ? ORDER BY date ASC",
         [since],
     ).fetchall()
-    if not rows:
-        return pd.DataFrame(columns=columns)
 
-    anchor = float(rows[0][1])
-    out = []
-    prev: float | None = None
-    for d, equity in rows:
+    reconciled_dates = {r[0] for r in rows}
+    synthesize_today = today >= since and today not in reconciled_dates
+
+    if not rows and not synthesize_today:
+        return pd.DataFrame(columns=_DAILY_BALANCE_COLUMNS)
+
+    out: list[dict] = []
+    anchor: float | None = None
+    prev_equity: float | None = None
+    for d, equity, realized, unrealized in rows:
         equity = float(equity)
-        daily_delta = None if prev is None else equity - prev
+        if anchor is None:
+            anchor = equity
+        daily_delta = None if prev_equity is None else equity - prev_equity
         out.append({
             "date": d,
             "equity": equity,
+            "realized_pnl_usd": float(realized) if realized is not None else None,
+            "unrealized_pnl_usd": float(unrealized) if unrealized is not None else None,
             "daily_delta": daily_delta,
             "cumulative_delta": equity - anchor,
+            "is_preliminary": False,
         })
-        prev = equity
-    return pd.DataFrame(out, columns=columns)
+        prev_equity = equity
+
+    if synthesize_today:
+        today_realized = float(engine_conn.execute(
+            "SELECT COALESCE(SUM(realized_pnl_usd), 0.0) FROM positions "
+            "WHERE current_state = 'exit_filled' "
+            "AND CAST(updated_at AS DATE) = ?",
+            [today],
+        ).fetchone()[0] or 0.0)
+        today_unrealized = get_open_positions_unrealized_pnl_usd(engine_conn)
+
+        if rows:
+            today_equity = float(rows[-1][1]) + today_realized
+        else:
+            today_equity = float("nan")
+
+        if anchor is None:
+            anchor = today_equity  # bootstrap: row is its own anchor (NaN-NaN=NaN)
+        daily_delta = None if prev_equity is None else today_equity - prev_equity
+        cumulative_delta = today_equity - anchor
+
+        out.append({
+            "date": today,
+            "equity": today_equity,
+            "realized_pnl_usd": today_realized,
+            "unrealized_pnl_usd": today_unrealized,
+            "daily_delta": daily_delta,
+            "cumulative_delta": cumulative_delta,
+            "is_preliminary": True,
+        })
+
+    return pd.DataFrame(out, columns=_DAILY_BALANCE_COLUMNS)
