@@ -67,6 +67,80 @@ def test_equity_freshness_stale_after_threshold(temp_db):
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Partial-coverage detection (KI-149 regression — the smoking-gun case)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _seed_prices_for_dates(conn, dates_and_counts: list[tuple[date, int]]) -> None:
+    """Seed prices_daily with N synthetic tickers per date."""
+    rid = 0
+    for d, n in dates_and_counts:
+        for i in range(n):
+            rid += 1
+            conn.execute(
+                "INSERT INTO prices_daily (id, ticker, trade_date, close) "
+                "VALUES (?, ?, ?, ?)",
+                [f"id{rid}", f"T{i:04d}", d, 100.0],
+            )
+
+
+def test_equity_freshness_partial_coverage_on_latest_date_is_not_fresh(temp_db):
+    """KI-149: 4 fallback OTC rows on the latest date must NOT count as fresh.
+
+    Smoking-gun scenario from data/processed/finding3_ml_pipeline_gap_root_cause.md:
+    prices_daily latest=2026-05-13 with 4 rows, prior days have ~520 rows each.
+    MAX(trade_date)-only check incorrectly declares freshness OK; the coverage
+    check must reject this.
+    """
+    today = date(2026, 5, 14)
+    # 30 prior trading days at ~520 rows each (well-covered), latest at 4 rows.
+    seed = [(date(2026, 5, 13), 4)]
+    for i in range(2, 32):
+        seed.append((today - timedelta(days=i), 520))
+    _seed_prices_for_dates(temp_db, seed)
+
+    rep = check_equity_freshness(temp_db, today=today)
+    assert not rep.is_fresh, (
+        f"Partial-coverage latest must be rejected (got is_fresh={rep.is_fresh}, "
+        f"msg={rep.message!r})"
+    )
+    assert rep.reason == "partial_coverage"
+    assert rep.coverage_row_count == 4
+    assert rep.coverage_expected_min is not None
+    assert rep.coverage_expected_min > 4
+
+
+def test_equity_freshness_full_coverage_on_latest_date_is_fresh(temp_db):
+    """Latest date with row count comparable to recent history → fresh."""
+    today = date(2026, 5, 14)
+    seed = [(date(2026, 5, 13), 510)]
+    for i in range(1, 31):
+        seed.append((today - timedelta(days=i + 1), 520))
+    _seed_prices_for_dates(temp_db, seed)
+
+    rep = check_equity_freshness(temp_db, today=today)
+    assert rep.is_fresh, f"Full coverage must pass; msg={rep.message!r}"
+    assert rep.reason is None
+
+
+def test_equity_freshness_single_row_history_does_not_crash(temp_db):
+    """When prices_daily has only 1 row, the coverage check must not crash.
+
+    With only one historical row, the rolling mean equals that row count
+    and the same row is the latest, so it trivially satisfies coverage.
+    Existing test_equity_freshness_fresh_today relies on this behavior.
+    """
+    today = date.today()
+    temp_db.execute(
+        "INSERT INTO prices_daily (id, ticker, trade_date, close) VALUES (?, ?, ?, ?)",
+        ["solo1", "AAPL", today, 150.0],
+    )
+    rep = check_equity_freshness(temp_db, today=today)
+    assert rep.is_fresh
+    assert rep.reason is None
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Crypto freshness — calendar-day arithmetic
 # ──────────────────────────────────────────────────────────────────────
 

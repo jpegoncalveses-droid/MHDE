@@ -166,6 +166,99 @@ def test_print_predictions_full_result(capsys):
     assert "SECTOR BREAKDOWN" in out
 
 
+# ──────────────────────────────────────────────────────────────────────
+# KI-149: ml_features / prices_daily cross-check (silent T-2 skip)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _seed_price(conn, ticker, d, close=100.0):
+    conn.execute(
+        "INSERT INTO prices_daily (id, ticker, trade_date, close) VALUES (?, ?, ?, ?)",
+        [f"{ticker}-{d.isoformat()}", ticker, d, close],
+    )
+
+
+def test_score_universe_auto_pick_raises_on_features_behind_prices(temp_db):
+    """KI-149 regression: when ml_features.MAX < prices_daily.MAX and the
+    caller doesn't pin prediction_date, score_universe must raise
+    StaleFeaturesError instead of silently scoring the stale date.
+    """
+    from ml.predict import StaleFeaturesError
+
+    features_date = date(2026, 5, 12)
+    prices_date = date(2026, 5, 13)
+    _seed_company(temp_db, "AAPL")
+    _insert_features(temp_db, "AAPL", features_date)
+    _seed_price(temp_db, "AAPL", prices_date)
+
+    with pytest.raises(StaleFeaturesError) as exc_info:
+        predict_mod.score_universe(temp_db)
+
+    msg = str(exc_info.value)
+    assert "2026-05-12" in msg and "2026-05-13" in msg, (
+        f"Error must name both dates explicitly; got {msg!r}"
+    )
+
+
+def test_score_universe_auto_pick_allow_stale_features_logs_and_proceeds(
+    temp_db, caplog
+):
+    """allow_stale_features=True must downgrade the cross-check to a
+    WARNING and proceed (it may still fail downstream for missing models,
+    but the cross-check itself must not raise).
+    """
+    features_date = date(2026, 5, 12)
+    prices_date = date(2026, 5, 13)
+    _seed_company(temp_db, "AAPL")
+    _insert_features(temp_db, "AAPL", features_date)
+    _seed_price(temp_db, "AAPL", prices_date)
+
+    import logging
+    with caplog.at_level(logging.WARNING, logger="mhde.ml.predict"):
+        out = predict_mod.score_universe(temp_db, allow_stale_features=True)
+
+    # Cross-check must not have raised. Downstream may still return error
+    # (no active models), but it must not be a StaleFeaturesError.
+    assert "stale" in caplog.text.lower() or "diverge" in caplog.text.lower(), (
+        f"Expected a stale/divergence WARNING in log; got: {caplog.text!r}"
+    )
+    assert "2026-05-12" in caplog.text and "2026-05-13" in caplog.text
+
+
+def test_score_universe_aligned_features_and_prices_no_warning(temp_db, caplog):
+    """When ml_features.MAX == prices_daily.MAX, the cross-check is silent."""
+    pred_date = date(2026, 5, 12)
+    _seed_company(temp_db, "AAPL")
+    _insert_features(temp_db, "AAPL", pred_date)
+    _seed_price(temp_db, "AAPL", pred_date)
+
+    import logging
+    with caplog.at_level(logging.WARNING, logger="mhde.ml.predict"):
+        predict_mod.score_universe(temp_db)  # will return error for no model
+
+    assert "stale" not in caplog.text.lower(), (
+        f"Aligned features must not produce a stale warning; got: {caplog.text!r}"
+    )
+
+
+def test_score_universe_explicit_prediction_date_skips_cross_check(temp_db):
+    """When the caller pins prediction_date, the cross-check must not fire.
+    Legitimate backfill / historical scoring use case — caller knows what
+    they're asking for.
+    """
+    features_date = date(2026, 5, 12)
+    prices_date = date(2026, 5, 13)
+    _seed_company(temp_db, "AAPL")
+    _insert_features(temp_db, "AAPL", features_date)
+    _seed_price(temp_db, "AAPL", prices_date)
+
+    # Explicit prediction_date — no cross-check, no exception. Downstream
+    # still returns error (no model), but that's not a StaleFeaturesError.
+    out = predict_mod.score_universe(temp_db, prediction_date=features_date)
+    assert out["status"] == "error"
+    assert "model" in out["message"].lower()
+
+
 def test_fill_outcomes_skips_when_window_not_complete(
     temp_db, synthetic_prices_equity
 ):

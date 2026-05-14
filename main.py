@@ -276,7 +276,9 @@ def ml():
 @ml.command("predict")
 @click.option("--date", default=None, help="Prediction date (YYYY-MM-DD). Default: latest.")
 @click.option("--skip-outcomes", is_flag=True, help="Skip filling historical outcomes.")
-def ml_predict(date, skip_outcomes):
+@click.option("--allow-stale-features", is_flag=True,
+              help="KI-149: downgrade ml_features-behind-prices_daily from raise to WARNING.")
+def ml_predict(date, skip_outcomes, allow_stale_features):
     """Run ML prediction pipeline: score universe, fill outcomes, print results."""
     from datetime import date as date_cls
     from pipelines.ml_prediction_pipeline import run_prediction_pipeline
@@ -285,7 +287,8 @@ def ml_predict(date, skip_outcomes):
     try:
         pred_date = date_cls.fromisoformat(date) if date else None
         run_prediction_pipeline(conn, prediction_date=pred_date,
-                                skip_features=True, skip_outcomes=skip_outcomes)
+                                skip_features=True, skip_outcomes=skip_outcomes,
+                                allow_stale_features=allow_stale_features)
     finally:
         conn.close()
 

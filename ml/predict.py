@@ -27,6 +27,26 @@ LOW_THRESHOLD = 0.50
 MAX_PREDICTIONS = 20
 MIN_HIGH_CONFIDENCE = 5
 
+class StaleFeaturesError(RuntimeError):
+    """Raised when ml_features.MAX(trade_date) lags prices_daily.MAX(trade_date).
+
+    KI-149: predict's default auto-pick used to silently fall back to the
+    latest ml_features row when current-day prices had landed but feature
+    computation had not. The pipeline then advertised "today's predictions"
+    while scoring a past date. Default behavior is now to raise instead;
+    `allow_stale_features=True` downgrades to a WARNING.
+    """
+
+    def __init__(self, features_max, prices_max):
+        self.features_max = features_max
+        self.prices_max = prices_max
+        super().__init__(
+            f"ml_features is stale: latest features={features_max}, "
+            f"latest prices={prices_max}. Refusing to silently score "
+            f"{features_max}. Pass allow_stale_features=True to proceed."
+        )
+
+
 SECTOR_ETF_MAP = {
     "Information Technology": "XLK",
     "Financials": "XLF",
@@ -83,8 +103,14 @@ def _bucket_market_cap(mc):
 def score_universe(
     conn: duckdb.DuckDBPyConnection,
     prediction_date: date | None = None,
+    allow_stale_features: bool = False,
 ) -> dict:
     """Score all universe tickers for a given date.
+
+    When prediction_date is None, the latest ml_features.trade_date is auto-
+    picked and compared against the latest prices_daily.trade_date — a
+    divergence (features behind prices by ≥1 day) raises StaleFeaturesError
+    unless allow_stale_features=True (KI-149).
 
     Returns dict with predictions, regime info, and correlation analysis.
     """
@@ -96,6 +122,25 @@ def score_universe(
         if prediction_date is None:
             logger.error("No features available")
             return {"status": "error", "message": "No features available"}
+
+        prices_row = conn.execute(
+            "SELECT MAX(trade_date) FROM prices_daily"
+        ).fetchone()
+        prices_max = prices_row[0] if prices_row else None
+        if prices_max is not None and prediction_date < prices_max:
+            if allow_stale_features:
+                logger.warning(
+                    "Features stale vs prices: ml_features=%s, prices_daily=%s. "
+                    "Proceeding because allow_stale_features=True (KI-149).",
+                    prediction_date, prices_max,
+                )
+            else:
+                logger.warning(
+                    "Features stale vs prices: ml_features=%s, prices_daily=%s. "
+                    "Refusing to score silently (KI-149).",
+                    prediction_date, prices_max,
+                )
+                raise StaleFeaturesError(prediction_date, prices_max)
 
     logger.info("Scoring universe for %s", prediction_date)
 

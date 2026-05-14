@@ -52,6 +52,28 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (ticker, trade_date) DO NOTHING
 """
 
+
+class IngestionError(RuntimeError):
+    """Distinct ingestion failure mode for monitor surfacing.
+
+    KI-149: Polygon's free-tier grouped endpoint returns HTTP 403 for the
+    current trading day (and often T-1). The prior behavior logged a
+    WARNING and rolled this into a generic "1 failed" counter, making it
+    invisible to dashboards and downstream gates. This exception names the
+    affected dates so callers and monitors can surface "current-day data
+    unavailable" as a distinct failure rather than a transient blip.
+    """
+
+    def __init__(self, blocked_dates: list[date], status_code: int = 403):
+        self.blocked_dates = list(blocked_dates)
+        self.status_code = status_code
+        dates_str = ", ".join(d.isoformat() for d in blocked_dates)
+        super().__init__(
+            f"Polygon grouped HTTP {status_code} with no universe coverage "
+            f"on dates: {dates_str}. Current-day data unavailable (free-tier "
+            f"plan limit). Affected dates will need fallback or paid-tier."
+        )
+
 # Default lookback for the nightly entry point. 7 calendar days covers
 # the most recent trading week plus weekend. Idempotent INSERT means
 # re-fetching already-stored dates is cheap.
@@ -225,6 +247,7 @@ class PricesIngestor(BaseIngestor):
         all_rows: list[list[Any]] = []
         attempted = failed = 0
         per_date: dict[str, dict[str, Any]] = {}
+        blocked_403_dates: list[date] = []
 
         for d in dates:
             results, status = self._fetch_grouped(api_key, d)
@@ -238,6 +261,11 @@ class PricesIngestor(BaseIngestor):
             if status != 200:
                 self.logger.warning("Polygon grouped %s: HTTP %d", d, status)
                 failed += 1
+                if status == 403:
+                    # KI-149: 403 + in_universe=0 is the plan-limited
+                    # current-day signature. Track for the post-loop raise.
+                    date_summary["current_day_blocked"] = True
+                    blocked_403_dates.append(d)
                 per_date[d.isoformat()] = date_summary
                 continue
             if not results:
@@ -295,6 +323,13 @@ class PricesIngestor(BaseIngestor):
         )
         for date_str, summary in per_date.items():
             self.logger.info("  %s: %s", date_str, summary)
+
+        if blocked_403_dates:
+            # KI-149: any 403 date with zero universe coverage indicates the
+            # plan-limited current-day path. Raise after persisting all
+            # successful dates so they aren't lost.
+            raise IngestionError(blocked_403_dates, status_code=403)
+
         return {
             "source": self.source_name,
             "status": "ok",

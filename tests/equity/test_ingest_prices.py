@@ -215,6 +215,106 @@ def test_ingest_without_api_key_skips(temp_db, monkeypatch):
     assert result["records"] == 0
 
 
+# ──────────────────────────────────────────────────────────────────────
+# KI-149: 403 + in_universe=0 → IngestionError (current-day blocked)
+# ──────────────────────────────────────────────────────────────────────
+
+
+@rsps_lib.activate
+def test_ingest_dates_403_with_no_universe_coverage_raises_ingestion_error(temp_db):
+    """KI-149: Polygon grouped 403 + in_universe=0 must surface as a distinct
+    IngestionError, not be rolled into the generic 'failed' counter. This is
+    the current-day blocked path on Polygon free tier.
+    """
+    from ingestion.ingest_prices import IngestionError
+
+    rsps_lib.add(rsps_lib.GET, _GROUPED_RE,
+                 json={"error": "plan_limited"},
+                 status=403, match_querystring=False)
+
+    ing = PricesIngestor(cfg={
+        "polygon_api_key": "TEST_KEY",
+        "polygon_throttle_s": 0,
+        "polygon_retry_after_429_s": 0,
+    })
+    with pytest.raises(IngestionError) as exc_info:
+        ing.ingest_dates(
+            temp_db, run_id="r1",
+            dates=[date(2026, 5, 13)],
+            tickers=["AAPL", "MSFT"],
+        )
+
+    err = exc_info.value
+    assert "2026-05-13" in str(err), (
+        f"IngestionError must name the affected date; got {err!r}"
+    )
+    assert hasattr(err, "blocked_dates")
+    assert date(2026, 5, 13) in err.blocked_dates
+
+
+@rsps_lib.activate
+def test_ingest_dates_403_on_one_date_still_raises_with_mixed_dates(temp_db):
+    """Mixed batch: one date 200 OK, one date 403. The 403 still triggers
+    IngestionError after the loop completes; the 200 date's rows are written.
+    """
+    from ingestion.ingest_prices import IngestionError
+
+    # First call (most recent date) → 403
+    rsps_lib.add(rsps_lib.GET, _GROUPED_RE,
+                 json={"error": "plan_limited"},
+                 status=403, match_querystring=False)
+    # Second call (older date) → 200 with AAPL
+    rsps_lib.add(rsps_lib.GET, _GROUPED_RE,
+                 json=_grouped_payload("AAPL"),
+                 status=200, match_querystring=False)
+
+    ing = PricesIngestor(cfg={
+        "polygon_api_key": "TEST_KEY",
+        "polygon_throttle_s": 0,
+        "polygon_retry_after_429_s": 0,
+    })
+    with pytest.raises(IngestionError) as exc_info:
+        ing.ingest_dates(
+            temp_db, run_id="r1",
+            dates=[date(2026, 5, 13), date(2026, 5, 12)],
+            tickers=["AAPL"],
+        )
+
+    # Older date's row should still have been written before the raise.
+    n = temp_db.execute(
+        "SELECT COUNT(*) FROM prices_daily WHERE ticker = 'AAPL'"
+    ).fetchone()[0]
+    assert n == 1, "Pre-403 dates' rows must be persisted before the raise"
+    assert date(2026, 5, 13) in exc_info.value.blocked_dates
+
+
+@rsps_lib.activate
+def test_ingest_dates_403_does_not_raise_when_unrelated_to_universe(temp_db):
+    """Sanity: a non-403 failure (e.g. 500) still goes through the generic
+    failed-counter path, NOT the IngestionError path. IngestionError is
+    specifically the 403+empty-universe signature.
+    """
+    from ingestion.ingest_prices import IngestionError
+
+    rsps_lib.add(rsps_lib.GET, _GROUPED_RE,
+                 json={"error": "internal"},
+                 status=500, match_querystring=False)
+
+    ing = PricesIngestor(cfg={
+        "polygon_api_key": "TEST_KEY",
+        "polygon_throttle_s": 0,
+        "polygon_retry_after_429_s": 0,
+    })
+    # 500 → no raise; counted in `failed` per existing contract.
+    result = ing.ingest_dates(
+        temp_db, run_id="r1",
+        dates=[date(2026, 5, 13)],
+        tickers=["AAPL"],
+    )
+    assert result["status"] == "ok"
+    assert result["per_date"]["2026-05-13"]["grouped_status"] == 500
+
+
 @rsps_lib.activate
 def test_ingest_default_uses_lookback_days(temp_db):
     """ingest() fans out to DEFAULT_LOOKBACK_DAYS grouped calls."""
