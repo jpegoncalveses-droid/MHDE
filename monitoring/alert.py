@@ -11,8 +11,10 @@ real sends during testing or manual one-off runs.
 Throttle / dedup (since 2026-05-13):
 
     On the 15-min cadence the same warn-level alert was firing on
-    every cycle. ``send_alert`` now persists the last-sent payload's
-    severity and SHA into ``monitor_alert_state`` (migration v10) and
+    every cycle. ``send_alert`` persists the last-sent payload's
+    severity and SHA into a JSON sidecar (``monitoring.alert_state_store``,
+    KI-150 fix — previously the DuckDB ``monitor_alert_state`` table,
+    which suffered writer-lock contention with the predict pipeline) and
     suppresses identical re-sends, with three escape valves:
 
       * payload SHA changed → send (the underlying state actually
@@ -38,6 +40,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Optional
+
+from monitoring import alert_state_store
 
 logger = logging.getLogger("mhde.monitoring.alert")
 
@@ -108,13 +112,6 @@ def _load_throttle_config() -> dict:
     return merged
 
 
-def _open_default_conn():
-    """Open a writable MHDE DuckDB connection using the project config."""
-    import duckdb
-    from storage.config import load_engine_config
-    return duckdb.connect(load_engine_config()["db_path"])
-
-
 def _payload_sha(result: MonitorResult) -> str:
     """Hash title + body only (metrics drift run-to-run and would defeat dedup)."""
     return hashlib.sha256(
@@ -122,44 +119,15 @@ def _payload_sha(result: MonitorResult) -> str:
     ).hexdigest()
 
 
-def _load_alert_state(conn, monitor: str) -> Optional[dict]:
-    """Return the persisted state row for ``monitor`` or ``None``."""
-    try:
-        row = conn.execute(
-            "SELECT last_payload_sha, last_severity, last_sent_at "
-            "FROM monitor_alert_state WHERE monitor = ?",
-            [monitor],
-        ).fetchone()
-    except Exception:
-        # Table not migrated yet — fail open so a stale DB doesn't silence alerts.
-        logger.exception("alert: monitor_alert_state read failed for %s", monitor)
-        return None
-    if row is None:
-        return None
-    return {
-        "last_payload_sha": row[0],
-        "last_severity": row[1],
-        "last_sent_at": row[2],
-    }
+def _load_alert_state(monitor: str, state_path: Optional[Path] = None) -> Optional[dict]:
+    """Return persisted state via the JSON sidecar, or ``None``."""
+    return alert_state_store.load_state(monitor, path=state_path)
 
 
-def _save_alert_state(conn, monitor: str, payload_sha: str,
-                      severity: str, sent_at: datetime) -> None:
-    try:
-        conn.execute(
-            """
-            INSERT INTO monitor_alert_state
-                (monitor, last_payload_sha, last_severity, last_sent_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT (monitor) DO UPDATE SET
-                last_payload_sha = excluded.last_payload_sha,
-                last_severity    = excluded.last_severity,
-                last_sent_at     = excluded.last_sent_at
-            """,
-            [monitor, payload_sha, severity, sent_at],
-        )
-    except Exception:
-        logger.exception("alert: monitor_alert_state write failed for %s", monitor)
+def _save_alert_state(monitor: str, payload_sha: str, severity: str,
+                      sent_at: datetime, state_path: Optional[Path] = None) -> None:
+    alert_state_store.save_state(monitor, payload_sha, severity, sent_at,
+                                 path=state_path)
 
 
 def _decide_send(state: Optional[dict], payload_sha: str, severity: str,
@@ -194,12 +162,15 @@ def _telegram_send(text: str) -> bool:
     return msg_id is not None
 
 
-def send_alert(result: MonitorResult, conn=None, now: Optional[datetime] = None) -> bool:
+def send_alert(result: MonitorResult, now: Optional[datetime] = None,
+               state_path: Optional[Path] = None) -> bool:
     """Send ``result`` to Telegram if alert-worthy *and* not throttled.
 
-    ``conn`` and ``now`` are injectable for tests; default to the project
-    DuckDB and current UTC. State is updated even under ``MONITORING_DRY_RUN``
-    so dry-run smoke tests can verify the throttle works.
+    ``now`` is injectable for tests; defaults to current UTC. ``state_path``
+    routes the throttle JSON sidecar to a test-local file; defaults to the
+    production location (``data/monitor_alert_state.json`` or the env
+    override). State is updated even under ``MONITORING_DRY_RUN`` so dry-run
+    smoke tests can verify the throttle works.
 
     Returns ``True`` if a real Telegram send completed, ``False`` otherwise
     (OK status without prior alert, throttled, dry-run, or send failure).
@@ -210,59 +181,44 @@ def send_alert(result: MonitorResult, conn=None, now: Optional[datetime] = None)
     enabled = bool(throttle.get("enabled", True))
     heartbeat_hours = float(throttle.get("heartbeat_hours", 24))
 
-    close_conn = False
-    if conn is None:
-        try:
-            conn = _open_default_conn()
-            close_conn = True
-        except Exception:
-            logger.exception("alert: could not open MHDE DB — bypassing throttle")
-            conn = None
+    state = _load_alert_state(result.monitor, state_path=state_path)
+    payload_sha = _payload_sha(result)
 
-    try:
-        state = _load_alert_state(conn, result.monitor) if conn is not None else None
-        payload_sha = _payload_sha(result)
-
-        if not result.is_alert_worthy():
-            # OK status — emit recovery only on transition out of warn/critical.
-            if state is not None and state.get("last_severity") in ("warn", "critical"):
-                recovery_text = (
-                    f"RECOVERED • MHDE monitor: {result.monitor}\n"
-                    f"\nstatus: OK (was {state['last_severity']})"
-                )
-                logger.warning("MONITOR RECOVERED — %s", result.monitor)
-                sent = _telegram_send(recovery_text)
-                if conn is not None:
-                    _save_alert_state(conn, result.monitor, payload_sha,
-                                      "info", now)
-                return sent
-            logger.info("monitor %s OK — no alert", result.monitor)
-            return False
-
-        # Alert-worthy result. Decide throttle.
-        if enabled and conn is not None:
-            should_send, reason = _decide_send(
-                state, payload_sha, result.severity, now, heartbeat_hours,
+    if not result.is_alert_worthy():
+        # OK status — emit recovery only on transition out of warn/critical.
+        if state is not None and state.get("last_severity") in ("warn", "critical"):
+            recovery_text = (
+                f"RECOVERED • MHDE monitor: {result.monitor}\n"
+                f"\nstatus: OK (was {state['last_severity']})"
             )
-            if not should_send:
-                logger.info("monitor %s throttled (%s)", result.monitor, reason)
-                return False
-            logger.info("monitor %s sending (%s)", result.monitor, reason)
+            logger.warning("MONITOR RECOVERED — %s", result.monitor)
+            sent = _telegram_send(recovery_text)
+            _save_alert_state(result.monitor, payload_sha, "info", now,
+                              state_path=state_path)
+            return sent
+        logger.info("monitor %s OK — no alert", result.monitor)
+        return False
 
-        payload = result.to_telegram_text()
-        logger.warning("MONITOR ALERT — %s\n%s", result.monitor, payload)
-        sent = _telegram_send(payload)
-        if conn is not None:
-            # Persist state on every send decision (incl. dry-run) so the
-            # next cycle sees the new baseline. _telegram_send's return only
-            # reflects network success; the throttle uses "we decided to
-            # send" semantics.
-            _save_alert_state(conn, result.monitor, payload_sha,
-                              result.severity, now)
-        return sent
-    finally:
-        if close_conn and conn is not None:
-            conn.close()
+    # Alert-worthy result. Decide throttle.
+    if enabled:
+        should_send, reason = _decide_send(
+            state, payload_sha, result.severity, now, heartbeat_hours,
+        )
+        if not should_send:
+            logger.info("monitor %s throttled (%s)", result.monitor, reason)
+            return False
+        logger.info("monitor %s sending (%s)", result.monitor, reason)
+
+    payload = result.to_telegram_text()
+    logger.warning("MONITOR ALERT — %s\n%s", result.monitor, payload)
+    sent = _telegram_send(payload)
+    # Persist state on every send decision (incl. dry-run) so the
+    # next cycle sees the new baseline. _telegram_send's return only
+    # reflects network success; the throttle uses "we decided to
+    # send" semantics.
+    _save_alert_state(result.monitor, payload_sha, result.severity, now,
+                      state_path=state_path)
+    return sent
 
 
 def send_text(text: str) -> bool:
