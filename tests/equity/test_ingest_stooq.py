@@ -214,8 +214,8 @@ def test_logs_source_run_on_success(conn):
 def test_polygon_prices_not_overwritten_by_stooq(conn):
     from ingestion.ingest_stooq import StooqPricesIngestor
 
-    # Use yesterday so this date is always within the 2-day freshness window
-    fresh_date = (date.today() - timedelta(days=1)).isoformat()
+    # Seed today's date so AAPL is "fresh" under the today-exact freshness rule.
+    fresh_date = date.today().isoformat()
     conn.execute(
         """INSERT INTO prices_daily (id, ticker, trade_date, close, source)
            VALUES (?, 'AAPL', ?, 999.0, 'polygon')""",
@@ -225,7 +225,7 @@ def test_polygon_prices_not_overwritten_by_stooq(conn):
                  content_type="text/csv", match_querystring=False)
 
     ingestor = StooqPricesIngestor({})
-    # AAPL already has a price within the freshness window — ingestor should skip it
+    # AAPL already has today's price — ingestor should skip it
     result = ingestor.ingest(conn, "run_conflict", ["AAPL"])
 
     close = conn.execute(
@@ -234,3 +234,132 @@ def test_polygon_prices_not_overwritten_by_stooq(conn):
     ).fetchone()[0]
     assert abs(close - 999.0) < 0.01, "Polygon price should not be overwritten"
     assert result["records"] == 0
+
+
+# ── ADR-030 regression: today-exact freshness, not "last N days" ──────────────
+
+
+def test_tickers_needing_prices_returns_universe_when_only_yesterday_in_db(conn):
+    """RED-pin for ADR-030 / KI-142.
+
+    Reproduces the post-2026-05-09 Polygon-grouped-daily failure mode: every
+    universe ticker has T-1 prices written by Polygon, none has T-0. Under the
+    pre-fix 2-day window, `_tickers_needing_prices` returned [] — Stooq stopped
+    fetching today's quotes. Contract after the fix: a ticker is "fresh" iff it
+    has a row for today exactly.
+    """
+    from ingestion.ingest_stooq import StooqPricesIngestor
+
+    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    tickers = ["AAPL", "MSFT", "NVDA"]
+    for tk in tickers:
+        conn.execute(
+            """INSERT INTO prices_daily (id, ticker, trade_date, close, source)
+               VALUES (?, ?, ?, 100.0, 'polygon')""",
+            [uuid.uuid4().hex[:16], tk, yesterday],
+        )
+
+    ingestor = StooqPricesIngestor({})
+    needing = ingestor._tickers_needing_prices(conn, tickers)
+    assert set(needing) == set(tickers), (
+        f"Expected all 3 universe tickers to be flagged as needing today's price; "
+        f"got {needing}. Yesterday's polygon row must not count as fresh."
+    )
+
+
+def test_tickers_needing_prices_skips_when_today_already_present(conn):
+    """Companion to the regression test: a ticker with today's row is fresh."""
+    from ingestion.ingest_stooq import StooqPricesIngestor
+
+    today = date.today().isoformat()
+    conn.execute(
+        """INSERT INTO prices_daily (id, ticker, trade_date, close, source)
+           VALUES (?, 'AAPL', ?, 100.0, 'polygon')""",
+        [uuid.uuid4().hex[:16], today],
+    )
+
+    ingestor = StooqPricesIngestor({})
+    needing = ingestor._tickers_needing_prices(conn, ["AAPL", "MSFT"])
+    assert needing == ["MSFT"]
+
+
+@rsps_lib.activate
+def test_ingest_fetches_today_when_universe_has_only_yesterday(conn):
+    """End-to-end pin for ADR-030: with universe rows for yesterday but not
+    today, ``ingest`` must call Stooq for the full universe and insert today's
+    quote. Under the pre-fix 2-day window, no HTTP call was made and no row was
+    inserted — exactly the production failure mode (Stooq line dropped from
+    ~517 rows to ~6 rows starting 2026-05-12).
+    """
+    from ingestion.ingest_stooq import StooqPricesIngestor
+
+    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    today = date.today().isoformat()
+    conn.execute(
+        """INSERT INTO prices_daily (id, ticker, trade_date, close, source)
+           VALUES (?, 'AAPL', ?, 200.0, 'polygon')""",
+        [uuid.uuid4().hex[:16], yesterday],
+    )
+
+    aapl_csv = _CSV_HEADER + _quote_row(
+        "AAPL", today, "201.0", "203.0", "199.5", "202.5", "12345678"
+    )
+    rsps_lib.add(rsps_lib.GET, _STOOQ_RE, body=aapl_csv, status=200,
+                 content_type="text/csv", match_querystring=False)
+
+    ingestor = StooqPricesIngestor({})
+    result = ingestor.ingest(conn, "run_today", ["AAPL"])
+
+    assert len(rsps_lib.calls) == 1, (
+        "Stooq must be called for AAPL — yesterday's polygon row is not 'fresh'."
+    )
+    assert result["records"] == 1
+
+    rows = conn.execute(
+        "SELECT trade_date, source, close FROM prices_daily "
+        "WHERE ticker='AAPL' ORDER BY trade_date"
+    ).fetchall()
+    assert len(rows) == 2, f"Expected polygon T-1 + stooq T-0; got {rows}"
+    assert str(rows[0][0]) == yesterday and rows[0][1] == "polygon"
+    assert str(rows[1][0]) == today and rows[1][1] == "stooq"
+    assert abs(rows[1][2] - 202.5) < 0.01
+
+
+@rsps_lib.activate
+def test_polygon_t1_does_not_short_circuit_stooq_t0(conn):
+    """Integration-shape pin for ADR-030 / KI-142: simulates the
+    Polygon→Stooq orchestration interaction that let the regression slip
+    through. Polygon writes T-1 rows for every universe ticker (the
+    grouped-daily endpoint's normal output at 23:15 UTC); the Stooq pass
+    must still fetch and write T-0 for those same tickers.
+    """
+    from ingestion.ingest_stooq import StooqPricesIngestor
+
+    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    today = date.today().isoformat()
+    universe = ["AAPL", "MSFT", "NVDA", "GOOG", "AMZN"]
+    for tk in universe:
+        conn.execute(
+            """INSERT INTO prices_daily (id, ticker, trade_date, close, source)
+               VALUES (?, ?, ?, 100.0, 'polygon')""",
+            [uuid.uuid4().hex[:16], tk, yesterday],
+        )
+
+    csv_body = _CSV_HEADER + "".join(
+        _quote_row(tk, today, "100", "101", "99", "100.5", "1000")
+        for tk in universe
+    )
+    rsps_lib.add(rsps_lib.GET, _STOOQ_RE, body=csv_body, status=200,
+                 content_type="text/csv", match_querystring=False)
+
+    ingestor = StooqPricesIngestor({})
+    result = ingestor.ingest(conn, "run_orch", universe)
+
+    assert result["records"] == len(universe)
+    n_today = conn.execute(
+        "SELECT COUNT(*) FROM prices_daily WHERE trade_date = ? AND source = 'stooq'",
+        [today],
+    ).fetchone()[0]
+    assert n_today == len(universe), (
+        f"Expected stooq to write T-0 for all {len(universe)} universe tickers; got {n_today}"
+    )

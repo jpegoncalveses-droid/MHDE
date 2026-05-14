@@ -6,6 +6,162 @@ are at the top.
 
 ---
 
+## 2026-05-14 — Equity Stooq freshness fix: today-exact match restores T-1 features after the Polygon grouped-daily switch (ADR-030 / KI-142)
+
+**Branch:** `fix-equity-stooq-freshness` (committed + pushed;
+**STOPPED for operator review/merge** — push-only per
+branch-handoff pattern, operator opens the PR). Single-repo (MHDE),
+no engine repo change, no schema change.
+
+**Trigger.** Per-pipeline equity monitor (ADR-026, deployed
+2026-05-12) flagged `Feature pipeline (ml_features)` 🔴 two days
+running:
+```
+🔴 Equity Pipeline 2026-05-13 01:00 UTC
+🔴 Feature pipeline (ml_features) — MAX(trade_date)=2026-05-11 (311 rows) — expected features for 2026-05-12
+🔴 Equity Pipeline 2026-05-14 01:00 UTC
+🔴 Feature pipeline (ml_features) — MAX(trade_date)=2026-05-12 (311 rows) — expected features for 2026-05-13
+```
+Operator triage handed me a read-only investigation; this branch is
+the follow-on fix.
+
+**Investigation findings (read-only phase).**
+- `mhde-predict.service` (`/etc/systemd/system/`, system-level) was
+  running on schedule (00:15 UTC daily, exit 0, both 05-13 and 05-14)
+  with the chained `ml backfill-features → ml predict` ExecStart pair
+  intact and the timer enabled. No service regression.
+- The cadence regression was real and pinpointable. `equity_predict.log`
+  showed `Scoring universe for {trade_date}` matching `prices_daily latest`
+  (T-1) every day from system inception through 2026-05-12, then
+  silently slipping to T-2 starting 2026-05-13 (`prices_daily latest=
+  2026-05-12, Scoring universe for 2026-05-11` and the analogous shift
+  the next morning).
+- Root cause traced upstream to `ingestion/ingest_stooq.py:_tickers_needing_prices`
+  and its `trade_date >= today - 2 days` predicate. The predicate had
+  worked because the pre-`473b92a` per-ticker Polygon path was rate-
+  limited and routinely left every universe ticker without a T-1 row
+  by the time Stooq ran; Stooq's broad sweep then patched today over
+  the gap. Commit `473b92a` (2026-05-09) switched to the grouped-daily
+  endpoint, which serves T-1 reliably at 23:15 UTC (and 403s on T-0
+  because Polygon hasn't published the same UTC day yet). The new
+  steady state — every universe ticker has a T-1 row, none has a T-0
+  — silently satisfied the 2-day predicate, Stooq's missing-list went
+  to ~3 ADRs/night, and `prices_daily` for T-0 stayed at ~4 macro
+  rows. `ml backfill-features` therefore couldn't write a feature
+  row for T-0; `ml predict` fell back to `MAX(trade_date)` = T-1 in
+  `ml_features`; the prediction surface lagged a day; the new monitor
+  caught it.
+- Stooq production-log evidence across three nights:
+  `Stooq: 517 rows for 517/520 tickers` (2026-05-11 23:15, pre-grouped),
+  `Stooq: 2 rows for 2/3 tickers` (2026-05-12 23:15, post-grouped),
+  `Stooq: 6 rows for 6/6 tickers` (2026-05-13 23:15).
+- Confirmed live DB state via read-only diagnostic
+  `.claude/local_scripts/diag_equity_pipeline_state.py`:
+  `prices_daily 2026-05-13: 4 tickers (HTHIY, IFNNY, RSHGY from stooq;
+  SUNB from yahoo); ml_features MAX(trade_date) = 2026-05-12 (311
+  rows); 0 universe tickers with prices for 2026-05-13`.
+
+**Decision.** Tighten Stooq's freshness predicate to `trade_date =
+today` exactly. Aligns the freshness check with what Stooq's `/q/l/`
+endpoint actually returns (today's quote), eliminates the false-
+positive "fresh" reading that yesterday's polygon row produced under
+the 2-day window, and restores the pre-2026-05-09 universe-sweep
+behaviour that gave T-0 prices. ADR-030 records the rationale,
+alternatives considered (per-ticker polygon same-day pass —
+incompatible with free-tier rate limits; daily-radar reschedule to
+~10:00 UTC — operationally invasive; pipeline-monitor expectation
+relaxation — hides the underlying data regression), and trade-offs.
+
+**What shipped.**
+- `ingestion/ingest_stooq.py` —
+  `_tickers_needing_prices(conn, tickers)` rewritten to query
+  `WHERE trade_date = ?` with today's UTC date as the parameter.
+  `_FRESHNESS_DAYS = 2` constant deleted; `timedelta` import dropped
+  (no other use in the file). Inline body comment cites ADR-030 +
+  KI-142 so a future reader does not "widen this back to 2 days"
+  without re-reading the rationale.
+- `tests/equity/test_ingest_stooq.py` — 4 new pinned regressions:
+  1. `test_tickers_needing_prices_returns_universe_when_only_yesterday_in_db`
+     — RED-pin, unit-level: universe with only T-1 rows must come
+     back as needing today's price.
+  2. `test_tickers_needing_prices_skips_when_today_already_present`
+     — forward-pin: ticker with today's row is fresh.
+  3. `test_ingest_fetches_today_when_universe_has_only_yesterday`
+     — RED-pin, end-to-end: HTTP call is made and row inserted with
+     `trade_date = today, source = 'stooq'`.
+  4. `test_polygon_t1_does_not_short_circuit_stooq_t0`
+     — orchestration-shape integration test, the gap the original
+     test suite missed: 5-ticker universe with T-1 polygon rows,
+     asserts Stooq writes T-0 for all 5.
+  Existing `test_polygon_prices_not_overwritten_by_stooq` re-seeded
+  to use today's date so the PK-overwrite guard remains meaningful
+  under the new contract.
+- `DECISIONS.md` — ADR-030 entry: context (why the 2-day window
+  worked pre-grouped; why it broke post-grouped), decision, four
+  alternatives considered with rationale for each rejection, trade-off
+  accepted (Stooq HTTP load returns to pre-2026-05-09 levels),
+  files of record, reversibility.
+- `KNOWN_ISSUES.md` — KI-142 added (opened + resolved 2026-05-14).
+  Header sentence + observation count unchanged (KI-142 closed in the
+  same session, like KI-138).
+
+**Verification (L5).**
+- RED: `.venv/bin/python -m pytest tests/equity/test_ingest_stooq.py -v`
+  before fix → 3 of 4 new tests fail with the expected messages
+  quoted in their assertion strings (`assert set() == {'AAPL','MSFT',
+  'NVDA'}`, `assert 0 == 1` for the HTTP call count, `assert 0 == 5`
+  for the orchestration shape). Forward-pin (test 2) green under
+  both code paths, as designed.
+- GREEN (post-fix): same command → **15 passed**.
+- Full equity suite (`.venv/bin/python -m pytest tests/equity/
+  --ignore=tests/equity/test_ml_predict.py -q`) → **770 passed, 2
+  failed**. Both failures (`test_smoke_test_fails_without_active_models`,
+  `test_smoke_test_flags_missing_joblib`) confirmed identically failing
+  on master via `git stash` baseline; both fail on `import joblib` in
+  `monitoring/smoke_test.py:34` — pre-existing `.venv` environment
+  issue, unrelated to this branch. `test_ml_predict.py` skipped
+  for the same `joblib` reason.
+- Regression suite (`.venv/bin/python -m pytest tests/regression/
+  -q`) → **30 passed, 3 failed**: `test_no_module_level_connection`
+  (KI-105), `test_active_model_paths_resolve` (joblib-related),
+  `test_repo_vs_deployed_unit_parity` (KI-112) — all pre-existing on
+  master.
+- `venv/bin/python -m py_compile` on the touched ingestion file →
+  clean.
+
+**Files of record.** `ingestion/ingest_stooq.py`,
+`tests/equity/test_ingest_stooq.py`, `DECISIONS.md` (ADR-030),
+`KNOWN_ISSUES.md` (KI-142 opened + resolved), this log. No
+CLAUDE.md change. No CHANGELOG.md in repo (matches prior session
+pattern). Diagnostic script
+`.claude/local_scripts/diag_equity_pipeline_state.py` is gitignored
+and re-runnable for the operator.
+
+**Pending operator action.**
+1. Review the branch + the ADR-030 rationale (especially the four
+   alternatives considered).
+2. Merge `fix-equity-stooq-freshness`. No deploy step needed beyond
+   the merge — the next `mhde-daily-analysis.service` fire (23:15 UTC)
+   picks up the new code automatically.
+3. Watch the 23:15 UTC daily-radar log: the Stooq line should jump
+   from `~6 rows / 6/6 tickers` back to `500+ rows / 500+/500+
+   tickers`. The next 00:15 UTC `mhde-predict.service` run should log
+   `Scoring universe for {T-1}` matching `prices_daily latest` (i.e.
+   today's expected target). The 01:00 UTC equity pipeline-monitor
+   fire should flip 🟢 on the Feature pipeline step.
+4. Historical T-2 prediction rows (2026-05-13, 2026-05-14) are not
+   retroactively rewritten — the prediction surface advances cleanly
+   from the next predict run forward.
+
+**Open follow-ups.** None tracked here. The orchestration-shape gap
+that let the original regression slip through is now pinned by
+`test_polygon_t1_does_not_short_circuit_stooq_t0`. ADR-030 explicitly
+notes that the per-ingestor test suites had no test exercising the
+post-Polygon, pre-Stooq DB state where the failure mode lived;
+adding one is the durable fix, not an open follow-up.
+
+---
+
 ## 2026-05-14 — Pipeline_execution monitor false-positive fix: crypto recency budget 27h → 51h (ADR-029 / KI-141)
 
 **Branch:** `fix-pipeline-execution-crypto-threshold` (committed +

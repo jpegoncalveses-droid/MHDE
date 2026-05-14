@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 
 import requests
 
@@ -12,7 +12,6 @@ from ingestion.base_ingestor import BaseIngestor
 logger = logging.getLogger("mhde.ingestion.stooq")
 
 _QUOTE_URL = "https://stooq.com/q/l/"
-_FRESHNESS_DAYS = 2
 _BATCH_SIZE = 50
 _REQUEST_DELAY = 0.15  # 150ms between batches — polite to Stooq
 
@@ -29,12 +28,20 @@ class StooqPricesIngestor(BaseIngestor):
     source_status = "experimental"
 
     def _tickers_needing_prices(self, conn, tickers: list[str]) -> list[str]:
-        threshold = (date.today() - timedelta(days=_FRESHNESS_DAYS)).isoformat()
+        # Today-exact match. Stooq's /q/l/ endpoint returns today's quote, so
+        # "fresh" means "already has today's row". A 2-day window here used to
+        # work when Polygon was rate-limited and could only deliver same-evening
+        # prices via Stooq; after the 2026-05-09 grouped-daily switch (ADR-030)
+        # Polygon reliably writes T-1, which falsely satisfied a "within 2 days"
+        # check and short-circuited Stooq's T-0 fill — leaving the universe
+        # without today's prices and the next morning's ml_features stuck at
+        # T-1. See ADR-030 / KI-142.
+        today = date.today().isoformat()
         existing = {
             r[0]
             for r in conn.execute(
-                "SELECT DISTINCT ticker FROM prices_daily WHERE trade_date >= ?",
-                [threshold],
+                "SELECT DISTINCT ticker FROM prices_daily WHERE trade_date = ?",
+                [today],
             ).fetchall()
         }
         return [t for t in tickers if t not in existing]

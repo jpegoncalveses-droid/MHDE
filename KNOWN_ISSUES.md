@@ -39,6 +39,21 @@ JSON to today UTC (the trading date), add an informational
 date vs the trade date — is the deferred follow-up. See "Recently
 resolved" below and ADR-025.
 
+**KI-142** opened + resolved 2026-05-14 — the equity Stooq fallback's
+2-day freshness window silently broke after the 2026-05-09 Polygon
+grouped-daily switch (commit `473b92a`). With Polygon now reliably
+writing T-1 prices the same evening, every universe ticker satisfied
+"has prices in last 2 days" and Stooq stopped fetching today's quotes
+(production logs: 517 → 2 → 6 rows on 05-11 → 05-12 → 05-13). The
+universe ended each daily-radar run without T-0 prices,
+`ml backfill-features` could only advance to T-1, and
+`ml_predictions.prediction_date` slipped from T-1 to T-2. Fix:
+`ingestion/ingest_stooq.py:_tickers_needing_prices` now requires
+`trade_date = today` exactly (matches the `/q/l/` endpoint's actual
+data semantic). Pinned by 4 regression tests including an
+orchestration-shape integration test. See "Recently resolved" below
+and ADR-030.
+
 **KI-135** opened + resolved 2026-05-10 — crypto retrain
 auto-promoted new models without validation; a regressed model could
 have silently entered Phase E paper trading. Fix: validation gate in
@@ -488,6 +503,110 @@ underlying constraints (trading-calendar helper, engine entry-reason recording,
 RECONCILE-001) are addressed.
 
 ## Recently resolved (post-Session-7)
+
+### KI-142 — Stooq freshness window short-circuited T-0 fill after the Polygon grouped-daily switch (resolved 2026-05-14)
+
+**Symptom (before fix).** Two days running (2026-05-13 and 2026-05-14)
+the per-pipeline equity monitor (ADR-026) flagged `Feature pipeline
+(ml_features)` 🔴 — `MAX(trade_date)=2026-05-12 (311 rows) — expected
+features for 2026-05-13`. `mhde-predict.service` itself was firing on
+schedule (00:15 UTC daily, exit 0, `ml backfill-features → ml predict`
+chained as designed); the predict log showed `Scoring universe for
+2026-05-12` with a healthy `Loaded features for 311 tickers`. The
+problem was upstream: `prices_daily` for 2026-05-13 had only 4 rows
+(three foreign ADRs from Stooq, one macro from Yahoo) — no rows for
+the active universe — so `ml backfill-features` could not write a
+feature row for trade_date 2026-05-13 and `ml predict` correctly
+fell back to the latest universe-complete date (2026-05-12, T-2).
+
+The Stooq side told the same story across three nightly runs of
+`mhde-daily-analysis.service` (23:15 UTC):
+
+```
+2026-05-11 23:15  Stooq: 517 rows inserted for 517/520 tickers   ← pre-grouped
+2026-05-12 23:15  Stooq:   2 rows inserted for 2/3   tickers     ← post-grouped
+2026-05-13 23:15  Stooq:   6 rows inserted for 6/6   tickers
+```
+
+**Root cause.** Commit `473b92a` (2026-05-09) replaced the per-ticker
+Polygon ingestor with the grouped-daily endpoint, which serves T-1 the
+same evening at 23:15 UTC for the entire ~12k-ticker US stock list and
+403s on T-0 (Polygon hasn't published the same UTC day yet). Every
+universe ticker gained a T-1 row in `prices_daily` immediately after
+Polygon's pass — and that satisfied
+`ingestion/ingest_stooq.py:_tickers_needing_prices`, which used
+`trade_date >= today - 2 days` as its "fresh" predicate. Stooq's
+fallback consequently dropped from a 504-ticker universe sweep to
+2-3 ADR fills per night.
+
+The end-to-end chain looked healthy at every layer — Polygon ingested
+504 tickers, Stooq exited "ok", `mhde-predict.service` exited 0, the
+predict log line `Loaded features for 311 tickers` was present — and
+yet the production output silently shifted from T-1 to T-2 features
+because no surface in the ingestion stack distinguished "Polygon wrote
+yesterday's prices" from "today's prices are now in the table". The
+gap was visible only by reading `MAX(trade_date)` against an external
+expectation, which is exactly what the per-pipeline monitor (deployed
+2026-05-12) started doing.
+
+**Fix.** `ingestion/ingest_stooq.py:_tickers_needing_prices` rewritten
+to compare `trade_date = today` exactly. Yesterday's polygon row no
+longer counts as "fresh" for the purpose of deciding whether to call
+Stooq. This restores the pre-2026-05-09 behaviour (Stooq sweeps the
+full universe every nightly run) and aligns the freshness predicate
+with what the Stooq `/q/l/` endpoint actually returns (today's
+quote). `_FRESHNESS_DAYS` constant deleted.
+
+**Pinned by.** 4 regressions in `tests/equity/test_ingest_stooq.py`:
+- `test_tickers_needing_prices_returns_universe_when_only_yesterday_in_db`
+  — unit-level: a universe with only T-1 rows must come back as
+  needing today's price.
+- `test_tickers_needing_prices_skips_when_today_already_present` —
+  forward-pin: a ticker with today's row is fresh and not re-fetched.
+- `test_ingest_fetches_today_when_universe_has_only_yesterday` —
+  end-to-end pin: with T-1 polygon rows present, `ingest()` makes the
+  HTTP call to Stooq and inserts a T-0 row.
+- `test_polygon_t1_does_not_short_circuit_stooq_t0` —
+  orchestration-shape integration test (the gap that originally let
+  the regression slip through the test suite): 5-ticker universe with
+  T-1 polygon rows, asserts Stooq writes T-0 for all 5.
+
+`test_polygon_prices_not_overwritten_by_stooq` re-seeded to use today's
+date so it remains a meaningful PK-overwrite guard under the new
+contract.
+
+**Verification.**
+- RED: `.venv/bin/python -m pytest tests/equity/test_ingest_stooq.py -v`
+  before fix → 3 of 4 new tests fail with the expected messages
+  (`assert set() == {'AAPL','MSFT','NVDA'}`, `assert 0 == 1`, `assert 0 == 5`).
+- GREEN (post-fix): same command → **15 passed**.
+- Full equity suite (excluding the pre-existing
+  `test_ml_predict.py` collection error from the missing `joblib` in
+  `.venv`): **770 passed, 2 failed** — both failures
+  (`test_smoke_test_fails_without_active_models`,
+  `test_smoke_test_flags_missing_joblib`) confirmed identically
+  failing on master via `git stash` baseline; both fail on `import
+  joblib` in `monitoring/smoke_test.py`, unrelated to this branch.
+- Regression suite: **30 passed, 3 failed** — all three
+  (`test_no_module_level_connection` KI-105,
+  `test_active_model_paths_resolve`,
+  `test_repo_vs_deployed_unit_parity` KI-112) pre-existing on master.
+
+**Operator follow-up (post-merge).** No deploy step beyond merging.
+The next `mhde-daily-analysis.service` fire (23:15 UTC) should show
+the Stooq line jump back to ~500 rows for ~500/500 tickers. The next
+morning's `mhde-predict.service` should log `Scoring universe for
+{T-1}` matching `prices_daily latest` (the existing T-2 lag in
+`ml_predictions` will close on its own from the next predict run
+forward; historical rows are not retroactively rewritten — the
+prediction surface simply advances cleanly going forward). The
+per-pipeline equity monitor's 01:00 UTC fire should flip 🟢.
+
+**Open follow-up.** None tracked here. ADR-030 records the
+freshness-contract rationale; the gap that let it slip past the
+existing per-ingestor test suite (no test exercised the
+"polygon-just-wrote-T-1-then-stooq-runs" sequencing) is now closed
+by `test_polygon_t1_does_not_short_circuit_stooq_t0`.
 
 ### KI-138 — Cap-at-today-1 OHLCV ingestion broke the prediction-export staleness gate (option A resolved 2026-05-12)
 
