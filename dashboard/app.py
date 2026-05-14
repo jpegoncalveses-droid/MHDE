@@ -11,6 +11,7 @@ import streamlit as st
 
 from dashboard.auth import require_auth
 from dashboard.services.maturity import (
+    format_equity_t2_banner,
     format_pct_move,
     format_time_remaining,
     pct_move_equity_or_crypto,
@@ -87,6 +88,14 @@ tab_equities, tab_crypto, tab_fx, tab_paper = st.tabs(
 conn = _open_conn()
 with tab_equities:
     st.title("ML Predictions")
+    st.caption(
+        "Equity predictions run on a **T-2 cadence**: free-tier Polygon "
+        "delays the current-day grouped-daily endpoint by ≥2 trading days, "
+        "so each scoring run uses the most recent fully-covered feature "
+        "snapshot. See `docs/EQUITY_WORKSTREAM_PAUSED.md` for the "
+        "architectural decision and the path to T-0 if/when paper-trading "
+        "calibration justifies a paid data tier."
+    )
 
     # --- Health Checks Banner ---
     with st.expander("System Health", expanded=False):
@@ -137,7 +146,16 @@ with tab_equities:
                 "Prediction date",
                 available_dates,
                 format_func=lambda d: d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d),
+                help=(
+                    "Dates available in ml_predictions. Equity cadence is "
+                    "T-2 (see banner below)."
+                ),
             )
+
+            st.markdown(format_equity_t2_banner(
+                prediction_date=selected_date,
+                today=datetime.now(timezone.utc).date(),
+            ))
 
             # --- Load predictions for selected date ---
             preds_df = get_equity_predictions(conn, selected_date)
@@ -202,7 +220,9 @@ with tab_equities:
                     filtered = filtered[filtered["market_cap_bucket"] == sel_cap]
 
             # --- Main predictions table ---
-            st.subheader(f"Predictions ({len(filtered)} shown)")
+            st.subheader(
+                f"Predictions for {selected_date} ({len(filtered)} shown)"
+            )
 
             if filtered.empty:
                 st.info("No predictions match current filters.")

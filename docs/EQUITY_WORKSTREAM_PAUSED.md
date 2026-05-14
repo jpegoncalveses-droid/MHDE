@@ -60,70 +60,70 @@ is made.
   - `data/processed/finding3_ml_pipeline_gap_root_cause.md`
   - `data/processed/stooq_t0_coverage_audit.md`
 
-## What's NOT done — resumption queue (in order)
+## Resumption queue (in order)
 
-### 1. Run cross-asset backfill
+### 1. Run cross-asset backfill — ✅ COMPLETE 2026-05-14
 
-Script ready at `.claude/local_scripts/backfill_cross_asset_2026-05-05.py`
-(local-only, gitignored). Invokes `ReferenceTickersIngestor.ingest()`
-with a 1y window; ON CONFLICT preserves any prior manual bootstrap
-rows. Also need a FRED backfill for DGS2 + VIXCLS — easiest path is
-`venv/bin/python main.py ingest fred` which runs only the FRED
-ingestor and writes DGS2 + VIXCLS observations under the extended
-`_SERIES`.
+Shipped on branch `fix-vix-symbol-and-macro-freshness` (merge `75ec5da`).
+Backfill ran via `.claude/local_scripts/backfill_cross_asset_2026-05-05.py`
++ `venv/bin/python main.py ingest fred`. Verification surfaced and
+fixed a Yahoo symbol bug: bare `VIX` resolved to a dormant
+mutual-fund placeholder, not CBOE VIX. Fix translates ticker → Yahoo
+symbol at the API boundary (`_YAHOO_SYMBOL = {"VIX": "^VIX"}`).
+Added `check_macro_series_freshness()` covering DGS10/DGS2/VIXCLS to
+close the symmetric blind spot.
 
-**Estimated effort:** 30 min.
+### 2. Verify backfill post-state — ✅ COMPLETE 2026-05-14
 
-### 2. Verify backfill post-state
+Folded into Step 1's branch. Post-state: all 13 reference tickers
+T-0 fresh; DGS2 + VIXCLS T-1 fresh in `macro_series`;
+`check_cross_asset_freshness()` and `check_macro_series_freshness()`
+both pass.
 
-- `health/ml_checks.py:check_cross_asset_freshness()` returns
-  `status=pass`.
-- `prices_daily` latest `trade_date` per source for SPY, VIX, all 11
-  sector ETFs is T-1 or T-0 (not 2026-05-04/05).
-- `macro_series` populated for `DGS2` (was 13d stale) and `VIXCLS`
-  (was absent).
+### 3. Fix KI-149 (silent T-2 skip) — ✅ COMPLETE 2026-05-14
 
-### 3. Fix KI-149 (silent T-2 skip)
+Shipped on branch `fix-ki149-honest-equity-freshness` (merge `a75efc5`).
+Three-layered fix in single branch:
 
-The smallest fix that closes the silent-skip is the two-part change in
-[[KI-149]]'s resolution paths:
+- `pipelines/freshness.py:check_equity_freshness` — coverage-aware
+  (latest trade_date row count must be ≥ 50% of mean daily count over
+  prior 30 trade dates); `FreshnessReport` extended with `reason`,
+  `coverage_row_count`, `coverage_expected_min`.
+- `ml/predict.py:score_universe` — `StaleFeaturesError` cross-check
+  when `MAX(ml_features.trade_date) < MAX(prices_daily.trade_date)`;
+  `--allow-stale-features` CLI flag for the soft-mode backfill case.
+- `ingestion/ingest_prices.py:PricesIngestor.ingest_dates` —
+  `IngestionError` raised post-loop when Polygon grouped returns 403
+  with `in_universe=0`, naming the affected date(s). Surviving non-403
+  dates are persisted before the raise.
 
-- Tighten `pipelines/freshness.py:67` to require row-count coverage
-  for the latest date (e.g. ≥ 50% of the 30d-window ml_features
-  ticker count), not just `MAX(trade_date)`.
-- Add a cross-check in `ml/predict.py:93-95`: when
-  `MAX(ml_features.trade_date) < MAX(prices_daily.trade_date)`, log
-  `WARNING` so the divergence is visible in
-  `data/logs/equity_predict.log`.
+10 new tests (3 freshness + 4 predict + 3 ingest); 880 tests pass
+across equity + integration, 0 regressions.
 
-Single branch, single concern. Compatible with the T-2 honest
-direction — the warning labels the prediction as stale, doesn't change
-which date is scored.
+### 4. Fix KI-150 (broken monitor services) — ✅ COMPLETE 2026-05-14
 
-**Estimated effort:** 1–2 hr.
+Shipped on branch `fix-ki150-monitor-services` (merge `f8762d7`).
 
-### 4. Fix KI-150 (broken monitor services)
+Phase 1 investigation surfaced that the original KI-150 diagnosis
+mis-attributed `mhde-equity-pipeline-monitor.service` exit-1 to a
+service crash. Local dry-run confirmed exit-1 is by-design RED signal
+per `monitoring/pipeline_monitor/daily_runner.py:142`. The
+operator-clarity gap (`systemctl status` reporting `Active: failed`
+indistinguishably from a real crash) is filed as [[KI-153]] for a
+later session.
 
-Three services failing simultaneously:
+Parts 2 + 3 (data-quality + pipeline-execution monitors bypassing
+their alert path on DuckDB lock contention) were the real bug. The
+failing path was `monitoring/alert.py:_open_default_conn`, which
+opened a writable DuckDB connection to persist `monitor_alert_state`.
+Fixed by moving throttle state to a JSON sidecar
+(`monitoring/alert_state_store.py`, `fcntl.flock`-serialized RMW).
+`send_alert` no longer depends on DuckDB writer availability. New
+regression test reproduces the failure mode under a real DuckDB
+writer-lock and asserts state persists + Telegram fires.
 
-- `mhde-equity-pipeline-monitor.service` — exit-1 every daily fire
-  since 2026-05-14 01:00 UTC. Most likely a deterministic failure
-  inside `main.py monitor equity-pipeline`. Reproduce interactively,
-  capture traceback, fix.
-- `mhde-monitor-data-quality.service` + `mhde-monitor-pipeline.service`
-  — exit-0 but log shows
-  `_duckdb.IOException: Could not set lock on file …` in a loop,
-  followed by `alert: could not open MHDE DB — bypassing throttle`.
-  Open the monitor connection with `read_only=True` (these monitors
-  only read tables); move alert-throttling state off DuckDB to a
-  JSON-on-disk sidecar so the alert path doesn't need the write lock.
-
-Once green, `check_cross_asset_freshness()` (already shipped in
-`feat-cross-asset-ingestion`) becomes the alert path for [[KI-149]]
-and Finding 1's gap class.
-
-**Estimated effort:** 2–4 hr depending on root cause of the
-equity-pipeline-monitor exit-1.
+138 monitoring tests pass; full equity + integration regression
+clean.
 
 ### 5. Update dashboard to advertise T-2 honestly
 
