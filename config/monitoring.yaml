@@ -20,6 +20,8 @@ paper_trading_drift:
   strategy_baselines:
     - date: "2026-05-12"
       reason: "KI-138 OHLCV repair landed 2026-05-11; pre-baseline trades used corrupted prices"
+    - date: "2026-05-14"
+      reason: "Variant D filter shipped: added ret5 < -0.30 short-window momentum exclusion to post-parabolic gate (Rule B). Strategy character changes from this date forward."
 
 alert_throttle:
   enabled: true

@@ -240,9 +240,12 @@ CREATE TABLE IF NOT EXISTS phase0_milestones (
 # Audit log of coins suppressed by the post-parabolic exclusion filter
 # (crypto/ml/postparabolic_filter.py) at prediction-export time. One row per
 # (export_date, symbol, model_id); UPSERTed so a re-run of the export for the
-# same date is idempotent. dd90 = drawdown_from_90d_high, ret60 = return_60d
-# (the feature values that tripped the gate); raw_probability = the model's
-# calibrated probability before suppression. See ADR in DECISIONS.md.
+# same date is idempotent. dd90 = drawdown_from_90d_high, ret60 = return_60d,
+# ret5 = return_5d (the feature values that tripped each rule); raw_probability
+# = the model's calibrated probability before suppression. ``reason`` records
+# which rule(s) fired — ``post_parabolic`` / ``short_momentum`` /
+# ``post_parabolic_and_short_momentum`` (the ret5 column was added in
+# ADR-028 alongside Rule B). See ADR-021 + ADR-028 in DECISIONS.md.
 SCHEMA_CRYPTO_SIGNAL_EXCLUSIONS = """
 CREATE TABLE IF NOT EXISTS crypto_signal_exclusions (
     export_date DATE NOT NULL,
@@ -251,11 +254,19 @@ CREATE TABLE IF NOT EXISTS crypto_signal_exclusions (
     raw_probability DOUBLE,
     dd90 DOUBLE,
     ret60 DOUBLE,
+    ret5 DOUBLE,
     reason VARCHAR,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (export_date, symbol, model_id)
 );
 """
+
+# Idempotent migration for the ADR-028 ``ret5`` column — applied after
+# create_all_tables so an existing copy of the table picks the column up.
+_CRYPTO_SIGNAL_EXCLUSIONS_MIGRATIONS = [
+    "ALTER TABLE crypto_signal_exclusions "
+    "ADD COLUMN IF NOT EXISTS ret5 DOUBLE",
+]
 
 ALL_SCHEMAS = [
     SCHEMA_CRYPTO_PRICES_DAILY,
@@ -278,4 +289,6 @@ def create_all_tables(conn):
     for stmt in _CRYPTO_ML_LABELS_MIGRATIONS:
         conn.execute(stmt)
     for stmt in _CRYPTO_ML_MODEL_RUNS_MIGRATIONS:
+        conn.execute(stmt)
+    for stmt in _CRYPTO_SIGNAL_EXCLUSIONS_MIGRATIONS:
         conn.execute(stmt)

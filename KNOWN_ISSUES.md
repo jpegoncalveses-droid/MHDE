@@ -1,7 +1,7 @@
 # Known Issues
 
-**9 open observations** (KI-122, KI-123, KI-126, KI-131, KI-132,
-KI-134, KI-136, KI-137, KI-139). KI-122/123 are cosmetic; KI-126 is a future
+**10 open observations** (KI-122, KI-123, KI-126, KI-131, KI-132,
+KI-134, KI-136, KI-137, KI-139, KI-140). KI-122/123 are cosmetic; KI-126 is a future
 Phase 0 enhancement deferred until weekly reliability snapshots
 accumulate; KI-131 is a low-priority single-day production-model
 row-count dip; KI-132 is a dashboard-deployment-process gap (no
@@ -12,12 +12,15 @@ planned "Gap 2.5" follow-up — the paper-trading drift monitor's
 P&L-band / drawdown / monthly arms, deferred until the engine's
 `daily_pnl` table starts filling (blocked on engine-side RECONCILE-001);
 KI-137 is the crypto post-parabolic re-entry bias — *mitigated* by the
-new exclusion filter (ADR-021) but the model-label root cause is the
-open follow-up; KI-139 catalogs the per-pipeline monitor's v1 scope cuts
-(no auto-remediation, coarse equity-dashboard mtime check, no engine-side
-"why 0 positions" reason, reconcile timer unchecked — ADR-026). None
-requires a hot fix — all tracked so a future session triages deliberately
-rather than letting them rot in the working tree.
+exclusion filter (ADR-021 + ADR-028) but the model-label root cause is
+the open follow-up; KI-139 catalogs the per-pipeline monitor's v1 scope
+cuts (no auto-remediation, coarse equity-dashboard mtime check, no
+engine-side "why 0 positions" reason, reconcile timer unchecked —
+ADR-026); KI-140 is the 4USDT-class deep-drawdown failure pattern,
+characterized but not addressable by the current `should_exclude` shape
+(tested + rejected as Variant E). None requires a hot fix — all tracked
+so a future session triages deliberately rather than letting them rot in
+the working tree.
 
 **KI-138** opened + resolved (option A) 2026-05-12 — the cap-at-today-1
 OHLCV ingestion fix (commit 8f9d707) made `MAX(trade_date)` in
@@ -311,23 +314,80 @@ for weeks after a top. So the probability is "honest" w.r.t. its
 objective; the objective is just the wrong one for a risk-aware entry
 signal.
 
-**Mitigation (shipped).** Post-parabolic exclusion filter
-(`crypto/ml/postparabolic_filter.py`, branch
-`feat-crypto-postparabolic-filter`, ADR-021): a deterministic hard gate
-in the prediction-export step drops a coin from the daily export iff
-`drawdown_from_90d_high < -0.20` **and** `return_60d > 2.0`. The raw
-signal stays in `crypto_ml_predictions`; exclusions are recorded in
-`crypto_signal_exclusions` and logged. This suppresses the *symptom*
-before order entry; it does not change the model.
+**Mitigation (shipped, two rounds).** Post-parabolic exclusion filter
+(`crypto/ml/postparabolic_filter.py`):
+- **v1 (ADR-021, branch `feat-crypto-postparabolic-filter`, 2026-05-11)** —
+  Rule A: drop a coin iff `drawdown_from_90d_high < -0.20` **and**
+  `return_60d > 2.0`. Targets the SKYAI-class (still-parabolic +
+  just-starting-to-crash).
+- **v2 (ADR-028, branch `feat-postparabolic-add-ret5-filter`, 2026-05-14)** —
+  added Rule B: drop a coin iff `return_5d < -0.30`, OR-combined with
+  Rule A. Targets the SWARMSUSDT-class (acute short-window weakness).
+  Backtest: Sharpe +0.18, max DD unchanged, cumRet -2% relative; 30% of
+  deep losses fit the class.
+
+In both rounds the raw signal stays in `crypto_ml_predictions`; exclusions
+are recorded in `crypto_signal_exclusions` and logged. The filter
+suppresses the *symptom* before order entry; it does not change the model.
 
 **Open follow-up (the real fix).** A direction-aware / risk-adjusted
 crypto label (e.g. forward return net of forward max-drawdown, or a
 "closes higher in N days" target) so the model stops mistaking
 volatility for opportunity. Until then KI-137 stays open: the filter is
-a guard rail, not a cure. (Threshold retuning, if the −0.20/+2.0 pair
-proves too narrow or too wide, is just two constants in
-`crypto/config.py` — the scan supports −0.15/+1.5 as a more-aggressive
-alternative.)
+a guard rail, not a cure. Threshold retuning, if any of the three
+constants in `crypto/config.py` proves too narrow or too wide, is a
+one-line change (the historical scan supports −0.15/+1.5 as a
+more-aggressive alternative for Rule A). KI-140 tracks the related but
+distinct 4USDT-class pattern the filter does not address.
+
+### KI-140 — 4USDT-class deep-drawdown failure pattern (characterized, not addressable by exclusion filter; deferred to a separate workstream)
+
+**Symptom.** A recurring deep-loss pattern distinct from KI-137's
+post-parabolic and SWARMSUSDT-class shapes: a coin deeply below its
+90-day high (`dd90 < -0.40`) **in a 60-day downtrend** (`ret60` modestly
+positive or negative, *not* parabolic) shows a recent bounce
+(positive `ret5`/`ret10`) at the entry-time feature snapshot, and the
+model takes the bounce as a buy signal. The bounce fails within days
+and the position grinds down to a `time`-exit loss. Live case: 4USDT
+entered 2026-05-12 (pred 2026-05-11 — `dd90 -43.5%, ret60 +60%,
+ret5 -1.2%, down_days 6/10`), currently −11.8% unrealized.
+
+**Population.** 14 of 93 deep losses (15%) in the validated 941-trade
+Phase-1B-winner backtest. Avg loss −19.3%, worst −34.7%. Characteristic
+profile: `dd90` mean −58.0%, `ret60` mean **−35.0%** (median −32.6%),
+`ret5` mean **+9.0%**, `ret10` mean +11.9%, `down_days` mean 4.5,
+exit_reason = `time` × 14 (none stopped on the trailing).
+
+**Why not addressed by ADR-028.** The proposed Variant E filter
+(`dd90 < -0.40 AND -1.0 < ret60 < 1.0`) was backtested and rejected:
+Sharpe collapsed from 6.32 to 4.36 (−1.96), max DD nearly tripled
+(−16.98% → −40.92%), cumRet dropped 43% relative. Root cause: `dd90 <
+-0.40` matches ~40% of the universe in a non-bull regime, turning the
+rule into a regime gate that forces Top-N backfill from rank-7+
+low-probability trades. No tighter dd90/ret60 combination caught the
+class without similar over-filtering. Live 4USDT itself sits on the
+class boundary (`ret60 = +60%` is positive and just below the parabolic
+gate) — even a perfect class filter wouldn't have caught this specific
+incident.
+
+**Hypothesized follow-up directions (none scoped).**
+1. **Trailing-stop tightening at entry-time, conditional on `dd90 <
+   -0.40`.** All 93 deep losers exit on `time` (none on trailing); a
+   tighter trail or an entry-conditional time-stop (e.g. 7d instead of
+   10d when `dd90 < -0.40` or `realized_vol_30d > 1.5`) could truncate
+   the loss without touching entries.
+2. **Probability-haircut on deep-dd entries.** A multiplier on
+   `predicted_probability` when `dd90 < -0.40`, applied before Top-N
+   selection — narrower than a binary gate, less prone to backfill
+   damage. Out of scope here (ADR-021 §3 chose hard exclude over
+   haircut for the SKYAI class on different grounds — would need a
+   separate ADR for this case).
+3. **Direction-aware label** (the KI-137 "real fix") would likely
+   address this class as a side-effect.
+
+**Status.** Open. Re-prioritized only when a new failure of this class
+materially impacts paper-trading P&L, or when KI-137's label rework
+makes a re-test cheap.
 
 ### KI-139 — Pipeline monitor v1 limitations (no auto-remediation, coarse equity dashboard check, no "why 0 positions", reconcile timer unchecked)
 

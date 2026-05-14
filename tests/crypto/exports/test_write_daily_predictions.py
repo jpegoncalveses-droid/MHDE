@@ -483,6 +483,107 @@ def test_all_excluded_empty_list_handled_gracefully(temp_db, monkeypatch):
     assert temp_db.execute("SELECT COUNT(*) FROM crypto_signal_exclusions").fetchone()[0] == 2
 
 
+def test_short_momentum_only_excludes_coin(temp_db, monkeypatch):
+    """ret5 < -0.30 with benign dd90/ret60 → coin dropped from the export.
+    Pins ADR-028 (the SWARMSUSDT-class addition)."""
+    today = date(2026, 5, 10)
+    syms = ["AUSDT", "BUSDT"]  # alphabetical: AUSDT, BUSDT
+    _seed_universe(temp_db, syms)
+    _seed_active_10d_model(temp_db)
+    _seed_features_overrides(temp_db, today, {
+        "AUSDT": {},  # clean
+        # BUSDT trips Rule B only (ret5 < -0.30) — Rule A is benign here.
+        "BUSDT": {"return_5d": -0.35},
+    })
+    _mock_joblib_load(monkeypatch, [0.60, 0.95])  # AUSDT=0.60, BUSDT=0.95
+
+    out = wdp.build_predictions(temp_db, prediction_date=today)
+
+    assert out["n_predictions"] == 1
+    assert {p["symbol"] for p in out["predictions"]} == {"AUSDT"}
+
+
+def test_short_momentum_exclusion_row_records_ret5(temp_db, monkeypatch):
+    """The audit row in crypto_signal_exclusions carries the ret5 value
+    that tripped the gate (new column added in ADR-028)."""
+    today = date(2026, 5, 10)
+    syms = ["AUSDT", "BUSDT"]
+    _seed_universe(temp_db, syms)
+    _seed_active_10d_model(temp_db)
+    _seed_features_overrides(temp_db, today, {
+        "AUSDT": {},
+        "BUSDT": {"return_5d": -0.42},
+    })
+    _mock_joblib_load(monkeypatch, [0.60, 0.95])
+
+    wdp.build_predictions(temp_db, prediction_date=today)
+
+    rows = temp_db.execute(
+        "SELECT symbol, dd90, ret60, ret5, reason "
+        "FROM crypto_signal_exclusions ORDER BY symbol"
+    ).fetchall()
+    assert len(rows) == 1
+    sym, dd90, ret60, ret5, reason = rows[0]
+    assert sym == "BUSDT"
+    assert ret5 == pytest.approx(-0.42)
+    # ret60 / dd90 still get recorded (full feature snapshot) even if they
+    # didn't trip the gate.
+    assert ret60 == pytest.approx(0.0)
+    assert dd90 == pytest.approx(0.0)
+    # short-momentum reason token (not the combined one)
+    assert reason == "short_momentum"
+
+
+def test_both_rules_recorded_with_combined_reason(temp_db, monkeypatch):
+    """SWARMSUSDT-class case wired into the exporter: deep dd90 AND
+    parabolic ret60 AND ret5 < -0.30 → both rules fire → combined token."""
+    today = date(2026, 5, 10)
+    _seed_universe(temp_db, ["AUSDT"])
+    _seed_active_10d_model(temp_db)
+    _seed_features_overrides(temp_db, today, {
+        "AUSDT": {"drawdown_from_90d_high": -0.50, "return_60d": 2.5,
+                  "return_5d": -0.37},
+    })
+    _mock_joblib_load(monkeypatch, [0.80])
+
+    wdp.build_predictions(temp_db, prediction_date=today)
+
+    rows = temp_db.execute(
+        "SELECT symbol, dd90, ret60, ret5, reason FROM crypto_signal_exclusions"
+    ).fetchall()
+    assert len(rows) == 1
+    sym, dd90, ret60, ret5, reason = rows[0]
+    assert sym == "AUSDT"
+    assert dd90 == pytest.approx(-0.50)
+    assert ret60 == pytest.approx(2.5)
+    assert ret5 == pytest.approx(-0.37)
+    assert reason == "post_parabolic_and_short_momentum"
+
+
+def test_short_momentum_missing_ret5_fails_open(temp_db, monkeypatch):
+    """NULL return_5d (warmup symbol) → Rule B does not fire; Rule A still
+    evaluated independently. Symbol passes through if both fail."""
+    today = date(2026, 5, 10)
+    _seed_universe(temp_db, ["AUSDT"])
+    _seed_active_10d_model(temp_db)
+    cols = ", ".join(FEATURE_COLS)
+    placeholders = ", ".join(["?"] * len(FEATURE_COLS))
+    idx_r5 = FEATURE_COLS.index("return_5d")
+    vals = [0.0] * len(FEATURE_COLS)
+    vals[idx_r5] = None
+    temp_db.execute(
+        f"INSERT INTO crypto_ml_features (symbol, trade_date, {cols}) "
+        f"VALUES (?, ?, {placeholders})", ["AUSDT", today] + vals,
+    )
+    _mock_joblib_load(monkeypatch, [0.80])
+
+    out = wdp.build_predictions(temp_db, prediction_date=today)
+    assert out["n_predictions"] == 1
+    assert temp_db.execute(
+        "SELECT COUNT(*) FROM crypto_signal_exclusions"
+    ).fetchone()[0] == 0
+
+
 def test_missing_features_not_excluded_fail_open(temp_db, monkeypatch):
     """A symbol with NULL drawdown_from_90d_high / return_60d (warmup) is
     NOT excluded — fail-open."""

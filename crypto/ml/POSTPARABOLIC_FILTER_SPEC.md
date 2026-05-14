@@ -1,8 +1,54 @@
-# Post-Parabolic Exclusion Filter — Design Spec (Step 1: investigation only)
+# Post-Parabolic Exclusion Filter — Design Spec
 
-**Status:** proposed, awaiting operator review. No production code yet.
-**Author:** Claude Code session, 2026-05-11.
-**Related:** the documented structural bias — the crypto model re-emits buy signals on coins immediately after a parabolic crash (SKYAI: probabilities 0.72–0.88 across the crash window, confirmed on clean data; root cause = volatility-loving threshold label + momentum-lag features `return_60d` / `drawdown_from_90d_high`, see the SKYAI model diagnostic). This filter is a *risk gate* applied before order entry; it does not change the model.
+**Status:** shipped. v1 = ADR-021 (Rule A only) on 2026-05-11; v2 = ADR-028 (added Rule B) on 2026-05-14.
+**Author:** Claude Code session, 2026-05-11 (v1); extension 2026-05-14 (v2).
+**Related:** the documented structural bias — the crypto model re-emits buy signals on coins immediately after a parabolic crash (SKYAI: probabilities 0.72–0.88 across the crash window, confirmed on clean data; root cause = volatility-loving threshold label + momentum-lag features `return_60d` / `drawdown_from_90d_high`, see the SKYAI model diagnostic). The 2026-05-14 SWARMSUSDT incident (a deep-dd coin in a 60d uptrend with sharp 5d weakness; entered −22% within 24h) exposed a second failure pattern not caught by Rule A. This filter is a *risk gate* applied before order entry; it does not change the model.
+
+---
+
+## v2 (2026-05-14) — Add Rule B: short-window momentum (ADR-028)
+
+**Rule B:** `return_5d < POSTPARABOLIC_RET5_THRESHOLD` (= `-0.30`), OR-combined with the original Rule A.
+
+`should_exclude(dd90, ret60, ret5)` returns `(True, REASON_*)` if **either** rule fires. Reason tokens: `post_parabolic`, `short_momentum`, `post_parabolic_and_short_momentum`. Each rule fails-open on its own missing/NaN inputs (a warmup-window coin with NULL `ret5` is still evaluated by Rule A).
+
+### Backtest evidence
+
+Paired backtest (`crypto/execution/backtest/harness.py` with monkey-patched `should_exclude`; Phase-1B-winner config — 10d, Policy D, top_n=6, trail_pct=0.3; window 2025-04-05 → 2026-05-07; 16,679 walkfold predictions):
+
+| metric | BASELINE (Rule A only) | + Rule B (ret5 < -0.30) |
+|---|---:|---:|
+| n_excluded | 105 (0.63%) | **253 (1.52%)** |
+| n_trades | 941 | 961 (+20) |
+| cumRet | 52.48% | 51.42% |
+| **Sharpe** | 6.32 | **6.51** (+0.18) |
+| **Max DD** | −16.98% | **−16.98%** (unchanged) |
+| Hit rate | 87.57% | 87.41% (−0.16 pp) |
+| Avg loser | −20.37% | −20.05% (+0.32 pp shallower) |
+
+Sharpe modestly improves; max DD unchanged to two decimals; cumRet drops ~2% relative (acceptable cost). Three looser variants (ret5 < −0.20; down_days_in_last_10 ≥ 7; their union) all destroyed Sharpe by ~4 points — the −0.30 threshold is the sweet spot. A separate Variant E targeting the "4USDT-class" (dd < −0.40 + non-parabolic ret60) tested at +1.96 Sharpe destruction and was rejected. Full numbers in `SESSION_LOG.md` 2026-05-14 entries.
+
+### Pattern characterization
+
+A loser-characterization study of the 93 deep losers (`net_pnl_pct < −10%`) from the validated 941-trade backtest tagged 28 (30%) as **SWARMSUSDT-class**: dd90 mean −52.8%, active short-window weakness (down_days mean 7.5), wide ATR (mean 16.7%), high realized vol (mean 1.87), avg loss −27.8% (the worst class average). Rule B's `ret5 < −0.30` threshold isolates the most acute subset of this class.
+
+### Live-coin verification
+
+The 2026-05-14 SWARMSUSDT entry was driven by the 2026-05-13 prediction row: `dd90=-0.4997, ret60=+1.4714, ret5=-0.3680, down_days=9/10`. Rule A does not fire (`ret60=+1.47 < +2.0` baseline gate). Rule B fires (`ret5=-0.368 < -0.30`). With the v2 filter live, the entry would have been suppressed. Pin-test in `tests/crypto/test_postparabolic_filter.py::test_swarmsusdt_live_incident_excluded`.
+
+The 2026-05-12 4USDT entry (a separate failure pattern — deep dd90 but with a recent bounce: `dd90=-0.4354, ret60=+0.6000, ret5=-0.0116`) is **not** caught by Rule B (`ret5=-0.012` nowhere near −0.30). That is a separate workstream, not addressed here. Pin-test in `test_4usdt_live_incident_not_excluded`.
+
+### Audit trail
+
+`crypto_signal_exclusions` gained a `ret5 DOUBLE` column (idempotent ALTER in `crypto/schema.py:_CRYPTO_SIGNAL_EXCLUSIONS_MIGRATIONS`). All three reason tokens are persisted so queries can disambiguate which rule drove a suppression. Existing rows pre-dating ADR-028 keep `ret5 = NULL` until the next export-day re-suppression of the same `(export_date, symbol, model_id)` UPSERTs the column.
+
+### Expected impact (live)
+
+Dry-run against `crypto_ml_features` MAX(trade_date) = 2026-05-13 (48 active coins): 4 would be excluded — SKYAIUSDT + ZEREBROUSDT by Rule A (unchanged from v1), DOGSUSDT + SWARMSUSDT newly by Rule B. ≈ 4% of universe per day; never wipes the top-6.
+
+---
+
+## v1 (2026-05-11) — Original ADR-021 design (Rule A only)
 
 ---
 

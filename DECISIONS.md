@@ -1415,3 +1415,137 @@ run that slow is itself an incident the monitor will flag (stale export at
 00:50). The export and entry now run while the FX hourly :05 chain and other
 :0X jobs are quieter than 06:xx, so DuckDB write-lock contention is, if
 anything, slightly lower.
+
+## ADR-028 — Post-parabolic filter v2: add short-window momentum rule (`return_5d < -0.30`)
+
+**Status:** accepted 2026-05-14. Implemented on branch
+`feat-postparabolic-add-ret5-filter`. Extends ADR-021 (Rule A); does not
+replace it. Single threshold (`POSTPARABOLIC_RET5_THRESHOLD = -0.30`), no
+per-model knob; same logic applies universally.
+
+**Context.** Two confirmed live failure patterns surfaced after ADR-021
+went live:
+
+1. **SWARMSUSDT 2026-05-14** (the trigger for this ADR) — entered at the
+   2026-05-13 prediction (dd90 −50.0%, ret60 +147%, ret5 −36.8%, 9/10 down
+   days). Rule A did **not** fire (`ret60 = +1.47` is below the `+2.0`
+   parabolic gate), so the coin made the top-6, the engine entered, and the
+   position was −22% within 24 hours. The pattern is "already-crashed +
+   still-falling", distinct from Rule A's "still-parabolic + just-starting-
+   to-crash" target.
+2. **4USDT 2026-05-12** — same family by drawdown depth but a different
+   failure shape: a recent bounce on top of a 60-day decline (dd90 −43.5%,
+   ret60 +60%, ret5 −1.2%). Tested separately and **not** addressed by this
+   ADR (see Variant E rejection below).
+
+A loser-characterization study of the 93 deep losses (`net_pnl_pct < −10%`)
+in the 941-trade Phase-1B-winner backtest tagged 28 (30%) as the
+SWARMSUSDT-class (deep dd90 + active short-window weakness + wide ATR;
+worst-class avg loss −27.8%). The class is the single largest named failure
+mode below Rule A's parabolic gate.
+
+**Decision.** Add `Rule B: return_5d < POSTPARABOLIC_RET5_THRESHOLD` (=
+`-0.30`), OR-combined with Rule A inside the same `should_exclude`
+predicate at the same call site (`build_predictions` in
+`crypto/exports/write_daily_predictions.py`). Reasons recorded:
+`post_parabolic` / `short_momentum` / `post_parabolic_and_short_momentum`.
+Per-input fail-open semantics: a warmup-window coin with NULL `return_5d`
+is still evaluated by Rule A.
+
+**Threshold rationale (backtest grid; window 2025-04-05 → 2026-05-07; 10d,
+Policy D, top_n=6, trail_pct=0.3; 16,679 walkfold predictions).** Three
+prior candidate variants were tested and rejected:
+
+| variant | Δ Sharpe | Δ Max DD | Δ cumRet (units) | verdict |
+|---|---:|---:|---:|---|
+| A: ret5 < -0.20 | -4.14 | -2.54 pp | +21.6 | reject — Sharpe collapse |
+| B: down_days >= 7 | -4.02 | -2.30 pp | +26.5 | reject — `down_days` doesn't discriminate (33.8% of winners vs 29.0% of deep losers fire the condition) |
+| C: A OR B | -4.09 | -3.35 pp | +24.3 | reject |
+| **D: ret5 < -0.30** | **+0.18** | **±0.00** | **−1.05** | **accept (this ADR)** |
+| E: dd90 < -0.40 AND -1<ret60<1 | -1.96 | -23.94 pp | -22.20 | reject — over-filters 40% of universe |
+| DE: D ∪ E | -1.95 | -23.94 pp | -22.29 | reject |
+
+At `-0.30` the rule fires on 1.52% of universe (253 of 16,679), Sharpe
+gains +0.18 (6.32 → 6.51), max DD is unchanged to two decimals, cumRet
+drops ~2% relative, hit rate −0.16 pp. The mechanism: a tight filter on a
+high-variance subset removes a small loss-prone population without
+forcing Top-N to backfill from low-quality rank-7+ candidates. Wider
+thresholds force more backfill and destroy Sharpe (variants A/B/C show
+this empirically). Variant E demonstrated that targeting the 4USDT-class
+via dd90/ret60 alone over-filters: `dd90 < -0.40` matches ~40% of the
+universe in a non-bull regime; combined with the trivial ret60 band it
+became a regime gate, not a tail filter.
+
+**Why a binary rule and not a probability haircut, why a single global
+threshold, why no horizon-specific tuning.** Same reasoning as ADR-021 —
+the model's probability is well-calibrated; the issue is risk shape, not
+forecast quality. A haircut interacts badly with Top-N (a haircut coin
+still tops the field on a thin day, which is exactly when you want it
+gone). Horizon-independent: `return_5d` is a 5-day window, and Phase-1B
+backs the 10d horizon today; same logic if a 5d export is ever added.
+No model-specific override — the SWARMSUSDT pattern doesn't depend on
+which model emitted the signal.
+
+**Schema change.** `crypto_signal_exclusions` gains a `ret5 DOUBLE`
+column. Idempotent migration: `ALTER TABLE … ADD COLUMN IF NOT EXISTS`
+(in `crypto/schema.py:_CRYPTO_SIGNAL_EXCLUSIONS_MIGRATIONS`, applied
+inside `create_all_tables` after the CREATE). Pre-ADR-028 rows keep
+`ret5 = NULL` until the next export-day re-suppression UPSERTs them.
+
+**4USDT-class explicitly NOT addressed.** The 4USDT-class pattern (deep
+dd90 + 60d downtrend + recent bounce) is a real failure mode (14 of 93
+deep losses, avg −19.3%) but none of the candidate filters caught it
+without unacceptable portfolio damage. Specifically, `ret5 = -0.012` at
+4USDT's entry-date is nowhere near the `-0.30` threshold; loosening to
+`-0.10` reintroduces the Variant-A collateral damage. Treated as a
+separate workstream — likely candidates are entry-conditional time-stop
+adjustment (all 93 deep losers exit on `time`, not on the trailing stop)
+or volatility-regime filtering, not another `should_exclude` rule.
+
+**Expected impact (live).** Dry-run against `crypto_ml_features`
+MAX(trade_date) = 2026-05-13 on 48 active coins: 4 exclusions — 2 from
+Rule A unchanged (SKYAIUSDT, ZEREBROUSDT), 2 newly by Rule B
+(DOGSUSDT, SWARMSUSDT). ≈ 4% of universe per day on current data; never
+wipes the top-6 (the existing "empty predictions list" behavior in
+`build_predictions` remains the same correct degradation path).
+
+**Files of record.** `crypto/config.py` (`POSTPARABOLIC_RET5_THRESHOLD`),
+`crypto/ml/postparabolic_filter.py` (signature + OR-combined rules +
+three reason tokens), `crypto/ml/POSTPARABOLIC_FILTER_SPEC.md` (v2
+section), `crypto/exports/write_daily_predictions.py` (passes `ret5`
+through; persists in the audit row), `crypto/schema.py`
+(`ret5 DOUBLE` column + migration), `tests/crypto/test_postparabolic_filter.py`
+(+13 cases incl. the SWARMSUSDT and 4USDT live-incident pins),
+`tests/crypto/exports/test_write_daily_predictions.py` (+4 integration
+cases). No engine-repo change (the file interface stays the same — coins
+are simply absent from the ranked list when excluded). No CLAUDE.md
+change. No CHANGELOG.md exists in the repo.
+
+**Pending operator action.** None required for the engine — it
+consumes the unchanged JSON schema. MHDE side: merge the branch; the
+next daily export at 00:40 UTC will apply the new rule and write
+ret5-aware rows to `crypto_signal_exclusions`.
+
+**Reversibility.** Set `POSTPARABOLIC_RET5_THRESHOLD = -1e9` in
+`crypto/config.py` (or any value the live `return_5d` distribution never
+crosses) to disable Rule B without removing code. Or pass a literal
+`None` from `build_predictions` — Rule B's per-input fail-open will then
+never fire. Full revert is a single commit revert.
+
+**Strategy-baseline marker.** This change establishes a new strategy
+baseline for downstream retrospective analysis. `config/monitoring.yaml`
+now carries two `paper_trading_drift.strategy_baselines` entries:
+
+  1. `2026-05-12` — KI-138 OHLCV repair (pre-baseline trades used
+     corrupted prices).
+  2. `2026-05-14` — this ADR (Variant D / Rule B added to the
+     post-parabolic gate; strategy character changes from this date
+     forward).
+
+The drift monitor and the dashboard daily-balance table both
+auto-resolve the *latest* baseline `date` as the floor for rolling-window
+metrics (Check C closed win rate, Check D label hit rate; pre-baseline
+trades are excluded from the denominator). The append-only list
+preserves history so a future analyst can see why each baseline was
+set — and so any pre-2026-05-14 P&L is correctly attributed to the v1
+filter (Rule A only) rather than mixed with v2 behavior.
