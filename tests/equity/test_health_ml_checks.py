@@ -120,7 +120,7 @@ def test_check_cross_asset_freshness_all_fresh_passes(temp_db):
     """All reference tickers fresh (today) → status=pass."""
     today = date.today()
     for t in ("SPY", "VIX", "XLK", "XLF", "XLV", "XLE", "XLY",
-              "XLI", "XLP", "XLB", "XLU", "XLRE"):
+              "XLI", "XLP", "XLB", "XLU", "XLRE", "XLC"):
         _seed_price(temp_db, t, today)
     result = check_cross_asset_freshness(temp_db)
     assert result["status"] == "pass", f"got {result}"
@@ -131,7 +131,7 @@ def test_check_cross_asset_freshness_stale_spy_fails(temp_db):
     today = date.today()
     _seed_price(temp_db, "SPY", today - timedelta(days=14))
     for t in ("VIX", "XLK", "XLF", "XLV", "XLE", "XLY",
-              "XLI", "XLP", "XLB", "XLU", "XLRE"):
+              "XLI", "XLP", "XLB", "XLU", "XLRE", "XLC"):
         _seed_price(temp_db, t, today)
     result = check_cross_asset_freshness(temp_db)
     assert result["status"] in ("fail", "warn")
@@ -143,7 +143,7 @@ def test_check_cross_asset_freshness_missing_ticker_fails(temp_db):
     today = date.today()
     # Seed everything except XLRE
     for t in ("SPY", "VIX", "XLK", "XLF", "XLV", "XLE", "XLY",
-              "XLI", "XLP", "XLB", "XLU"):
+              "XLI", "XLP", "XLB", "XLU", "XLC"):
         _seed_price(temp_db, t, today)
     result = check_cross_asset_freshness(temp_db)
     assert result["status"] in ("fail", "warn")

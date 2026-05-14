@@ -60,7 +60,7 @@ def check_rolling_precision(conn: duckdb.DuckDBPyConnection) -> dict:
 _REFERENCE_TICKERS = (
     "SPY", "VIX",
     "XLK", "XLF", "XLV", "XLE", "XLY",
-    "XLI", "XLP", "XLB", "XLU", "XLRE",
+    "XLI", "XLP", "XLB", "XLU", "XLRE", "XLC",
 )
 _CROSS_ASSET_MAX_AGE_DAYS = 3
 

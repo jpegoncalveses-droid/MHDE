@@ -64,7 +64,7 @@ def test_reference_tickers_constant_includes_spy_vix_and_all_sector_etfs():
     expected = {
         "SPY", "VIX",
         "XLK", "XLF", "XLV", "XLE", "XLY",
-        "XLI", "XLP", "XLB", "XLU", "XLRE",
+        "XLI", "XLP", "XLB", "XLU", "XLRE", "XLC",
     }
     assert expected.issubset(set(REFERENCE_TICKERS)), (
         f"Missing tickers from REFERENCE_TICKERS: {expected - set(REFERENCE_TICKERS)}"

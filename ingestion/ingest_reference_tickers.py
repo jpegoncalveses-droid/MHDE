@@ -26,7 +26,7 @@ logger = logging.getLogger("mhde.ingestion.reference_tickers")
 REFERENCE_TICKERS: tuple[str, ...] = (
     "SPY", "VIX",
     "XLK", "XLF", "XLV", "XLE", "XLY",
-    "XLI", "XLP", "XLB", "XLU", "XLRE",
+    "XLI", "XLP", "XLB", "XLU", "XLRE", "XLC",
 )
 
 _YF_BASE = "https://query1.finance.yahoo.com/v8/finance/chart"
