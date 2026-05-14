@@ -1,7 +1,7 @@
 # Known Issues
 
-**10 open observations** (KI-122, KI-123, KI-126, KI-131, KI-132,
-KI-134, KI-136, KI-137, KI-139, KI-140). KI-122/123 are cosmetic; KI-126 is a future
+**11 open observations** (KI-122, KI-123, KI-126, KI-131, KI-132,
+KI-134, KI-136, KI-137, KI-139, KI-140, KI-141). KI-122/123 are cosmetic; KI-126 is a future
 Phase 0 enhancement deferred until weekly reliability snapshots
 accumulate; KI-131 is a low-priority single-day production-model
 row-count dip; KI-132 is a dashboard-deployment-process gap (no
@@ -18,9 +18,13 @@ cuts (no auto-remediation, coarse equity-dashboard mtime check, no
 engine-side "why 0 positions" reason, reconcile timer unchecked —
 ADR-026); KI-140 is the 4USDT-class deep-drawdown failure pattern,
 characterized but not addressable by the current `should_exclude` shape
-(tested + rejected as Variant E). None requires a hot fix — all tracked
-so a future session triages deliberately rather than letting them rot in
-the working tree.
+(tested + rejected as Variant E); KI-141 is a follow-up to ADR-029 —
+add a true run-time timestamp column to `crypto_ml_predictions` so the
+pipeline_execution monitor can detect a single missed fire (the
+ADR-029 budget bump fixed the false-positive but trades sensitivity
+for truthfulness). None requires a hot fix — all tracked so a future
+session triages deliberately rather than letting them rot in the
+working tree.
 
 **KI-138** opened + resolved (option A) 2026-05-12 — the cap-at-today-1
 OHLCV ingestion fix (commit 8f9d707) made `MAX(trade_date)` in
@@ -388,6 +392,62 @@ incident.
 **Status.** Open. Re-prioritized only when a new failure of this class
 materially impacts paper-trading P&L, or when KI-137's label rework
 makes a re-test cheap.
+
+### KI-141 — `crypto_ml_predictions` carries no run-time stamp; pipeline_execution can only detect a 2-day outage, not a 1-day miss
+
+**Symptom (the false-positive that surfaced this).** Until ADR-029,
+`monitoring/pipeline_execution.py` set `RECENCY_BUDGET['crypto'] =
+27h`, calling it "24h cycle + 3h grace". But the column the monitor
+reads is `prediction_date`, which `crypto/ml/predict.py:score_universe`
+sets to `MAX(trade_date) FROM crypto_ml_features` — the last completed
+features day, T-1 calendar. Immediately after a healthy 00:30 UTC fire
+the age was already ~24h 30m; from ~03:30 UTC every day onward the
+monitor false-fired through the rest of the UTC day, regardless of
+pipeline health.
+
+**Fix shipped (ADR-029).** Threshold raised to 51h (`timedelta(days=2,
+hours=3)`). Catches a real two-day outage at ~03:30 UTC on day-2 of
+the outage, well inside the operator's response window. Tested by
+`tests/regression/test_pipeline_execution_crypto_t1.py`.
+
+**Open follow-up.** Add a run-time stamp column to
+`crypto_ml_predictions` so the monitor can detect a one-day miss.
+Concrete shape:
+
+  1. **Schema.** `created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP` on
+     `crypto_ml_predictions` (mirrors `ml_model_runs.created_at`).
+     Idempotent migration via `ALTER TABLE … ADD COLUMN IF NOT EXISTS`
+     inside `create_all_tables`. Equity `ml_predictions` benefits from
+     the same treatment under ADR-015 — out of scope for this KI, but
+     worth bundling if the same operator is making the change.
+  2. **Writer.** `crypto/ml/predict.py:score_universe` is already an
+     INSERT path; default would populate on each insert. The
+     existing `DELETE FROM crypto_ml_predictions WHERE
+     prediction_date = ?` upsert idiom keeps re-runs correct.
+  3. **Monitor.** Swap the recency check to
+     `MAX(created_at)` filtered by active model_ids; tighten budget
+     to 24h + grace (or hourly + grace if a future job re-runs the
+     scoring intra-day). The row-count check stays on
+     `prediction_date` because that is still the unit of "today's
+     scored universe".
+  4. **Back-fill.** Historical rows (pre-migration) get `NULL`
+     `created_at`. Two options: back-fill from
+     `crypto_ml_model_runs.created_at` joined on `model_id` (lower
+     bound), or leave NULL and have the monitor query
+     `MAX(created_at) WHERE created_at IS NOT NULL`. The latter is
+     simpler — the monitor only needs the *latest* run, not history.
+
+**Why deferred.** ADR-029 fixed the operational pain (continuous
+false-firing) with a one-line change. The schema-level fix is a
+multi-file change that touches a writer on the live daily path; doing
+it under the same banner as the false-positive fix would have inflated
+blast radius and made revert non-trivial. Open as a separate workstream
+so a future session takes it deliberately.
+
+**Status.** Open. Priority: medium — pick up when the next operator
+incident demonstrates that a one-day-miss matters in practice, or
+bundle with the equity `ml_predictions.created_at` change under a
+joint ADR.
 
 ### KI-139 — Pipeline monitor v1 limitations (no auto-remediation, coarse equity dashboard check, no "why 0 positions", reconcile timer unchecked)
 
