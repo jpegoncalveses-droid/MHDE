@@ -9,6 +9,7 @@ from ingestion.ingest_sec import SECIngestor
 from ingestion.ingest_prices import PricesIngestor
 from ingestion.ingest_stooq import StooqPricesIngestor
 from ingestion.ingest_yahoo_historical import YahooHistoricalIngestor
+from ingestion.ingest_reference_tickers import ReferenceTickersIngestor
 from ingestion.ingest_fred import FREDIngestor
 from ingestion.ingest_finra import FINRAIngestor
 from ingestion.ingest_cftc import CFTCIngestor
@@ -25,6 +26,7 @@ _ALL_INGESTORS = [
     PricesIngestor,       # Polygon — runs first, fills what it can
     StooqPricesIngestor,      # Stooq — fills gaps for tickers Polygon missed
     YahooHistoricalIngestor,  # Yahoo — bootstraps/increments price history for momentum
+    ReferenceTickersIngestor, # Cross-asset references (SPY/VIX/sector ETFs) — not in companies
     FREDIngestor,
     FINRAIngestor,
     CFTCIngestor,

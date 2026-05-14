@@ -6,6 +6,86 @@ are at the top.
 
 ---
 
+## 2026-05-14 — Cross-asset ingestion restored (Finding 1): SPY/VIX/sector ETFs + DGS2/VIXCLS now in nightly chain
+
+**Branch:** `feat-cross-asset-ingestion` (pushed; **STOPPED for
+operator review/merge** — push-only per branch-handoff pattern,
+operator opens the PR). Single-repo (MHDE), no engine repo change,
+no schema change.
+
+**Trigger.** `data/processed/finding1_cross_asset_ingestion_root_cause.md`
+documented that SPY, VIX, all sector ETFs and FRED `DGS2` had no
+producer-side counterpart in the scheduled ingestion chain: the
+universe-driven path (Polygon/Stooq/YahooHistorical) iterates
+`companies.ticker`, and SPY/VIX/XL* are not in `companies`; the
+FRED `_SERIES` constant never included `DGS2`/`VIXCLS`. Six features
+(`return_vs_spy_5d/20d`, `return_vs_sector_5d/20d`, `beta_60d`,
+`vix_change_5d`) were 100% NULL on every live prediction since the
+2026-05-10 retrain.
+
+**Decision.** Option A from the investigation: new
+`ReferenceTickersIngestor` with a hardcoded constant (bypasses
+universe lookup), wired into `orchestrator._ALL_INGESTORS`; FRED
+`_SERIES` extended with `DGS2` + `VIXCLS`; cross-asset freshness
+check added to `health/ml_checks.py`. No `companies` row pollution
+(SPY isn't a tradeable engine candidate), no schema change.
+
+**What shipped.**
+- `ingestion/ingest_reference_tickers.py` (NEW) —
+  `ReferenceTickersIngestor` with `REFERENCE_TICKERS = ('SPY',
+  'VIX', 'XLK', 'XLF', 'XLV', 'XLE', 'XLY', 'XLI', 'XLP', 'XLB',
+  'XLU', 'XLRE')`. Reuses `_parse_yf_response` from
+  `ingest_yahoo_historical.py`. Writes to `prices_daily` with
+  `source='yahoo'`, ON CONFLICT DO NOTHING.
+- `ingestion/orchestrator.py` — `ReferenceTickersIngestor` added
+  to `_ALL_INGESTORS` between `YahooHistoricalIngestor` and
+  `FREDIngestor`. Dry-run confirms it appears as `[active]`.
+- `ingestion/ingest_fred.py` — `_SERIES` extended with
+  `'DGS2': '2-Year Treasury Yield'` and
+  `'VIXCLS': 'VIX Close'`.
+- `health/ml_checks.py` — `check_cross_asset_freshness()` asserts
+  each reference ticker has a `prices_daily.trade_date` within
+  T-3; returns `{check_name, status, severity, message}` matching
+  the existing check signature. Threshold: 3 days.
+- `tests/equity/test_reference_tickers_ingestor.py` (NEW) — 5
+  TDD-RED-first tests: constant contents, orchestrator
+  registration, full-write coverage, universe-arg bypass,
+  `source='yahoo'` recording.
+- `tests/equity/test_fred_ingestor_series.py` (NEW) — 3 tests:
+  `DGS2` present, `VIXCLS` present, existing-series preserved.
+- `tests/equity/test_health_ml_checks.py` (extended) — 4 new
+  tests: empty-DB fail, all-fresh pass, stale-SPY fail with
+  ticker named, missing-ticker fail with ticker named.
+
+**Verification.**
+- 12 new tests pass; 25 adjacent existing tests still pass (37
+  total in the regression sweep:
+  `test_reference_tickers_ingestor.py + test_fred_ingestor_series.py
+  + test_health_ml_checks.py + test_yahoo_historical.py +
+  test_orchestrator_universe_sort.py`).
+- `venv/bin/python main.py ingest --dry-run` lists 12 sources
+  including `reference_tickers [active]` between
+  `yahoo_historical [experimental]` and `fred [active]`.
+
+**Pending (out of scope, not blocked by this branch).**
+- One-time backfill `2026-05-05 → today`: local-only script at
+  `.claude/local_scripts/backfill_cross_asset_2026-05-05.py` (path
+  is gitignored). Operator runs after this branch merges; it
+  invokes `ReferenceTickersIngestor.ingest()` with a 1y window so
+  ON CONFLICT preserves any rows from the prior manual bootstrap.
+- KI-149 — `ml/predict.py` silently scores T-2 when ml_features
+  for the latest prices_daily date is incomplete (separate
+  branch).
+- KI-150 — `mhde-equity-pipeline-monitor.service` has been
+  failing since 2026-05-14; once fixed, the new
+  `check_cross_asset_freshness` becomes the alert path
+  (separate branch).
+- Model retrain (will pick up DGS2/VIXCLS once `macro_series` is
+  warm and `ml_features` is rebuilt against fresh cross-asset
+  data).
+
+---
+
 ## 2026-05-14 — Equity universe-tier sort fix: ORDER BY DESC restores 99 displaced ML-universe tickers (ADR-031 / KI-143)
 
 **Branch:** `fix-equity-orchestrator-tier-sort` (committed +
