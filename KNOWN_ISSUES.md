@@ -1,7 +1,8 @@
 # Known Issues
 
-**13 open observations** (KI-122, KI-123, KI-126, KI-131, KI-132,
-KI-134, KI-136, KI-137, KI-139, KI-140, KI-141, KI-144, KI-145). KI-122/123 are cosmetic; KI-126 is a future
+**15 open observations** (KI-122, KI-123, KI-126, KI-131, KI-132,
+KI-134, KI-136, KI-137, KI-139, KI-140, KI-141, KI-144, KI-145,
+KI-146, KI-147). KI-122/123 are cosmetic; KI-126 is a future
 Phase 0 enhancement deferred until weekly reliability snapshots
 accumulate; KI-131 is a low-priority single-day production-model
 row-count dip; KI-132 is a dashboard-deployment-process gap (no
@@ -27,9 +28,14 @@ to ADR-031 (the universe-tier sort lives in two byte-identical SELECTs
 and any future drift would silently re-introduce the KI-143 bug class);
 KI-145 is the `max_symbols=520` cap removal — vestigial after the
 2026-05-09 Polygon grouped-daily switch and would moot the KI-143
-displacement entirely. None requires a hot fix — all tracked so a future
-session triages deliberately rather than letting them rot in the
-working tree.
+displacement entirely; KI-146 and KI-147 are the two ADR-032
+follow-ups — extending the walkfold validation script to compute
+per-fold portfolio max DD so both ADR-032 gates run inside one
+script (KI-146), and documenting the two-gate pre-ship checklist in
+OPERATIONS.md so the methodology binds operators who weren't in the
+room for the trail_pct=0.10 decision (KI-147). None requires a hot
+fix — all tracked so a future session triages deliberately rather
+than letting them rot in the working tree.
 
 **KI-138** opened + resolved (option A) 2026-05-12 — the cap-at-today-1
 OHLCV ingestion fix (commit 8f9d707) made `MAX(trade_date)` in
@@ -601,6 +607,116 @@ the "Dev mode" framing.
 **Out of scope for ADR-031.** Larger blast radius; needs a separate
 investigation pass to confirm no consumer depends on the cap. KI-143
 is the single-day fix; KI-145 is the structural cleanup.
+
+### KI-146 — Extend walkfold validation script to compute per-fold portfolio max DD
+
+**Symptom (methodology gap, not a production bug).** ADR-032 now
+requires two gates for any spec change that affects portfolio
+drawdown: walkfold per-fold dominance ≥ 4/6 AND portfolio-simulator
+full-window `max_dd ≤ -25%` (5pp under the live -30% kill switch).
+Today the two gates live in separate scripts:
+
+- `.claude/local_scripts/backtest_trail_walkfold.py` runs the
+  per-fold sweep and reports per-fold Sharpe + raw-P&L "Max DD" (the
+  capital-naive, sum-of-per-trade-fractions metric).
+- `simulate_portfolio` (`crypto/execution/backtest/report.py`) runs
+  full-window over a single trade stream and produces the capital-
+  constrained `portfolio_max_dd_pct` the spec's
+  `backtest_expectations` consume.
+
+The walkfold script does not call `simulate_portfolio` per fold.
+A candidate parameter can therefore pass gate (1) and still fail
+gate (2) at the full-window simulation step — exactly the trail_pct=0.10
+case ADR-032 immortalises. Worse, the failure mode might be regime-
+specific: a fold-2-shaped drawdown can be invisible in the full-
+window simulation if a benign late-window regime drowns it out.
+Computing portfolio max_dd *per fold* would surface the
+capital-constrained metric at walkfold granularity and catch the
+envelope problem before the ship workstream starts.
+
+**Detection / fix path.** Extend
+`.claude/local_scripts/backtest_trail_walkfold.py` to, for each
+(fold × parameter-value) cell, additionally call
+`simulate_portfolio(starting_capital=1000, max_positions=6,
+deploy_fraction=0.8, leverage=1.0)` on that cell's persisted trades
+(reading from `crypto_backtest_trades`) and emit two new tables in
+the output markdown:
+
+1. *Per-fold portfolio Sharpe* — analogous to the existing per-fold
+   harness Sharpe table, but computed from the capital-constrained
+   simulator.
+2. *Per-fold portfolio max DD* — analogous to the existing per-fold
+   raw-P&L Max DD table, but computed from the simulator. This is
+   the metric that should be compared against the -25% safety floor
+   per fold, not the raw-P&L Max DD.
+
+Keep the existing raw-P&L Max DD column for continuity (it answers a
+different question: signal-and-exit fit). Add a small section at the
+top of the report explaining the difference so a future reader does
+not conflate the two metrics — same mistake the trail_pct=0.10
+workstream nearly shipped.
+
+**Effort: low/medium.** The simulator is already a pure function over
+a trade list; the wiring change is per-fold trade-list construction
++ two extra DataFrame columns. No new persistence. Worth doing
+before the next Policy-D-axis sweep so the methodology check happens
+inside one script instead of across two.
+
+**References.** ADR-032 (the binding gate definition).
+
+### KI-147 — Document the two-gate pre-ship checklist in OPERATIONS.md
+
+**Symptom (operational gap, not a production bug).** ADR-032
+defines the validation gates that any spec change affecting
+portfolio drawdown must pass, but the operational procedure — the
+*sequence of steps* an operator or agent should run before
+regenerating `active_spec.json` and repointing the active prediction
+path — is not yet codified anywhere a runbook reader would find it.
+The ADR is the binding rationale; the runbook is the checklist.
+Today the only place the two-gate pattern is written down is in
+`DECISIONS.md` and the two `data/processed/trail_pct_*` research
+markdowns, none of which a fresh operator opens during a ship
+workstream.
+
+**Detection / fix path.** Add a "Spec-change procedure" subsection
+to `OPERATIONS.md` (or extend the existing one if present) covering
+parameter changes on the axes ADR-032 binds — `trail_pct`,
+`activation_pct`, `top_n`, `max_concurrent`, `deploy_fraction`, and
+any new position-sizing logic. Checklist shape:
+
+1. *Walkfold gate.* Run the walkfold validation script (per
+   KI-146, ideally extended to compute per-fold portfolio max DD).
+   Confirm per-fold dominance over the deployed baseline in ≥ 4 of
+   6 folds.
+2. *Portfolio-simulator gate.* Persist a full-window backtest at
+   the candidate value; run `simulate_portfolio(starting_capital=1000,
+   max_positions=6, deploy_fraction=0.8, leverage=1.0)` with
+   post-parabolic filter ON; confirm `max_dd ≤ -25%` AND
+   `sharpe_ratio ≥ baseline_sharpe + 0.10`.
+3. *If either gate fails:* HOLD the deployed value, write a research
+   markdown documenting the result (template:
+   `data/processed/trail_pct_constrained_sweep.md`), and do not
+   regenerate the spec.
+4. *Only after both gates pass:* repoint `PHASE1B_WINNER_RUN_ID`,
+   regenerate `data/exports/active_spec.json`, and verify the spec's
+   `backtest_expectations.portfolio_max_dd_pct` matches the gate (2)
+   number (catches the filter-ON/filter-OFF inconsistency noted at
+   the bottom of `trail_pct_constrained_sweep.md`).
+
+Cross-link from `OPERATIONS.md` → ADR-032 so the rationale is one
+hop away. Mention this KI in the existing pre-ship section of
+`docs/PATH_TO_LIVE_PLAN.md` if there is one, so Phase-2 operators
+inherit the checklist.
+
+**Effort: low.** Pure documentation; no code change. Worth doing
+soon so the methodology binds even when the operator running the
+ship workstream is not the one who participated in the trail_pct=0.10
+case.
+
+**References.** ADR-032 (gate definitions); [[KI-146]] (the script
+extension that makes gate (1) cheap to run); the
+`trail_pct_constrained_sweep.md` research markdown (canonical
+worked example of the two-gate decision).
 
 ## Recently resolved (post-Session-7)
 
