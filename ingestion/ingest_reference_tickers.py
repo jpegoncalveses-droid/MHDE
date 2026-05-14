@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import time
+import urllib.parse
 import uuid
 from datetime import datetime
 
@@ -28,6 +29,10 @@ REFERENCE_TICKERS: tuple[str, ...] = (
     "XLK", "XLF", "XLV", "XLE", "XLY",
     "XLI", "XLP", "XLB", "XLU", "XLRE", "XLC",
 )
+
+# Storage ticker → Yahoo API symbol. Yahoo returns a stale mutual-fund artifact
+# for bare "VIX"; the CBOE VIX index requires "^VIX" (URL-encoded %5EVIX).
+_YAHOO_SYMBOL: dict[str, str] = {"VIX": "^VIX"}
 
 _YF_BASE = "https://query1.finance.yahoo.com/v8/finance/chart"
 _YF_HEADERS = {
@@ -48,7 +53,8 @@ class ReferenceTickersIngestor(BaseIngestor):
         now = datetime.utcnow()
 
         for i, ticker in enumerate(REFERENCE_TICKERS):
-            url = f"{_YF_BASE}/{ticker}?range=1y&interval=1d"
+            yf_symbol = urllib.parse.quote(_YAHOO_SYMBOL.get(ticker, ticker), safe="")
+            url = f"{_YF_BASE}/{yf_symbol}?range=1y&interval=1d"
             try:
                 r = requests.get(url, headers=_YF_HEADERS, timeout=20)
                 for backoff in _RETRY_DELAYS:

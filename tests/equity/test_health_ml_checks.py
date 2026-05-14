@@ -9,6 +9,7 @@ from health.ml_checks import (
     check_ml_tables_freshness,
     check_trained_models,
     check_cross_asset_freshness,
+    check_macro_series_freshness,
 )
 
 
@@ -148,3 +149,53 @@ def test_check_cross_asset_freshness_missing_ticker_fails(temp_db):
     result = check_cross_asset_freshness(temp_db)
     assert result["status"] in ("fail", "warn")
     assert "XLRE" in result["message"]
+
+
+# ── Macro-series freshness ────────────────────────────────────────────────────
+
+def _seed_macro(conn, series_id: str, d: date, value: float = 1.0) -> None:
+    conn.execute(
+        "INSERT INTO macro_series (id, series_id, series_name, value, as_of_date, source) "
+        "VALUES (?, ?, ?, ?, ?, 'fred') "
+        "ON CONFLICT (series_id, as_of_date) DO NOTHING",
+        ["id" + series_id + d.isoformat(), series_id, series_id, value, d],
+    )
+
+
+def test_check_macro_series_freshness_empty_db_fails(temp_db):
+    """No rows for DGS10/DGS2/VIXCLS → status=fail naming missing series."""
+    result = check_macro_series_freshness(temp_db)
+    assert result["check_name"] == "macro_series_freshness"
+    assert result["status"] == "fail"
+    for s in ("DGS10", "DGS2", "VIXCLS"):
+        assert s in result["message"]
+
+
+def test_check_macro_series_freshness_all_fresh_passes(temp_db):
+    """All three series fresh (T-1) → status=pass."""
+    yesterday = date.today() - timedelta(days=1)
+    for s in ("DGS10", "DGS2", "VIXCLS"):
+        _seed_macro(temp_db, s, yesterday)
+    result = check_macro_series_freshness(temp_db)
+    assert result["status"] == "pass", f"got {result}"
+
+
+def test_check_macro_series_freshness_stale_vixcls_fails(temp_db):
+    """VIXCLS stale > threshold → fail/warn naming VIXCLS."""
+    today = date.today()
+    _seed_macro(temp_db, "DGS10", today - timedelta(days=1))
+    _seed_macro(temp_db, "DGS2", today - timedelta(days=1))
+    _seed_macro(temp_db, "VIXCLS", today - timedelta(days=14))
+    result = check_macro_series_freshness(temp_db)
+    assert result["status"] in ("fail", "warn")
+    assert "VIXCLS" in result["message"]
+
+
+def test_check_macro_series_freshness_missing_dgs2_fails(temp_db):
+    """DGS2 absent entirely (Finding-1 historical state) → fail naming DGS2."""
+    yesterday = date.today() - timedelta(days=1)
+    _seed_macro(temp_db, "DGS10", yesterday)
+    _seed_macro(temp_db, "VIXCLS", yesterday)
+    result = check_macro_series_freshness(temp_db)
+    assert result["status"] in ("fail", "warn")
+    assert "DGS2" in result["message"]
