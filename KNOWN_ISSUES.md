@@ -1,8 +1,8 @@
 # Known Issues
 
-**15 open observations** (KI-122, KI-123, KI-126, KI-131, KI-132,
+**16 open observations** (KI-122, KI-123, KI-126, KI-131, KI-132,
 KI-134, KI-136, KI-137, KI-139, KI-140, KI-141, KI-144, KI-145,
-KI-146, KI-147). KI-122/123 are cosmetic; KI-126 is a future
+KI-146, KI-147, KI-148). KI-122/123 are cosmetic; KI-126 is a future
 Phase 0 enhancement deferred until weekly reliability snapshots
 accumulate; KI-131 is a low-priority single-day production-model
 row-count dip; KI-132 is a dashboard-deployment-process gap (no
@@ -33,9 +33,16 @@ follow-ups — extending the walkfold validation script to compute
 per-fold portfolio max DD so both ADR-032 gates run inside one
 script (KI-146), and documenting the two-gate pre-ship checklist in
 OPERATIONS.md so the methodology binds operators who weren't in the
-room for the trail_pct=0.10 decision (KI-147). None requires a hot
-fix — all tracked so a future session triages deliberately rather
-than letting them rot in the working tree.
+room for the trail_pct=0.10 decision (KI-147); KI-148 is the
+deployed-spec-vs-kill-switch gap surfaced by the same workstream —
+`PHASE1B_WINNER_RUN_ID` points to a filter-OFF backtest stating
+`portfolio_max_dd_pct = -23.7%` while the filter-ON re-run of the
+same config is -31.9%, which already exceeds the -30% engine kill
+switch (no production trip yet because no F2-shaped regime under
+filter-ON live, but the envelope is misstated and the switch is
+calibrated against the wrong number). None requires a hot fix — all
+tracked so a future session triages deliberately rather than letting
+them rot in the working tree.
 
 **KI-138** opened + resolved (option A) 2026-05-12 — the cap-at-today-1
 OHLCV ingestion fix (commit 8f9d707) made `MAX(trade_date)` in
@@ -717,6 +724,110 @@ case.
 extension that makes gate (1) cheap to run); the
 `trail_pct_constrained_sweep.md` research markdown (canonical
 worked example of the two-gate decision).
+
+### KI-148 — Deployed spec's `portfolio_max_dd_pct` understates real deployment drawdown by ~8pp (filter-ON envelope exceeds kill switch)
+
+**Severity: medium — not currently active, but real risk in an
+F2-like regime.** Discovered 2026-05-14 during the
+`feat-trail-pct-tighten-to-0.10` constrained-sweep workstream.
+
+**Symptom.** The deployed crypto strategy spec
+(`data/exports/active_spec.json`) carries
+`backtest_expectations.portfolio_max_dd_pct = -23.7%`, sourced from
+`PHASE1B_WINNER_RUN_ID = "backtest_10d_D_top_n_a02e15a0"`. That row
+in `crypto_backtest_runs` has no `apply_postparabolic_filter` field
+in its stored `params` — i.e. the backtest was run with the
+post-parabolic filter **OFF**. Live execution
+(`crypto/exports/write_daily_predictions.py`) applies the
+post-parabolic filter to every prediction batch (per ADR-021 +
+ADR-028, the filter is part of production behaviour). A filter-ON
+re-run of the same trail=0.30 config — persisted during the
+constrained sweep as `backtest_10d_D_top_n_f74ee424` — reports
+`portfolio_max_dd = -31.9%`.
+
+The deployed spec therefore states a -23.7% drawdown envelope while
+the trade stream the engine actually produces has a -31.9% envelope.
+That -31.9% **already exceeds the live `risk.max_account_drawdown_pct
+= 0.30` kill switch** by ~1.9 percentage points. The kill switch has
+not tripped only because we have not been through an F2-shaped regime
+(2025-06-05 → 2025-08-04, the window that drove this drawdown) under
+filter-ON production yet — the filter-ON config has been live for
+weeks, but the regime that exercises its tail has not recurred.
+
+The two numbers diverge by ~8pp: -23.7% (filter-OFF, stated) vs
+-31.9% (filter-ON, real). The spec's published expectations are
+therefore self-inconsistent with the engine the spec configures.
+
+**Implications.**
+
+1. *Spec expectations diverge from real production envelope.* Any
+   drift-monitor that compares observed drawdown against the spec's
+   `portfolio_max_dd_pct` will flag normal filter-ON behaviour as
+   anomalous once the realised DD exceeds the -23.7% stated number.
+   The existing divergence-alert threshold of 20% (per
+   `trail_pct_constrained_sweep.md`) is wide enough to absorb this
+   today, but the underlying inconsistency will surface as alerts
+   mature.
+2. *Kill-switch trip on F2 recurrence.* In a regime resembling
+   Jun-Jul 2025, the engine running trail=0.30 with filter-ON will
+   draw down past -30% and trip its own
+   `risk.max_account_drawdown_pct` guard. The operator recovery
+   protocol on a kill-switch trip is not currently exercised in
+   production (no historical trip event).
+3. *Kill switch likely calibrated against the wrong envelope.* The
+   -30% threshold was set when the spec's stated DD was -23.7%
+   (filter-OFF). It was probably chosen as "stated envelope + a
+   margin." If the real envelope is -31.9%, the margin is negative
+   — the switch trips on the strategy's *normal* tail, not on
+   anomalous behaviour. Recalibration is its own analysis: what is
+   the switch defending against, what failure modes need the trip,
+   what is the operator recovery procedure.
+
+**Resolution paths (none chosen yet; all imperfect).**
+
+1. *Re-point `PHASE1B_WINNER_RUN_ID` to the filter-ON 0.30 baseline
+   (`backtest_10d_D_top_n_f74ee424`).* The spec then states what the
+   engine actually does. Truthful expectations; spec-vs-reality
+   divergence resolved at source. Does **not** fix the underlying
+   gap — the kill switch is still violated by the strategy's stated
+   envelope. Only stops the alert-noise problem from mismatched
+   expectations. Low-cost; one config line + spec regeneration.
+2. *Recalibrate the kill-switch envelope itself.* The right number
+   for `risk.max_account_drawdown_pct` depends on what failure modes
+   the switch defends against (catastrophic strategy decay vs
+   normal-regime tails), what's recoverable vs unrecoverable, and
+   what the operator's intervention protocol looks like when it
+   trips. Multi-step investigation; touches engine-repo `risk.yaml`
+   and operational runbook. Largest blast radius but the only path
+   that produces a kill switch matched to the actual deployed
+   strategy.
+3. *Accept the divergence-alert discrepancy.* Status quo. The 20%
+   divergence-alert threshold absorbs the gap for now; operators
+   manually triage any DD-related alerts against both the stated
+   spec and the filter-ON baseline. Operational cost from recurring
+   alert noise as the alert threshold tightens. Zero code change.
+
+**Out of scope for ADR-032 and the trail_pct workstream.** ADR-032
+binds the validation methodology for future spec changes; it does
+not retroactively fix the deployed spec or the kill switch
+calibration. The trail_pct workstream documented the gap and reverted
+to deployed; this KI is the durable tracker for resolution.
+
+**References.**
+
+- ADR-032 (validation methodology that surfaced this gap).
+- `data/processed/trail_pct_constrained_sweep.md` — final section
+  "Adjacent finding: filter-ON vs filter-OFF inconsistency" is the
+  canonical write-up.
+- `crypto_backtest_runs` row `backtest_10d_D_top_n_f74ee424` —
+  filter-ON 0.30 baseline; the evidence backing the -31.9% number.
+- `crypto_backtest_runs` row `backtest_10d_D_top_n_a02e15a0` —
+  filter-OFF 0.30 baseline; the currently-deployed
+  `PHASE1B_WINNER_RUN_ID`.
+- `crypto/exports/write_daily_predictions.py` — confirms live
+  execution applies the post-parabolic filter.
+- `data/exports/active_spec.json` — `risk.max_account_drawdown_pct
+  = 0.30` and `backtest_expectations.portfolio_max_dd_pct = -23.7%`.
 
 ## Recently resolved (post-Session-7)
 
