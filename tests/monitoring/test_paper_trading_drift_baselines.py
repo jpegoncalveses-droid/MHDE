@@ -251,3 +251,178 @@ def test_label_hit_rate_respects_baseline_entry_date(temp_db, monkeypatch):
     # All 25 pre-baseline candidates excluded → no settled labels remain
     assert res.metrics["label_n"] == 0
     assert "insufficient sample" in res.body.lower()
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Message-clarity (KI: drift_monitor_count_discrepancy.md)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_check_c_message_names_pre_baseline_exclusion_count(temp_db, monkeypatch):
+    """KI/drift_monitor_count_discrepancy Part A: when pre-baseline trades
+    are excluded from the Check C denominator, the human-readable
+    "insufficient sample" line must name BOTH the count and the
+    baseline date so the operator can tell why the denominator is small."""
+    monkeypatch.setattr(ptd, "_latest_baseline_date",
+                        lambda: date(2026, 5, 12))
+
+    eng = _new_engine_db()
+    _healthy_engine(eng)
+    _populate_pre_and_post_baseline(eng)  # 17 pre + 8 post
+
+    res = ptd.run(engine_conn=eng, mhde_conn=temp_db, now=NOW)
+    assert res.metrics["closed_trade_n_excluded_pre_baseline"] == 17
+    body = res.body.lower()
+    assert "17 excluded as pre-baseline" in body, (
+        f"Check C message must name the 17-trade exclusion; got body={res.body!r}"
+    )
+    assert "2026-05-12" in res.body, (
+        f"Check C message must name the baseline date; got body={res.body!r}"
+    )
+
+
+def test_check_c_message_omits_pre_baseline_clause_when_zero(temp_db, monkeypatch):
+    """Negative case: when no trades are excluded, the message must not
+    mention pre-baseline at all (would be noise / confusing)."""
+    monkeypatch.setattr(ptd, "_latest_baseline_date",
+                        lambda: date(2026, 1, 1))  # months ago — excludes nothing
+
+    eng = _new_engine_db()
+    _healthy_engine(eng)
+    # Only 8 post-baseline trades — under MIN_CLOSED_FOR_HITRATE
+    post_exit = datetime(2026, 5, 13, 12, 0, 0)
+    for i in range(8):
+        _add_closed_trade(eng, f"post-{i}", f"POST{i}USDT",
+                          date(2026, 5, 12), 100.0, 10.0, 105.0, post_exit)
+
+    res = ptd.run(engine_conn=eng, mhde_conn=temp_db, now=NOW)
+    assert res.metrics["closed_trade_n_excluded_pre_baseline"] == 0
+    body = res.body.lower()
+    assert "pre-baseline" not in body, (
+        f"Empty exclusion bucket should not appear; got body={res.body!r}"
+    )
+
+
+def test_check_d_message_splits_unsettled_and_pre_baseline_buckets(
+    temp_db, monkeypatch
+):
+    """KI/drift_monitor_count_discrepancy Part B: when entry_lo > entry_hi
+    (baseline > today - LABEL_SETTLE_DAYS), the bare n_unsettled count
+    double-attributes pre-baseline trades as "not settled yet". The
+    monitor must split the two buckets and report both honestly.
+
+    Reproduction: baseline=2026-05-14 (today), today's drift-monitor run.
+    entry_hi = today - 10 = 2026-05-04. entry_lo = max(2026-04-20,
+    2026-05-14) = 2026-05-14 — inverted window.
+    """
+    # NOW_BASELINE_TODAY: drift monitor runs on 2026-05-14 with baseline=today.
+    now_baseline_today = datetime(2026, 5, 14, 22, 0, 0)
+    monkeypatch.setattr(ptd, "_latest_baseline_date",
+                        lambda: date(2026, 5, 14))
+
+    eng = _new_engine_db()
+    # Engine is alive today
+    eng.execute(
+        "INSERT INTO engine_runs (id, phase, started_at, success) VALUES (?,?,?,?)",
+        ["r-monitor", "monitor", now_baseline_today - timedelta(seconds=40), True],
+    )
+    eng.execute(
+        "INSERT INTO engine_runs (id, phase, started_at, success) VALUES (?,?,?,?)",
+        ["r-entry", "entry",
+         now_baseline_today.replace(hour=8, minute=2, second=0, microsecond=0),
+         True],
+    )
+
+    # 25 pre-baseline closed trades (entered 2026-05-10, exited 2026-05-12) +
+    # 2 post-baseline closed trades (entered 2026-05-14, exited later today).
+    pre_entry = date(2026, 5, 10)
+    pre_exit = datetime(2026, 5, 12, 12, 0, 0)
+    for i in range(25):
+        _add_closed_trade(eng, f"pre-{i}", f"PRE{i}USDT",
+                          pre_entry, 100.0, 10.0, 97.0, pre_exit)
+    post_entry = date(2026, 5, 14)
+    post_exit = datetime(2026, 5, 14, 4, 0, 0)
+    for i in range(2):
+        _add_closed_trade(eng, f"post-{i}", f"POST{i}USDT",
+                          post_entry, 100.0, 10.0, 105.0, post_exit)
+
+    res = ptd.run(engine_conn=eng, mhde_conn=temp_db, now=now_baseline_today)
+
+    # Both buckets must be tracked independently in the metrics.
+    assert res.metrics["label_unsettled_skipped"] == 2, (
+        f"Only the 2 post-baseline trades qualify as 'not settled yet'; got "
+        f"{res.metrics.get('label_unsettled_skipped')}"
+    )
+    assert res.metrics.get("label_excluded_pre_baseline") == 25, (
+        f"The 25 pre-baseline trades must be tracked separately; metrics={res.metrics}"
+    )
+
+    # And the human-readable line must show both counts distinctly.
+    body = res.body.lower()
+    assert "25 excluded as pre-baseline" in body, (
+        f"Check D message must name the 25 pre-baseline exclusions; "
+        f"got body={res.body!r}"
+    )
+    assert "2 not settled yet" in body, (
+        f"Check D message must name the 2 trades genuinely waiting on label "
+        f"settlement; got body={res.body!r}"
+    )
+    # Must NOT say "27 not settled yet" — the old misleading behavior.
+    assert "27 not settled yet" not in body, (
+        f"Check D message must not double-count pre-baseline trades into the "
+        f"unsettled bucket; got body={res.body!r}"
+    )
+
+
+def test_inverted_window_logs_warning(temp_db, monkeypatch, caplog):
+    """KI/drift_monitor_count_discrepancy Part C: when baseline >
+    today - LABEL_SETTLE_DAYS the Check D window inverts. The monitor
+    must log a defensive WARNING so an operator inspecting logs after
+    a baseline ship is told that the window will be empty until enough
+    calendar days pass."""
+    import logging
+
+    now_baseline_today = datetime(2026, 5, 14, 22, 0, 0)
+    monkeypatch.setattr(ptd, "_latest_baseline_date",
+                        lambda: date(2026, 5, 14))
+
+    eng = _new_engine_db()
+    _healthy_engine(eng, now=now_baseline_today)
+
+    with caplog.at_level(logging.WARNING,
+                         logger="mhde.monitoring.paper_trading_drift"):
+        ptd.run(engine_conn=eng, mhde_conn=temp_db, now=now_baseline_today)
+
+    log_text = caplog.text.lower()
+    assert "inverted" in log_text or "window will be empty" in log_text, (
+        f"Expected window-inversion warning; got log={caplog.text!r}"
+    )
+    assert "2026-05-14" in caplog.text
+
+
+def test_label_arm_no_double_counting_when_window_not_inverted(
+    temp_db, monkeypatch
+):
+    """Regression: when the window is healthy (baseline old enough), the
+    new bucket split must NOT subtract from the unsettled count.
+
+    Scenario: baseline=2026-05-12, NOW=2026-05-14. entry_hi = 2026-05-04,
+    entry_lo = 2026-05-12 — STILL inverted (lo > hi). Use a baseline far
+    back so the window opens up properly: baseline=2026-04-20.
+    """
+    monkeypatch.setattr(ptd, "_latest_baseline_date",
+                        lambda: date(2026, 4, 20))
+
+    eng = _new_engine_db()
+    _healthy_engine(eng)
+
+    # 3 trades entered well after baseline but not yet 10 days old → unsettled.
+    recent_entry = date(2026, 5, 10)
+    for i in range(3):
+        _add_closed_trade(eng, f"recent-{i}", f"RCT{i}USDT",
+                          recent_entry, 100.0, 10.0, 102.0,
+                          datetime(2026, 5, 11, 12, 0, 0))
+
+    res = ptd.run(engine_conn=eng, mhde_conn=temp_db, now=NOW)
+    assert res.metrics["label_unsettled_skipped"] == 3
+    assert res.metrics.get("label_excluded_pre_baseline", 0) == 0

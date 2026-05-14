@@ -295,15 +295,20 @@ def _check_closed_win_rate(eng, now: datetime, metrics: dict) -> list[_Finding]:
     metrics["closed_trade_n_excluded_pre_baseline"] = n_excluded_pre_baseline
     np_note = (f"; {n_no_exit_price} more closed but exit price not recorded by the engine (KI-136)"
                if n_no_exit_price else "")
+    pb_note = (
+        f"; {n_excluded_pre_baseline} excluded as pre-baseline ({baseline.isoformat()})"
+        if n_excluded_pre_baseline and baseline is not None
+        else ""
+    )
 
     if n < MIN_CLOSED_FOR_HITRATE:
         metrics["closed_trade_win_rate"] = None
         if n == 0 and n_no_exit_price:
             return [_Finding("ok",
                 f"closed-trade win rate: {n_no_exit_price} closed trade(s) in last {ROLLING_WINDOW_DAYS}d "
-                f"but the engine doesn't record exit fill prices yet — uncomputable (KI-136)")]
+                f"but the engine doesn't record exit fill prices yet — uncomputable (KI-136){pb_note}")]
         return [_Finding("ok",
-            f"closed-trade win rate: insufficient sample ({n}/{MIN_CLOSED_FOR_HITRATE} priced in last {ROLLING_WINDOW_DAYS}d{np_note})")]
+            f"closed-trade win rate: insufficient sample ({n}/{MIN_CLOSED_FOR_HITRATE} priced in last {ROLLING_WINDOW_DAYS}d{np_note}{pb_note})")]
 
     rate = winners / n
     metrics["closed_trade_win_rate"] = round(rate, 4)
@@ -327,6 +332,22 @@ def _check_label_hit_rate(eng, mhde, now: datetime, metrics: dict) -> list[_Find
     baseline = _latest_baseline_date()
     entry_lo = max(rolling_entry_lo, baseline) if baseline is not None else rolling_entry_lo
 
+    # Part C: defensive warning when a freshly-shipped baseline inverts the
+    # label-settlement window. Until LABEL_SETTLE_DAYS calendar days have
+    # elapsed since the baseline, no post-baseline trade can have a settled
+    # label, and the message would otherwise mis-attribute every closed
+    # trade to "not settled yet". Log so operators inspecting the journal
+    # after a baseline ship see the cause.
+    if baseline is not None and baseline > entry_hi:
+        logger.warning(
+            "paper_trading_drift: label-hit-rate window is inverted "
+            "(entry_lo=%s > entry_hi=%s); baseline=%s is within "
+            "LABEL_SETTLE_DAYS (%d) of today. Window will be empty until "
+            "%s.",
+            entry_lo, entry_hi, baseline.isoformat(), LABEL_SETTLE_DAYS,
+            (baseline + timedelta(days=LABEL_SETTLE_DAYS)).isoformat(),
+        )
+
     pos_rows = eng.execute(
         "SELECT symbol, entry_date FROM positions "
         "WHERE current_state = 'exit_filled' AND entry_price IS NOT NULL "
@@ -334,7 +355,21 @@ def _check_label_hit_rate(eng, mhde, now: datetime, metrics: dict) -> list[_Find
     ).fetchall()
 
     candidates = [(s, d) for (s, d) in pos_rows if entry_lo <= d <= entry_hi]
-    n_unsettled = sum(1 for (_s, d) in pos_rows if d > entry_hi)
+    # Part B: split the "outside window" trades into (a) pre-baseline (real
+    # exclusion) and (b) entry too recent to settle. Without the split, a
+    # pre-baseline trade gets counted as "not settled yet" simply because
+    # its entry_date > entry_hi (when entry_lo > entry_hi, the inequality
+    # holds for trades with entry_date strictly between baseline and
+    # entry_lo as well — yes, that range is empty by construction, but
+    # the inverted-window case below is the operational concern).
+    if baseline is not None:
+        n_excluded_pre_baseline = sum(1 for (_s, d) in pos_rows if d < baseline)
+    else:
+        n_excluded_pre_baseline = 0
+    n_unsettled = sum(
+        1 for (_s, d) in pos_rows
+        if d > entry_hi and (baseline is None or d >= baseline)
+    )
 
     label_map: dict[tuple[str, Any], Optional[int]] = {}
     if candidates:
@@ -360,10 +395,16 @@ def _check_label_hit_rate(eng, mhde, now: datetime, metrics: dict) -> list[_Find
     metrics["label_n"] = n
     metrics["label_unsettled_skipped"] = n_unsettled
     metrics["label_no_label_skipped"] = n_no_label
+    metrics["label_excluded_pre_baseline"] = n_excluded_pre_baseline
 
     if n < MIN_CLOSED_FOR_HITRATE:
         metrics["label_hit_rate"] = None
         extra = []
+        if n_excluded_pre_baseline and baseline is not None:
+            extra.append(
+                f"{n_excluded_pre_baseline} excluded as pre-baseline "
+                f"({baseline.isoformat()})"
+            )
         if n_unsettled:
             extra.append(f"{n_unsettled} not settled yet")
         if n_no_label:
