@@ -71,8 +71,16 @@ def run_all(
         tickers = tickers_override
         logger.info("Tickers capped to %d (override)", len(tickers))
     else:
+        # ORDER BY universe_tier DESC: 'primary' sorts after 'extended'
+        # alphabetically, so DESC puts primary tier first. With max_symbols
+        # truncating the list, primary fills the cap before extended competes
+        # for slots. Pre-fix (no DESC) the 174 extended rows displaced 99
+        # ML-universe primary tickers (ODFL → XYL alphabetically). See
+        # ADR-031 / KI-143. Same SQL is duplicated in pipelines/daily_radar.py;
+        # follow-up KI-144 tracks extracting to a shared helper.
         rows = conn.execute(
-            "SELECT ticker FROM companies WHERE is_active = true ORDER BY universe_tier, ticker"
+            "SELECT ticker FROM companies WHERE is_active = true "
+            "ORDER BY universe_tier DESC, ticker"
         ).fetchall()
         tickers = [r[0] for r in rows]
         max_symbols = cfg.get("universe", {}).get("max_symbols")

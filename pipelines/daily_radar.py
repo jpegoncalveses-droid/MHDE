@@ -72,9 +72,16 @@ def run(cfg: dict, conn: duckdb.DuckDBPyConnection) -> RunSummary:
             logger.error("Universe build failed: %s", exc)
             summary.warnings.append(f"Universe build failed: {exc}")
 
+    # ORDER BY universe_tier DESC: see ingestion/orchestrator.py for the full
+    # rationale (ADR-031 / KI-143). The list built here is what daily-radar
+    # passes as `tickers_override` to ingestion/orchestrator.py:run_all, which
+    # short-circuits the orchestrator's own SELECT — so this is the call site
+    # that actually reaches production. Both queries must stay byte-identical
+    # until KI-144 (shared helper) consolidates them.
     tickers = [
         r[0] for r in conn.execute(
-            "SELECT ticker FROM companies WHERE is_active = true ORDER BY universe_tier, ticker"
+            "SELECT ticker FROM companies WHERE is_active = true "
+            "ORDER BY universe_tier DESC, ticker"
         ).fetchall()
     ]
     max_symbols = cfg.get("universe", {}).get("max_symbols")

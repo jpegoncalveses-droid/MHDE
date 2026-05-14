@@ -1751,3 +1751,144 @@ fail-loud if the freshness check is widened past today, which is
 the intended guardrail. The orchestrator-shape integration test
 (`test_polygon_t1_does_not_short_circuit_stooq_t0`) double-pins
 the failure mode that originally let this slip through.
+
+---
+
+## ADR-031 — Universe-tier sort puts primary first so the dev-mode cap displaces extended, not primary
+
+**Status:** accepted 2026-05-14. Implemented on branch
+`fix-equity-orchestrator-tier-sort`. Single-character SQL change
+applied to two byte-identical call sites
+(`ingestion/orchestrator.py` and `pipelines/daily_radar.py`).
+No schema change, no orchestration change, no engine repo change.
+
+**Context.** The equity ingest universe is built by selecting
+`SELECT ticker FROM companies WHERE is_active = true ORDER BY
+universe_tier, ticker` and slicing to a `max_symbols` cap (520 in
+production). The same SELECT lives in two places: the orchestrator
+itself (`ingestion/orchestrator.py:75`, called by direct CLI `python
+main.py ingest`) and the daily-radar pipeline
+(`pipelines/daily_radar.py:77`, called by the 23:15 UTC
+`mhde-daily-analysis.service`). Daily-radar passes its own list to
+the orchestrator as `tickers_override`, which short-circuits the
+orchestrator's own SELECT — so daily_radar.py is the call site that
+actually reaches production every night.
+
+In SQL, `'extended'` sorts alphabetically before `'primary'`. With
+the live shape of 174 extended-tier rows + 504 primary-tier rows =
+678 total, the pre-fix sort produced:
+
+- positions 0-173: 174 extended-tier tickers (alphabetical)
+- positions 174-677: 504 primary-tier tickers (alphabetical)
+
+Slicing to `max_symbols=520` therefore included all 174 extended +
+the first 346 primary tickers (A → just before "ODFL"), and dropped
+positions 520-672 — 153 primary tickers from "ODFL" through "XYL".
+Of those 153, 99 passed the ML universe filter (≥$10B market cap,
+non-ETF, sectored) — including `ORCL` ($494B), `WMT` ($450B), `XOM`
+($638B), `PLTR` ($345B), `UNH` ($334B), and many others. They
+silently stopped having `prices_daily` rows ingested, which silently
+stopped having `ml_features` rows computed, which silently shifted
+the active models' `prediction_date` from T-1 to T-2 (because
+`ml_features.MAX(trade_date)` could no longer advance).
+
+The trigger was a data event: the extended tier was first populated
+on 2026-05-01 09:51 UTC and finished filling on 2026-05-02 09:02 UTC
+(per `companies.created_at`). Before that the universe was 504 active
+companies (all primary), which fit comfortably under the 520 cap. The
+sort was latent-buggy from inception — only the introduction of the
+extended tier exposed it. ML feature coverage dropped from 411 → 312
+between trade_date 2026-05-01 and 2026-05-04, and stayed at ~311 for
+two weeks until the per-pipeline equity monitor (deployed 2026-05-12,
+ADR-026) flagged the prediction-side T-1 → T-2 lag and a read-only
+investigation traced it back here.
+
+**Decision.** Add `DESC` to the ORDER BY in both call sites:
+
+```sql
+SELECT ticker FROM companies WHERE is_active = true
+ORDER BY universe_tier DESC, ticker
+```
+
+`'primary'` > `'extended'` alphabetically, so DESC puts the 504
+primary-tier tickers in positions 0-503 of the sorted list. The
+520-slot cap now fills as 504 primary + first 16 extended, which is
+exactly the production intent ("ingest the full ML universe; use
+extended slots only for incidental coverage"). Live verification
+against the current `companies` snapshot confirms the cap goes from
+312 → 416 ML-universe tickers (full recovery, +104 tickers
+including all the displaced names).
+
+**Alternatives considered.**
+- *Two-pass selection (Option B from the investigation):* "include
+  all primary tickers up to cap, then fill remaining slots with
+  extended in alphabetical order." Functionally equivalent to the
+  ORDER BY DESC approach in the current shape (504 primary fits
+  under 520 cap with room to spare). More code; no incremental
+  capability. Rejected as more complex without benefit.
+- *Remove the `max_symbols` cap entirely (Option C):* The cap was
+  introduced when `ingestion/ingest_prices.py` looped per-ticker
+  against Polygon's rate-limited per-ticker endpoint and 504
+  tickers took ~50 minutes to ingest. After the 2026-05-09
+  grouped-daily switch (commit `473b92a`, ADR pending), Polygon
+  serves the entire ~12k US stock list in one HTTP call regardless
+  of universe size. The cap no longer rate-limits anything. Removing
+  it is the cleanest long-term fix but has larger blast radius
+  (every downstream consumer that assumed `len(tickers) ≤ 520` would
+  see ~678 tickers). Tracked as KI-145 follow-up; deferred so the
+  immediate ML-universe fix could ship as a one-character change.
+- *Refactor both call sites to a shared helper* (e.g.
+  `universe.get_active_tickers_for_ingest(conn, max_symbols)`).
+  Eliminates the parallel-query duplication that let the bug slip
+  past code review (one ORDER BY change should not need to be
+  applied to two files in lock-step). Larger change touching
+  multiple files; tracked as KI-144 follow-up.
+
+**Trade-off accepted.** Under the new sort, on each daily-radar fire
+all 504 primary tickers are ingested plus the first 16 extended
+tickers (alphabetical). 158 extended tickers (positions 16-173 in
+the post-fix sort) are NOT ingested. Per KI-122, the extended tier
+contains 174 stale rows accumulated from prior universe builds —
+none of which currently flow through to `ml_features` (the ≥$10B
+filter excludes them). Losing extended-tier ingestion for those 158
+rows therefore has no observable downstream effect today. KI-122
+remains the open follow-up on extended-tier reconciliation; this
+ADR doesn't claim to resolve it, only to stop it from displacing
+primary-tier coverage.
+
+**Files of record.**
+- `ingestion/orchestrator.py` — line 75; ORDER BY clause now
+  `universe_tier DESC, ticker`. Inline block comment cites this ADR
+  + KI-143 + KI-144 (the duplication follow-up) so a future reader
+  doesn't "tighten" by removing DESC without re-reading the rationale.
+- `pipelines/daily_radar.py` — line 77; identical change. Inline
+  comment cross-references the orchestrator ADR rationale and notes
+  this is the call site that reaches production via
+  `tickers_override`.
+- `tests/equity/test_orchestrator_universe_sort.py` (NEW) — 5
+  pinned regressions:
+  1. `test_primary_tier_fills_cap_first` — behavioural pin: with
+     500 primary + 174 extended seeded, the first 520 slots after
+     the (fixed) sort contain all 500 primary + 20 extended.
+  2. `test_full_universe_returned_when_below_cap` — edge case:
+     small universe (4 tickers) returns full set regardless of
+     cap.
+  3. `test_inactive_tickers_excluded` — sanity pin: the
+     `is_active = true` filter remains intact under the new sort.
+  4. `test_orchestrator_uses_primary_first_sort` — duplication-pin
+     A: reads `ingestion/orchestrator.py` source, asserts the
+     fixed ORDER BY clause is present and the buggy form is not.
+  5. `test_daily_radar_uses_primary_first_sort` — duplication-pin
+     B: same assertions on `pipelines/daily_radar.py`. Both
+     duplication-pins fail-loud if either file drifts.
+- `KNOWN_ISSUES.md` — KI-143 added (opened + resolved 2026-05-14),
+  KI-144 added (open follow-up: shared helper extraction), KI-122
+  amended to note the related fix landed here. KI-145 added (open
+  follow-up: `max_symbols` cap removal post-grouped-daily).
+
+**Reversibility.** One-character revert per file. The two
+duplication-pin tests fail-loud if either file is reverted, which is
+the intended guardrail. The behavioural test fails if the sort order
+changes such that primary no longer fills the cap first (e.g. if a
+future change removes the `is_active` filter and includes inactive
+tickers ahead of primary).
