@@ -252,3 +252,66 @@ def _to_datetime(value) -> datetime:
     if isinstance(dt, datetime) and dt.tzinfo is not None:
         dt = dt.replace(tzinfo=None)
     return dt
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Equity T-2 honest banner (KI-149 follow-up, resumption queue Step 5)
+# ──────────────────────────────────────────────────────────────────────
+
+def format_equity_t2_banner(prediction_date: date, today: date) -> str:
+    """Honest "predictions as of …" copy for the equity dashboard.
+
+    The equity engine is on a T-2 cadence (Polygon free-tier delays
+    current-day grouped-daily by ≥2 trading days; see
+    ``docs/EQUITY_WORKSTREAM_PAUSED.md`` for the architectural decision).
+    This helper labels the scoring date so the operator can tell at a
+    glance:
+
+      * whether the dashboard is showing the expected T-2 state, or
+      * accidentally stale (>T-2 — usually means feature-pipeline or
+        ingestion is behind), or
+      * the unusual T-0 / T-1 case (paid-tier or backfill).
+
+    Returns Streamlit-markdown text. The prediction date is bolded; the
+    trading-day gap and the cadence label (T-0 / T-1 / T-2 / stale) are
+    explicit so the message reads correctly even if the operator only
+    glances at it.
+    """
+    from datetime import timedelta
+
+    from pipelines.market_calendar import trading_days_between
+
+    # Coerce common date-ish inputs (pandas.Timestamp, datetime) to date.
+    p = _to_date(prediction_date)
+    t = _to_date(today)
+
+    # Elapsed trading days strictly after the prediction date. Mirrors
+    # pipelines/freshness.py:78 (uses p + 1 day as inclusive start). For
+    # p == t this returns 0; for p one trading day back it returns 1.
+    gap = trading_days_between(p + timedelta(days=1), t) if p <= t else 0
+
+    date_str = f"**{p.isoformat()}**"
+    today_str = t.isoformat()
+
+    if gap == 0:
+        return (
+            f"Predictions as of {date_str} — current (T-0 vs today "
+            f"{today_str})."
+        )
+    if gap == 1:
+        return (
+            f"Predictions as of {date_str} — 1 trading day behind "
+            f"today ({today_str})."
+        )
+    if gap == 2:
+        return (
+            f"Predictions as of {date_str} — 2 trading days behind "
+            f"today ({today_str}). This is the expected **T-2 cadence** "
+            "(Polygon free-tier delays current-day grouped-daily; see "
+            "`docs/EQUITY_WORKSTREAM_PAUSED.md`)."
+        )
+    return (
+        f"Predictions as of {date_str} — {gap} trading days behind "
+        f"today ({today_str}). This is **stale** — check the equity "
+        "ingestion / feature pipeline."
+    )
