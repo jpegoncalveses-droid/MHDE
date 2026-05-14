@@ -15,10 +15,12 @@ _BASE = "https://api.stlouisfed.org/fred"
 _SERIES = {
     "FEDFUNDS": "Federal Funds Rate",
     "DGS10": "10-Year Treasury Yield",
+    "DGS2": "2-Year Treasury Yield",
     "CPIAUCSL": "CPI All Items",
     "UNRATE": "Unemployment Rate",
     "PAYEMS": "Nonfarm Payrolls",
     "GDP": "Real GDP",
+    "VIXCLS": "VIX Close",
 }
 
 

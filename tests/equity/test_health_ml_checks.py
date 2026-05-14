@@ -8,6 +8,7 @@ from health.ml_checks import (
     check_rolling_precision,
     check_ml_tables_freshness,
     check_trained_models,
+    check_cross_asset_freshness,
 )
 
 
@@ -95,3 +96,55 @@ def test_check_trained_models_returns_dict(monkeypatch, tmp_path):
     assert "check_name" in result
     assert "status" in result
     assert result["status"] in ("pass", "warn", "fail")
+
+
+# ── Cross-asset freshness ─────────────────────────────────────────────────────
+
+def _seed_price(conn, ticker: str, d: date, source: str = "yahoo") -> None:
+    conn.execute(
+        "INSERT INTO prices_daily (id, ticker, trade_date, open, high, low, close, "
+        "volume, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT (ticker, trade_date) DO NOTHING",
+        ["id" + ticker + d.isoformat(), ticker, d, 100.0, 101.0, 99.0, 100.0, 1_000_000, source],
+    )
+
+
+def test_check_cross_asset_freshness_empty_db_fails(temp_db):
+    """No prices_daily rows for any reference ticker → status=fail."""
+    result = check_cross_asset_freshness(temp_db)
+    assert result["check_name"] == "cross_asset_freshness"
+    assert result["status"] == "fail"
+
+
+def test_check_cross_asset_freshness_all_fresh_passes(temp_db):
+    """All reference tickers fresh (today) → status=pass."""
+    today = date.today()
+    for t in ("SPY", "VIX", "XLK", "XLF", "XLV", "XLE", "XLY",
+              "XLI", "XLP", "XLB", "XLU", "XLRE"):
+        _seed_price(temp_db, t, today)
+    result = check_cross_asset_freshness(temp_db)
+    assert result["status"] == "pass", f"got {result}"
+
+
+def test_check_cross_asset_freshness_stale_spy_fails(temp_db):
+    """SPY stale > threshold → fail/warn, with SPY named in the message."""
+    today = date.today()
+    _seed_price(temp_db, "SPY", today - timedelta(days=14))
+    for t in ("VIX", "XLK", "XLF", "XLV", "XLE", "XLY",
+              "XLI", "XLP", "XLB", "XLU", "XLRE"):
+        _seed_price(temp_db, t, today)
+    result = check_cross_asset_freshness(temp_db)
+    assert result["status"] in ("fail", "warn")
+    assert "SPY" in result["message"]
+
+
+def test_check_cross_asset_freshness_missing_ticker_fails(temp_db):
+    """A reference ticker entirely absent from prices_daily → fail/warn naming it."""
+    today = date.today()
+    # Seed everything except XLRE
+    for t in ("SPY", "VIX", "XLK", "XLF", "XLV", "XLE", "XLY",
+              "XLI", "XLP", "XLB", "XLU"):
+        _seed_price(temp_db, t, today)
+    result = check_cross_asset_freshness(temp_db)
+    assert result["status"] in ("fail", "warn")
+    assert "XLRE" in result["message"]

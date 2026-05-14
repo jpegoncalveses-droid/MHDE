@@ -57,6 +57,59 @@ def check_rolling_precision(conn: duckdb.DuckDBPyConnection) -> dict:
             "message": f"Precision: {precision:.0%} ({hits}/{n} hits)"}
 
 
+_REFERENCE_TICKERS = (
+    "SPY", "VIX",
+    "XLK", "XLF", "XLV", "XLE", "XLY",
+    "XLI", "XLP", "XLB", "XLU", "XLRE",
+)
+_CROSS_ASSET_MAX_AGE_DAYS = 3
+
+
+def check_cross_asset_freshness(conn: duckdb.DuckDBPyConnection) -> dict:
+    """Assert SPY/VIX/sector-ETF prices in prices_daily are within T-3.
+
+    These feed ml/features.py (return_vs_spy_*, return_vs_sector_*, beta_60d,
+    vix_level, vix_change_5d). If any are missing or stale, those features
+    silently go NULL on every prediction. See KI for ReferenceTickersIngestor.
+    """
+    today = date.today()
+    threshold = today - timedelta(days=_CROSS_ASSET_MAX_AGE_DAYS)
+    missing: list[str] = []
+    stale: list[tuple[str, date, int]] = []
+
+    for ticker in _REFERENCE_TICKERS:
+        row = conn.execute(
+            "SELECT MAX(trade_date) FROM prices_daily WHERE ticker = ?",
+            [ticker],
+        ).fetchone()
+        latest = row[0] if row else None
+        if latest is None:
+            missing.append(ticker)
+            continue
+        if isinstance(latest, str):
+            latest = date.fromisoformat(latest)
+        elif hasattr(latest, "date") and not isinstance(latest, date):
+            latest = latest.date()
+        if latest < threshold:
+            stale.append((ticker, latest, (today - latest).days))
+
+    if missing:
+        return {
+            "check_name": "cross_asset_freshness", "status": "fail", "severity": "critical",
+            "message": f"Missing reference tickers in prices_daily: {', '.join(missing)}",
+        }
+    if stale:
+        names = ", ".join(f"{t} ({age}d)" for t, _, age in stale)
+        return {
+            "check_name": "cross_asset_freshness", "status": "fail", "severity": "high",
+            "message": f"Stale reference tickers (>{_CROSS_ASSET_MAX_AGE_DAYS}d): {names}",
+        }
+    return {
+        "check_name": "cross_asset_freshness", "status": "pass", "severity": "low",
+        "message": f"All {len(_REFERENCE_TICKERS)} reference tickers fresh (≤{_CROSS_ASSET_MAX_AGE_DAYS}d)",
+    }
+
+
 def check_ml_tables_freshness(conn: duckdb.DuckDBPyConnection) -> list[dict]:
     results = []
     for table in ("ml_features", "ml_labels"):
