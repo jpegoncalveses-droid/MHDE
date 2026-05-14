@@ -1892,3 +1892,158 @@ the intended guardrail. The behavioural test fails if the sort order
 changes such that primary no longer fills the cap first (e.g. if a
 future change removes the `is_active` filter and includes inactive
 tickers ahead of primary).
+
+---
+
+## ADR-032 — Validation methodology for parameters affecting portfolio drawdown
+
+**Status:** accepted 2026-05-14. Methodology lesson; no code change in this
+ADR. Derived from the `feat-trail-pct-tighten-to-0.10` workstream, where
+walkfold per-fold dominance pointed to a ship that portfolio-level
+simulation later rejected. Future-binding on the operator and on any
+agent making spec changes that affect Policy D exit or position
+concurrency parameters.
+
+**Context.** The 2026-05-14 walkfold validation
+(`data/processed/trail_pct_walkfold_validation.md`) compared crypto
+`trail_pct` values 0.05 → 0.30 across six non-overlapping ~2-month folds
+on the live window 2025-04-05 → 2026-05-07. `trail_pct=0.10` dominated
+the deployed `0.30` on both Sharpe (per-fold mean 7.42 vs 6.35,
+0.10 winning all six folds) and the walkfold's "Max DD" metric
+(per-fold mean −24.30% vs −28.70%, 0.10 winning 5 of 6 folds — the
+combined dominance criterion the operator was using). On that evidence the `feat-trail-pct-tighten-to-0.10`
+ship workstream was opened: a full-window backtest was persisted at
+trail=0.10, `PHASE1B_WINNER_RUN_ID` was repointed, and
+`active_spec.json` was regenerated.
+
+The regenerated spec exposed a disagreement the walkfold validation had
+not. The spec's own `backtest_expectations.portfolio_max_dd_pct` came
+back at **−37.0%** for trail=0.10, exceeding the live
+`risk.max_account_drawdown_pct = 0.30` catastrophic guard. The
+constrained sweep
+(`data/processed/trail_pct_constrained_sweep.md`) then showed every
+trail value tested (0.10, 0.15, 0.20, 0.25, 0.30) producing
+portfolio_max_dd worse than the −25% safety floor:
+
+| trail | walkfold dom. vs 0.30 | walkfold mean max_dd | portfolio max_dd |
+|---:|---:|---:|---:|
+| 0.10 | 5/6 | −24.30% | **−37.03%** |
+| 0.15 | 5/6 | −25.96% | **−37.67%** |
+| 0.20 | 4/6 | −27.53% | **−38.31%** |
+| 0.25 | 3/6 | −28.18% | **−31.60%** |
+| 0.30 | baseline | −28.70% | **−31.91%** |
+
+The two metrics are not the same number measured differently — they are
+different metrics. The walkfold "Max DD" is the per-fold maximum of the
+running sum of per-trade net P&L fractions: no starting capital, no
+position-size cap, no compounding. The portfolio simulator
+(`crypto/execution/backtest/report.py:simulate_portfolio`) models the
+live deployment shape — $1,000 starting capital, max 6 concurrent
+positions, deploy_fraction=0.8, leverage=1.0, position size computed off
+current equity each entry. Compounding amplifies tail drawdowns
+asymmetrically: when equity is at a high after a winning streak,
+position sizes are larger, so a regime like F2 (2025-06-05 →
+2025-08-04, where trail=0.10 walkfold max_dd is −57.7%) draws down a
+much larger nominal balance than the walkfold's capital-naive metric
+suggests. Walkfold validation measures *signal-and-exit fit*. It does
+not measure *envelope conformance* against the engine's kill switch.
+
+**Decision.** Future spec changes on any axis where compounding can
+amplify portfolio drawdown — `trail_pct`, `activation_pct`, `top_n`,
+`max_concurrent`, `deploy_fraction`, or any new position-sizing logic
+— require **BOTH** of the following before the spec is regenerated and
+the active prediction path is repointed:
+
+1. **Walkfold per-fold dominance over the deployed baseline in ≥ 4 of
+   6 folds.** Computed by `.claude/local_scripts/backtest_trail_walkfold.py`
+   (or the equivalent harness for the axis under test) over the
+   current production window, on Sharpe ratio as the primary metric.
+   This is the existing gate; it stays.
+2. **Portfolio-simulator full-window run with `max_dd ≤ −25%`
+   (a 5-percentage-point safety margin below the live
+   `risk.max_account_drawdown_pct = 0.30` kill switch) AND portfolio
+   Sharpe meaningfully above the deployed baseline (operator default:
+   ≥ baseline + 0.10).** Computed by `simulate_portfolio(
+   starting_capital=1000, max_positions=6, deploy_fraction=0.8,
+   leverage=1.0)` — exactly the call `_backtest_expectations` makes
+   when the spec is generated. Same params, full window, post-parabolic
+   filter ON (matching live).
+
+Gate (1) is necessary but not sufficient. Gate (2) is the catastrophic
+guard. Both must pass; if either fails, **HOLD** the deployed value.
+
+**Rationale.** Walkfold validation answers: *does this parameter fit
+the signal-and-exit dynamics better in held-out windows?* The portfolio
+simulator answers: *does the resulting trade stream survive the
+capital envelope the engine actually enforces?* These are independent
+questions, and the trail_pct=0.10 case proves they can disagree on the
+metric that matters most — the catastrophic kill-switch boundary. A
+parameter that wins on per-fold P&L geometry but loses on capital-
+constrained simulation is a parameter that ships well in research and
+trips the kill switch in production. The portfolio simulator is the
+last validation step before the live envelope; it must precede the
+spec repoint, not follow it.
+
+**Alternatives considered.**
+
+- *Walkfold-only (the status quo).* Empirically demonstrated
+  insufficient by the trail_pct=0.10 case. Walkfold dominance pointed
+  to a ship; portfolio simulation showed every candidate trail value
+  exceeded the −30% kill switch. Without gate (2) the workstream
+  would have shipped a spec whose own `backtest_expectations` admitted
+  to a kill-switch-tripping drawdown — a self-inconsistent artifact.
+  Rejected.
+- *Live shadow trading as the second gate.* Conceptually stronger than
+  simulation because it captures real fill quality, real slippage, and
+  real funding behaviour. Out of scope: the engine's
+  shadow-vs-live-mode harness is not yet built (Phase 3 of
+  `docs/PATH_TO_LIVE_PLAN.md`). Until that infrastructure exists, the
+  portfolio simulator is the best proxy for the envelope. Re-evaluate
+  this ADR when Phase 3 lands; shadow trading would supersede gate
+  (2), not duplicate it.
+- *Portfolio-simulator-only.* Skips the per-fold robustness check.
+  Full-window simulation can hide regime-specific failure modes that
+  walkfold surfaces — e.g. a parameter that looks fine over the whole
+  window because a benign late-window regime drowns out an awful
+  mid-window one. Walkfold dominance is cheap to compute and adds a
+  robustness signal the full-window simulation lacks. Rejected.
+
+**Consequences.**
+
+- The trail_pct=0.10 rejection is the canonical example for future
+  operators: walkfold-dominant, portfolio-failing, correctly held.
+  Anyone shipping a Policy D exit-parameter change should read both
+  research markdowns before opening the PR.
+- The pre-ship checklist for any param change affecting portfolio DD
+  must now state, explicitly, both gates and the kill-switch margin.
+  This belongs in `OPERATIONS.md` under spec-change procedure (filed
+  as a follow-up; not in scope of this ADR).
+- The walkfold validation script
+  (`.claude/local_scripts/backtest_trail_walkfold.py`) currently
+  computes per-fold raw-P&L max drawdown. Extending it to also run
+  `simulate_portfolio` on each fold's trades would surface the
+  capital-constrained metric at walkfold granularity, catching the
+  envelope problem before the ship workstream starts rather than
+  after. Filed as a separate KI to avoid scope creep here; the gate
+  defined in this ADR remains the full-window portfolio simulation,
+  which is the metric the spec's own expectations use.
+- This ADR binds the methodology, not a specific parameter. Future
+  axes that compound into portfolio drawdown (e.g. a new
+  position-sizing policy, a leverage knob) are governed by it
+  automatically; the ADR does not need to be amended per-axis.
+
+**References.**
+
+- `data/processed/trail_pct_walkfold_validation.md` — six-fold sweep,
+  trail=0.05 → 0.30, Sharpe + walkfold max_dd + per-fold P&L. Source
+  of the dominance claim.
+- `data/processed/trail_pct_constrained_sweep.md` — full-window dual-
+  gate sweep, walkfold dominance count + portfolio-simulator Sharpe +
+  portfolio max_dd, per trail value. Source of the methodological
+  finding immortalised here.
+- `crypto/execution/backtest/report.py` — `simulate_portfolio`
+  implementation; the function call shape that gate (2) requires.
+- `data/exports/active_spec.json` — `risk.max_account_drawdown_pct`,
+  the live kill-switch envelope the safety floor is set 5pp under.
+- ADR-024 (knockout label validation methodology) — adjacent precedent
+  for "walkfold isn't the whole gate."
