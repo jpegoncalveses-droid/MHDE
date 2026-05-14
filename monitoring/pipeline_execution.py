@@ -51,9 +51,17 @@ RECENCY_BUDGET = {
     # 3h grace. Holiday-extended weekends may still warn — accepted.
     # See ADR-015 for rationale.
     "equity": timedelta(hours=75),
-    # Crypto: 24/7 scoring at 00:30 UTC; no weekend gap.
-    # 27h = 24h cycle + 3h grace.
-    "crypto": timedelta(hours=27),
+    # Crypto: 24/7 scoring at 00:30 UTC writes prediction_date = T-1
+    # (the last completed features `trade_date`), not the run time.
+    # Age right after a successful fire is therefore ~24h 30m, and
+    # right before the next fire is ~48h 30m — the same cycle-on-T-1
+    # pattern as equity, just without the weekend roll. 51h = 48h
+    # cycle + 3h grace; this still catches a single missed fire
+    # within ~3h after the second day's scheduled run. See ADR-029
+    # and KI-141. The prior value of 27h assumed prediction_date
+    # incremented to *today*, which it does not, and false-fired
+    # ~21h of every 24h cycle.
+    "crypto": timedelta(days=2, hours=3),
     # FX: hourly at :05; tight budget appropriate.
     "fx":     timedelta(hours=2),
 }

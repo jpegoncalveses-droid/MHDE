@@ -1549,3 +1549,75 @@ trades are excluded from the denominator). The append-only list
 preserves history so a future analyst can see why each baseline was
 set — and so any pre-2026-05-14 P&L is correctly attributed to the v1
 filter (Rule A only) rather than mixed with v2 behavior.
+
+## ADR-029 — pipeline_execution crypto recency budget reflects T-1 prediction_date semantic (27h → 51h)
+
+**Status:** accepted 2026-05-14. Implemented on branch
+`fix-pipeline-execution-crypto-threshold`. Adjusts the threshold
+constant inside `monitoring/pipeline_execution.py:RECENCY_BUDGET`;
+no schema change, no writer change.
+
+**Context.** `monitoring/pipeline_execution.py` flags a pipeline as
+stale when `now - midnight(MAX(prediction_date))` exceeds a per-engine
+`RECENCY_BUDGET`. The crypto entry was `timedelta(hours=27)` with the
+comment "24h cycle + 3h grace". That budget is only correct if
+`prediction_date` increments to *today* on each successful fire. It
+does not: `crypto/ml/predict.py:score_universe` sets
+`prediction_date = MAX(trade_date) FROM crypto_ml_features` — i.e. the
+last completed features day, T-1 calendar. So even immediately after
+the 00:30 UTC fire the age is already ~24h 30m, and right before the
+next fire it is ~48h 30m. The 27h budget alerted from ~03:30 UTC
+onwards every day, regardless of pipeline health.
+
+The same T-1 semantic applies to the equity leg (ADR-015 → 75h budget
+absorbs both T-1 and the Fri→Mon weekend roll). FX is unaffected
+because `fx_ml_predictions` carries a true hourly `datetime_utc`, not
+a calendar date.
+
+**Decision.** Set `RECENCY_BUDGET['crypto'] = timedelta(days=2, hours=3)`
+(51h = 48h cycle + 3h grace). The 3h grace mirrors equity. Source-of-
+truth comment in `monitoring/pipeline_execution.py` rewritten to spell
+out the T-1 cause so a future reader does not "tighten this back down".
+
+**Alternatives considered.**
+- *Switch the column the monitor reads to a run-time stamp
+  (`export_date`, `created_at`).* Cleaner in spirit, but neither
+  `crypto_ml_predictions` nor any sibling table currently carries a
+  reliably-populated run-time stamp. `crypto_signal_exclusions.export_date`
+  is itself a calendar `DATE`. Adopting this option requires (1) a
+  schema change to `crypto_ml_predictions` (add `created_at TIMESTAMP
+  DEFAULT CURRENT_TIMESTAMP`), (2) a writer update, (3) a back-fill
+  decision for historical rows, and (4) a corresponding monitor change.
+  Out of scope for a single-symptom fix; recorded as a follow-up under
+  KI-141.
+- *Tighten back toward 24h+grace by changing what `latest_dt` resolves
+  to (e.g. add 24h on read).* Hides the T-1 semantic in the monitor
+  rather than in the schema. Future readers of either side would need
+  the other to make sense. Rejected.
+- *Make the budget operator-configurable per engine.* No live need; the
+  constant is read once at module import and tested with a pinned
+  literal. Adds knobs without solving anything.
+
+**Trade-off accepted.** At 51h the monitor catches a single missed
+00:30 fire within ~3h of when the *second* day's fire would also have
+to miss — i.e. it requires ~two consecutive missed runs to alert,
+versus the previous (broken) one. The previous behavior was producing
+zero usable signal anyway (firing every day at ~03:30 UTC even when
+healthy); a less sensitive but truthful alarm is strictly better than
+a sensitive but constantly-false one. A row-count alarm and the
+per-pipeline monitor (ADR-026) provide complementary, faster signals
+for single-day issues.
+
+**Files of record.** `monitoring/pipeline_execution.py` (constant +
+header docstring; `RECENCY_BUDGET['crypto']` literal updated, comment
+rewritten to cite this ADR + KI-141),
+`tests/regression/test_pipeline_execution_crypto_t1.py` (three pinned
+regressions: on-time afternoon must pass, just-before-next-fire must
+pass, two-missed-fires must fail). KI-141 added to `KNOWN_ISSUES.md`.
+No engine-repo change. No schema change.
+
+**Reversibility.** Single-constant revert. The pinned regression
+tests fail-loud if the constant is moved back below 48h+grace; that is
+the intended guardrail against accidental reversion. To genuinely
+revisit (e.g. once a run-time column ships), update the tests
+alongside the constant and link the new ADR.

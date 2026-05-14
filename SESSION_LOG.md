@@ -6,6 +6,80 @@ are at the top.
 
 ---
 
+## 2026-05-14 — Pipeline_execution monitor false-positive fix: crypto recency budget 27h → 51h (ADR-029 / KI-141)
+
+**Branch:** `fix-pipeline-execution-crypto-threshold` (committed +
+pushed; **STOPPED for operator review/merge** — push-only per
+branch-handoff pattern, operator opens the PR). Single-repo (MHDE),
+no engine repo change, no schema change.
+
+**Trigger.** `monitoring/pipeline_execution.py` was alerting the
+crypto leg through ~21 hours of every UTC day even when the daily
+00:30 UTC scoring fired on time. Root cause: the monitor's recency
+check compared `now - midnight(MAX(prediction_date))` against a
+`27h` budget commented "24h cycle + 3h grace". But
+`crypto/ml/predict.py:score_universe` writes
+`prediction_date = MAX(trade_date) FROM crypto_ml_features` — the
+last completed features day, i.e. T-1 calendar. So the age right
+after a healthy fire is already ~24h 30m, and the gap before the
+next fire pushes it up to ~48h 30m. The 27h budget assumed
+prediction_date incremented to *today*, which it never does.
+
+**Decision.** Option A from the task brief: raise the crypto
+threshold to `timedelta(days=2, hours=3)` (51h = 48h cycle + 3h
+grace), mirroring equity's ADR-015 pattern (which already absorbs
+the same T-1 semantic plus the Fri→Mon weekend roll). Option B
+(switch the monitor to a run-time column) was rejected for this
+PR because `crypto_ml_predictions` carries no reliably-populated
+run-time timestamp — adding one is a writer-touching multi-file
+change tracked separately as KI-141.
+
+**What shipped.**
+- `monitoring/pipeline_execution.py` — `RECENCY_BUDGET['crypto']`
+  changed from `timedelta(hours=27)` to `timedelta(days=2, hours=3)`.
+  Inline comment rewritten to spell out the T-1 cause and cite
+  ADR-029 + KI-141 so a future reader does not "tighten this back
+  down" without re-reading the rationale.
+- `tests/regression/test_pipeline_execution_crypto_t1.py` (NEW) —
+  three TDD-pinned regressions:
+  1. `test_crypto_ok_at_normal_afternoon` — on-time fire yesterday,
+     now = 14:00 UTC today, age ≈ 38h → must pass. (The case the
+     old 27h budget got wrong.)
+  2. `test_crypto_ok_just_before_next_fire` — on-time fire
+     yesterday, now = 00:29 UTC tomorrow, age ≈ 48h 29m → must
+     pass. (Tightest pre-fire moment in the cycle.)
+  3. `test_crypto_fails_when_two_consecutive_fires_missed` —
+     latest prediction_date 3 days ago, now 04:00 UTC, age ≈ 52h
+     → must fail with `threshold` mentioned in the reason.
+- `DECISIONS.md` — ADR-029: context (T-1 semantic), decision,
+  alternatives considered (run-time column / on-read offset /
+  operator-configurable), trade-off accepted (single-day-miss
+  insensitivity), files of record, reversibility.
+- `KNOWN_ISSUES.md` — KI-141 added (run-time column follow-up),
+  count updated 10 → 11, header sentence amended.
+
+**Verification (L5).**
+- RED: `venv/bin/python -m pytest tests/regression/test_pipeline_execution_crypto_t1.py -v` (before fix) → 2 failed, 1 passed; failure reasons quoted "age N old, threshold 1 day, 3:00:00" — exactly the bug.
+- GREEN (post-fix): same command → **3 passed**.
+- Full pipeline_execution suite:
+  `venv/bin/python -m pytest tests/regression/test_pipeline_execution_*.py tests/equity/test_monitoring.py` → **44 passed**.
+- Pre-existing failures outside this fix (`test_dashboard_structure.py::test_no_module_level_connection` KI-105, `test_systemd_units.py::test_repo_vs_deployed_unit_parity` KI-112) confirmed present on master via `git stash` baseline — unrelated to this branch.
+
+**Pending operator action.**
+- Open the PR, merge, restart `mhde-pipeline-execution.service` (or
+  let the next hourly fire re-import). No DB migration, no engine
+  change. The drift monitor and dashboard are unaffected.
+
+**Open follow-up (KI-141).** Add `created_at TIMESTAMP DEFAULT
+CURRENT_TIMESTAMP` to `crypto_ml_predictions` (and bundle the same
+for equity `ml_predictions` under ADR-015 if the operator agrees),
+then switch the monitor's recency check to `MAX(created_at)` with a
+24h + grace budget. Trade-off doc lives in KI-141; ADR-029
+explicitly defers this so the false-positive fix could ship as a
+one-line change.
+
+---
+
 ## 2026-05-14 — Post-parabolic filter v2: add short-window momentum rule `return_5d < -0.30` (ADR-028)
 
 **Branch:** `feat-postparabolic-add-ret5-filter` (committed + pushed;
