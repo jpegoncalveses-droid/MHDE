@@ -1,8 +1,8 @@
 # Known Issues
 
 **18 open observations** (KI-122, KI-123, KI-126, KI-131, KI-132,
-KI-134, KI-136, KI-137, KI-139, KI-140, KI-141, KI-144, KI-145,
-KI-146, KI-147, KI-148, KI-149, KI-150). KI-122/123 are cosmetic; KI-126 is a future
+KI-134, KI-136, KI-137, KI-139, KI-141, KI-144, KI-145,
+KI-146, KI-147, KI-148, KI-149, KI-150, KI-151). KI-122/123 are cosmetic; KI-126 is a future
 Phase 0 enhancement deferred until weekly reliability snapshots
 accumulate; KI-131 is a low-priority single-day production-model
 row-count dip; KI-132 is a dashboard-deployment-process gap (no
@@ -17,9 +17,7 @@ exclusion filter (ADR-021 + ADR-028) but the model-label root cause is
 the open follow-up; KI-139 catalogs the per-pipeline monitor's v1 scope
 cuts (no auto-remediation, coarse equity-dashboard mtime check, no
 engine-side "why 0 positions" reason, reconcile timer unchecked —
-ADR-026); KI-140 is the 4USDT-class deep-drawdown failure pattern,
-characterized but not addressable by the current `should_exclude` shape
-(tested + rejected as Variant E); KI-141 is a follow-up to ADR-029 —
+ADR-026); KI-141 is a follow-up to ADR-029 —
 add a true run-time timestamp column to `crypto_ml_predictions` so the
 pipeline_execution monitor can detect a single missed fire (the
 ADR-029 budget bump fixed the false-positive but trades sensitivity
@@ -55,7 +53,11 @@ is dead. KI-149 + KI-150 are tracked together in
 `docs/EQUITY_WORKSTREAM_PAUSED.md` as the equity workstream's
 resumption queue (steps 3 and 4). None requires a hot fix — all
 tracked so a future session triages deliberately rather than letting
-them rot in the working tree.
+them rot in the working tree. KI-151 is the "Other"-class characterization
+follow-up to KI-140's closure — 47% of deep losers fit a "late-stage
+uptrend reversal" profile that is describable (AUC 0.74) but not filterable
+without unacceptable winner-rejection cost; productive paths are
+non-exclusion (probability haircut / direction-aware label).
 
 **KI-138** opened + resolved (option A) 2026-05-12 — the cap-at-today-1
 OHLCV ingestion fix (commit 8f9d707) made `MAX(trade_date)` in
@@ -416,57 +418,9 @@ volatility for opportunity. Until then KI-137 stays open: the filter is
 a guard rail, not a cure. Threshold retuning, if any of the three
 constants in `crypto/config.py` proves too narrow or too wide, is a
 one-line change (the historical scan supports −0.15/+1.5 as a
-more-aggressive alternative for Rule A). KI-140 tracks the related but
-distinct 4USDT-class pattern the filter does not address.
-
-### KI-140 — 4USDT-class deep-drawdown failure pattern (characterized, not addressable by exclusion filter; deferred to a separate workstream)
-
-**Symptom.** A recurring deep-loss pattern distinct from KI-137's
-post-parabolic and SWARMSUSDT-class shapes: a coin deeply below its
-90-day high (`dd90 < -0.40`) **in a 60-day downtrend** (`ret60` modestly
-positive or negative, *not* parabolic) shows a recent bounce
-(positive `ret5`/`ret10`) at the entry-time feature snapshot, and the
-model takes the bounce as a buy signal. The bounce fails within days
-and the position grinds down to a `time`-exit loss. Live case: 4USDT
-entered 2026-05-12 (pred 2026-05-11 — `dd90 -43.5%, ret60 +60%,
-ret5 -1.2%, down_days 6/10`), currently −11.8% unrealized.
-
-**Population.** 14 of 93 deep losses (15%) in the validated 941-trade
-Phase-1B-winner backtest. Avg loss −19.3%, worst −34.7%. Characteristic
-profile: `dd90` mean −58.0%, `ret60` mean **−35.0%** (median −32.6%),
-`ret5` mean **+9.0%**, `ret10` mean +11.9%, `down_days` mean 4.5,
-exit_reason = `time` × 14 (none stopped on the trailing).
-
-**Why not addressed by ADR-028.** The proposed Variant E filter
-(`dd90 < -0.40 AND -1.0 < ret60 < 1.0`) was backtested and rejected:
-Sharpe collapsed from 6.32 to 4.36 (−1.96), max DD nearly tripled
-(−16.98% → −40.92%), cumRet dropped 43% relative. Root cause: `dd90 <
--0.40` matches ~40% of the universe in a non-bull regime, turning the
-rule into a regime gate that forces Top-N backfill from rank-7+
-low-probability trades. No tighter dd90/ret60 combination caught the
-class without similar over-filtering. Live 4USDT itself sits on the
-class boundary (`ret60 = +60%` is positive and just below the parabolic
-gate) — even a perfect class filter wouldn't have caught this specific
-incident.
-
-**Hypothesized follow-up directions (none scoped).**
-1. **Trailing-stop tightening at entry-time, conditional on `dd90 <
-   -0.40`.** All 93 deep losers exit on `time` (none on trailing); a
-   tighter trail or an entry-conditional time-stop (e.g. 7d instead of
-   10d when `dd90 < -0.40` or `realized_vol_30d > 1.5`) could truncate
-   the loss without touching entries.
-2. **Probability-haircut on deep-dd entries.** A multiplier on
-   `predicted_probability` when `dd90 < -0.40`, applied before Top-N
-   selection — narrower than a binary gate, less prone to backfill
-   damage. Out of scope here (ADR-021 §3 chose hard exclude over
-   haircut for the SKYAI class on different grounds — would need a
-   separate ADR for this case).
-3. **Direction-aware label** (the KI-137 "real fix") would likely
-   address this class as a side-effect.
-
-**Status.** Open. Re-prioritized only when a new failure of this class
-materially impacts paper-trading P&L, or when KI-137's label rework
-makes a re-test cheap.
+more-aggressive alternative for Rule A). The related-but-distinct
+4USDT-class pattern is closed at KI-140 (Recently Resolved
+2026-05-14); the 47% "Other"-class residual is at KI-151.
 
 ### KI-141 — `crypto_ml_predictions` carries no run-time stamp; pipeline_execution can only detect a 2-day outage, not a 1-day miss
 
@@ -1062,7 +1016,150 @@ hr depending on root cause).
   catch.
 - `docs/EQUITY_WORKSTREAM_PAUSED.md` — resumption queue step 4.
 
+### KI-151 — "Other"-class deep losers (47% of deep losers) characterized as "late-stage uptrend reversal" but not filterable
+
+**Symptom.** After KI-140's exclusion-rule closure, 47% of deep losers
+(44 of 93 in the 941-trade Phase-1B backtest, mean final P&L −24.59%)
+remain unattributed to either the SWARMSUSDT-class (ADR-028 addresses)
+or the 4USDT-class (KI-140 closes). They share a coherent entry-time
+profile but no filter rule on the available features can isolate them
+without unacceptable winner-rejection cost.
+
+**Profile (extended uptrend, overbought, calm BTC vol).** Vs the 776
+winners in the same window, all KS p < 1e-4 unless noted:
+
+- `drawdown_from_90d_high`: Other **−17.9%** vs winners **−39.6%**
+  (mean shift +1.08 SD) — Other are *near peak*, not pulled back.
+- `rsi_14d`: Other **59.0** vs winners **49.8** (shift +0.70 SD).
+- `bollinger_position`: Other **+0.39** vs winners **+0.01** (shift
+  +0.58 SD) — pressed against upper band.
+- `price_vs_50d_ma`: Other **+25.7%** vs winners **+8.1%** (shift
+  +0.33 SD).
+- `return_60d`: Other **+53.1%** vs winners **+28.0%** (shift
+  +0.18 SD).
+- `funding_rate_zscore`: Other **+0.47** vs winners **−0.30** (shift
+  +0.21 SD) — crowded long, expensive carry.
+- `btc_vol_30d`: Other **0.34** vs winners **0.41** (shift −0.74 SD)
+  — Other losses happen in *tame* tape, not crashes.
+
+Synthesis: late-stage uptrend reversal. Coins that have been running,
+are overbought, sit near peak, attract crowded longs, and the model
+buys them just before a pullback in an otherwise calm market.
+
+**Status: describable but not filterable.** A 5-fold-CV logistic
+regression on all crypto_ml_features columns reaches **AUC 0.743** —
+modestly informative but not concentrated enough for a precision
+filter. The cohort base rate is 44 / 941 ≈ 4.7%; every economically
+meaningful threshold filters 5–13 winners per Other-loser caught.
+Economic analysis using BASELINE's empirical edges (winners +9.26%,
+Other-losers −24.59% — a 2.7× P&L asymmetry):
+
+| threshold | TP saved | FP foregone | NET |
+|---:|---:|---:|---:|
+| 0.50 | +664 pp | −1759 pp | **−1095 pp** |
+| 0.70 | +393 pp |  −991 pp | **−598 pp** |
+| 0.80 | +221 pp |  −574 pp | **−353 pp** |
+| 0.90 | +123 pp |  −222 pp | **−99 pp** |
+| 0.95 |  +49 pp |   −56 pp | **−7 pp** (N=2, noise) |
+
+No threshold is Sharpe-positive — the 5-13× volume asymmetry overwhelms
+the 2.7× P&L asymmetry at every operating point. This generalises the
+ADR-028 Variant E rejection: the broader cohort exhibits the same
+"filter would gut the winner distribution" pathology.
+
+**Productive paths from here (none scoped).**
+
+1. **Probability haircut (Path E)** — multiplicative downscale on
+   `predicted_probability` for entries matching the Other-class
+   feature shape, applied *before* Top-N selection. Avoids the
+   binary-filter Top-N backfill problem that killed Variant E and the
+   classifier-as-filter analysis above. Same lever proposed for KI-140
+   (item 2 of its original hypothesised directions); KI-151
+   strengthens the case for *the same fix* across both unaddressed
+   classes.
+2. **Direction-aware label** — the [[KI-137]] long-term root-cause
+   fix: a label that penalises forward drawdown directly (long-only
+   knockout from entry) would naturally down-rate all three named
+   classes — SWARMSUSDT (still-falling = high downward forward
+   probability), 4USDT-class (bounce-fade = high downward), Other
+   (late-stage reversal = high downward) — at training time, without
+   any exclusion-rule plumbing.
+
+**References.**
+
+- `data/processed/other_deep_loser_characterization.md` — full cohort
+  characterization, clustering analysis, classifier results, threshold
+  sweep, and economic analysis.
+- `data/processed/rescue_rate_heatmap.md` — the parallel finding that
+  no conditional-cut state shows Sharpe-positive EV either.
+- [[KI-140]] — the related 4USDT-class closure that motivated this
+  analysis as the residual workstream.
+- [[KI-137]] — the underlying model-label root cause that any
+  long-term fix routes through.
+- `DECISIONS.md` ADR-028 — the SWARMSUSDT-class exclusion rule that
+  addressed the third 30% of deep losers.
+
 ## Recently resolved (post-Session-7)
+
+### KI-140 — 4USDT-class deep-drawdown failure pattern (closed; describable but not addressable by exclusion or entry-conditional-horizon rules; resolved 2026-05-14)
+
+**Original symptom (kept for archival completeness).** A recurring
+deep-loss pattern distinct from KI-137's post-parabolic and
+SWARMSUSDT-class shapes: a coin deeply below its 90-day high
+(`dd90 < -0.40`) **in a 60-day downtrend** (`ret60` modestly positive or
+negative, *not* parabolic) shows a recent bounce (positive
+`ret5`/`ret10`) at the entry-time feature snapshot, and the model takes
+the bounce as a buy signal. The bounce fails within days and the
+position grinds down to a `time`-exit loss. Live case: 4USDT entered
+2026-05-12 (pred 2026-05-11 — `dd90 -43.5%, ret60 +60%, ret5 -1.2%,
+down_days 6/10`), realised −29.3% on horizon close.
+
+**Original population.** 14 of 93 deep losses (15%) in the validated
+941-trade Phase-1B-winner backtest. Avg loss −19.3%, worst −34.7%.
+Characteristic profile: `dd90` mean −58.0%, `ret60` mean **−35.0%**
+(median −32.6%), `ret5` mean **+9.0%**, `ret10` mean +11.9%,
+`down_days` mean 4.5, exit_reason = `time` × 14 (none stopped on the
+trailing).
+
+**Why exclusion filters were rejected (ADR-028).** The proposed Variant
+E filter (`dd90 < -0.40 AND -1.0 < ret60 < 1.0`) was backtested and
+rejected: Sharpe collapsed from 6.32 to 4.36 (−1.96), max DD nearly
+tripled (−16.98% → −40.92%), cumRet dropped 43% relative. Root cause:
+`dd90 < -0.40` matches ~40% of the universe in a non-bull regime,
+turning the rule into a regime gate that forces Top-N backfill from
+rank-7+ low-probability trades. No tighter dd90/ret60 combination
+caught the class without similar over-filtering.
+
+**Closure (2026-05-14).** Tested via walk-fold + portfolio-simulator
+(ADR-032 gates) at
+`data/processed/variant_e_narrow_4usdt_validation.md`. Both gates FAIL:
+walkfold dominance 0/6, portfolio Sharpe gain +0.007 (noise). Root
+cause: the narrowed filter (`dd90 < -0.40 AND ret10 > +0.10 AND
+ret60 < -0.20`) does NOT isolate a loser cohort. It matched 46 of 941
+baseline trades with mean P&L +4.13% and hit rate 87.0% — matches
+BASELINE's 87.6%. The model picks these entries correctly; there's
+nothing for a shortened-horizon rule to fix.
+
+**Implication.** The exclusion-rule family for BASELINE Policy D is
+closed across three independent probes (rescue-rate heatmap,
+Other-cohort classifier, Variant E''). Productive paths now require
+non-exclusion approaches: probability haircut (multiplicative downscale
+on `predicted_probability` before Top-N selection), direction-aware
+label retrain (KI-137 root-cause fix), or a second uncorrelated edge.
+
+**References.**
+
+- `data/processed/variant_e_narrow_4usdt_validation.md` — both-gates
+  validation that produced the closure.
+- `data/processed/other_deep_loser_characterization.md` — the 47%
+  Other-cohort analysis that led to the narrowed filter probe and now
+  becomes [[KI-151]].
+- `data/processed/rescue_rate_heatmap.md` — the parallel conditional-cut
+  evidence (no Sharpe-positive cut state exists).
+- [[KI-137]] — the underlying model-label root cause; remains open.
+- [[KI-151]] — the residual "Other"-class follow-up.
+- `DECISIONS.md` ADR-028 §"4USDT-class explicitly NOT addressed" — the
+  prior rejection that motivated this probe.
 
 ### KI-143 — Universe-tier sort displaced 99 ML-universe primary tickers under the dev-mode cap (resolved 2026-05-14)
 
