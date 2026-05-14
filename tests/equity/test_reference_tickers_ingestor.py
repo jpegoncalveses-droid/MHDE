@@ -137,3 +137,33 @@ def test_ingest_records_source_yahoo(conn):
         ).fetchall()
     }
     assert sources == {"yahoo"}, f"Expected only source='yahoo', got {sources}"
+
+
+@rsps_lib.activate
+def test_ingest_requests_vix_as_url_encoded_caret(conn):
+    """VIX must be requested from Yahoo as ^VIX (URL-encoded %5EVIX).
+
+    Bare 'VIX' resolves to a dormant Yahoo mutual-fund placeholder, not the
+    CBOE VIX index. Storage stays as 'VIX'; only the API request is translated.
+    """
+    from ingestion.ingest_reference_tickers import ReferenceTickersIngestor
+
+    rsps_lib.add(rsps_lib.GET, _YF_URL_RE, json=_make_yf_response(5),
+                 status=200, match_querystring=False)
+
+    ReferenceTickersIngestor({}).ingest(conn, "run_vix_url", tickers=[])
+
+    requested_urls = [call.request.url for call in rsps_lib.calls]
+    vix_calls = [u for u in requested_urls if "VIX" in u or "%5EVIX" in u]
+    assert vix_calls, f"No VIX request found in {requested_urls!r}"
+    assert all("%5EVIX" in u for u in vix_calls), (
+        f"VIX must be URL-encoded as %5EVIX (^VIX), got: {vix_calls!r}"
+    )
+
+    stored = {
+        r[0]
+        for r in conn.execute(
+            "SELECT DISTINCT ticker FROM prices_daily WHERE ticker IN ('VIX', '^VIX')"
+        ).fetchall()
+    }
+    assert stored == {"VIX"}, f"Storage must remain bare 'VIX', got {stored}"

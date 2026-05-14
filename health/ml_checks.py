@@ -110,6 +110,58 @@ def check_cross_asset_freshness(conn: duckdb.DuckDBPyConnection) -> dict:
     }
 
 
+_MACRO_SERIES = ("DGS10", "DGS2", "VIXCLS")
+_MACRO_SERIES_MAX_AGE_DAYS = 5
+
+
+def check_macro_series_freshness(conn: duckdb.DuckDBPyConnection) -> dict:
+    """Assert FRED macro series consumed by ml/features.py are present + fresh.
+
+    DGS10 + DGS2 feed _load_yield_curve (yield_curve_10y_2y). VIXCLS is the
+    macro_series-side VIX backup (prices_daily.VIX is the primary path).
+
+    Threshold is wider than check_cross_asset_freshness (T-5 vs T-3) because
+    FRED publishes T-1 on a business-day cadence and weekends can push the
+    last value back by 2-3 days legitimately.
+    """
+    today = date.today()
+    threshold = today - timedelta(days=_MACRO_SERIES_MAX_AGE_DAYS)
+    missing: list[str] = []
+    stale: list[tuple[str, date, int]] = []
+
+    for series_id in _MACRO_SERIES:
+        row = conn.execute(
+            "SELECT MAX(as_of_date) FROM macro_series WHERE series_id = ?",
+            [series_id],
+        ).fetchone()
+        latest = row[0] if row else None
+        if latest is None:
+            missing.append(series_id)
+            continue
+        if isinstance(latest, str):
+            latest = date.fromisoformat(latest)
+        elif hasattr(latest, "date") and not isinstance(latest, date):
+            latest = latest.date()
+        if latest < threshold:
+            stale.append((series_id, latest, (today - latest).days))
+
+    if missing:
+        return {
+            "check_name": "macro_series_freshness", "status": "fail", "severity": "critical",
+            "message": f"Missing macro series in macro_series: {', '.join(missing)}",
+        }
+    if stale:
+        names = ", ".join(f"{s} ({age}d)" for s, _, age in stale)
+        return {
+            "check_name": "macro_series_freshness", "status": "fail", "severity": "high",
+            "message": f"Stale macro series (>{_MACRO_SERIES_MAX_AGE_DAYS}d): {names}",
+        }
+    return {
+        "check_name": "macro_series_freshness", "status": "pass", "severity": "low",
+        "message": f"All {len(_MACRO_SERIES)} macro series fresh (≤{_MACRO_SERIES_MAX_AGE_DAYS}d)",
+    }
+
+
 def check_ml_tables_freshness(conn: duckdb.DuckDBPyConnection) -> list[dict]:
     results = []
     for table in ("ml_features", "ml_labels"):
