@@ -40,6 +40,11 @@ class FreshnessReport:
     age_str: str
     threshold: str
     message: str
+    # KI-149: coverage-aware fields for the equity check. Populated only when
+    # the coverage path runs (currently equity only); None for other engines.
+    reason: Optional[str] = None
+    coverage_row_count: Optional[int] = None
+    coverage_expected_min: Optional[int] = None
 
 
 def _format_age(age: Optional[timedelta]) -> str:
@@ -58,11 +63,24 @@ def _format_age(age: Optional[timedelta]) -> str:
     return f"{days}d {hours}h"
 
 
+_EQUITY_COVERAGE_RATIO = 0.5
+_EQUITY_COVERAGE_WINDOW_DAYS = 30
+
+
 def check_equity_freshness(
     conn: duckdb.DuckDBPyConnection,
     today: Optional[date] = None,
     max_trading_days: int = 2,
 ) -> FreshnessReport:
+    """Equity freshness, KI-149 hardened.
+
+    Two-stage check:
+      1. Latest trade_date within `max_trading_days` (existing behavior).
+      2. Latest trade_date row count ≥ ``_EQUITY_COVERAGE_RATIO`` × mean
+         daily row count over the prior ``_EQUITY_COVERAGE_WINDOW_DAYS``
+         trading dates. Closes the silent-T-2 skip: 4 fallback OTC rows
+         on the current date used to satisfy a MAX-only check.
+    """
     today = today or datetime.now(tz=timezone.utc).date()
     row = conn.execute("SELECT MAX(trade_date) FROM prices_daily").fetchone()
     latest = row[0] if row else None
@@ -76,14 +94,71 @@ def check_equity_freshness(
 
     age = datetime.combine(today, datetime.min.time()) - datetime.combine(latest, datetime.min.time())
     trading_gap = trading_days_between(latest + timedelta(days=1), today)
-    is_fresh = trading_gap <= max_trading_days
-    msg = (f"Equity prices_daily latest={latest} "
-           f"({trading_gap} trading-day gap; threshold={max_trading_days})")
+    base_msg = (f"Equity prices_daily latest={latest} "
+                f"({trading_gap} trading-day gap; threshold={max_trading_days})")
+
+    if trading_gap > max_trading_days:
+        return FreshnessReport(
+            engine="equity", is_fresh=False, latest=latest, age=age,
+            age_str=_format_age(age), threshold=f"{max_trading_days} trading days",
+            message=base_msg,
+        )
+
+    latest_count, expected_min = _equity_latest_coverage(conn, latest)
+    if latest_count < expected_min:
+        msg = (f"{base_msg}; partial coverage on {latest}: "
+               f"{latest_count} rows < expected ≥{expected_min}")
+        return FreshnessReport(
+            engine="equity", is_fresh=False, latest=latest, age=age,
+            age_str=_format_age(age), threshold=f"{max_trading_days} trading days",
+            message=msg,
+            reason="partial_coverage",
+            coverage_row_count=latest_count,
+            coverage_expected_min=expected_min,
+        )
+
     return FreshnessReport(
-        engine="equity", is_fresh=is_fresh, latest=latest, age=age,
+        engine="equity", is_fresh=True, latest=latest, age=age,
         age_str=_format_age(age), threshold=f"{max_trading_days} trading days",
-        message=msg,
+        message=base_msg,
     )
+
+
+def _equity_latest_coverage(
+    conn: duckdb.DuckDBPyConnection, latest: date
+) -> tuple[int, int]:
+    """Return (row_count_on_latest, expected_min) for KI-149 coverage check.
+
+    expected_min = round(_EQUITY_COVERAGE_RATIO × mean daily row count over
+    the prior `_EQUITY_COVERAGE_WINDOW_DAYS` trade dates). Falls back to a
+    permissive threshold (== latest_count) when there is no prior history,
+    so seeding a single row still passes.
+    """
+    latest_count = conn.execute(
+        "SELECT COUNT(*) FROM prices_daily WHERE trade_date = ?", [latest]
+    ).fetchone()[0]
+
+    history = conn.execute(
+        """
+        WITH daily AS (
+            SELECT trade_date, COUNT(*) AS n
+            FROM prices_daily
+            WHERE trade_date < ?
+            GROUP BY trade_date
+            ORDER BY trade_date DESC
+            LIMIT ?
+        )
+        SELECT AVG(n) FROM daily
+        """,
+        [latest, _EQUITY_COVERAGE_WINDOW_DAYS],
+    ).fetchone()
+    mean_prior = history[0] if history and history[0] is not None else None
+
+    if mean_prior is None:
+        return latest_count, latest_count
+
+    expected_min = int(round(_EQUITY_COVERAGE_RATIO * float(mean_prior)))
+    return latest_count, expected_min
 
 
 def check_crypto_freshness(

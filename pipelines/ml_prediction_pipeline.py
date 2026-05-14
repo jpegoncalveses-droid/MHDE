@@ -23,6 +23,7 @@ def run_prediction_pipeline(
     prediction_date: date | None = None,
     skip_features: bool = False,
     skip_outcomes: bool = False,
+    allow_stale_features: bool = False,
 ) -> dict:
     """Run the full prediction pipeline.
 
@@ -31,6 +32,8 @@ def run_prediction_pipeline(
         prediction_date: Date to predict for (default: latest available)
         skip_features: If True, assume features already computed
         skip_outcomes: If True, skip filling historical outcomes
+        allow_stale_features: If True, downgrade the KI-149 cross-check
+            (ml_features behind prices_daily) from raise to WARNING.
     """
     from ml.predict import score_universe, fill_outcomes, print_predictions
     from pipelines.freshness import check_equity_freshness
@@ -48,7 +51,9 @@ def run_prediction_pipeline(
         _ensure_features(conn, prediction_date)
 
     # Stage 2: Score universe
-    result = score_universe(conn, prediction_date)
+    result = score_universe(
+        conn, prediction_date, allow_stale_features=allow_stale_features
+    )
 
     # Stage 3: Fill outcomes for past predictions
     if not skip_outcomes:
