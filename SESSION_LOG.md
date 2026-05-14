@@ -6,6 +6,131 @@ are at the top.
 
 ---
 
+## 2026-05-14 — Post-parabolic filter v2: add short-window momentum rule `return_5d < -0.30` (ADR-028)
+
+**Branch:** `feat-postparabolic-add-ret5-filter` (committed + pushed;
+**STOPPED for operator review/merge** — push-only per branch-handoff
+pattern, operator opens the PR). Extends ADR-021's `should_exclude`
+with an OR-combined second rule. Single-repo (MHDE), no engine repo
+change, no JSON-interface change.
+
+**Trigger.** Two confirmed live failure patterns surfaced after ADR-021
+went live:
+- **SWARMSUSDT 2026-05-14** entered at the 2026-05-13 prediction (dd90
+  −50.0%, ret60 +147%, ret5 −36.8%, 9/10 down days). Rule A did not fire
+  (`ret60 = +1.47` is below the `+2.0` baseline gate). Position
+  immediately drew down to −22% within 24h.
+- **4USDT 2026-05-12** at −11.8% unrealized — same dd-depth family but
+  different shape (deep dd + 60d downtrend + recent bounce).
+Prior research session ran a paired backtest of three short-momentum
+candidate variants (ret5 < -0.20; down_days ≥ 7; their union), all of
+which destroyed Sharpe by ~4 points. A tighter Variant D
+(`ret5 < -0.30`) was Sharpe-positive and operator-approved.
+
+**What shipped.**
+- `crypto/config.py` — `POSTPARABOLIC_RET5_THRESHOLD = -0.30` (+ updated
+  block comment describing the two-rule OR-gate).
+- `crypto/ml/postparabolic_filter.py` — `should_exclude(dd90, ret60, ret5=None)`
+  signature with OR-combined logic; three stable reason tokens
+  (`REASON_POST_PARABOLIC`, `REASON_SHORT_MOMENTUM`, `REASON_BOTH`); the
+  legacy `REASON` constant kept as a back-compat alias. Each rule
+  fail-opens on its own missing input.
+- `crypto/exports/write_daily_predictions.py:build_predictions` — reads
+  `return_5d` off the raw feature row, passes it to `should_exclude`,
+  logs the value (with NULL/NaN safely coerced to `-999.0` in the
+  printf), persists into `crypto_signal_exclusions.ret5` (coerces NaN/None
+  to SQL NULL via a small inline `_to_db` helper). UPSERT now includes
+  the new column.
+- `crypto/schema.py` — `crypto_signal_exclusions` schema gains a
+  `ret5 DOUBLE` column; idempotent `ALTER TABLE … ADD COLUMN IF NOT
+  EXISTS` migration applied inside `create_all_tables` so existing live
+  rows pick the column up (NULL until next UPSERT). Header comment
+  updated to cite ADR-028.
+- `crypto/ml/POSTPARABOLIC_FILTER_SPEC.md` — new v2 section at the top
+  documenting Rule B, backtest evidence, pattern characterization, live
+  verification, audit-trail change, and the explicit non-coverage of the
+  4USDT-class. v1 content preserved verbatim below it.
+- `DECISIONS.md` — ADR-028 entry: context (two live incidents), decision
+  (Rule B threshold + OR-combined), threshold rationale (the full
+  variant grid: A/B/C reject; D accept; E/DE reject), schema-change
+  rationale, 4USDT-class explicit non-coverage, expected live impact,
+  files of record, reversibility (one-line config change).
+- `KNOWN_ISSUES.md` — KI-137 mitigation paragraph rewritten to cover v1
+  + v2; header counts updated to 10 open; new KI-140 for the 4USDT-class
+  pattern (characterized, not addressable by current filter shape,
+  deferred to a separate workstream — proposes 3 directions: tighter
+  entry-conditional time-stop, probability haircut, direction-aware
+  label).
+- Tests (TDD, RED → GREEN):
+  `tests/crypto/test_postparabolic_filter.py` — 13 new cases covering
+  ret5-only firing, exact-edge strictness (=`-0.30` does not fire),
+  just-below excludes, missing/NaN ret5 fails open (per-input),
+  default-value preserves legacy callers, combined reason token,
+  reason-token stability/distinctness, plus two **live-incident pins**
+  (SWARMSUSDT 2026-05-13 excluded; 4USDT 2026-05-11 not excluded).
+  `tests/crypto/exports/test_write_daily_predictions.py` — 4 new
+  integration cases (short-momentum-only drops symbol; audit row
+  records ret5 + short_momentum reason; both rules → combined reason;
+  NULL ret5 fails open without affecting Rule A evaluation).
+
+**Verification (L5).**
+- `venv/bin/python -m pytest tests/crypto/test_postparabolic_filter.py
+  tests/crypto/exports/test_write_daily_predictions.py -v` → **48 passed**
+  (24 in `test_postparabolic_filter.py`, 24 in
+  `test_write_daily_predictions.py`).
+- `venv/bin/python -m pytest tests/crypto/ tests/regression/ -q` → **459
+  passed, 1 skipped, 3 pre-existing failures unrelated to this work**
+  (`test_no_module_level_connection` — KI-105 dashboard module-level
+  conn, `test_repo_vs_deployed_unit_parity` — KI-112 deployed-unit drift,
+  `test_migration_backfills_pre_existing_db` — pre-existing on master,
+  confirmed identically failing on the branch base after a fresh
+  `git stash` re-run).
+- **Live dry-run** (`.claude/local_scripts/dryrun_postparabolic_extension.py`,
+  gitignored, read-only connection) against `crypto_ml_features`
+  MAX(trade_date) = 2026-05-13 on 48 active coins: 4 would-be exclusions
+  — SKYAIUSDT + ZEREBROUSDT by Rule A unchanged, **DOGSUSDT + SWARMSUSDT
+  newly by Rule B**. SWARMSUSDT 2026-05-13 (the live incident) caught;
+  4USDT 2026-05-11 (the separate-workstream incident) correctly not
+  caught.
+- `venv/bin/python -m py_compile` on all touched files → clean.
+- Pre-commit hook (py_compile + smoke pytest + lint) → expected OK on
+  commit (see Pending below).
+
+**Files of record.** `crypto/config.py`, `crypto/ml/postparabolic_filter.py`,
+`crypto/exports/write_daily_predictions.py`, `crypto/schema.py`,
+`crypto/ml/POSTPARABOLIC_FILTER_SPEC.md`, `DECISIONS.md` (ADR-028),
+`KNOWN_ISSUES.md` (KI-140 + KI-137 mitigation update),
+`tests/crypto/test_postparabolic_filter.py`,
+`tests/crypto/exports/test_write_daily_predictions.py`, this log. No
+CLAUDE.md change, no CHANGELOG.md in repo.
+
+**Pending operator action.**
+1. Review the branch + the ADR-028 evidence table.
+2. Merge `feat-postparabolic-add-ret5-filter`. No deploy step needed —
+   the change takes effect on the next scheduled 00:40 UTC export run
+   automatically. The `ret5` column is created by
+   `create_all_tables`, which the application calls on every fresh
+   connection / fresh DB; the idempotent ALTER picks up the column on
+   the existing live `crypto_signal_exclusions` table the first time
+   any code path that goes through `create_all_tables` opens the live
+   DB. The first post-merge export will write fully-populated rows; any
+   pre-existing rows keep `ret5 = NULL` until re-UPSERTed on a future
+   day's exclusion of the same `(export_date, symbol, model_id)`.
+3. Watch the 00:50 monitor on day 1 — expect identical pipeline status
+   (filter widening doesn't change pipeline shape). On 2026-05-13 data
+   it would add 2 exclusions (DOGSUSDT, SWARMSUSDT) on top of the 2
+   pre-existing Rule A exclusions.
+
+**Open follow-ups carried.**
+- **KI-140 (new)** — 4USDT-class pattern; the deep-dd + 60d-downtrend +
+  recent-bounce signature is not addressable by the current
+  `should_exclude` shape (Variant E backtested at −1.96 Sharpe and
+  rejected). Three hypothesized directions documented; none scoped.
+- **KI-137 (continued)** — the model-level root cause (volatility-loving
+  label) remains the real fix; this ADR is one more guard rail.
+
+---
+
 ## 2026-05-12 — Move the crypto daily chain (export / engine entry / pipeline monitor) up to 00:40–00:50 UTC, right after predict (ADR-027)
 
 **Branch:** `fix-pipeline-timers-early-fire` (committed; **STOPPED — branch

@@ -27,13 +27,22 @@ REFETCH_WINDOW_DAYS = 3
 # Post-parabolic exclusion filter (a pre-order-entry risk gate applied in the
 # prediction export step — see crypto/ml/postparabolic_filter.py and
 # crypto/ml/POSTPARABOLIC_FILTER_SPEC.md). A coin is excluded from the daily
-# export if BOTH hold: it sits more than 20% below its 90-day high
-# (``drawdown_from_90d_high < POSTPARABOLIC_DD90_THRESHOLD``) AND it is still up
-# more than 200% over 60 days (``return_60d > POSTPARABOLIC_RET60_THRESHOLD``).
-# This suppresses the documented post-parabolic re-entry bias (SKYAI) without
-# touching the model or the raw crypto_ml_predictions signal.
+# export if EITHER rule fires (OR-combined):
+#
+#   Rule A — post-parabolic (SKYAI-class, original):
+#     ``drawdown_from_90d_high < POSTPARABOLIC_DD90_THRESHOLD``
+#     AND ``return_60d > POSTPARABOLIC_RET60_THRESHOLD``
+#   Rule B — short-window momentum (SWARMSUSDT-class, added ADR-028 2026-05-14):
+#     ``return_5d < POSTPARABOLIC_RET5_THRESHOLD``
+#
+# Rule B was added after a paired backtest validated it as Sharpe-positive
+# (6.32 → 6.51) with unchanged max DD over the Phase-1B-winner config and the
+# loser-characterization study confirmed the SWARMSUSDT-class as 30% of deep
+# losses. Both rules are strict less-than / greater-than on the cited features
+# and fail-open per-input on NULL/NaN. See ADR-028.
 POSTPARABOLIC_DD90_THRESHOLD = -0.20
 POSTPARABOLIC_RET60_THRESHOLD = 2.0
+POSTPARABOLIC_RET5_THRESHOLD = -0.30
 
 # OHLCV plausibility / volume-cliff guard (pipelines/data_quality_guard.py).
 # Runs in the daily pipeline between backfill-prices and the downstream stages;

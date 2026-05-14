@@ -201,43 +201,69 @@ def build_predictions(
 
     # ── Post-parabolic exclusion filter (option (b); see
     # crypto/ml/postparabolic_filter.py and POSTPARABOLIC_FILTER_SPEC.md) ──
-    # dd90 / ret60 are read from the *raw* feature row, NOT the median-filled X,
-    # so a warmup-window symbol with NULL features fails open. A coin that trips
-    # the gate is dropped from the export and recorded in crypto_signal_exclusions;
-    # the raw probability is left untouched in crypto_ml_predictions (written
-    # separately by score_universe).
+    # dd90 / ret60 / ret5 are read from the *raw* feature row, NOT the
+    # median-filled X, so a warmup-window symbol with NULL features fails
+    # open per-input (Rule A and Rule B each evaluate independently against
+    # their own inputs). A coin that trips either rule is dropped from the
+    # export and recorded in crypto_signal_exclusions; the raw probability
+    # is left untouched in crypto_ml_predictions (written separately by
+    # score_universe). ADR-028 added Rule B (ret5 < -0.30).
     dd90s = features_df["drawdown_from_90d_high"].tolist()
     ret60s = features_df["return_60d"].tolist()
+    ret5s = features_df["return_5d"].tolist()
     rows = []
     n_excluded = 0
-    for sym, prob, dd90, ret60 in zip(
-        features_df["symbol"].tolist(), cal.tolist(), dd90s, ret60s
+    for sym, prob, dd90, ret60, ret5 in zip(
+        features_df["symbol"].tolist(), cal.tolist(), dd90s, ret60s, ret5s
     ):
-        excluded, reason = should_exclude(dd90, ret60)
+        excluded, reason = should_exclude(dd90, ret60, ret5)
         if not excluded:
             rows.append((sym, float(prob)))
             continue
         n_excluded += 1
+        # ret5 is logged as -999.0 when NULL/NaN (warmup) so the printf
+        # format never breaks; the column in crypto_signal_exclusions stays
+        # NULL via the float-or-None coercion below.
+        ret5_for_log = (
+            float(ret5) if ret5 is not None and not (
+                isinstance(ret5, float) and ret5 != ret5
+            ) else -999.0
+        )
         logger.warning(
             "postparabolic_exclude symbol=%s export_date=%s model_id=%s "
-            "drawdown_from_90d_high=%.4f return_60d=%.4f raw_probability=%.4f "
-            "reason=%s",
+            "drawdown_from_90d_high=%.4f return_60d=%.4f return_5d=%.4f "
+            "raw_probability=%.4f reason=%s",
             sym, prediction_date, model_info["model_id"],
-            float(dd90), float(ret60), float(prob), reason,
+            float(dd90) if dd90 is not None else -999.0,
+            float(ret60) if ret60 is not None else -999.0,
+            ret5_for_log,
+            float(prob), reason,
         )
+
+        def _to_db(v):
+            if v is None:
+                return None
+            try:
+                f = float(v)
+            except (TypeError, ValueError):
+                return None
+            return None if f != f else f  # NaN → NULL
+
         conn.execute(
             """
             INSERT INTO crypto_signal_exclusions
-                (export_date, symbol, model_id, raw_probability, dd90, ret60, reason)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (export_date, symbol, model_id, raw_probability,
+                 dd90, ret60, ret5, reason)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (export_date, symbol, model_id) DO UPDATE SET
                 raw_probability = excluded.raw_probability,
                 dd90 = excluded.dd90,
                 ret60 = excluded.ret60,
+                ret5 = excluded.ret5,
                 reason = excluded.reason
             """,
             [prediction_date, sym, model_info["model_id"], float(prob),
-             float(dd90), float(ret60), reason],
+             _to_db(dd90), _to_db(ret60), _to_db(ret5), reason],
         )
 
     if not rows:
