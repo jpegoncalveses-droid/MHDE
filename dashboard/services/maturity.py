@@ -315,3 +315,91 @@ def format_equity_t2_banner(prediction_date: date, today: date) -> str:
         f"today ({today_str}). This is **stale** — check the equity "
         "ingestion / feature pipeline."
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Crypto: trading-date relabel
+#
+# The crypto pipeline writes prediction_date = MAX(crypto_ml_features.
+# trade_date) = T-1 calendar day (the last completed daily bar). The
+# trading engine consumes those predictions for entries on the
+# FOLLOWING calendar day. From the operator's POV the meaningful
+# "trading date" is prediction_date + 1, not prediction_date itself.
+#
+# These helpers translate at the presentation layer only — backend
+# schema and column semantics are unchanged.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def crypto_feature_date_to_trading_date(prediction_date: date) -> date:
+    """Forward: feature-snapshot date → operator-facing trading date.
+
+    Crypto is 24/7; the mapping is a plain +1 calendar day. No
+    trading-day-skip logic (that's an equity-only concern).
+    """
+    from datetime import timedelta
+    return _to_date(prediction_date) + timedelta(days=1)
+
+
+def crypto_trading_date_to_feature_date(trading_date: date) -> date:
+    """Inverse: operator's trading-date pick → backend prediction_date.
+
+    Used by the dashboard selectbox callback to translate user input
+    back to the column value DuckDB indexes.
+    """
+    from datetime import timedelta
+    return _to_date(trading_date) - timedelta(days=1)
+
+
+def format_crypto_trading_date_banner(
+    prediction_date: date,
+    predicted_at,
+    today: date,
+) -> str:
+    """Three-reference banner shown under the crypto date selector.
+
+    Surfaces (a) the trading date the operator picked, (b) the
+    feature-snapshot date the model actually used, and (c) the
+    timestamp the prediction row was written. (c) is `predicted_at`
+    from `crypto_ml_predictions` (migration v11, KI-154). Pre-migration
+    rows have NULL predicted_at and render as "N/A".
+
+    All timestamps are UTC — labeled explicitly so the operator
+    doesn't misread as local time.
+    """
+    p = _to_date(prediction_date)
+    t = _to_date(today)
+    trading_date = crypto_feature_date_to_trading_date(p)
+
+    if _is_missing(predicted_at):
+        generated_str = "N/A"
+    else:
+        ts = predicted_at
+        # pandas.Timestamp / datetime both expose .strftime; normalize
+        # to a stripped HH:MM:SS UTC label.
+        if hasattr(ts, "tz_convert"):  # pandas.Timestamp
+            try:
+                ts = ts.tz_convert("UTC")
+            except (TypeError, AttributeError):
+                pass
+        elif hasattr(ts, "astimezone"):
+            try:
+                from datetime import timezone as _tz
+                ts = ts.astimezone(_tz.utc) if ts.tzinfo else ts
+            except (TypeError, ValueError):
+                pass
+        generated_str = ts.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    today_marker = (
+        " (today)" if trading_date == t
+        else f" (today is {t.isoformat()})"
+    )
+    return (
+        f"**Trading date: {trading_date.isoformat()}**{today_marker} "
+        f"— features as of **{p.isoformat()}** "
+        f"— generated at **{generated_str}**. "
+        "Predictions are produced at 00:30 UTC against the previous "
+        "day's complete daily bar (T-1 cadence per ADR-029) and "
+        "consumed by the trading engine at 00:45 UTC on the trading "
+        "date shown."
+    )
