@@ -130,6 +130,7 @@ CREATE TABLE IF NOT EXISTS fx_ml_predictions (
     actual_max_pips DOUBLE,
     actual_hit BOOLEAN,
     outcome_filled_at TIMESTAMP,
+    predicted_at TIMESTAMP,
     PRIMARY KEY (datetime_utc, model_id, direction, horizon)
 );
 """

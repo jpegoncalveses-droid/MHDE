@@ -70,10 +70,12 @@ def score_bar(conn: duckdb.DuckDBPyConnection, bar_datetime: datetime | None = N
 
         conn.execute("""
             INSERT INTO fx_ml_predictions (datetime_utc, model_id, direction, horizon,
-                                           predicted_probability, prediction_threshold)
-            VALUES (?, ?, ?, ?, ?, ?)
+                                           predicted_probability, prediction_threshold,
+                                           predicted_at)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT (datetime_utc, model_id, direction, horizon) DO UPDATE SET
-                predicted_probability = excluded.predicted_probability
+                predicted_probability = excluded.predicted_probability,
+                predicted_at = excluded.predicted_at
         """, [bar_datetime, model_cfg["model_id"], model_cfg["direction"],
               model_cfg["horizon"], cal_prob, model_cfg["target_pips"]])
 

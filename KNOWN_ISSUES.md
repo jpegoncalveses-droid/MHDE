@@ -1,7 +1,7 @@
 # Known Issues
 
-**19 open observations** (KI-122, KI-123, KI-126, KI-131, KI-132,
-KI-134, KI-136, KI-137, KI-139, KI-141, KI-144, KI-145,
+**18 open observations** (KI-122, KI-123, KI-126, KI-131, KI-132,
+KI-134, KI-136, KI-137, KI-139, KI-144, KI-145,
 KI-146, KI-147, KI-148, KI-149, KI-151, KI-152, KI-153). KI-122/123 are cosmetic; KI-126 is a future
 Phase 0 enhancement deferred until weekly reliability snapshots
 accumulate; KI-131 is a low-priority single-day production-model
@@ -17,11 +17,7 @@ exclusion filter (ADR-021 + ADR-028) but the model-label root cause is
 the open follow-up; KI-139 catalogs the per-pipeline monitor's v1 scope
 cuts (no auto-remediation, coarse equity-dashboard mtime check, no
 engine-side "why 0 positions" reason, reconcile timer unchecked —
-ADR-026); KI-141 is a follow-up to ADR-029 —
-add a true run-time timestamp column to `crypto_ml_predictions` so the
-pipeline_execution monitor can detect a single missed fire (the
-ADR-029 budget bump fixed the false-positive but trades sensitivity
-for truthfulness); KI-144 is the shared-helper extraction follow-up
+ADR-026); KI-144 is the shared-helper extraction follow-up
 to ADR-031 (the universe-tier sort lives in two byte-identical SELECTs
 and any future drift would silently re-introduce the KI-143 bug class);
 KI-145 is the `max_symbols=520` cap removal — vestigial after the
@@ -87,6 +83,20 @@ universe ended each daily-radar run without T-0 prices,
 data semantic). Pinned by 4 regression tests including an
 orchestration-shape integration test. See "Recently resolved" below
 and ADR-030.
+
+**KI-154** opened + resolved 2026-05-15 — all three prediction tables
+(`ml_predictions`, `crypto_ml_predictions`, `fx_ml_predictions`) carried
+no write-time stamp, so "did the pipeline run today?" was answerable
+only from systemd timer logs and `data/logs/*_predict.log` mtimes —
+never from the data itself. KI-141 captured the crypto-side instance;
+this branch bundled equity + FX as the same gap. Fix:
+`predicted_at TIMESTAMP` (nullable, no DDL default) added to all
+three schemas + migration v11 ALTER TABLE for existing DBs;
+production INSERTs in `ml/predict.py`, `crypto/ml/predict.py`,
+`crypto/ml/backfill_walkforward.py`, `fx/ml/predict.py` populate via
+`CURRENT_TIMESTAMP`. 9 RED-then-GREEN tests under
+`tests/test_predicted_at_observability.py`. Resolves [[KI-141]].
+See "Recently resolved" below.
 
 **KI-143** opened + resolved 2026-05-14 — the equity orchestrator's
 universe sort `ORDER BY universe_tier, ticker` combined with
@@ -474,10 +484,16 @@ it under the same banner as the false-positive fix would have inflated
 blast radius and made revert non-trivial. Open as a separate workstream
 so a future session takes it deliberately.
 
-**Status.** Open. Priority: medium — pick up when the next operator
-incident demonstrates that a one-day-miss matters in practice, or
-bundle with the equity `ml_predictions.created_at` change under a
-joint ADR.
+**Status.** Resolved 2026-05-15 by branch
+`feat-prediction-tables-predicted-at-audit` ([[KI-154]]) — bundled
+with the equity + FX equivalents. `crypto_ml_predictions` now
+carries `predicted_at TIMESTAMP` populated on every production
+INSERT (daily score_universe + walk-forward backfill). Schema-level
+fix uses an explicit `CURRENT_TIMESTAMP` in INSERT VALUES (not a DDL
+DEFAULT — see KI-154 for the rationale). Migrating the
+`pipeline_execution` recency check from `MAX(prediction_date)` to
+`MAX(predicted_at)` to enable 1-day-miss detection is an out-of-scope
+follow-up.
 
 ### KI-139 — Pipeline monitor v1 limitations (no auto-remediation, coarse equity dashboard check, no "why 0 positions", reconcile timer unchecked)
 
@@ -1147,6 +1163,105 @@ blast radius of a freshly-tested fix.
 - [[KI-150]] — the misdiagnosis that surfaced this observation.
 
 ## Recently resolved (post-Session-7)
+
+### KI-154 — Prediction tables carried no write-time stamp; "did the pipeline run today?" was answerable only from systemd logs (opened + resolved 2026-05-15)
+
+**Symptom (the observability gap).** All three prediction tables —
+`ml_predictions`, `crypto_ml_predictions`, `fx_ml_predictions` —
+recorded WHAT was predicted (ticker/symbol/datetime, model_id,
+probability) and when outcomes were filled (`outcome_filled_at`), but
+not WHEN the prediction row itself was written. Answering "did
+today's pipeline actually run?" required `journalctl --user -u
+mhde-*-predict.service` + `ls -la data/logs/*_predict.log` —
+never the data alone. [[KI-141]] captured the crypto-side instance
+of this gap; equity + FX shared it.
+
+**Fix shipped (branch `feat-prediction-tables-predicted-at-audit`,
+2026-05-15).** Added `predicted_at TIMESTAMP` (nullable, no DDL
+default) to all three prediction tables, populated via
+`CURRENT_TIMESTAMP` in the four production INSERT paths:
+
+- `ml/predict.py:241` — equity `score_universe`
+- `crypto/ml/predict.py:124` — crypto `score_universe`
+- `crypto/ml/backfill_walkforward.py:394` — crypto walk-forward
+  backfill
+- `fx/ml/predict.py:72` — FX `score_bar`
+
+Schema changes in `ml/schema.py`, `crypto/schema.py`, `fx/schema.py`
+add the column at CREATE TABLE time (fresh DBs). Migration v11 in
+`storage/migrations.py` adds the column via idempotent ALTER TABLE
+for existing DBs (probe + skip if column exists, since DuckDB lacks
+`ADD COLUMN IF NOT EXISTS`).
+
+**Why no DDL DEFAULT.** Spec was explicit: existing rows stay NULL,
+no implicit backfill. Without a DDL default, only production INSERTs
+populate the column; a maintenance script or test that does a
+legacy-shape INSERT without `predicted_at` gets NULL, which surfaces
+"this row didn't come from a production run" explicitly. The four
+production sites all use explicit `CURRENT_TIMESTAMP` in their
+INSERT VALUES.
+
+**Why `EXCLUDED.predicted_at` in DO UPDATE SET (not
+`CURRENT_TIMESTAMP`).** DuckDB parses the bare token
+`CURRENT_TIMESTAMP` on the RHS of `DO UPDATE SET col = X` as a
+column reference (not the standard SQL function call), failing the
+binder with `Table "X" does not have a column named
+"CURRENT_TIMESTAMP"`. Workaround: the production INSERTs use
+`SET predicted_at = EXCLUDED.predicted_at` (or
+`excluded.predicted_at`), relying on the INSERT VALUES side's
+`CURRENT_TIMESTAMP` to compute the timestamp once per upsert and
+forwarding via the EXCLUDED reference. Probed in
+`.claude/local_scripts/test_duckdb_current_timestamp_upsert.py`.
+
+**TDD.** 9 RED-then-GREEN tests in
+`tests/test_predicted_at_observability.py`:
+
+1. `test_ml_predictions_schema_has_predicted_at`
+2. `test_crypto_ml_predictions_schema_has_predicted_at`
+3. `test_fx_ml_predictions_schema_has_predicted_at`
+4. `test_equity_predict_writes_predicted_at_within_seconds` —
+   exercises `ml.predict.score_universe` end-to-end with a mocked
+   joblib bundle; asserts `predicted_at` ≤ 60s of now.
+5. `test_crypto_predict_writes_predicted_at_within_seconds` — full
+   `crypto.ml.predict.score_universe` against synthetic 80-day fixture.
+6. `test_fx_predict_writes_predicted_at_within_seconds` — full
+   `fx.ml.predict.score_bar` against synthetic 600-hour fixture.
+7. `test_crypto_backfill_walkforward_insert_sql_populates_predicted_at`
+   — source-level + SQL-level (full walk-forward integration is 30s+
+   to set up; this test pins both the source string and the SQL shape).
+8. `test_migration_v11_idempotent_on_fresh_db` — running migrations
+   twice on the same DB does not raise.
+9. `test_migration_v11_preserves_pre_existing_rows_as_null` — a
+   pre-existing row from a legacy 6-column INSERT keeps
+   `predicted_at=NULL`.
+
+All 9 RED first, then GREEN. Full equity + integration regression
+suite: 885 → 894 tests passing (no regressions).
+
+**Resolves [[KI-141]].** The crypto-side run-time-stamp ticket. The
+broader fix bundles equity + FX as KI-141 anticipated would be
+worthwhile.
+
+**Out-of-scope follow-up.** `monitoring/pipeline_execution.py` could
+now tighten its recency check from `MAX(prediction_date)` (T-1
+calendar from the features cadence) to `MAX(predicted_at)` (true
+write time), enabling single-day-miss detection per KI-141's
+original spec. Separate workstream; do not bundle without a deliberate
+decision on the trade-off between sensitivity and false-positive
+risk (the prior bump from 27h → 51h in ADR-029 was specifically to
+suppress false-positives that resulted from confusing the two
+semantics).
+
+**References.**
+
+- Commit on branch `feat-prediction-tables-predicted-at-audit`
+  (2026-05-15) — `ml/schema.py`, `crypto/schema.py`, `fx/schema.py`,
+  `storage/migrations.py` (v11), `ml/predict.py`,
+  `crypto/ml/predict.py`, `crypto/ml/backfill_walkforward.py`,
+  `fx/ml/predict.py`, `tests/test_predicted_at_observability.py`.
+- KI-141 — original (crypto-only) ticket, marked resolved by this
+  branch.
+- ADR-029 — the recency-budget bump that surfaced the gap.
 
 ### KI-150 — Equity monitoring services failing silently — resolved 2026-05-14 (parts 2 + 3 fixed; part 1 was misdiagnosis)
 

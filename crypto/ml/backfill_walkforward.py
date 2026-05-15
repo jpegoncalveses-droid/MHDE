@@ -395,8 +395,8 @@ def _persist_fold(
                     symbol, prediction_date, model_id, horizon,
                     predicted_probability, prediction_threshold, market_cap_bucket,
                     actual_max_return, actual_max_drawdown, actual_hit,
-                    outcome_filled_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    outcome_filled_at, predicted_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 """,
                 rows,
             )

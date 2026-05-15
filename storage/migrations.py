@@ -8,7 +8,7 @@ from storage.db import init_schema
 
 logger = logging.getLogger("mhde.storage.migrations")
 
-_CURRENT_VERSION = 10
+_CURRENT_VERSION = 11
 
 
 def run_migrations(conn: duckdb.DuckDBPyConnection) -> None:
@@ -183,3 +183,38 @@ def run_migrations(conn: duckdb.DuckDBPyConnection) -> None:
             "ON CONFLICT DO NOTHING"
         )
         logger.info("Applied migration v10: monitor_alert_state table")
+
+    if current < 11:
+        # Add predicted_at TIMESTAMP to all three prediction tables.
+        # New CREATE TABLE statements (ml/schema.py, crypto/schema.py,
+        # fx/schema.py) already include the column, so a fresh DB picks
+        # it up at init time; this migration handles existing DBs.
+        # DuckDB lacks "ADD COLUMN IF NOT EXISTS", so we probe for the
+        # column first per-table and skip the ALTER when it's present.
+        for table in ("ml_predictions", "crypto_ml_predictions",
+                      "fx_ml_predictions"):
+            exists = conn.execute(
+                "SELECT COUNT(*) FROM information_schema.tables "
+                "WHERE table_name = ?", [table]
+            ).fetchone()[0] > 0
+            if not exists:
+                continue
+            existing_cols = {
+                r[0] for r in conn.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = ?", [table]
+                ).fetchall()
+            }
+            if "predicted_at" not in existing_cols:
+                conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN predicted_at TIMESTAMP"
+                )
+        conn.execute(
+            "INSERT INTO schema_version (version, description) "
+            "VALUES (11, 'Add predicted_at TIMESTAMP to ml_predictions, "
+            "crypto_ml_predictions, fx_ml_predictions for write-time "
+            "audit') ON CONFLICT DO NOTHING"
+        )
+        logger.info(
+            "Applied migration v11: predicted_at on prediction tables"
+        )

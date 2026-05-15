@@ -123,10 +123,12 @@ def score_universe(conn: duckdb.DuckDBPyConnection, prediction_date: date | None
         conn.execute("""
             INSERT INTO crypto_ml_predictions (
                 symbol, prediction_date, model_id, horizon,
-                predicted_probability, prediction_threshold, market_cap_bucket
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                predicted_probability, prediction_threshold, market_cap_bucket,
+                predicted_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT (symbol, prediction_date, model_id, horizon) DO UPDATE SET
-                predicted_probability = excluded.predicted_probability
+                predicted_probability = excluded.predicted_probability,
+                predicted_at = excluded.predicted_at
         """, [p["symbol"], p["prediction_date"], p["model_id"], p["horizon"],
               p["predicted_probability"], p["prediction_threshold"], p["market_cap_bucket"]])
 
