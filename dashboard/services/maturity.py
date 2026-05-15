@@ -351,6 +351,74 @@ def crypto_trading_date_to_feature_date(trading_date: date) -> date:
     return _to_date(trading_date) - timedelta(days=1)
 
 
+def format_crypto_exclusion_badge(
+    reason,
+    dd90,
+    ret60,
+    ret5,
+) -> str:
+    """Inline badge text for the per-row Status column on the crypto
+    predictions table.
+
+    Returns an empty string when ``reason`` is missing (no exclusion —
+    the renderer falls back to pending / outcome display). Otherwise
+    formats the rule name + the trigger value(s) that fired it:
+
+        short_momentum                  → "EXCLUDED: short_momentum (ret5=-43.7%)"
+        post_parabolic                  → "EXCLUDED: post_parabolic (dd90=-25.0%, ret60=+250.0%)"
+        post_parabolic_and_short_momentum → "EXCLUDED: post_parabolic_and_short_momentum "
+                                            "(dd90=-25.0%, ret60=+250.0%, ret5=-35.0%)"
+
+    Filter rule definitions live in ``crypto/ml/postparabolic_filter.py``
+    (ADR-021 + ADR-028).
+    """
+    if _is_missing(reason):
+        return ""
+
+    parts = []
+    if _has(dd90):
+        parts.append(f"dd90={float(dd90)*100:.1f}%")
+    if _has(ret60):
+        parts.append(f"ret60={float(ret60)*100:+.1f}%")
+    if _has(ret5):
+        parts.append(f"ret5={float(ret5)*100:+.1f}%")
+    metrics = f" ({', '.join(parts)})" if parts else ""
+    return f"EXCLUDED: {reason}{metrics}"
+
+
+def _has(v) -> bool:
+    return not _is_missing(v)
+
+
+def format_crypto_predictions_summary(
+    n_total: int,
+    n_excluded: int,
+    exclusion_reasons,
+) -> str:
+    """Summary line shown as the Crypto Predictions table's subheader.
+
+    When no exclusions fired today: plain count form
+    ``"Predictions (N coins)"`` — historical behaviour preserved so the
+    operator's eye isn't drawn to a "0 filtered" non-event.
+
+    When at least one exclusion fired: surface total / active /
+    filtered counts plus the distinct rule names that fired so the
+    operator can read the cohort at a glance without scrolling to the
+    filtered rows. Reasons are listed in sorted order for stable
+    rendering.
+    """
+    if n_excluded <= 0:
+        return f"Predictions ({n_total} coins)"
+
+    n_active = n_total - n_excluded
+    reasons_sorted = sorted(set(exclusion_reasons or set()))
+    reasons_str = ", ".join(reasons_sorted) if reasons_sorted else "filter"
+    return (
+        f"Predictions ({n_total} total — {n_active} active after "
+        f"exclusions, {n_excluded} filtered: {reasons_str})"
+    )
+
+
 def format_crypto_trading_date_banner(
     prediction_date: date,
     predicted_at,

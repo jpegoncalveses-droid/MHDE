@@ -13,6 +13,8 @@ from dashboard.auth import require_auth
 from dashboard.services.maturity import (
     crypto_feature_date_to_trading_date,
     crypto_trading_date_to_feature_date,
+    format_crypto_exclusion_badge,
+    format_crypto_predictions_summary,
     format_crypto_trading_date_banner,
     format_equity_t2_banner,
     format_pct_move,
@@ -534,7 +536,24 @@ with tab_crypto:
             ].copy()
 
             # --- Predictions Table ---
-            st.subheader(f"Predictions ({len(crypto_filtered)} coins)")
+            # feat-dashboard-crypto-exclusion-overlay: surface which
+            # raw predictions actually reach the trading engine.
+            _n_total = len(crypto_filtered)
+            _excluded_mask = (
+                crypto_filtered["is_excluded"].fillna(False).astype(bool)
+                if "is_excluded" in crypto_filtered.columns
+                else pd.Series([False] * _n_total, index=crypto_filtered.index)
+            )
+            _n_excluded = int(_excluded_mask.sum())
+            _excl_reasons = set(
+                crypto_filtered.loc[_excluded_mask, "exclusion_reason"]
+                .dropna().astype(str).tolist()
+            ) if "exclusion_reason" in crypto_filtered.columns else set()
+            st.subheader(format_crypto_predictions_summary(
+                n_total=_n_total,
+                n_excluded=_n_excluded,
+                exclusion_reasons=_excl_reasons,
+            ))
 
             if crypto_filtered.empty:
                 st.info("No predictions match filters.")
@@ -544,12 +563,29 @@ with tab_crypto:
                 display["Confidence"] = display["predicted_probability"].map(
                     lambda p: "High" if p >= 0.60 else "Lower")
 
-                if "actual_hit" in display.columns:
-                    display["Outcome"] = display.apply(
-                        lambda r: f"{'HIT' if r['actual_hit'] else 'miss'} ({r['actual_max_return']:+.1%})"
-                        if pd.notna(r.get("actual_hit")) else "pending",
-                        axis=1,
-                    )
+                # Status column: per-row exclusion badge takes precedence
+                # over the pending/outcome string. Excluded predictions
+                # never trade, so the badge is the operationally
+                # authoritative answer for that row.
+                _outcome_str = display.apply(
+                    lambda r: f"{'HIT' if r['actual_hit'] else 'miss'} ({r['actual_max_return']:+.1%})"
+                    if pd.notna(r.get("actual_hit")) else "pending",
+                    axis=1,
+                ) if "actual_hit" in display.columns else "pending"
+                display["Status"] = display.apply(
+                    lambda r: format_crypto_exclusion_badge(
+                        reason=r.get("exclusion_reason"),
+                        dd90=r.get("exclusion_dd90"),
+                        ret60=r.get("exclusion_ret60"),
+                        ret5=r.get("exclusion_ret5"),
+                    ) or (
+                        f"{'HIT' if r['actual_hit'] else 'miss'} "
+                        f"({r['actual_max_return']:+.1%})"
+                        if pd.notna(r.get("actual_hit"))
+                        else "pending"
+                    ),
+                    axis=1,
+                )
 
                 display["pct_move_str"] = display.apply(
                     lambda r: format_pct_move(pct_move_equity_or_crypto(
@@ -571,11 +607,26 @@ with tab_crypto:
                 show_cols = ["symbol", "horizon", "Prob", "Confidence",
                              "market_cap_bucket", "price_at_prediction",
                              "maturity_date", "price_at_maturity",
-                             "pct_move_str", "time_remaining_str"]
-                if "Outcome" in display.columns:
-                    show_cols.append("Outcome")
+                             "pct_move_str", "time_remaining_str",
+                             "Status"]
+
+                # Visual de-emphasis on excluded rows. Streamlit's
+                # st.dataframe accepts a pandas Styler; we grey the
+                # entire row when is_excluded is True so the operator's
+                # eye treats excluded rows as informational, not actionable.
+                _styled = display[show_cols].style
+                if "is_excluded" in display.columns:
+                    _excluded_idx = display.index[_excluded_mask].tolist()
+
+                    def _grey_excluded_row(row):
+                        return (
+                            ["color: #888; font-style: italic"] * len(row)
+                            if row.name in _excluded_idx else [""] * len(row)
+                        )
+                    _styled = _styled.apply(_grey_excluded_row, axis=1)
+
                 st.dataframe(
-                    display[show_cols],
+                    _styled,
                     use_container_width=True,
                     hide_index=True,
                     column_config={
@@ -593,6 +644,19 @@ with tab_crypto:
                         ),
                         "time_remaining_str": st.column_config.TextColumn(
                             "Time Left", width="small"
+                        ),
+                        "Status": st.column_config.TextColumn(
+                            "Status",
+                            help=(
+                                "Outcome (pending / HIT / miss) for "
+                                "non-excluded rows, OR exclusion badge "
+                                "for predictions filtered by the "
+                                "post-parabolic / short-momentum rule "
+                                "chain (crypto/ml/postparabolic_filter.py, "
+                                "ADR-021 + ADR-028). Excluded rows are "
+                                "informational only — the engine never "
+                                "sees them."
+                            ),
                         ),
                     },
                 )
