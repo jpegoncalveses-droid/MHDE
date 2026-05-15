@@ -558,6 +558,16 @@ def get_equity_recent_outcomes(
 def get_crypto_predictions(
     conn: duckdb.DuckDBPyConnection, prediction_date
 ) -> pd.DataFrame:
+    """Crypto predictions for the dashboard's per-day view.
+
+    Joins ``crypto_signal_exclusions`` via (symbol, model_id,
+    export_date = prediction_date + 1 day) so each row carries an
+    ``is_excluded`` flag and the rule/trigger-value columns needed for
+    the dashboard exclusion overlay (feat-dashboard-crypto-exclusion-
+    overlay). The +1-day mapping mirrors the trading-date relabel:
+    exclusions are indexed by export_date (the trading day), not by
+    the upstream prediction_date (the feature-snapshot day).
+    """
     sql = f"""
         WITH latest AS (
             SELECT symbol, MAX(trade_date) AS latest_date
@@ -571,7 +581,12 @@ def get_crypto_predictions(
                mat.close AS price_at_maturity,
                cur.close AS current_price,
                p.actual_max_return, p.actual_max_drawdown, p.actual_hit,
-               p.outcome_filled_at
+               p.outcome_filled_at,
+               (ex.symbol IS NOT NULL) AS is_excluded,
+               ex.reason AS exclusion_reason,
+               ex.dd90   AS exclusion_dd90,
+               ex.ret60  AS exclusion_ret60,
+               ex.ret5   AS exclusion_ret5
         FROM crypto_ml_predictions p
         LEFT JOIN crypto_prices_daily entry
           ON entry.symbol = p.symbol AND entry.trade_date = p.prediction_date
@@ -582,6 +597,10 @@ def get_crypto_predictions(
         LEFT JOIN latest lp ON lp.symbol = p.symbol
         LEFT JOIN crypto_prices_daily cur
           ON cur.symbol = lp.symbol AND cur.trade_date = lp.latest_date
+        LEFT JOIN crypto_signal_exclusions ex
+          ON ex.symbol = p.symbol
+         AND ex.model_id = p.model_id
+         AND ex.export_date = (p.prediction_date + INTERVAL 1 DAY)::DATE
         WHERE p.prediction_date = ?
         ORDER BY p.horizon, p.predicted_probability DESC
     """
