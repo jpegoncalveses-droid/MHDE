@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS ml_predictions (
     actual_max_drawdown DOUBLE,
     actual_hit BOOLEAN,
     outcome_filled_at TIMESTAMP,
+    predicted_at TIMESTAMP,
     PRIMARY KEY (ticker, prediction_date, model_id, horizon)
 );
 """

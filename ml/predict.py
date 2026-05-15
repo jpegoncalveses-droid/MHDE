@@ -242,10 +242,12 @@ def _write_predictions(conn: duckdb.DuckDBPyConnection, predictions: list[dict])
             ticker, prediction_date, model_id, horizon,
             predicted_probability, prediction_threshold,
             sector, market_cap_bucket,
-            actual_max_return, actual_max_drawdown, actual_hit, outcome_filled_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            actual_max_return, actual_max_drawdown, actual_hit, outcome_filled_at,
+            predicted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         ON CONFLICT (ticker, prediction_date, model_id, horizon) DO UPDATE SET
-            predicted_probability = EXCLUDED.predicted_probability
+            predicted_probability = EXCLUDED.predicted_probability,
+            predicted_at = EXCLUDED.predicted_at
     """, rows)
 
 
