@@ -125,28 +125,52 @@ writer-lock and asserts state persists + Telegram fires.
 138 monitoring tests pass; full equity + integration regression
 clean.
 
-### 5. Update dashboard to advertise T-2 honestly
+### 5. Update dashboard to advertise T-2 honestly — ✅ COMPLETE 2026-05-14
 
-- Header / page-level "predictions as of T-2 [date]" copy.
-- Any "today's signals" framing softened to "latest predictions
-  (T-2)".
-- Tooltip explaining the cadence so future operators don't think the
-  pipeline is broken.
+Shipped on branch `feat-dashboard-t2-labeling` (merge `8044da8`, commit
+`6de1187`). Three surfaces:
+1. Page-level caption under the "ML Predictions" title explaining the
+   T-2 cadence and pointing operators to this doc.
+2. Per-date banner labelling the gap as T-0 / T-1 / **expected T-2** /
+   stale. Banner copy from pure helper
+   `dashboard.services.maturity.format_equity_t2_banner` so the four
+   cadence branches are unit-testable without Streamlit.
+3. Predictions subheader names the date verbatim.
 
-Pure UI; pairs with step 3 conceptually but can ship independently.
+### 6. Freshness graceful degradation (replaces "T-2 alignment retrain")
 
-### 6. Retrain models on T-2 alignment
+**Original step 6 ("retrain models on T-2 alignment") was MISFRAMED
+and is closed.** See
+`data/processed/finding5_pipeline_gap_and_t2_alignment.md` §5. The
+ML pipeline (`ml/labels.py`, `ml/features.py`, `ml/train.py`) is
+time-of-inference-invariant: features at trade_date D are computed
+identically whether D is read as T-0 by yesterday's pipeline or as
+T-2 by today's. There is no "T-0 vs T-2 distributional shift" to
+retrain away. KI-149 (strict freshness) + Step 5 (dashboard
+labelling) were the complete fix for the operator-facing concern.
 
-Current models were trained on T-0 historical features (labels formed
-from prices following the T-0 feature snapshot). Applying a
-T-0-trained model to T-2 inputs creates a subtle distributional shift
-because the input distribution at T-2 differs slightly from T-0
-(missing two days of decay). Retrain on T-2 alignment to remove the
-shift.
+What did need closing was a **secondary operational defect** that
+finding5 surfaced: under KI-149's strict-MAX coverage check, the
+2026-05-15 morning showed the pipeline failing entirely rather than
+degrading to the latest fully-covered trade_date (T-2). Polygon
+free-tier 403-on-current-day + Yahoo/ReferenceTickers partial
+fallback every weekday meant `MAX(trade_date)` had partial coverage
+every morning, so the daily predict run skipped indefinitely.
 
-The next scheduled retrain is Sunday (`mhde-retrain.timer` Sat 21:30
-UTC?, confirm in `systemctl list-timers`). Could be brought forward
-once steps 1–4 are green and the inputs are clean.
+Branch `fix-freshness-backward-scan` (push pending operator merge)
+extends `pipelines/freshness.py:check_equity_freshness` with a
+scan-backward selector: walk distinct `trade_date` values DESC from
+MAX (bounded by `max_trading_days`), accept the first that satisfies
+the existing 50% coverage threshold. `FreshnessReport` gains
+`latest_covered_date` (the selected date) and `is_partial_max`
+(True if MAX was partial and the selector degraded). The pipeline
+passes `latest_covered_date` to `score_universe`. A WARNING fires
+on every degraded run so the upstream gap stays visible.
+
+`mhde-retrain.timer` continues its normal Sun 21:30 UTC weekly
+cadence — that's the standard walk-forward retrain that picks up
+new cross-asset features now that DGS2/VIXCLS/sector ETFs are warm.
+It is **not** a "T-2 alignment retrain"; just the regular weekly run.
 
 ### 7. Wait for forward windows under clean conditions
 

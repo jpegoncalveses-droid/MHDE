@@ -37,6 +37,80 @@ def test_equity_pipeline_skips_when_stale(temp_db, caplog):
     assert any("DATA STALE" in r.message for r in caplog.records)
 
 
+def test_equity_pipeline_uses_latest_covered_date_under_partial_max(
+    temp_db, monkeypatch
+):
+    """fix-freshness-backward-scan integration: when the freshness check
+    degrades to a prior date (partial MAX, covered T-2), the pipeline
+    must pass that degraded date to score_universe rather than None or
+    MAX. Captures the prediction_date argument via a score_universe spy.
+    """
+    from pipelines import ml_prediction_pipeline as pipeline_mod
+
+    today = date(2026, 5, 15)  # Friday
+    # MAX(prices_daily) = 2026-05-14 with 68 rows (partial fallback).
+    # T-2 = 2026-05-13 with 536 rows (full Polygon coverage).
+    # Prior history goes 3..32 days back at 520 rows each so mean_prior
+    # comfortably exceeds 2*68 (forces partial-MAX) but stays below 536
+    # (T-2 still satisfies coverage).
+    seed = [(date(2026, 5, 14), 68), (date(2026, 5, 13), 536)]
+    for i in range(3, 33):
+        seed.append((today - timedelta(days=i), 520))
+    rid = 0
+    for d, n in seed:
+        for ticker_idx in range(n):
+            rid += 1
+            temp_db.execute(
+                "INSERT INTO prices_daily (id, ticker, trade_date, close) "
+                "VALUES (?, ?, ?, ?)",
+                [f"r{rid}", f"T{ticker_idx:04d}", d, 100.0],
+            )
+
+    # Spy on score_universe and pin freshness to a fixed `today` — we
+    # want to confirm the date passed in is the freshness selector's
+    # latest_covered_date.
+    captured = {}
+    from pipelines import freshness as freshness_mod
+
+    real_check_equity_freshness = freshness_mod.check_equity_freshness
+
+    def freshness_pin_today(conn, *args, **kwargs):
+        rep = real_check_equity_freshness(conn, today=today)
+        captured["freshness"] = rep
+        return rep
+
+    def score_universe_spy(conn, prediction_date=None, **kwargs):
+        captured["prediction_date_arg"] = prediction_date
+        return {
+            "status": "error", "message": "spy: no scoring performed",
+            "predictions": [], "prediction_date": prediction_date,
+        }
+
+    monkeypatch.setattr(freshness_mod, "check_equity_freshness", freshness_pin_today)
+    from ml import predict as predict_mod
+    monkeypatch.setattr(predict_mod, "score_universe", score_universe_spy)
+    # fill_outcomes is also imported locally; stub it out so it doesn't
+    # touch our synthetic-only universe state.
+    monkeypatch.setattr(predict_mod, "fill_outcomes", lambda _conn: None)
+    monkeypatch.setattr(predict_mod, "print_predictions", lambda _result: None)
+
+    out = run_prediction_pipeline(
+        temp_db, skip_features=True, skip_outcomes=True,
+    )
+
+    assert captured["freshness"].is_fresh, (
+        f"Freshness must succeed under partial-MAX + covered-prior; "
+        f"msg={captured['freshness'].message!r}"
+    )
+    assert captured["freshness"].is_partial_max is True
+    assert captured["freshness"].latest_covered_date == date(2026, 5, 13)
+    assert captured["prediction_date_arg"] == date(2026, 5, 13), (
+        f"score_universe must receive latest_covered_date (T-2), not None or "
+        f"MAX; got {captured.get('prediction_date_arg')!r}"
+    )
+    assert "skipped" not in out
+
+
 def test_crypto_pipeline_skips_when_stale(temp_db, caplog):
     import logging
     caplog.set_level(logging.WARNING)
