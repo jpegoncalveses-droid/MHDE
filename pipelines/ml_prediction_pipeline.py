@@ -46,6 +46,14 @@ def run_prediction_pipeline(
         return {"skipped": "stale_data", "freshness": freshness}
     logger.info("Freshness OK: %s", freshness.message)
 
+    # fix-freshness-backward-scan: when the caller didn't pin a date,
+    # honor the freshness selector's latest_covered_date. Under T-2
+    # honest cadence this is typically T-2 (Polygon free-tier delivers
+    # day N-1 fully overnight) rather than MAX(trade_date) which may be
+    # a partial fallback row landing on day N.
+    if prediction_date is None and freshness.latest_covered_date is not None:
+        prediction_date = freshness.latest_covered_date
+
     # Stage 1: Ensure features exist for prediction_date
     if not skip_features and prediction_date is not None:
         _ensure_features(conn, prediction_date)

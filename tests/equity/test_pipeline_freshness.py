@@ -8,6 +8,7 @@ test_predict.py.
 """
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime, timedelta, timezone
 
 from pipelines.freshness import (
@@ -67,7 +68,17 @@ def test_equity_freshness_stale_after_threshold(temp_db):
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Partial-coverage detection (KI-149 regression — the smoking-gun case)
+# Backward-scan coverage selection (KI-149 follow-up — graceful T-2)
+#
+# Original KI-149 hardening rejected the silent T-2 skip: when MAX had
+# partial coverage the freshness check returned is_fresh=False and the
+# pipeline skipped entirely. Under the T-2 honest direction, the
+# Polygon-free-tier 403-on-current-day pattern recurs every weekday and
+# bumps MAX(trade_date) with a partial fallback row count, so the
+# strict-MAX behavior produced no predictions ever. This branch
+# (fix-freshness-backward-scan) keeps KI-149's refuse-to-silently-skip
+# guarantee but degrades the failure to a "select latest fully-covered
+# date" path, exposing the gap via is_partial_max + a WARNING log.
 # ──────────────────────────────────────────────────────────────────────
 
 
@@ -84,43 +95,121 @@ def _seed_prices_for_dates(conn, dates_and_counts: list[tuple[date, int]]) -> No
             )
 
 
-def test_equity_freshness_partial_coverage_on_latest_date_is_not_fresh(temp_db):
-    """KI-149: 4 fallback OTC rows on the latest date must NOT count as fresh.
+def test_equity_freshness_partial_max_with_covered_prior_degrades_to_prior(temp_db):
+    """KI-149 follow-up: partial MAX + covered prior in scan range →
+    is_fresh=True with latest_covered_date set to the prior date.
 
-    Smoking-gun scenario from data/processed/finding3_ml_pipeline_gap_root_cause.md:
-    prices_daily latest=2026-05-13 with 4 rows, prior days have ~520 rows each.
-    MAX(trade_date)-only check incorrectly declares freshness OK; the coverage
-    check must reject this.
+    Smoking-gun reproduction from data/processed/finding5_pipeline_gap_and_t2_alignment.md:
+    today=2026-05-15, prices_daily MAX=2026-05-14 with 68 rows (Yahoo
+    fallback only, Polygon 403'd), 2026-05-13 with 536 rows (full
+    Polygon coverage). The pipeline must produce a T-2 prediction
+    rather than skip entirely.
     """
-    today = date(2026, 5, 14)
-    # 30 prior trading days at ~520 rows each (well-covered), latest at 4 rows.
-    seed = [(date(2026, 5, 13), 4)]
+    today = date(2026, 5, 15)  # Friday
+    # Latest (T-1) is partial; T-2 is full; deep history is full.
+    seed = [(date(2026, 5, 14), 68)]
     for i in range(2, 32):
         seed.append((today - timedelta(days=i), 520))
     _seed_prices_for_dates(temp_db, seed)
 
     rep = check_equity_freshness(temp_db, today=today)
-    assert not rep.is_fresh, (
-        f"Partial-coverage latest must be rejected (got is_fresh={rep.is_fresh}, "
+    assert rep.is_fresh, (
+        f"Graceful degradation must succeed (got is_fresh={rep.is_fresh}, "
         f"msg={rep.message!r})"
     )
-    assert rep.reason == "partial_coverage"
-    assert rep.coverage_row_count == 4
-    assert rep.coverage_expected_min is not None
-    assert rep.coverage_expected_min > 4
+    assert rep.latest == date(2026, 5, 14), "latest must remain MAX(trade_date)"
+    assert rep.latest_covered_date == date(2026, 5, 13), (
+        f"latest_covered_date should degrade to fully-covered T-2; got "
+        f"{rep.latest_covered_date}"
+    )
+    assert rep.is_partial_max is True
+    assert rep.reason == "partial_coverage_degraded"
 
 
-def test_equity_freshness_full_coverage_on_latest_date_is_fresh(temp_db):
-    """Latest date with row count comparable to recent history → fresh."""
-    today = date(2026, 5, 14)
-    seed = [(date(2026, 5, 13), 510)]
+def test_equity_freshness_full_max_coverage_returns_max_unchanged(temp_db):
+    """When MAX(trade_date) is fully covered, latest_covered_date == MAX
+    and is_partial_max=False (current behavior preserved)."""
+    today = date(2026, 5, 15)
+    seed = [(date(2026, 5, 14), 510)]
     for i in range(1, 31):
         seed.append((today - timedelta(days=i + 1), 520))
     _seed_prices_for_dates(temp_db, seed)
 
     rep = check_equity_freshness(temp_db, today=today)
     assert rep.is_fresh, f"Full coverage must pass; msg={rep.message!r}"
+    assert rep.latest == date(2026, 5, 14)
+    assert rep.latest_covered_date == date(2026, 5, 14)
+    assert rep.is_partial_max is False
     assert rep.reason is None
+
+
+def test_equity_freshness_all_dates_in_scan_range_partial_is_not_fresh(temp_db):
+    """When every date within the trading-day threshold is partial,
+    is_fresh=False (no graceful degradation possible)."""
+    today = date(2026, 5, 15)
+    # T-1 and T-2 both partial; only T-3+ is full but that's outside
+    # the default max_trading_days=2 scan range.
+    seed = [
+        (date(2026, 5, 14), 50),  # T-1, partial
+        (date(2026, 5, 13), 40),  # T-2, partial
+    ]
+    for i in range(5, 32):
+        seed.append((today - timedelta(days=i), 520))
+    _seed_prices_for_dates(temp_db, seed)
+
+    rep = check_equity_freshness(temp_db, today=today)
+    assert not rep.is_fresh, (
+        f"No covered date in scan range must reject (got is_fresh={rep.is_fresh}, "
+        f"msg={rep.message!r})"
+    )
+    assert rep.latest == date(2026, 5, 14)
+    assert rep.latest_covered_date is None
+    assert rep.is_partial_max is True
+    assert rep.reason == "no_covered_date_in_scan"
+
+
+def test_equity_freshness_partial_max_emits_warning_log(temp_db, caplog):
+    """Degraded path must emit a WARNING describing the upstream gap and
+    the date the pipeline degraded to."""
+    today = date(2026, 5, 15)
+    seed = [(date(2026, 5, 14), 68)]
+    for i in range(2, 32):
+        seed.append((today - timedelta(days=i), 520))
+    _seed_prices_for_dates(temp_db, seed)
+
+    with caplog.at_level(logging.WARNING, logger="mhde.freshness"):
+        rep = check_equity_freshness(temp_db, today=today)
+
+    assert rep.is_fresh and rep.is_partial_max
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    matching = [
+        r for r in warnings
+        if "upstream gap" in r.getMessage().lower()
+        and "2026-05-14" in r.getMessage()
+        and "2026-05-13" in r.getMessage()
+    ]
+    assert matching, (
+        "Expected one WARNING naming the partial MAX date and the degraded "
+        f"target. Got records: {[r.getMessage() for r in warnings]}"
+    )
+
+
+def test_equity_freshness_full_coverage_does_not_emit_partial_warning(temp_db, caplog):
+    """Healthy path must NOT emit the upstream-gap warning."""
+    today = date(2026, 5, 15)
+    seed = [(date(2026, 5, 14), 510)]
+    for i in range(1, 31):
+        seed.append((today - timedelta(days=i + 1), 520))
+    _seed_prices_for_dates(temp_db, seed)
+
+    with caplog.at_level(logging.WARNING, logger="mhde.freshness"):
+        rep = check_equity_freshness(temp_db, today=today)
+
+    assert rep.is_fresh and not rep.is_partial_max
+    assert not [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING and "upstream gap" in r.getMessage().lower()
+    ], "Full-coverage path must stay silent on the upstream-gap warning"
 
 
 def test_equity_freshness_single_row_history_does_not_crash(temp_db):
@@ -138,6 +227,8 @@ def test_equity_freshness_single_row_history_does_not_crash(temp_db):
     rep = check_equity_freshness(temp_db, today=today)
     assert rep.is_fresh
     assert rep.reason is None
+    assert rep.latest_covered_date == today
+    assert rep.is_partial_max is False
 
 
 # ──────────────────────────────────────────────────────────────────────

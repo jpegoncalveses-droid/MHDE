@@ -45,6 +45,12 @@ class FreshnessReport:
     reason: Optional[str] = None
     coverage_row_count: Optional[int] = None
     coverage_expected_min: Optional[int] = None
+    # fix-freshness-backward-scan: graceful-degradation fields for equity.
+    # latest_covered_date is the date the pipeline should score (≤ latest);
+    # is_partial_max is True when MAX(trade_date) had partial coverage and
+    # the selector degraded to an earlier date (or rejected outright).
+    latest_covered_date: Optional[date] = None
+    is_partial_max: bool = False
 
 
 def _format_age(age: Optional[timedelta]) -> str:
@@ -72,14 +78,26 @@ def check_equity_freshness(
     today: Optional[date] = None,
     max_trading_days: int = 2,
 ) -> FreshnessReport:
-    """Equity freshness, KI-149 hardened.
+    """Equity freshness, KI-149 hardened + backward-scan graceful degradation.
 
-    Two-stage check:
-      1. Latest trade_date within `max_trading_days` (existing behavior).
-      2. Latest trade_date row count ≥ ``_EQUITY_COVERAGE_RATIO`` × mean
-         daily row count over the prior ``_EQUITY_COVERAGE_WINDOW_DAYS``
-         trading dates. Closes the silent-T-2 skip: 4 fallback OTC rows
-         on the current date used to satisfy a MAX-only check.
+    Three-stage selector:
+      1. ``MAX(trade_date)`` within ``max_trading_days`` trading days of
+         today; else stale.
+      2. Walk distinct ``trade_date`` values backward from MAX, all within
+         the same trading-day window. The first date whose row count
+         meets the coverage threshold (``_EQUITY_COVERAGE_RATIO`` × mean
+         row count over the prior ``_EQUITY_COVERAGE_WINDOW_DAYS`` dates,
+         baseline anchored before MAX) is selected as
+         ``latest_covered_date`` and the report is fresh.
+      3. If no date in the window has full coverage, the report is not
+         fresh (``reason="no_covered_date_in_scan"``).
+
+    When the selected date differs from ``MAX(trade_date)``, the report
+    sets ``is_partial_max=True`` and emits a WARNING describing the
+    upstream gap. This is the T-2 honest graceful degradation: under
+    Polygon free-tier 403-on-current-day, the partial fallback row count
+    on MAX(trade_date) no longer kills the daily pipeline — instead it
+    degrades to the latest fully-covered date (typically T-2).
     """
     today = today or datetime.now(tz=timezone.utc).date()
     row = conn.execute("SELECT MAX(trade_date) FROM prices_daily").fetchone()
@@ -104,40 +122,75 @@ def check_equity_freshness(
             message=base_msg,
         )
 
-    latest_count, expected_min = _equity_latest_coverage(conn, latest)
-    if latest_count < expected_min:
-        msg = (f"{base_msg}; partial coverage on {latest}: "
-               f"{latest_count} rows < expected ≥{expected_min}")
-        return FreshnessReport(
-            engine="equity", is_fresh=False, latest=latest, age=age,
-            age_str=_format_age(age), threshold=f"{max_trading_days} trading days",
-            message=msg,
-            reason="partial_coverage",
-            coverage_row_count=latest_count,
-            coverage_expected_min=expected_min,
-        )
+    expected_min = _equity_coverage_threshold(conn, anchor=latest)
+    candidates = _equity_recent_candidates(conn, latest, max_trading_days)
 
+    latest_count = next((n for d, n in candidates if d == latest), 0)
+
+    # Walk candidates DESC, pick the latest that satisfies coverage. The
+    # MAX-fully-covered path lands on the first iteration; degraded
+    # paths walk into prior dates.
+    for cand_date, cand_count in candidates:
+        if cand_count >= expected_min:
+            if cand_date == latest:
+                return FreshnessReport(
+                    engine="equity", is_fresh=True, latest=latest, age=age,
+                    age_str=_format_age(age),
+                    threshold=f"{max_trading_days} trading days",
+                    message=base_msg,
+                    coverage_row_count=cand_count,
+                    coverage_expected_min=expected_min,
+                    latest_covered_date=latest,
+                    is_partial_max=False,
+                )
+            msg = (
+                f"{base_msg}; partial coverage on {latest}: "
+                f"{latest_count} rows < expected ≥{expected_min}; "
+                f"degraded to latest_covered_date={cand_date} ({cand_count} rows)"
+            )
+            logger.warning(
+                "Upstream gap detected on %s (%d rows < %d expected); "
+                "degraded to latest_covered_date=%s (%d rows)",
+                latest, latest_count, expected_min, cand_date, cand_count,
+            )
+            return FreshnessReport(
+                engine="equity", is_fresh=True, latest=latest, age=age,
+                age_str=_format_age(age),
+                threshold=f"{max_trading_days} trading days",
+                message=msg,
+                reason="partial_coverage_degraded",
+                coverage_row_count=latest_count,
+                coverage_expected_min=expected_min,
+                latest_covered_date=cand_date,
+                is_partial_max=True,
+            )
+
+    msg = (
+        f"{base_msg}; no date within scan window has full coverage "
+        f"(expected ≥{expected_min}; observed: "
+        f"{', '.join(f'{d}={n}' for d, n in candidates) or 'none'})"
+    )
     return FreshnessReport(
-        engine="equity", is_fresh=True, latest=latest, age=age,
+        engine="equity", is_fresh=False, latest=latest, age=age,
         age_str=_format_age(age), threshold=f"{max_trading_days} trading days",
-        message=base_msg,
+        message=msg,
+        reason="no_covered_date_in_scan",
+        coverage_row_count=latest_count,
+        coverage_expected_min=expected_min,
+        latest_covered_date=None,
+        is_partial_max=True,
     )
 
 
-def _equity_latest_coverage(
-    conn: duckdb.DuckDBPyConnection, latest: date
-) -> tuple[int, int]:
-    """Return (row_count_on_latest, expected_min) for KI-149 coverage check.
-
-    expected_min = round(_EQUITY_COVERAGE_RATIO × mean daily row count over
-    the prior `_EQUITY_COVERAGE_WINDOW_DAYS` trade dates). Falls back to a
-    permissive threshold (== latest_count) when there is no prior history,
-    so seeding a single row still passes.
+def _equity_coverage_threshold(
+    conn: duckdb.DuckDBPyConnection, anchor: date
+) -> int:
+    """expected_min = round(_EQUITY_COVERAGE_RATIO × mean daily row count
+    over the `_EQUITY_COVERAGE_WINDOW_DAYS` trade dates strictly before
+    `anchor`). When prior history is empty (e.g. seeded with a single
+    row), the threshold falls back to the row count on `anchor` itself
+    so the trivial single-row case still passes.
     """
-    latest_count = conn.execute(
-        "SELECT COUNT(*) FROM prices_daily WHERE trade_date = ?", [latest]
-    ).fetchone()[0]
-
     history = conn.execute(
         """
         WITH daily AS (
@@ -150,15 +203,48 @@ def _equity_latest_coverage(
         )
         SELECT AVG(n) FROM daily
         """,
-        [latest, _EQUITY_COVERAGE_WINDOW_DAYS],
+        [anchor, _EQUITY_COVERAGE_WINDOW_DAYS],
     ).fetchone()
     mean_prior = history[0] if history and history[0] is not None else None
 
     if mean_prior is None:
-        return latest_count, latest_count
+        anchor_count = conn.execute(
+            "SELECT COUNT(*) FROM prices_daily WHERE trade_date = ?", [anchor]
+        ).fetchone()[0]
+        return anchor_count
 
-    expected_min = int(round(_EQUITY_COVERAGE_RATIO * float(mean_prior)))
-    return latest_count, expected_min
+    return int(round(_EQUITY_COVERAGE_RATIO * float(mean_prior)))
+
+
+def _equity_recent_candidates(
+    conn: duckdb.DuckDBPyConnection,
+    latest: date,
+    max_trading_days: int,
+) -> list[tuple[date, int]]:
+    """Return [(trade_date, row_count), ...] DESC for all distinct dates
+    in prices_daily within `max_trading_days` trading days of MAX. The
+    earliest candidate satisfies trading_gap(cand+1, latest) ≤
+    max_trading_days−1 — i.e. the same trading-day window the stage 1
+    check applied to MAX vs today.
+    """
+    earliest_calendar = latest - timedelta(days=max_trading_days * 2 + 7)
+    rows = conn.execute(
+        """
+        SELECT trade_date, COUNT(*) AS n
+        FROM prices_daily
+        WHERE trade_date >= ?
+          AND trade_date <= ?
+        GROUP BY trade_date
+        ORDER BY trade_date DESC
+        """,
+        [earliest_calendar, latest],
+    ).fetchall()
+    kept: list[tuple[date, int]] = []
+    for d, n in rows:
+        gap = trading_days_between(d + timedelta(days=1), latest)
+        if gap <= max_trading_days - 1:
+            kept.append((d, int(n)))
+    return kept
 
 
 def check_crypto_freshness(
