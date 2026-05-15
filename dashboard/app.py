@@ -11,6 +11,9 @@ import streamlit as st
 
 from dashboard.auth import require_auth
 from dashboard.services.maturity import (
+    crypto_feature_date_to_trading_date,
+    crypto_trading_date_to_feature_date,
+    format_crypto_trading_date_banner,
     format_equity_t2_banner,
     format_pct_move,
     format_time_remaining,
@@ -416,6 +419,11 @@ with tab_crypto:
                                f"Train: {row['train_start']} → {row['train_end']}")
 
         # --- Date selector ---
+        # Backend `prediction_date` is the feature-snapshot date (T-1 =
+        # the just-completed daily bar). Operationally the predictions
+        # are generated for the FOLLOWING calendar day's trading; the
+        # selector relabels accordingly. Backend column semantics
+        # unchanged — translation is presentation-only.
         crypto_dates = get_distinct_prediction_dates(
             conn, "crypto_ml_predictions", "prediction_date", limit=30
         )
@@ -423,12 +431,39 @@ with tab_crypto:
         if not crypto_dates:
             st.warning("No predictions yet. Run `python main.py crypto predict` to generate.")
         else:
-            crypto_selected_date = st.selectbox(
-                "Prediction date",
-                crypto_dates,
+            crypto_trading_dates = [
+                crypto_feature_date_to_trading_date(d) for d in crypto_dates
+            ]
+            crypto_selected_trading_date = st.selectbox(
+                "Trading date",
+                crypto_trading_dates,
                 format_func=lambda d: d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d),
-                key="crypto_date",
+                key="crypto_trading_date",
+                help=(
+                    "Date predictions drive trading on. The backend "
+                    "`crypto_ml_predictions.prediction_date` is the "
+                    "feature-snapshot date (T-1); this label is "
+                    "trading-date (T) for operator clarity."
+                ),
             )
+            crypto_selected_date = crypto_trading_date_to_feature_date(
+                crypto_selected_trading_date
+            )
+
+            # --- Banner: trading date, features-as-of date, generation time ---
+            _crypto_predicted_at = conn.execute(
+                "SELECT MAX(predicted_at) FROM crypto_ml_predictions "
+                "WHERE prediction_date = ?",
+                [crypto_selected_date],
+            ).fetchone()
+            _crypto_predicted_at_val = (
+                _crypto_predicted_at[0] if _crypto_predicted_at else None
+            )
+            st.markdown(format_crypto_trading_date_banner(
+                prediction_date=crypto_selected_date,
+                predicted_at=_crypto_predicted_at_val,
+                today=datetime.now(timezone.utc).date(),
+            ))
 
             # --- Load predictions ---
             crypto_preds = get_crypto_predictions(conn, crypto_selected_date)
