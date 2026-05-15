@@ -462,13 +462,36 @@ def test_daily_balance_since_override_takes_precedence():
 
 
 def test_daily_balance_includes_realized_and_unrealized_columns():
-    """Reconciled rows pull realized_pnl_usd and unrealized_pnl_usd
-    straight from daily_pnl. No synthesis involved."""
+    """Reconciled rows expose realized_pnl_usd + unrealized_pnl_usd
+    recomputed from the positions table, filtered to entry_date >=
+    baseline. The fix-daily-balance-baseline-awareness branch moved
+    these from daily_pnl pass-through to position-level aggregation so
+    pre-baseline positions don't pollute post-baseline strategy
+    attribution.
+    """
     e = _engine_db()
-    _daily(e, date(2026, 5, 12), equity=1000.0, realized=50.0, unrealized=10.0)
-    _daily(e, date(2026, 5, 13), equity=1020.0, realized=70.0, unrealized=5.0)
+    _daily(e, date(2026, 5, 12), equity=1000.0)
+    _daily(e, date(2026, 5, 13), equity=1020.0)
+    # Closure on 5/12 → row 5/12 realized = 50
+    _pos(e, "c12", "CUSDT", "exit_filled",
+         entry_date=date(2026, 5, 12), entry_price=10.0, qty=5.0,
+         peak_price=20.0, exit_price=20.0, realized_pnl_usd=50.0,
+         updated_at=datetime(2026, 5, 12, 9, 0))
+    # Closure on 5/13 → row 5/13 realized = 70
+    _pos(e, "c13", "DUSDT", "exit_filled",
+         entry_date=date(2026, 5, 13), entry_price=10.0, qty=7.0,
+         peak_price=20.0, exit_price=20.0, realized_pnl_usd=70.0,
+         updated_at=datetime(2026, 5, 13, 9, 0))
+    # Open position spanning both rows → unrealized at EOD each
+    _pos(e, "open1", "OPENUSDT", "entry_filled",
+         entry_date=date(2026, 5, 12), entry_price=10.0, qty=1.0,
+         peak_price=10.0, updated_at=datetime(2026, 5, 12, 9, 0))
+    _snap(e, "open1", 20.0, ts=datetime(2026, 5, 12, 23, 0))  # +$10 at 5/12 EOD
+    _snap(e, "open1", 15.0, ts=datetime(2026, 5, 13, 23, 0))  # +$5 at 5/13 EOD
+
     df = q.get_daily_balance_since_baseline(
-        e, since=date(2026, 5, 12), today=date(2026, 5, 13)
+        e, since=date(2026, 5, 12), today=date(2026, 5, 13),
+        baseline_date=date(2026, 5, 12),
     )
     assert df.iloc[0]["realized_pnl_usd"] == pytest.approx(50.0)
     assert df.iloc[0]["unrealized_pnl_usd"] == pytest.approx(10.0)
@@ -480,29 +503,40 @@ def test_daily_balance_includes_realized_and_unrealized_columns():
 def test_daily_balance_synthesizes_today_when_missing():
     """daily_pnl has 5/12 and 5/13; today is 5/14, missing. A single
     preliminary row is appended with equity = prev + today_realized,
-    today_realized from positions exit-filled today, today_unrealized
-    from open positions' latest price snapshots."""
+    today_realized from positions exit-filled today (filtered to
+    entry_date >= baseline), today_unrealized from open positions'
+    latest price snapshots (same filter)."""
     e = _engine_db()
     _daily(e, date(2026, 5, 12), equity=1000.0)
-    _daily(e, date(2026, 5, 13), equity=1010.0, realized=10.0, unrealized=0.0)
+    _daily(e, date(2026, 5, 13), equity=1010.0)
     # Closed today: realized 5 + 3 = 8. Closed yesterday: ignored.
+    # All entry_dates >= baseline (5/12) so the filter is a no-op here.
     today_ts = datetime(2026, 5, 14, 9, 0, 0)
-    _pos(e, "x", "XUSDT", "exit_filled", entry_price=10.0, qty=5.0,
+    _pos(e, "x", "XUSDT", "exit_filled",
+         entry_date=date(2026, 5, 14),
+         entry_price=10.0, qty=5.0,
          peak_price=11.0, exit_price=11.0, realized_pnl_usd=5.0,
          updated_at=today_ts)
-    _pos(e, "y", "YUSDT", "exit_filled", entry_price=10.0, qty=2.0,
+    _pos(e, "y", "YUSDT", "exit_filled",
+         entry_date=date(2026, 5, 14),
+         entry_price=10.0, qty=2.0,
          peak_price=12.0, exit_price=11.5, realized_pnl_usd=3.0,
          updated_at=today_ts)
-    _pos(e, "yest", "ZUSDT", "exit_filled", entry_price=10.0, qty=1.0,
+    _pos(e, "yest", "ZUSDT", "exit_filled",
+         entry_date=date(2026, 5, 13),
+         entry_price=10.0, qty=1.0,
          peak_price=11.0, exit_price=11.0, realized_pnl_usd=1.0,
          updated_at=datetime(2026, 5, 13, 9, 0, 0))
     # One open position: entry 100, latest snapshot 110, qty 2 → +20 unrealized.
-    _pos(e, "open1", "OPEN1USDT", "entry_filled", entry_price=100.0, qty=2.0,
+    _pos(e, "open1", "OPEN1USDT", "entry_filled",
+         entry_date=date(2026, 5, 14),
+         entry_price=100.0, qty=2.0,
          peak_price=110.0, updated_at=today_ts)
     _snap(e, "open1", 110.0, ts=today_ts)
 
     df = q.get_daily_balance_since_baseline(
-        e, since=date(2026, 5, 12), today=date(2026, 5, 14)
+        e, since=date(2026, 5, 12), today=date(2026, 5, 14),
+        baseline_date=date(2026, 5, 12),
     )
     assert len(df) == 3
     today_row = df.iloc[-1]
@@ -516,21 +550,26 @@ def test_daily_balance_synthesizes_today_when_missing():
 
 
 def test_daily_balance_no_synthesis_when_today_already_reconciled():
-    """If today is already in daily_pnl, the existing reconciled row is
-    used verbatim — no synthesis, is_preliminary stays False."""
+    """If today is already in daily_pnl, the reconciled row is used —
+    no synthesis, is_preliminary stays False. The per-row realized is
+    still recomputed from positions filtered to entry_date >= baseline.
+    """
     e = _engine_db()
     _daily(e, date(2026, 5, 12), equity=1000.0)
-    _daily(e, date(2026, 5, 13), equity=1050.0, realized=50.0, unrealized=0.0)
-    # Position closed today; if synthesis fired it would double-count.
-    _pos(e, "x", "XUSDT", "exit_filled", entry_price=10.0, qty=5.0,
-         peak_price=11.0, exit_price=11.0, realized_pnl_usd=99.0,
+    _daily(e, date(2026, 5, 13), equity=1050.0)
+    # Closure on 5/13 entered 5/13 → counted under baseline_date=5/12
+    _pos(e, "x", "XUSDT", "exit_filled",
+         entry_date=date(2026, 5, 13),
+         entry_price=10.0, qty=5.0, peak_price=11.0, exit_price=11.0,
+         realized_pnl_usd=50.0,
          updated_at=datetime(2026, 5, 13, 9, 0, 0))
     df = q.get_daily_balance_since_baseline(
-        e, since=date(2026, 5, 12), today=date(2026, 5, 13)
+        e, since=date(2026, 5, 12), today=date(2026, 5, 13),
+        baseline_date=date(2026, 5, 12),
     )
     assert len(df) == 2
     assert not df["is_preliminary"].any()
-    # Reconciled equity, not double-counted.
+    # Reconciled equity preserved.
     assert df.iloc[1]["equity"] == pytest.approx(1050.0)
     assert df.iloc[1]["realized_pnl_usd"] == pytest.approx(50.0)
 
@@ -558,11 +597,15 @@ def test_daily_balance_synthesized_today_when_daily_pnl_empty():
     import pandas as _pd
     e = _engine_db()
     today_ts = datetime(2026, 5, 14, 9, 0, 0)
-    _pos(e, "x", "XUSDT", "exit_filled", entry_price=10.0, qty=5.0,
-         peak_price=11.0, exit_price=11.0, realized_pnl_usd=5.0,
+    # Post-baseline closure on today (entry on 5/14, baseline = 5/12)
+    _pos(e, "x", "XUSDT", "exit_filled",
+         entry_date=date(2026, 5, 14),
+         entry_price=10.0, qty=5.0, peak_price=11.0, exit_price=11.0,
+         realized_pnl_usd=5.0,
          updated_at=today_ts)
     df = q.get_daily_balance_since_baseline(
-        e, since=date(2026, 5, 12), today=date(2026, 5, 14)
+        e, since=date(2026, 5, 12), today=date(2026, 5, 14),
+        baseline_date=date(2026, 5, 12),
     )
     assert len(df) == 1
     row = df.iloc[0]
@@ -653,3 +696,222 @@ def test_unrealized_pnl_includes_entry_pending():
     _snap(e, "p", 105.0)
     val = q.get_open_positions_unrealized_pnl_usd(e)
     assert val == pytest.approx(5.0)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Baseline-aware position filtering — fix-daily-balance-baseline-awareness
+#
+# The daily balance table used to filter its DATE ROWS by baseline but
+# sum realized/unrealized across ALL positions, polluting post-baseline
+# strategy attribution with pre-baseline contributions. This branch
+# moves filtering to the position level: realized/unrealized per row
+# recomputed from positions filtered by entry_date >= baseline_date.
+# Pre-baseline open positions become invisible to the per-row metrics
+# but are surfaced via a new helper for the dashboard explainer.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_daily_balance_filters_unrealized_to_post_baseline_positions():
+    """Two open positions on baseline_date+1: one pre-baseline (entry
+    before baseline_date) and one post-baseline. The row's unrealized
+    must include only the post-baseline contribution.
+    """
+    e = _engine_db()
+    baseline = date(2026, 5, 14)
+    row_date = date(2026, 5, 14)
+    _daily(e, row_date, equity=10000.0, realized=0.0, unrealized=999.0)
+    # Pre-baseline open: entered 5/12, mark $90 from $100 entry, qty 5 → -$50
+    _pos(e, "pre1", "PREUSDT", "entry_filled",
+         entry_date=date(2026, 5, 12),
+         entry_price=100.0, qty=5.0, peak_price=100.0,
+         updated_at=datetime(2026, 5, 12, 9, 0))
+    _snap(e, "pre1", 90.0, ts=datetime(2026, 5, 14, 23, 0))
+    # Post-baseline open: entered 5/14, mark $11 from $10 entry, qty 3 → +$3
+    _pos(e, "post1", "POSTUSDT", "entry_filled",
+         entry_date=date(2026, 5, 14),
+         entry_price=10.0, qty=3.0, peak_price=11.0,
+         updated_at=datetime(2026, 5, 14, 9, 0))
+    _snap(e, "post1", 11.0, ts=datetime(2026, 5, 14, 23, 0))
+
+    df = q.get_daily_balance_since_baseline(
+        e, since=baseline, today=row_date, baseline_date=baseline,
+    )
+    assert len(df) == 1
+    # Only post-baseline contributes: (11-10)*3 = +3.0. Pre-baseline (-$50) excluded.
+    assert df.iloc[0]["unrealized_pnl_usd"] == pytest.approx(3.0)
+
+
+def test_daily_balance_filters_realized_to_post_baseline_closures():
+    """Two closures on the row date: one pre-baseline entry (excluded)
+    and one post-baseline entry (included). Realized must reflect only
+    the post-baseline closure.
+    """
+    e = _engine_db()
+    baseline = date(2026, 5, 14)
+    row_date = date(2026, 5, 14)
+    _daily(e, row_date, equity=10000.0, realized=99.0, unrealized=0.0)
+    # Pre-baseline closure on row_date: realized +$50 (must be excluded)
+    _pos(e, "pre_closed", "PRECLOSED", "exit_filled",
+         entry_date=date(2026, 5, 12),
+         entry_price=100.0, qty=5.0, peak_price=110.0,
+         exit_price=110.0, realized_pnl_usd=50.0,
+         updated_at=datetime(2026, 5, 14, 9, 0))
+    # Post-baseline closure on row_date: realized +$7 (included)
+    _pos(e, "post_closed", "POSTCLOSED", "exit_filled",
+         entry_date=date(2026, 5, 14),
+         entry_price=10.0, qty=1.0, peak_price=17.0,
+         exit_price=17.0, realized_pnl_usd=7.0,
+         updated_at=datetime(2026, 5, 14, 10, 0))
+
+    df = q.get_daily_balance_since_baseline(
+        e, since=baseline, today=row_date, baseline_date=baseline,
+    )
+    assert df.iloc[0]["realized_pnl_usd"] == pytest.approx(7.0)
+
+
+def test_daily_balance_cumulative_delta_uses_post_baseline_attributable_equity():
+    """starting_equity = wallet_at_first_row - cost_basis_of_pre_baseline_open.
+    Each row's equity_attributable = wallet(D) - cost_basis_pre_baseline_still_open(D).
+    cumulative_delta = equity_attributable(D) - starting_equity_attributable.
+
+    Concretely:
+      Pre-baseline open: cost basis = $1000 at baseline.
+      First-row cumulative_delta must be 0.0 (no time has passed).
+      If the pre-baseline position closes on day +1 with $50 realized,
+      day +1 wallet = first_wallet + 50, locked_pre on day +1 = 0,
+      equity_attributable(day +1) = first_wallet + 50 - 0,
+      cumulative_delta(day +1) = (first_wallet + 50) - (first_wallet - 1000) = 1050.
+    """
+    e = _engine_db()
+    baseline = date(2026, 5, 14)
+    _daily(e, date(2026, 5, 14), equity=10000.0)
+    _daily(e, date(2026, 5, 15), equity=10050.0)  # +50 from pre-baseline closure
+    # Pre-baseline open at baseline; closes on 5/15
+    _pos(e, "pre1", "PREUSDT", "exit_filled",
+         entry_date=date(2026, 5, 12),
+         entry_price=100.0, qty=10.0, peak_price=105.0,
+         exit_price=105.0, realized_pnl_usd=50.0,
+         updated_at=datetime(2026, 5, 15, 9, 0))
+
+    df = q.get_daily_balance_since_baseline(
+        e, since=baseline, today=date(2026, 5, 15), baseline_date=baseline,
+    )
+    assert df.iloc[0]["cumulative_delta"] == pytest.approx(0.0)
+    assert df.iloc[1]["cumulative_delta"] == pytest.approx(1050.0)
+
+
+def test_daily_balance_no_baseline_no_positions_falls_back_to_current_behavior():
+    """When no pre-baseline positions exist, the new filter is a no-op
+    and the historical behavior (cumulative_delta starts at 0, equity
+    pass-through) is preserved.
+    """
+    e = _engine_db()
+    _daily(e, date(2026, 5, 14), equity=1000.0)
+    _daily(e, date(2026, 5, 15), equity=1020.0, realized=20.0, unrealized=0.0)
+    df = q.get_daily_balance_since_baseline(
+        e, since=date(2026, 5, 14), today=date(2026, 5, 15),
+        baseline_date=date(2026, 5, 14),
+    )
+    # No positions seeded → filtered realized/unrealized = 0.0 on each row
+    assert df.iloc[0]["realized_pnl_usd"] == pytest.approx(0.0)
+    assert df.iloc[1]["realized_pnl_usd"] == pytest.approx(0.0)
+    # cumulative_delta unaffected (no cost basis to subtract)
+    assert df.iloc[0]["cumulative_delta"] == pytest.approx(0.0)
+    assert df.iloc[1]["cumulative_delta"] == pytest.approx(20.0)
+
+
+def test_daily_balance_synthesized_today_filters_open_positions_by_baseline():
+    """Today's preliminary row's unrealized must exclude pre-baseline
+    open positions, mirroring the historical-row contract.
+    """
+    e = _engine_db()
+    baseline = date(2026, 5, 14)
+    _daily(e, date(2026, 5, 14), equity=10000.0)
+    # Pre-baseline open: ignored
+    _pos(e, "pre1", "PREUSDT", "entry_filled",
+         entry_date=date(2026, 5, 12),
+         entry_price=100.0, qty=5.0, peak_price=100.0,
+         updated_at=datetime(2026, 5, 14, 9, 0))
+    _snap(e, "pre1", 90.0, ts=datetime(2026, 5, 15, 9, 0))  # -$50 pre
+    # Post-baseline open: counted
+    _pos(e, "post1", "POSTUSDT", "entry_filled",
+         entry_date=date(2026, 5, 15),
+         entry_price=10.0, qty=2.0, peak_price=10.0,
+         updated_at=datetime(2026, 5, 15, 9, 0))
+    _snap(e, "post1", 13.0, ts=datetime(2026, 5, 15, 9, 0))  # +$6 post
+
+    df = q.get_daily_balance_since_baseline(
+        e, since=baseline, today=date(2026, 5, 15), baseline_date=baseline,
+    )
+    today_row = df.iloc[-1]
+    assert bool(today_row["is_preliminary"]) is True
+    assert today_row["unrealized_pnl_usd"] == pytest.approx(6.0)
+
+
+def test_get_pre_baseline_open_summary_returns_scalar_metrics():
+    """The new helper exposes the count and unrealized P&L of
+    pre-baseline open positions for the dashboard explainer below the
+    daily-balance table.
+    """
+    e = _engine_db()
+    baseline = date(2026, 5, 14)
+    _pos(e, "pre1", "PREUSDT", "entry_filled",
+         entry_date=date(2026, 5, 12),
+         entry_price=100.0, qty=5.0, peak_price=100.0,
+         updated_at=datetime(2026, 5, 12, 9, 0))
+    _snap(e, "pre1", 90.0, ts=datetime(2026, 5, 15, 9, 0))  # -$50
+    _pos(e, "pre2", "PRE2USDT", "entry_filled",
+         entry_date=date(2026, 5, 13),
+         entry_price=20.0, qty=10.0, peak_price=20.0,
+         updated_at=datetime(2026, 5, 13, 9, 0))
+    _snap(e, "pre2", 18.0, ts=datetime(2026, 5, 15, 9, 0))  # -$20
+    # Post-baseline open — must be excluded from the pre-baseline summary
+    _pos(e, "post1", "POSTUSDT", "entry_filled",
+         entry_date=date(2026, 5, 14),
+         entry_price=10.0, qty=1.0, peak_price=10.0,
+         updated_at=datetime(2026, 5, 14, 9, 0))
+    _snap(e, "post1", 11.0, ts=datetime(2026, 5, 15, 9, 0))
+
+    summary = q.get_pre_baseline_open_summary(e, baseline_date=baseline)
+    assert summary["n_pre_baseline_open_positions"] == 2
+    assert summary["pre_baseline_unrealized_pnl_usd"] == pytest.approx(-70.0)
+    assert summary["pre_baseline_cost_basis_usd"] == pytest.approx(700.0)
+
+
+def test_get_pre_baseline_open_summary_empty_when_no_pre_baseline_positions():
+    """Edge case: no pre-baseline open positions → zero scalars, not None
+    or NaN. The dashboard renders without conditional fallback."""
+    e = _engine_db()
+    baseline = date(2026, 5, 14)
+    _pos(e, "post1", "POSTUSDT", "entry_filled",
+         entry_date=date(2026, 5, 14),
+         entry_price=10.0, qty=1.0, peak_price=10.0,
+         updated_at=datetime(2026, 5, 14, 9, 0))
+    summary = q.get_pre_baseline_open_summary(e, baseline_date=baseline)
+    assert summary["n_pre_baseline_open_positions"] == 0
+    assert summary["pre_baseline_unrealized_pnl_usd"] == 0.0
+    assert summary["pre_baseline_cost_basis_usd"] == 0.0
+
+
+def test_daily_balance_baseline_date_defaults_to_since():
+    """baseline_date is optional; when omitted it defaults to `since` so
+    callers that supply only `since` get baseline-aware filtering
+    automatically (the common case: dashboard calls
+    paper_baseline_date() once and threads it through)."""
+    e = _engine_db()
+    _daily(e, date(2026, 5, 14), equity=10000.0)
+    _pos(e, "pre", "PRE", "entry_filled",
+         entry_date=date(2026, 5, 12), entry_price=100.0, qty=5.0,
+         peak_price=100.0, updated_at=datetime(2026, 5, 12, 9, 0))
+    _snap(e, "pre", 90.0, ts=datetime(2026, 5, 14, 23, 0))
+    _pos(e, "post", "POST", "entry_filled",
+         entry_date=date(2026, 5, 14), entry_price=10.0, qty=2.0,
+         peak_price=10.0, updated_at=datetime(2026, 5, 14, 9, 0))
+    _snap(e, "post", 12.0, ts=datetime(2026, 5, 14, 23, 0))
+
+    # No baseline_date — must default to since=5/14
+    df = q.get_daily_balance_since_baseline(
+        e, since=date(2026, 5, 14), today=date(2026, 5, 14),
+    )
+    # Only the post-baseline (2*1.0 * 2 = 4) contributes
+    assert df.iloc[0]["unrealized_pnl_usd"] == pytest.approx(4.0)
