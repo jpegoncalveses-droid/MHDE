@@ -930,6 +930,8 @@ _DAILY_BALANCE_COLUMNS = [
 
 def get_open_positions_unrealized_pnl_usd(
     engine_conn: duckdb.DuckDBPyConnection,
+    *,
+    baseline_date: date | None = None,
 ) -> float:
     """Live mark-to-market unrealized P&L across currently-open positions.
 
@@ -940,12 +942,19 @@ def get_open_positions_unrealized_pnl_usd(
     also includes ``trailing_active`` / ``exit_pending`` / ``expired``);
     broaden the filter if the operator wants those bucketed in too.
 
+    When ``baseline_date`` is supplied, only positions with
+    ``entry_date >= baseline_date`` contribute (fix-daily-balance-
+    baseline-awareness). Pre-baseline positions are excluded so the
+    metric reflects post-baseline strategy attribution only.
+
     Returns ``0.0`` when no open positions have snapshots — never raises,
     never returns NaN. The engine's monitor service writes a snapshot
     each minute, so this read is fresh within ~60 seconds.
     """
+    where_baseline = "AND p.entry_date >= ?" if baseline_date is not None else ""
+    params = [baseline_date] if baseline_date is not None else []
     row = engine_conn.execute(
-        """
+        f"""
         SELECT COALESCE(SUM((latest.price - p.entry_price) * p.qty), 0.0)
         FROM positions p
         JOIN (
@@ -958,9 +967,166 @@ def get_open_positions_unrealized_pnl_usd(
             )
         ) latest ON latest.position_id = p.id
         WHERE p.current_state IN ('entry_filled', 'entry_pending')
-        """
+          {where_baseline}
+        """,
+        params,
     ).fetchone()
     return float(row[0]) if row and row[0] is not None else 0.0
+
+
+def get_pre_baseline_open_summary(
+    engine_conn: duckdb.DuckDBPyConnection,
+    *,
+    baseline_date: date,
+) -> dict:
+    """Scalar summary of pre-baseline open positions for the dashboard
+    explainer below the daily-balance table.
+
+    Returns a dict with three keys, always populated (never None / NaN):
+      n_pre_baseline_open_positions  — int count
+      pre_baseline_unrealized_pnl_usd — float, MTM across pre-baseline
+                                        open positions using each one's
+                                        latest price_snapshot. 0.0 when
+                                        no snapshots or no positions.
+      pre_baseline_cost_basis_usd     — float, SUM(entry_price * qty)
+                                        across pre-baseline open
+                                        positions. Used by the daily
+                                        balance table for starting_equity
+                                        attributable adjustment.
+    """
+    n = int(engine_conn.execute(
+        """
+        SELECT COUNT(*) FROM positions
+        WHERE current_state IN ('entry_filled', 'entry_pending')
+          AND entry_date < ?
+        """,
+        [baseline_date],
+    ).fetchone()[0] or 0)
+    unrealized = engine_conn.execute(
+        """
+        SELECT COALESCE(SUM((latest.price - p.entry_price) * p.qty), 0.0)
+        FROM positions p
+        LEFT JOIN (
+            SELECT position_id, price
+            FROM price_snapshots ps
+            WHERE (position_id, timestamp) IN (
+                SELECT position_id, MAX(timestamp)
+                FROM price_snapshots
+                GROUP BY position_id
+            )
+        ) latest ON latest.position_id = p.id
+        WHERE p.current_state IN ('entry_filled', 'entry_pending')
+          AND p.entry_date < ?
+          AND latest.price IS NOT NULL
+        """,
+        [baseline_date],
+    ).fetchone()[0]
+    cost_basis = engine_conn.execute(
+        """
+        SELECT COALESCE(SUM(entry_price * qty), 0.0)
+        FROM positions
+        WHERE current_state IN ('entry_filled', 'entry_pending')
+          AND entry_date < ?
+        """,
+        [baseline_date],
+    ).fetchone()[0]
+    return {
+        "n_pre_baseline_open_positions": n,
+        "pre_baseline_unrealized_pnl_usd": float(unrealized or 0.0),
+        "pre_baseline_cost_basis_usd": float(cost_basis or 0.0),
+    }
+
+
+def _compute_post_baseline_realized_for_date(
+    engine_conn: duckdb.DuckDBPyConnection, row_date: date, baseline_date: date,
+) -> float:
+    """SUM(positions.realized_pnl_usd) for closures on `row_date` whose
+    entry_date >= baseline_date. fix-daily-balance-baseline-awareness:
+    replaces the pass-through of daily_pnl.realized_pnl_usd which
+    aggregated across all positions including pre-baseline closures.
+    """
+    val = engine_conn.execute(
+        """
+        SELECT COALESCE(SUM(realized_pnl_usd), 0.0)
+        FROM positions
+        WHERE current_state = 'exit_filled'
+          AND CAST(updated_at AS DATE) = ?
+          AND entry_date >= ?
+        """,
+        [row_date, baseline_date],
+    ).fetchone()[0]
+    return float(val or 0.0)
+
+
+def _compute_post_baseline_unrealized_for_date(
+    engine_conn: duckdb.DuckDBPyConnection, row_date: date, baseline_date: date,
+) -> float:
+    """End-of-day mark-to-market of post-baseline positions still open at
+    end of `row_date`. fix-daily-balance-baseline-awareness: replaces
+    the pass-through of daily_pnl.unrealized_pnl_usd.
+
+    "Open at end of row_date" means: entry_date <= row_date AND
+    (current_state is open OR position closed strictly after row_date).
+    The mark is the latest price_snapshot whose timestamp is <= row_date
+    23:59:59. Positions without a qualifying snapshot are skipped
+    (contribute 0 — same behavior as get_open_positions_unrealized_pnl_usd).
+    """
+    eod = datetime.combine(row_date, datetime.max.time())
+    val = engine_conn.execute(
+        """
+        WITH open_at_eod AS (
+            SELECT id, entry_price, qty
+            FROM positions
+            WHERE entry_date <= ?
+              AND entry_date >= ?
+              AND (
+                  current_state IN ('entry_filled', 'entry_pending',
+                                    'trailing_active', 'exit_pending', 'expired')
+                  OR CAST(updated_at AS DATE) > ?
+              )
+        ),
+        eod_snapshots AS (
+            SELECT position_id, price,
+                   ROW_NUMBER() OVER (PARTITION BY position_id
+                                      ORDER BY timestamp DESC) AS rn
+            FROM price_snapshots
+            WHERE timestamp <= ?
+        )
+        SELECT COALESCE(SUM((s.price - o.entry_price) * o.qty), 0.0)
+        FROM open_at_eod o
+        JOIN eod_snapshots s ON s.position_id = o.id AND s.rn = 1
+        """,
+        [row_date, baseline_date, row_date, eod],
+    ).fetchone()[0]
+    return float(val or 0.0)
+
+
+def _compute_pre_baseline_locked_at_eod(
+    engine_conn: duckdb.DuckDBPyConnection, row_date: date, baseline_date: date,
+) -> float:
+    """SUM(entry_price * qty) for pre-baseline positions OPEN at end of
+    `row_date`. Used to compute equity_attributable per row: the wallet
+    balance minus this locked-pre-baseline amount.
+
+    Mirrors `_compute_post_baseline_unrealized_for_date`'s "open at end
+    of row_date" predicate but filters to `entry_date < baseline_date`
+    and reads cost basis (no snapshot dependency).
+    """
+    val = engine_conn.execute(
+        """
+        SELECT COALESCE(SUM(entry_price * qty), 0.0)
+        FROM positions
+        WHERE entry_date < ?
+          AND entry_date <= ?
+          AND (
+              current_state IN ('entry_filled', 'entry_pending',
+                                'trailing_active', 'exit_pending', 'expired')
+              OR CAST(updated_at AS DATE) > ?
+          )
+        """,
+        [baseline_date, row_date, row_date],
+    ).fetchone()[0]
+    return float(val or 0.0)
 
 
 def get_daily_balance_since_baseline(
@@ -968,6 +1134,7 @@ def get_daily_balance_since_baseline(
     *,
     since: date,
     today: date | None = None,
+    baseline_date: date | None = None,
 ) -> pd.DataFrame:
     """Daily account-equity strip for the Paper Trading tab.
 
@@ -1015,9 +1182,11 @@ def get_daily_balance_since_baseline(
     """
     if today is None:
         today = datetime.now(timezone.utc).date()
+    if baseline_date is None:
+        baseline_date = since
 
     rows = engine_conn.execute(
-        "SELECT date, account_equity_usd, realized_pnl_usd, unrealized_pnl_usd "
+        "SELECT date, account_equity_usd "
         "FROM daily_pnl WHERE date >= ? ORDER BY date ASC",
         [since],
     ).fetchall()
@@ -1029,42 +1198,56 @@ def get_daily_balance_since_baseline(
         return pd.DataFrame(columns=_DAILY_BALANCE_COLUMNS)
 
     out: list[dict] = []
-    anchor: float | None = None
+    anchor_attributable: float | None = None
     prev_equity: float | None = None
-    for d, equity, realized, unrealized in rows:
+    for d, equity in rows:
         equity = float(equity)
-        if anchor is None:
-            anchor = equity
+        realized_post = _compute_post_baseline_realized_for_date(
+            engine_conn, d, baseline_date,
+        )
+        unrealized_post = _compute_post_baseline_unrealized_for_date(
+            engine_conn, d, baseline_date,
+        )
+        locked_pre = _compute_pre_baseline_locked_at_eod(
+            engine_conn, d, baseline_date,
+        )
+        equity_attributable = equity - locked_pre
+        if anchor_attributable is None:
+            anchor_attributable = equity_attributable
         daily_delta = None if prev_equity is None else equity - prev_equity
         out.append({
             "date": d,
             "equity": equity,
-            "realized_pnl_usd": float(realized) if realized is not None else None,
-            "unrealized_pnl_usd": float(unrealized) if unrealized is not None else None,
+            "realized_pnl_usd": realized_post,
+            "unrealized_pnl_usd": unrealized_post,
             "daily_delta": daily_delta,
-            "cumulative_delta": equity - anchor,
+            "cumulative_delta": equity_attributable - anchor_attributable,
             "is_preliminary": False,
         })
         prev_equity = equity
 
     if synthesize_today:
-        today_realized = float(engine_conn.execute(
-            "SELECT COALESCE(SUM(realized_pnl_usd), 0.0) FROM positions "
-            "WHERE current_state = 'exit_filled' "
-            "AND CAST(updated_at AS DATE) = ?",
-            [today],
-        ).fetchone()[0] or 0.0)
-        today_unrealized = get_open_positions_unrealized_pnl_usd(engine_conn)
+        today_realized = _compute_post_baseline_realized_for_date(
+            engine_conn, today, baseline_date,
+        )
+        today_unrealized = get_open_positions_unrealized_pnl_usd(
+            engine_conn, baseline_date=baseline_date,
+        )
+        today_locked_pre = _compute_pre_baseline_locked_at_eod(
+            engine_conn, today, baseline_date,
+        )
 
         if rows:
             today_equity = float(rows[-1][1]) + today_realized
         else:
             today_equity = float("nan")
 
-        if anchor is None:
-            anchor = today_equity  # bootstrap: row is its own anchor (NaN-NaN=NaN)
+        today_equity_attributable = today_equity - today_locked_pre
+        if anchor_attributable is None:
+            # Bootstrap: row is its own anchor (NaN-NaN=NaN propagates).
+            anchor_attributable = today_equity_attributable
         daily_delta = None if prev_equity is None else today_equity - prev_equity
-        cumulative_delta = today_equity - anchor
+        cumulative_delta = today_equity_attributable - anchor_attributable
 
         out.append({
             "date": today,

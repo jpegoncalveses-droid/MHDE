@@ -30,6 +30,7 @@ from dashboard.services.queries import (
     get_fx_recent_predictions,
     get_paper_closed_trades,
     get_paper_engine_runs_summary,
+    get_pre_baseline_open_summary,
     get_paper_failed_entries,
     get_paper_open_positions,
     paper_baseline_date,
@@ -975,16 +976,34 @@ with tab_paper:
                 ]
                 _display_df = _display_df.drop(columns=["is_preliminary"])
                 st.dataframe(_display_df, use_container_width=True, hide_index=True)
+                # fix-daily-balance-baseline-awareness: surface the pre-baseline
+                # exclusions so the operator understands what the metrics
+                # above attribute and what they don't.
+                _pre = get_pre_baseline_open_summary(
+                    _engine_conn, baseline_date=_baseline,
+                )
+                if _pre["n_pre_baseline_open_positions"] > 0:
+                    st.caption(
+                        f"Post-baseline strategy attribution: "
+                        f"{_pre['n_pre_baseline_open_positions']} pre-baseline "
+                        f"position(s) excluded "
+                        f"(${_pre['pre_baseline_unrealized_pnl_usd']:+,.2f} "
+                        f"unrealized, ${_pre['pre_baseline_cost_basis_usd']:,.2f} "
+                        f"cost basis locked). See **Open positions** below "
+                        f"for full wallet state."
+                    )
             st.caption(
-                "Source: crypto-trading-engine `daily_pnl` (ADR-020, read-only). "
-                "`daily Δ` = equity − prior present row; `cumulative Δ` is "
-                "anchored to the baseline date. Today's row is synthesized "
-                "in-process (equity = previous reconciled equity + today's "
-                "realized P&L; unrealized P&L mark-to-market from engine "
-                "`price_snapshots`, ~60 s freshness) and updates live on each "
-                "page refresh until reconcile fires at 23:00 UTC. Funding "
-                "and fees are not subtracted — the drift vs the eventual "
-                "reconciled wallet balance is small and acceptable."
+                "Source: crypto-trading-engine `daily_pnl` (ADR-020, read-only) "
+                "for the wallet `equity` column; per-row `realized` and "
+                "`unrealized` are recomputed from `positions` filtered to "
+                "`entry_date >= baseline_date` "
+                "(fix-daily-balance-baseline-awareness). `daily Δ` = equity − "
+                "prior present row; `cumulative Δ` is anchored to the "
+                "baseline-attributable equity (= wallet − pre-baseline locked "
+                "cost basis). Today's row is synthesized in-process and updates "
+                "live until reconcile fires at 23:00 UTC. Funding and fees are "
+                "not subtracted — the drift vs the eventual reconciled wallet "
+                "balance is small and acceptable."
             )
 
             _summary = get_paper_engine_runs_summary(_engine_conn)
