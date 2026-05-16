@@ -1,11 +1,101 @@
 ticker,priority,reason,last_price_date,last_filing_date,market_cap,sector
-BF.B,1,no_prices|no_market_cap,,2026-03-04,,Consumer Staples
-BRK.B,1,no_prices|no_market_cap,,2026-03-02,,Financials
-OMC,1,no_prices|no_fundamentals|no_market_cap,,,,Communication Services
-PFG,1,no_prices|no_fundamentals|no_market_cap,,,,Financials
-PHM,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Discretionary
-PKG,1,no_prices|no_fundamentals|no_market_cap,,,,Materials
-PNR,1,no_prices|no_fundamentals|no_market_cap,,,,Industrials
-PNW,1,no_prices|no_fundamentals|no_market_cap,,,,Utilities
-PODD,1,no_prices|no_fundamentals|no_market_cap,,,,Health Care
-POOL,1,no_prices|no_fundamentals|no_market_cap,,,,Consumer Discretionary
+CRWV,2,no_market_cap|polygon_fundamentals_missing_miss,2026-05-12,2026-05-08,,
+DDOG,2,no_market_cap|polygon_fundamentals_missing_miss,2026-05-15,2026-05-07,,Information Technology
+MSTR,2,no_market_cap|polygon_fundamentals_missing_miss,2026-05-12,2026-05-06,,
+NET,2,no_market_cap|polygon_fundamentals_missing_miss,2026-05-12,2026-05-08,,
+RDDT,2,no_market_cap|polygon_fundamentals_missing_miss,2026-05-12,2026-05-01,,
+SHOP,2,no_market_cap|polygon_fundamentals_missing_miss,2026-05-12,2026-05-05,,
+BAESY,3,no_fundamentals|no_market_cap,2026-05-12,,,
+CSLLY,3,no_fundamentals|no_market_cap,2026-05-12,,,
+FSNUY,3,no_fundamentals|no_market_cap,2026-05-12,,,
+LSEGY,3,no_fundamentals|no_market_cap,2026-05-11,,,
+RSHGY,3,no_fundamentals|no_market_cap,2026-05-13,,,
+ASTS,4,no_market_cap,2026-05-15,2026-05-11,,
+AXIA,4,no_market_cap,2026-05-15,2026-04-24,,
+AZN,4,no_market_cap,2026-05-15,2026-02-24,,
+BAM,4,no_market_cap,2026-05-12,2026-05-08,,
+BF.B,4,no_market_cap,2026-05-14,2026-03-04,,Consumer Staples
+BIDU,4,no_market_cap,2026-05-12,2026-03-17,,
+BN,4,no_market_cap,2026-05-12,2026-03-18,,
+BP,4,no_market_cap,2026-05-12,2026-03-06,,
+BRK.B,4,no_market_cap,2026-05-14,2026-05-04,,Financials
+BSBR,4,no_market_cap,2026-05-12,2026-02-27,,
+CPNG,4,no_market_cap,2026-05-12,2026-05-05,,
+CVNA,4,no_market_cap,2026-05-15,2026-04-29,,Consumer Discretionary
+DASH,4,no_market_cap,2026-05-15,2026-05-06,,Consumer Discretionary
+DTEGY,4,no_market_cap,2026-05-12,2010-02-25,,
+EL,4,no_market_cap,2026-05-15,2026-05-01,,Consumer Staples
+EONGY,4,no_market_cap,2026-05-12,2007-03-07,,
+ERIC,4,no_market_cap,2026-05-12,2026-03-12,,
+ERIE,4,no_market_cap,2026-05-15,2026-04-23,,Financials
+FMX,4,no_market_cap,2026-05-12,2026-04-24,,
+GWLIF,4,no_market_cap,2026-05-12,2003-07-02,,
+HOOD,4,no_market_cap,2026-05-15,2026-04-29,,Financials
+HRL,4,no_market_cap,2026-05-15,2026-02-26,,Consumer Staples
+IBN,4,no_market_cap,2026-05-12,2025-07-25,,
+IFNNY,4,no_market_cap,2026-05-13,2009-12-08,,
+LEN,4,no_market_cap,2026-05-15,2026-04-09,,Consumer Discretionary
+MDLN,4,no_market_cap,2026-05-12,2026-05-06,,
+META,4,no_market_cap,2026-05-15,2026-04-30,,Communication Services
+MFC,4,no_market_cap,2026-05-12,2026-02-11,,
+MKC,4,no_market_cap,2026-05-15,2026-03-31,,Consumer Staples
+NU,4,no_market_cap,2026-05-12,2026-04-08,,
+NVO,4,no_market_cap,2026-05-12,2026-02-04,,
+NWG,4,no_market_cap,2026-05-12,2026-02-17,,
+OMC,4,no_market_cap,2026-05-15,2026-04-29,,Communication Services
+PFG,4,no_market_cap,2026-05-15,2026-04-29,,Financials
+PHM,4,no_market_cap,2026-05-15,2026-04-23,,Consumer Discretionary
+PKG,4,no_market_cap,2026-05-15,2026-05-08,,Materials
+PNR,4,no_market_cap,2026-05-15,2026-04-28,,Industrials
+PNW,4,no_market_cap,2026-05-15,2026-05-04,,Utilities
+PODD,4,no_market_cap,2026-05-15,2026-05-06,,Health Care
+POOL,4,no_market_cap,2026-05-15,2026-04-28,,Consumer Discretionary
+PPG,4,no_market_cap,2026-05-15,2026-04-29,,Materials
+REG,4,no_market_cap,2026-05-15,2026-05-04,,Real Estate
+RF,4,no_market_cap,2026-05-15,2026-05-07,,Financials
+RKLB,4,no_market_cap,2026-05-15,2026-05-07,,
+RKT,4,no_market_cap,2026-05-12,2026-05-12,,
+RL,4,no_market_cap,2026-05-15,2026-02-05,,Consumer Discretionary
+RTNTF,4,no_market_cap,2026-05-11,2026-02-19,,
+RVTY,4,no_market_cap,2026-05-15,2026-05-12,,Health Care
+SBAC,4,no_market_cap,2026-05-15,2026-05-05,,Real Estate
+SCMWY,4,no_market_cap,2026-05-12,2007-04-23,,
+SE,4,no_market_cap,2026-05-12,2026-04-17,,
+SJM,4,no_market_cap,2026-05-15,2026-02-26,,Consumer Staples
+SLF,4,no_market_cap,2026-05-12,2026-02-12,,
+SMCI,4,no_market_cap,2026-05-15,2026-05-11,,Information Technology
+SNA,4,no_market_cap,2026-05-15,2026-04-23,,Industrials
+SOLV,4,no_market_cap,2026-05-15,2026-05-05,,Health Care
+STE,4,no_market_cap,2026-05-15,2026-02-06,,Health Care
+STZ,4,no_market_cap,2026-05-15,2026-04-22,,Consumer Staples
+SW,4,no_market_cap,2026-05-15,2026-05-01,,Materials
+SWK,4,no_market_cap,2026-05-15,2026-04-29,,Industrials
+SWKS,4,no_market_cap,2026-05-15,2026-05-05,,Information Technology
+SYF,4,no_market_cap,2026-05-15,2026-04-23,,Financials
+TAP,4,no_market_cap,2026-05-15,2026-04-30,,Consumer Staples
+TECH,4,no_market_cap,2026-05-15,2026-05-06,,Health Care
+TECK,4,no_market_cap,2026-05-12,2026-02-19,,
+TKO,4,no_market_cap,2026-05-15,2026-05-06,,Communication Services
+TRMB,4,no_market_cap,2026-05-15,2026-05-06,,Information Technology
+TROW,4,no_market_cap,2026-05-15,2026-04-30,,Financials
+TSCO,4,no_market_cap,2026-05-15,2026-05-07,,Consumer Discretionary
+TSLA,4,no_market_cap,2026-05-15,2026-04-23,,Consumer Discretionary
+TSN,4,no_market_cap,2026-05-15,2026-05-04,,Consumer Staples
+TTD,4,no_market_cap,2026-05-15,2026-05-07,,Communication Services
+UDR,4,no_market_cap,2026-05-15,2026-04-30,,Real Estate
+UHS,4,no_market_cap,2026-05-15,2026-05-07,,Health Care
+ULTA,4,no_market_cap,2026-05-15,2026-03-26,,Consumer Discretionary
+VG,4,no_market_cap,2026-05-12,2026-05-12,,
+VIK,4,no_market_cap,2026-05-12,2026-03-03,,
+VLTO,4,no_market_cap,2026-05-15,2026-04-29,,Industrials
+VRSK,4,no_market_cap,2026-05-15,2026-04-29,,Industrials
+VRSN,4,no_market_cap,2026-05-15,2026-04-23,,Information Technology
+VTRS,4,no_market_cap,2026-05-15,2026-05-07,,Health Care
+WRB,4,no_market_cap,2026-05-15,2026-05-01,,Financials
+WSM,4,no_market_cap,2026-05-15,2026-03-26,,Consumer Discretionary
+WST,4,no_market_cap,2026-05-15,2026-04-23,,Health Care
+WY,4,no_market_cap,2026-05-15,2026-05-01,,Real Estate
+WYNN,4,no_market_cap,2026-05-15,2026-05-07,,Consumer Discretionary
+XYZ,4,no_market_cap,2026-05-15,2026-05-07,,Financials
+YUM,4,no_market_cap,2026-05-15,2026-05-06,,Consumer Discretionary
+ZBH,4,no_market_cap,2026-05-15,2026-05-01,,Health Care

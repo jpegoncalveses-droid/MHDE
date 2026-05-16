@@ -1,6 +1,6 @@
 # Root Cause Enrichment Report
 
-Generated: 2026-05-06 | Total rows: 1518
+Generated: 2026-05-15 | Total rows: 973
 
 > **Shadow-only: no production scores were changed.**
 
@@ -8,7 +8,7 @@ Generated: 2026-05-06 | Total rows: 1518
 
 | Group | Count |
 |-------|-------|
-| `data_gap` | 1482 |
+| `data_gap` | 937 |
 | `scoring_gap` | 9 |
 | `feature_gap` | 19 |
 | `near_miss` | 4 |
@@ -18,7 +18,7 @@ Generated: 2026-05-06 | Total rows: 1518
 
 | Root Cause | Group | Count | Confidence |
 |------------|-------|-------|------------|
-| `pre_score_history` | data_gap | 1394 | high |
+| `pre_score_history` | data_gap | 849 | high |
 | `ifrs_mapping_gap` | data_gap | 72 | medium |
 | `polygon_fundamentals_missing` | data_gap | 15 | medium |
 | `sector_cluster_move` | feature_gap | 14 | medium |
