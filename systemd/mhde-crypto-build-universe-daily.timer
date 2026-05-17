@@ -1,0 +1,13 @@
+[Unit]
+Description=MHDE crypto universe daily hysteresis rebuild (timer)
+
+[Timer]
+# Daily at 23:30 UTC — 30 min after the daily ranking-buffer write so the
+# rebuild always sees today's fresh entry as the most recent ranking_date.
+# Hysteresis rules then evaluate the last 7 days; the 7-consecutive in/out
+# rule means daily invocation does not churn membership on non-transition days.
+OnCalendar=*-*-* 23:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

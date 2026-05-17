@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import requests
 
@@ -131,9 +131,15 @@ class BinanceClient:
             if (s.get("contractType") == "PERPETUAL"
                     and s.get("quoteAsset") == "USDT"
                     and s.get("status") == "TRADING"):
+                onboard_ms = s.get("onboardDate")
+                onboard_date = (
+                    datetime.fromtimestamp(onboard_ms / 1000, tz=timezone.utc).date()
+                    if onboard_ms else None
+                )
                 symbols.append({
                     "symbol": s["symbol"],
                     "base_asset": s["baseAsset"],
+                    "onboard_date": onboard_date,
                 })
         return symbols
 
@@ -141,3 +147,54 @@ class BinanceClient:
         endpoint = f"{BINANCE_FUTURES_BASE}/fapi/v1/ticker/24hr"
         data = self._get(endpoint)
         return [{"symbol": t["symbol"], "quote_volume": float(t["quoteVolume"])} for t in data]
+
+    def fetch_30d_avg_quote_volume_at(self, symbol: str, end_date: date,
+                                      days: int = 30) -> float | None:
+        """Point-in-time 30-day average quote-asset volume for ``symbol`` ending
+        on ``end_date`` (UTC). Window: ``[end_date - days, end_date]`` inclusive.
+
+        Used by the backfill of crypto_universe_ranking_buffer so hysteresis
+        rules have a runway of historical daily rankings to evaluate. Returns
+        ``None`` if Binance has no klines in the window.
+        """
+        endpoint = f"{BINANCE_FUTURES_BASE}/fapi/v1/klines"
+        end_dt = datetime.combine(end_date, datetime.min.time(), tzinfo=timezone.utc)
+        end_dt = end_dt + timedelta(days=1)
+        end_ms = int(end_dt.timestamp() * 1000)
+        start_ms = end_ms - (days + 1) * 24 * 3600 * 1000
+        params = {
+            "symbol": symbol,
+            "interval": "1d",
+            "startTime": start_ms,
+            "endTime": end_ms,
+            "limit": days + 2,
+        }
+        klines = self._get(endpoint, params)
+        if not klines:
+            return None
+        return sum(float(k[7]) for k in klines) / len(klines)
+
+    def fetch_30d_avg_quote_volume(self, symbol: str, days: int = 30) -> float | None:
+        """Average daily quote-asset volume over the last ``days`` daily klines.
+
+        Replaces the 24h-snapshot proxy previously used by the universe
+        builder (commit 9ec0044 mislabeled the persisted column
+        ``avg_daily_volume_30d`` while populating it from a 24h ticker).
+        Returns ``None`` when Binance has no klines for the symbol — caller
+        must skip rather than treating as zero.
+        """
+        endpoint = f"{BINANCE_FUTURES_BASE}/fapi/v1/klines"
+        end_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+        start_ms = end_ms - (days + 1) * 24 * 3600 * 1000
+        params = {
+            "symbol": symbol,
+            "interval": "1d",
+            "startTime": start_ms,
+            "endTime": end_ms,
+            "limit": days + 2,
+        }
+        klines = self._get(endpoint, params)
+        if not klines:
+            return None
+        qvs = [float(k[7]) for k in klines]
+        return sum(qvs) / len(qvs)

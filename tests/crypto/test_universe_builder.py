@@ -1,42 +1,45 @@
-"""Tests for crypto universe builder."""
-import duckdb
+"""Unit tests for helpers in crypto/ingestion/universe_builder.py.
 
-from crypto.ingestion.universe_builder import build_universe
-from crypto.ingestion import binance_client
-from crypto.schema import create_all_tables
+The hysteresis-based ``build_universe`` itself is tested in
+``test_universe_hysteresis.py``. The exclusion behavior previously tested
+here is now tested at the producer side — see
+``test_rank_universe_daily.py`` and ``test_backfill_universe_rankings.py``.
+"""
+from crypto.ingestion.universe_builder import _is_safe_symbol
 
 
-def test_build_universe_filters_and_ranks(monkeypatch):
-    """Verify stablecoins excluded, ranking by volume, top N selected."""
-    conn = duckdb.connect(":memory:")
-    create_all_tables(conn)
+def test_safe_symbol_accepts_canonical_perp_tickers():
+    assert _is_safe_symbol("BTCUSDT")
+    assert _is_safe_symbol("ETHUSDT")
+    assert _is_safe_symbol("1000PEPEUSDT")
+    assert _is_safe_symbol("4USDT")
 
-    mock_symbols = [
-        {"symbol": "BTCUSDT", "base_asset": "BTC"},
-        {"symbol": "ETHUSDT", "base_asset": "ETH"},
-        {"symbol": "USDCUSDT", "base_asset": "USDC"},
-        {"symbol": "SOLUSDT", "base_asset": "SOL"},
-    ]
-    mock_tickers = [
-        {"symbol": "BTCUSDT", "quote_volume": 5_000_000_000},
-        {"symbol": "ETHUSDT", "quote_volume": 3_000_000_000},
-        {"symbol": "USDCUSDT", "quote_volume": 1_000_000_000},
-        {"symbol": "SOLUSDT", "quote_volume": 2_000_000_000},
-    ]
 
-    monkeypatch.setattr(binance_client.BinanceClient, "fetch_futures_exchange_info", lambda self: mock_symbols)
-    monkeypatch.setattr(binance_client.BinanceClient, "fetch_24hr_tickers", lambda self: mock_tickers)
+def test_safe_symbol_rejects_non_ascii():
+    """Real Binance pairs seen 2026-05-16: CJK-encoded base assets."""
+    assert not _is_safe_symbol("币安人生USDT")
+    assert not _is_safe_symbol("我踏马来了USDT")
+    assert not _is_safe_symbol("龙虾USDT")
 
-    result = build_universe(conn, top_n=3)
 
-    assert len(result) == 3
-    assert "USDCUSDT" not in result
-    assert result[0] == "BTCUSDT"
-    assert result[1] == "ETHUSDT"
-    assert result[2] == "SOLUSDT"
+def test_safe_symbol_rejects_lowercase():
+    assert not _is_safe_symbol("btcusdt")
+    assert not _is_safe_symbol("BtcUsdt")
 
-    rows = conn.execute("SELECT symbol, rank_by_volume FROM crypto_universe ORDER BY rank_by_volume").fetchall()
-    assert len(rows) == 3
-    assert rows[0][0] == "BTCUSDT"
-    assert rows[0][1] == 1
-    conn.close()
+
+def test_safe_symbol_rejects_hyphen_or_other_punctuation():
+    assert not _is_safe_symbol("FOO-BARUSDT")
+    assert not _is_safe_symbol("FOO_BARUSDT")
+    assert not _is_safe_symbol("FOO.BARUSDT")
+
+
+def test_safe_symbol_rejects_non_usdt_quote():
+    assert not _is_safe_symbol("BTCUSDC")
+    assert not _is_safe_symbol("BTCBUSD")
+    assert not _is_safe_symbol("BTCUSD")
+    # USDT-prefix only doesn't match — must END in USDT.
+    assert not _is_safe_symbol("USDTBTC")
+
+
+def test_safe_symbol_rejects_empty_base():
+    assert not _is_safe_symbol("USDT")

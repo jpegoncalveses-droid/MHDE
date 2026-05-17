@@ -1,0 +1,20 @@
+[Unit]
+Description=MHDE crypto universe daily ranking buffer write
+After=network.target
+Documentation=file:/home/jpcg/MHDE/systemd/README-universe-correction.md
+
+[Service]
+Type=oneshot
+User=jpcg
+WorkingDirectory=/home/jpcg/MHDE
+Environment=MHDE_DB_PATH=/home/jpcg/MHDE/data/mhde.duckdb
+# Fail fast if the virtualenv or DB is missing — surfaces deployment drift
+# before we waste a Binance round-trip.
+ExecStartPre=/bin/bash -c "test -f /home/jpcg/MHDE/venv/bin/python"
+ExecStartPre=/bin/bash -c "test -f /home/jpcg/MHDE/data/mhde.duckdb"
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto rank-universe-daily
+StandardOutput=journal
+StandardError=journal
+Restart=on-failure
+RestartSec=300
+TimeoutStartSec=900

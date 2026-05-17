@@ -1,8 +1,8 @@
 # Known Issues
 
-**18 open observations** (KI-122, KI-123, KI-126, KI-131, KI-132,
+**19 open observations** (KI-122, KI-123, KI-126, KI-131, KI-132,
 KI-134, KI-136, KI-137, KI-139, KI-144, KI-145,
-KI-146, KI-147, KI-148, KI-149, KI-151, KI-152, KI-153). KI-122/123 are cosmetic; KI-126 is a future
+KI-146, KI-147, KI-148, KI-149, KI-151, KI-152, KI-153, KI-155). KI-122/123 are cosmetic; KI-126 is a future
 Phase 0 enhancement deferred until weekly reliability snapshots
 accumulate; KI-131 is a low-priority single-day production-model
 row-count dip; KI-132 is a dashboard-deployment-process gap (no
@@ -1161,6 +1161,64 @@ blast radius of a freshly-tested fix.
 - `systemd/mhde-equity-pipeline-monitor.service` — the unit whose
   `failed` status the initial KI-150 diagnosis misread.
 - [[KI-150]] — the misdiagnosis that surfaced this observation.
+
+
+### KI-155 — `test_schema_promotion_status.py::test_migration_backfills_pre_existing_db` fails on master
+
+**Severity: low (stale migration test, no production impact).**
+Surfaced 2026-05-16 during the universe-correction TDD sweep
+(`feat-universe-correction` branch); verified pre-existing on
+`master` by stashing the universe-correction edits and rerunning
+the same test.
+
+**Symptom.**
+
+```
+tests/crypto/test_schema_promotion_status.py:96: BinderException
+Binder Error: Referenced column "promotion_status" not found in FROM clause!
+Candidate bindings: "train_start", "precision_at_threshold",
+"n_positive_test", "n_positive_train", "feature_importance_json"
+```
+
+The test attempts `SELECT model_id, promotion_status FROM
+crypto_ml_model_runs`, but `promotion_status` is not in the column
+list of the table as currently defined in `crypto/schema.py`. The
+test appears to expect a migration that adds the column to
+pre-existing DBs; either the migration was reverted or the test
+was written against a column that never landed in the canonical
+DDL.
+
+**Root cause (suspected, not verified).** The test asserts a
+migration path for a `promotion_status` column on
+`crypto_ml_model_runs`; that column is not present in the current
+schema or in `_CRYPTO_ML_MODEL_RUNS_MIGRATIONS` (whichever the
+canonical migration list is). Either:
+
+1. The column was removed in a later refactor and the test wasn't
+   updated, or
+2. The migration was prepared but never committed, leaving the test
+   orange-by-design.
+
+**Production impact: none.** No production code path reads
+`promotion_status` from `crypto_ml_model_runs`. The retrain
+auto-promotion gating discussed in [[KI-135]] is governed by other
+columns (`is_active`, `precision_at_threshold`, etc.). The 439/440
+crypto suite passes without this test.
+
+**Tracking.** Separate workstream — not blocking universe-correction
+work. Suggested resolution: either restore the missing migration
+(if `promotion_status` is intended to exist) or delete the test (if
+the column was intentionally removed). Decision needs whoever owns
+[[KI-135]] / retrain promotion logic.
+
+**References.**
+
+- `tests/crypto/test_schema_promotion_status.py:96` — the failing
+  assertion.
+- `crypto/schema.py` (current `crypto_ml_model_runs` DDL) — does
+  not include `promotion_status`.
+- [[KI-135]] — retrain auto-promotion gating (resolved); related
+  but historically distinct.
 
 ## Recently resolved (post-Session-7)
 
