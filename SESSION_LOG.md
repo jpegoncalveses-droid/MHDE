@@ -6,6 +6,126 @@ are at the top.
 
 ---
 
+## 2026-05-17 (evening) — Crypto universe: hysteresis-based daily continuous-update pipeline shipped
+
+**Branch:** `feat-universe-hysteresis-continuous` (pushed; **STOPPED for
+operator review/merge** — push-only per branch-handoff pattern, operator
+opens the PR). Single-repo (MHDE), no engine repo change. Logically
+stacked on top of `chore/session-log-universe-state` (commit d91c9ae,
+already pushed) which pins the pre-fix state; both branches merge cleanly
+to master (chore-branch first to avoid a SESSION_LOG conflict).
+
+**Trigger.** Earlier today's read-only investigation (see the
+chore-branch SESSION_LOG entry) pinned: `crypto_universe` was frozen at
+50 coins added 2026-05-05; no systemd timer fed `crypto build-universe`;
+the hysteresis work that addresses this lived only in `stash@{0}` (never
+committed to any branch). Operator chose **Option A** — ship the
+hysteresis from the stash AND wire continuous daily-update timers so
+each 00:30 UTC predict consumes a freshly-evaluated universe.
+
+**What landed (commit fc51219).**
+
+*Schema (idempotent — orphan tables already in prod DB matched the
+shape exactly per `.claude/local_scripts/audit_orphan_universe_tables.py`):*
+- `crypto_universe_ranking_buffer (symbol, ranking_date,
+  avg_daily_volume_30d, rank_by_volume, in_top_50)`
+- `crypto_universe_pending (symbol, days_listed, eligible_after_date,
+  consecutive_top_50, last_checked_at)`
+
+*CLI:*
+- `crypto rank-universe-daily` — writes top-100 USDT-perp by 30d avg
+  quote volume into the buffer for today (UTC). Idempotent on
+  `(symbol, ranking_date)`. Does NOT touch `crypto_universe`.
+- `crypto backfill-universe-rankings --start-date YYYY-MM-DD` — same
+  but per-date in a range, using point-in-time 30d windows.
+- `crypto build-universe [--dry-run]` — rewritten as hysteresis-based:
+  ADD on 7-consecutive `in_top_50=TRUE` + ≥60d listed; REMOVE on
+  7-consecutive `in_top_50=FALSE`; PENDING when ADD-eligible but listed
+  <60d. Refreshes `rank_by_volume` + `avg_daily_volume_30d` for active
+  symbols from the most recent buffer date.
+
+*Cadence (diverges from the originally-stashed weekly-Sunday design;
+operator chose daily so each rotation feeds the next predict):*
+- 23:00 UTC daily — `mhde-crypto-rank-universe-daily` (rank, ~3 min)
+- 23:30 UTC daily — `mhde-crypto-build-universe-daily` (hysteresis, ~s)
+- 00:30 UTC daily — `mhde-crypto-predict` (existing — consumes result)
+
+The 7-consecutive hysteresis rule means daily invocation does NOT churn
+membership on non-transition days; rotation only happens when a coin
+stabilises in or out of top-50 for a full week.
+
+*Systemd:* `mhde-crypto-rank-universe-daily.{service,timer}` and
+`mhde-crypto-build-universe-daily.{service,timer}` installed in
+`/etc/systemd/system/`, enabled, started. `systemctl list-timers`
+confirms next fires:
+- `mhde-crypto-rank-universe-daily.timer  → Sun 2026-05-17 23:00 UTC`
+- `mhde-crypto-build-universe-daily.timer → Sun 2026-05-17 23:30 UTC`
+
+**Tests.** 44 new tests across hysteresis branches (ADD-success, ADD-
+blocked-by-streak, ADD-blocked-by-listing-floor→PENDING, REMOVE,
+REMOVE-blocked-by-transition, insufficient-history, dry-run, rank-
+refresh), ranker idempotency, backfill correctness + per-date failure
+isolation, systemd unit syntax + invariants. 59 universe-correction
+tests pass; broader crypto suite has 439 passing + 1 pre-existing fail
+(`test_schema_promotion_status::test_migration_backfills_pre_existing_db`,
+documented as **KI-155** in `KNOWN_ISSUES.md`, verified to also fail on
+master, unrelated to this work).
+
+**Tonight's first rebuild — dry-run preview (2026-05-17 20:53 UTC).**
+
+```
+[DRY-RUN] build-universe: 9 adds, 9 removes, 3 pendings, 97 no-ops
+                          (latest buffer date 2026-05-16)
+ADDs    : AAVE, APE, HIGH, KAT, ORDI, PIEVERSE, SIREN, WLD, ZBT
+REMOVEs : 1000LUNC, FARTCOIN, GIGGLE, M, NAORIS, PRL, TST, WLFI, ZEREBRO
+PENDINGs: BASED (eligible 2026-05-29), BILL (2026-07-06),
+          CHIP (2026-06-15)
+```
+
+Net: universe stays at 50 coins after the rotation. Hysteresis behaved
+as designed — meaningful turnover after 12 days frozen, no flicker.
+
+**Active spec unchanged.** `data/exports/active_spec.json` continues to
+declare `universe.source = "binance_usdtm_perp_top_50"`; the source
+label remains accurate when membership rotates. Phase-1B-winner params
+(`horizon_days=10, exit_policy=D, selection_mode=top_n, selection_n=6,
+trail_pct=0.3, activation_pct=0.01`) unchanged.
+
+**Stash + safety net.** The originating `stash@{0}` was preserved
+unchanged for the entire workstream; the operator-side patch backup at
+`/home/jpcg/wip-universe-hysteresis.patch` (752 lines, 30683 bytes)
+remains in place. The stash itself is dropped at the end of this
+session now that the install is verified and the work is committed.
+
+**Pending.**
+- Monitor `journalctl -u mhde-crypto-rank-universe-daily -f` and
+  `journalctl -u mhde-crypto-build-universe-daily -f` tonight at 23:00
+  / 23:30 UTC for the first live fires.
+- Tomorrow 00:30 UTC: predict consumes the rotated universe for the
+  first time. Tomorrow 06:30 UTC: trading-engine entries fire against
+  the new set.
+- Open the PRs for `chore/session-log-universe-state` (already pushed,
+  d91c9ae) and `feat-universe-hysteresis-continuous` (this branch);
+  merge chore-branch first to avoid a SESSION_LOG conflict.
+- Step 8 still owed (per stashed `systemd/README-universe-correction.md`):
+  write ADR for the methodology fix; add universe section to
+  `docs/PATH_TO_LIVE_PLAN.md`.
+
+**Related files.**
+- `crypto/ingestion/rank_universe.py`,
+  `crypto/ingestion/universe_builder.py`
+- `crypto/schema.py` (additions for ranking_buffer + pending)
+- `systemd/README-universe-correction.md`,
+  `systemd/mhde-crypto-rank-universe-daily.{service,timer}`,
+  `systemd/mhde-crypto-build-universe-daily.{service,timer}`
+- `tests/crypto/test_universe_hysteresis.py`,
+  `tests/crypto/test_rank_universe_daily.py`,
+  `tests/crypto/test_backfill_universe_rankings.py`,
+  `tests/crypto/test_systemd_units.py`
+- `KNOWN_ISSUES.md` — KI-155 added (pre-existing test fail, unrelated)
+
+---
+
 ## 2026-05-14 — Cross-asset ingestion restored (Finding 1): SPY/VIX/sector ETFs + DGS2/VIXCLS now in nightly chain
 
 **Branch:** `feat-cross-asset-ingestion` (pushed; **STOPPED for
