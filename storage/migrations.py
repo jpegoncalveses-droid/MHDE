@@ -8,7 +8,7 @@ from storage.db import init_schema
 
 logger = logging.getLogger("mhde.storage.migrations")
 
-_CURRENT_VERSION = 11
+_CURRENT_VERSION = 12
 
 
 def run_migrations(conn: duckdb.DuckDBPyConnection) -> None:
@@ -217,4 +217,41 @@ def run_migrations(conn: duckdb.DuckDBPyConnection) -> None:
         )
         logger.info(
             "Applied migration v11: predicted_at on prediction tables"
+        )
+
+    if current < 12:
+        # Phase 3 Week 1: sentiment ingestion tables. Per
+        # docs/design/2026-05-16-phase3-amendment-regime-filter.md.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS sentiment_fear_greed (
+                date DATE PRIMARY KEY,
+                value INTEGER NOT NULL,
+                value_classification VARCHAR,
+                source VARCHAR NOT NULL DEFAULT 'alternative.me',
+                ingested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS sentiment_funding_universe (
+                symbol VARCHAR PRIMARY KEY,
+                rank_by_volume INTEGER NOT NULL,
+                quote_volume_24mo DOUBLE,
+                snapshot_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS sentiment_funding_aggregate (
+                trade_date DATE PRIMARY KEY,
+                volume_weighted_funding_rate DOUBLE,
+                n_constituents INTEGER,
+                computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute(
+            "INSERT INTO schema_version (version, description) VALUES "
+            "(12, 'Phase 3 Week 1: sentiment_fear_greed + sentiment_funding_universe "
+            "+ sentiment_funding_aggregate tables') ON CONFLICT DO NOTHING"
+        )
+        logger.info(
+            "Applied migration v12: sentiment ingestion tables"
         )
