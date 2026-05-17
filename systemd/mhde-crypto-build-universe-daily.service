@@ -1,0 +1,20 @@
+[Unit]
+Description=MHDE crypto universe daily hysteresis rebuild
+After=network.target mhde-crypto-rank-universe-daily.service
+Documentation=file:/home/jpcg/MHDE/systemd/README-universe-correction.md
+
+[Service]
+Type=oneshot
+User=jpcg
+WorkingDirectory=/home/jpcg/MHDE
+Environment=MHDE_DB_PATH=/home/jpcg/MHDE/data/mhde.duckdb
+ExecStartPre=/bin/bash -c "test -f /home/jpcg/MHDE/venv/bin/python"
+ExecStartPre=/bin/bash -c "test -f /home/jpcg/MHDE/data/mhde.duckdb"
+# NB: no --dry-run flag here; this is the live daily rebuild. The dry-run
+# review happened in the Step-7 approval gate.
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto build-universe
+StandardOutput=journal
+StandardError=journal
+Restart=on-failure
+RestartSec=300
+TimeoutStartSec=600

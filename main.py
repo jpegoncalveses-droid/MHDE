@@ -1622,18 +1622,114 @@ def crypto():
 
 
 @crypto.command("build-universe")
-def crypto_build_universe():
-    """Fetch top coins by Binance futures volume and populate crypto_universe."""
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Print ADD/REMOVE/PENDING decisions without modifying the DB.")
+def crypto_build_universe(dry_run):
+    """Apply daily hysteresis-based rebuild of crypto_universe.
+
+    Reads the last 7 days from crypto_universe_ranking_buffer. ADDs require
+    7 consecutive in_top_50=TRUE days plus >=60d listed on Binance perp;
+    REMOVEs require 7 consecutive in_top_50=FALSE days. Anything else is
+    a no-op (transitions are smoothed).
+    """
     from crypto.ingestion.universe_builder import build_universe
 
     cfg, conn = _engine_setup()
     try:
-        symbols = build_universe(conn)
-        click.echo(f"Universe built: {len(symbols)} coins")
-        for s in symbols[:10]:
-            click.echo(f"  {s}")
-        if len(symbols) > 10:
-            click.echo(f"  ... and {len(symbols) - 10} more")
+        result = build_universe(conn, dry_run=dry_run)
+        prefix = "[DRY-RUN] " if dry_run else ""
+        click.echo(
+            f"{prefix}build-universe: "
+            f"{len(result['adds'])} adds, "
+            f"{len(result['removes'])} removes, "
+            f"{len(result['pendings'])} pendings, "
+            f"{len(result['no_ops'])} no-ops "
+            f"(latest buffer date {result['latest_buffer_date']})"
+        )
+        if result["adds"]:
+            click.echo("\nADDs:")
+            for a in result["adds"]:
+                click.echo(f"  + {a['symbol']:<14} (listed {a['days_listed']}d)")
+        if result["removes"]:
+            click.echo("\nREMOVEs:")
+            for r in result["removes"]:
+                click.echo(f"  - {r['symbol']}")
+        if result["pendings"]:
+            click.echo("\nPENDINGs:")
+            for p in result["pendings"]:
+                click.echo(
+                    f"  ? {p['symbol']:<14} "
+                    f"({p['days_listed']}d listed, eligible after "
+                    f"{p['eligible_after_date']}, "
+                    f"{p['consecutive_top_50']}d consecutive top-50)"
+                )
+    finally:
+        conn.close()
+
+
+@crypto.command("backfill-universe-rankings")
+@click.option("--start-date", "start_str", required=True,
+              help="First ranking_date YYYY-MM-DD (inclusive).")
+@click.option("--end-date", "end_str", default=None,
+              help="Last ranking_date YYYY-MM-DD (default: today UTC).")
+@click.option("--top-n", default=100, show_default=True, type=int,
+              help="Top-N symbols persisted per date.")
+def crypto_backfill_universe_rankings(start_str, end_str, top_n):
+    """Backfill crypto_universe_ranking_buffer for every date in the range.
+
+    Each date uses a point-in-time 30-day window — i.e., the ranking for
+    date D is computed from the 30-day window ending on D, not 'today'. This
+    seeds hysteresis for the daily build_universe rebuild.
+
+    Per-date atomic replace; per-date Binance failures are logged and skipped.
+    """
+    from datetime import date as _date_cls
+    from crypto.ingestion.rank_universe import backfill_universe_rankings
+
+    start_date = _date_cls.fromisoformat(start_str)
+    end_date = _date_cls.fromisoformat(end_str) if end_str else None
+
+    cfg, conn = _engine_setup()
+    try:
+        results = backfill_universe_rankings(
+            conn, start_date=start_date, end_date=end_date, top_n=top_n,
+        )
+        ok = sum(1 for n in results.values() if n >= 0)
+        fail = sum(1 for n in results.values() if n < 0)
+        total_rows = sum(n for n in results.values() if n >= 0)
+        click.echo(
+            f"backfill-universe-rankings: {ok} dates ok, {fail} failed, "
+            f"{total_rows} total rows written"
+        )
+    finally:
+        conn.close()
+
+
+@crypto.command("rank-universe-daily")
+@click.option("--date", "date_str", default=None,
+              help="Ranking date YYYY-MM-DD (default: today UTC).")
+@click.option("--top-n", default=100, show_default=True, type=int,
+              help="Number of top-ranked symbols to persist.")
+def crypto_rank_universe_daily(date_str, top_n):
+    """Compute 30-day avg quote volume for all eligible perps; persist the
+    top-N into crypto_universe_ranking_buffer. Idempotent on
+    (symbol, ranking_date). Does NOT modify crypto_universe.
+
+    Feeds the daily build_universe rebuild (hysteresis ADD/REMOVE rules
+    consume 7 consecutive days of this buffer).
+    """
+    from datetime import date as _date_cls
+    from crypto.ingestion.rank_universe import rank_universe_daily
+
+    ranking_date = None
+    if date_str:
+        ranking_date = _date_cls.fromisoformat(date_str)
+
+    cfg, conn = _engine_setup()
+    try:
+        n = rank_universe_daily(conn, ranking_date=ranking_date, top_n=top_n)
+        click.echo(f"rank-universe-daily: wrote {n} rows for "
+                   f"{ranking_date or 'today'}")
     finally:
         conn.close()
 
