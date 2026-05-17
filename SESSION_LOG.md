@@ -126,6 +126,46 @@ session now that the install is verified and the work is committed.
 
 ---
 
+## 2026-05-17 — Crypto universe state pinned (no fix applied)
+
+Investigation outcome: the crypto universe in `mhde.duckdb` is static at 50 coins
+from 2026-05-05. Nothing scheduled or otherwise runs `crypto build-universe`.
+
+Active code state:
+- `crypto/ingestion/universe_builder.py` = simple volume-rank version (no hysteresis)
+- `main.py` `crypto build-universe` CLI = wired to simple builder
+- `crypto/schema.py` `ALL_SCHEMAS` = does NOT include ranking_buffer or pending tables
+
+Live DB has two orphan tables (not in active schema, not written by active code,
+not read by any production path):
+- `crypto_universe_ranking_buffer` (1400 rows, 2026-05-03 → 2026-05-16)
+- `crypto_universe_pending` (0 rows)
+
+These came from running stashed WIP against the live DB during development.
+
+Stashed work: `stash@{0}` "feat-universe-correction WIP before sentiment week 1"
+- 7 files, +559/-85 lines
+- Adds hysteresis (7-day consecutive rule, 60-day listing floor)
+- Adds the two schema tables to `ALL_SCHEMAS`
+- Adds `fetch_30d_avg_quote_volume_at` to `binance_client`
+- Backed up to `~/wip-universe-hysteresis.patch` on 2026-05-17
+
+Branch `feat-universe-correction` exists (local + origin) but HEAD == master.
+No commits on the branch. Easy to overlook.
+
+Systemd timers for universe management: do NOT exist anywhere (not in repo,
+not in `/etc/systemd/system/`, not in any commit on any branch). The earlier
+recollection of "authored but not installed" was incorrect.
+
+Open KI: KI-155 (referenced in stashed `KNOWN_ISSUES.md` changes).
+
+Decision deferred: Option A (ship hysteresis from stash) vs Option B (minimal:
+wire simple builder weekly) vs Option C (manual curation, status quo).
+Recommended A, scheduled for a dedicated focused session before any next
+Phase 1B re-run.
+
+---
+
 ## 2026-05-14 — Cross-asset ingestion restored (Finding 1): SPY/VIX/sector ETFs + DGS2/VIXCLS now in nightly chain
 
 **Branch:** `feat-cross-asset-ingestion` (pushed; **STOPPED for
