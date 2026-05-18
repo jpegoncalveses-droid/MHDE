@@ -6,6 +6,71 @@ are at the top.
 
 ---
 
+## 2026-05-18 — Universe state pin + rank/build timer-gap widened
+
+**Branch:** `fix/universe-timer-gap` (pushed; do NOT auto-deploy).
+
+**Where universe stands today** (audited read-only against
+`/home/jpcg/MHDE/data/mhde.duckdb` + journalctl):
+
+- Hysteresis builder deployed. Both daily timers active and healthy:
+  - `mhde-crypto-rank-universe-daily.timer` — currently fires 23:00 UTC
+    (this commit moves it to **22:00 UTC**; not yet deployed).
+  - `mhde-crypto-build-universe-daily.timer` — fires 23:30 UTC (unchanged).
+- Last successful build run 2026-05-17 23:30:01–23:30:33 UTC:
+  **9 adds, 8 removes, 3 pendings, 95 no-ops**.
+  - ADDs: AAVEUSDT, APEUSDT, HIGHUSDT, KATUSDT, ORDIUSDT, PIEVERSEUSDT,
+    SIRENUSDT, WLDUSDT, ZBTUSDT
+  - REMOVEs: FARTCOINUSDT, GIGGLEUSDT, MUSDT, NAORISUSDT, PRLUSDT,
+    TSTUSDT, WLFIUSDT, ZEREBROUSDT
+- **Active universe size: 51** (50 was the pre-rebuild count; net +1 from
+  the rebuild). 51 is a *hysteresis overshoot* — the 7-day consecutive
+  in/out rule lets the active set drift slightly above the cutoff. Audit
+  confirmed downstream (MHDE predict + crypto-trading-engine top-N
+  selection) scales with `len(active_universe)`; no code on the live path
+  caps at 50. `UNIVERSE_SIZE=50` in `crypto/config.py` is a vestigial
+  import used only by off-the-path backtest validation + local audit
+  scripts.
+- Pending list (blocked by the 60-day listing floor, all with 7d
+  consecutive top-50):
+  - **BASEDUSDT** — eligible 2026-05-29 (48d listed)
+  - **BILLUSDT** — eligible 2026-07-06 (10d listed)
+  - **CHIPUSDT** — eligible 2026-06-15 (31d listed)
+
+**What this commit changes.** Moves rank from 23:00 → 22:00 UTC. With
+the observed 3 min 34 s rank runtime, the prior 26-min gap before build
+left no margin for a runtime spike. The new schedule:
+
+```
+rank end  ~22:03:34  →  build start 23:30:00  =  ~86 min headroom
+build end ~23:30:32  →  predict     00:30:00  =  ~60 min
+```
+
+`systemd-analyze verify` clean on both unit files. Build's timer comment
+updated to describe the new gap; OnCalendar value unchanged.
+
+**Supersedes the entry at line 129 ("Crypto universe state pinned (no
+fix applied)").** Option A from that entry was shipped 2026-05-17
+evening; this entry pins the post-deploy state and the timer-gap fix.
+Line 129 stays in the log as the historical waypoint but is no longer
+operationally accurate.
+
+**Not deployed.** No `sudo cp`/`daemon-reload`/`restart` performed. To
+activate, the operator runs the standard:
+
+```
+sudo cp systemd/mhde-crypto-rank-universe-daily.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl restart mhde-crypto-rank-universe-daily.timer
+```
+
+(Build's `.timer` file changed only its comment block — no functional
+change there, so the daemon-reload alone picks up the new description.
+Skip the build-universe restart unless you also want to refresh its
+`Active since` timestamp.)
+
+---
+
 ## 2026-05-17 (evening) — Crypto universe: hysteresis-based daily continuous-update pipeline shipped
 
 **Branch:** `feat-universe-hysteresis-continuous` (pushed; **STOPPED for
