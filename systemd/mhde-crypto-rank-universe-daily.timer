@@ -2,10 +2,14 @@
 Description=MHDE crypto universe daily ranking buffer write (timer)
 
 [Timer]
-# Daily at 23:00 UTC — populates today's ranking buffer entry. The daily
-# build_universe at 23:30 UTC consumes the last 7 buffer dates so each
-# 00:30 UTC predict (next day) sees a freshly-evaluated universe.
-OnCalendar=*-*-* 23:00:00
+# Daily at 22:00 UTC — populates today's ranking buffer entry early so the
+# daily build_universe at 23:30 UTC has a comfortable margin (~85 min) over
+# rank's observed 3-4 min runtime. The earlier 23:00 fire left only ~26 min
+# of headroom before build; bumping to 22:00 keeps the schedule safe even
+# if rank's runtime spikes 5x. build_universe still consumes the last 7
+# buffer dates, so each 00:30 UTC predict (next day) sees a freshly-
+# evaluated universe.
+OnCalendar=*-*-* 22:00:00
 Persistent=true
 
 [Install]
