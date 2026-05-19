@@ -36,7 +36,7 @@ def test_risk_values_match_interface_example():
 
 def test_runtime_values():
     rt = sc.RUNTIME
-    assert rt["polling_interval_seconds"] >= 30
+    assert "polling_interval_seconds" not in rt
     assert rt["entry_time_utc"] == "06:30"
     assert rt["reconciliation_time_utc"] == "23:00"
 
