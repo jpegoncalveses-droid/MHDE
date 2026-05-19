@@ -6,6 +6,106 @@ are at the top.
 
 ---
 
+## 2026-05-19 — Phase 1b: phantom `polling_interval_seconds` removed from MHDE spec emission
+
+**Branch:** `chore/spec-remove-phantom-polling-mhde` (local, not pushed).
+
+**Context.** The spec field `runtime.polling_interval_seconds` written
+into `data/exports/active_spec.json` was non-binding on the consumer
+side: actual polling cadence in crypto-trading-engine is driven by an
+in-handler loop in `engine/cli/handlers/monitor.py` (not by the spec).
+The field's presence in the spec was misleading future edits, and the
+consumer's `_MIN_POLLING_SECONDS = 30` validator floor existed only to
+gate this dead field.
+
+**Phase 1a (already shipped on the engine side, prerequisite for this
+work).** crypto-trading-engine PR #7 removed the field from the
+engine's spec loader, schema, validator, types, and tests. The loader
+now tolerates the field being present or absent (transitional). Phase
+1a was deployed in production and verified: monitor cycles ran cleanly
+with the new code, `load_spec` succeeded against MHDE's then-current
+spec (which still carried the field).
+
+**Phase 1b (this commit).** Stop emitting the field from MHDE so the
+spec no longer carries it.
+
+### What was changed
+
+- `crypto/exports/spec_config.py` — removed
+  `"polling_interval_seconds": 60` from the `RUNTIME` dict.
+- `tests/crypto/exports/test_spec_config.py::test_runtime_values` —
+  replaced the `>= 30` assertion with an absence check
+  (`assert "polling_interval_seconds" not in rt`).
+- `data/exports/active_spec.json` — regenerated locally via
+  `venv/bin/python main.py crypto export-spec` for verification only.
+  The file is gitignored (`.gitignore:121` excludes `data/exports/`)
+  so the regeneration is NOT in this commit. The `runtime` block in
+  the freshly built file now has 3 fields (entry_time_utc,
+  monitoring_window_hours, reconciliation_time_utc). New `spec_hash`
+  produced: `sha256:122dc4205647dc9308542f4800bcd81b6311f35081a1dc842c63a97c2326fc0e`
+  (was `sha256:0e3a9f4105195b6857276e528dedd9e0f0d23d4be732aa7dca8bb7760f4afa05`).
+
+### Files intentionally NOT changed
+
+- `docs/superpowers/plans/2026-05-10-mhde-engine-export-contract.md`
+  and `docs/superpowers/specs/2026-05-10-mhde-engine-export-contract-design.md`
+  still reference the field. These are dated planning artifacts from
+  the original 2026-05-10 implementation; modifying them retroactively
+  would falsify the historical record. The field's removal is recorded
+  here in the session log instead.
+
+### Verification
+
+- `venv/bin/python main.py crypto export-spec` — succeeded; wrote
+  active_spec.json with new hash, log line confirms write.
+- `grep polling_interval data/exports/active_spec.json` — 0 matches.
+- `venv/bin/python -m pytest tests/crypto/exports/ -v` — 55 passed,
+  1 skipped. The skip is the pre-existing cross-repo hash parity test
+  waiting on a fixture from crypto-trading-engine; unrelated to this
+  change.
+
+### Cross-repo state after this commit
+
+The two-repo phantom-config cleanup is complete:
+
+- crypto-trading-engine (Phase 1a, PR #7) — field absent from loader /
+  schema / validator / types / tests. Loader tolerates presence or
+  absence. Deployed.
+- MHDE (Phase 1b, this commit) — field absent from `spec_config.RUNTIME`
+  and from emitted `active_spec.json`. The engine's transitional
+  "tolerate either" loader will now consistently see "absent."
+
+A related engine-side follow-up exists as engine PR #8
+(docs/SESSION_LOG resolution) but is independent of this work.
+
+### Pending
+
+- Push this branch and open PR on operator approval.
+- **Post-merge deploy step.** Because `data/exports/active_spec.json`
+  is gitignored, the production VPS will keep emitting the old spec
+  (with the phantom field) until `venv/bin/python main.py crypto
+  export-spec` is run there after pulling. Engine PR #7 is already
+  tolerant of the field, so there's no ordering hazard, but the
+  cross-repo "consistently absent" state isn't reached until the prod
+  regen runs.
+- After the MHDE PR lands and the new spec is deployed, the engine
+  side can drop its transitional "tolerate field" tolerance in a
+  future cleanup (out of scope here).
+
+### Out-of-scope flag (not acted on in this PR)
+
+The operator noted that some MHDE docs may carry stale "universe
+static, frozen at 50, no dynamic management" wording. A casual scan
+during this work surfaced nothing matching that exact claim in the
+files I touched (spec_config.py UNIVERSE source label
+`binance_usdtm_perp_top_50` is the source-of-truth label string, not
+a static-size assertion). The most recent SESSION_LOG entry
+(2026-05-18) already pins the current dynamic state at 51 active / 8
+inactive / 2 pending with daily rank/build timers firing. Any deeper
+audit is deferred.
+
+---
+
 ## 2026-05-18 — Universe state pin + rank/build timer-gap widened
 
 **Branch:** `fix/universe-timer-gap` (pushed; do NOT auto-deploy).

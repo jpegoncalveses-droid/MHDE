@@ -37,7 +37,6 @@ UNIVERSE = {
 }
 
 RUNTIME = {
-    "polling_interval_seconds": 60,
     "monitoring_window_hours": 24,
     "reconciliation_time_utc": "23:00",
     "entry_time_utc": "06:30",
