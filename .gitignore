@@ -1,6 +1,7 @@
 .worktrees/
 __pycache__/
 *.py[cod]
+*.bak
 .env
 samples/
 *.egg-info/
