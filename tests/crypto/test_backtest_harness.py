@@ -197,7 +197,7 @@ def test_walk_forward_defensive_fallback_fires_when_policy_never_completes():
         def __init__(self):
             super().__init__(entry_price=100.0, horizon_days=5)
 
-        def step(self, day_idx, high, low, close):
+        def step(self, day_idx, high, low, close, open_=None):
             return []   # never emits
 
     pos = Position(

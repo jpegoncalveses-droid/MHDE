@@ -41,7 +41,9 @@ from typing import Any, Optional
 # ──────────────────────────────────────────────────────────────────────
 
 
-VALID_EXIT_REASONS = frozenset({"tp", "sl", "trailing", "time", "data_gap"})
+VALID_EXIT_REASONS = frozenset(
+    {"tp", "sl", "stop_loss", "trailing", "time", "data_gap"}
+)
 
 
 @dataclass(frozen=True)
@@ -50,13 +52,16 @@ class ExitEvent:
 
     ``fraction`` is in (0, 1]; the harness sums fractions across events
     to verify every trade fully closes. ``reason`` is one of:
-    ``'tp'``, ``'sl'``, ``'trailing'``, ``'time'``, ``'data_gap'``.
+    ``'tp'``, ``'sl'``, ``'stop_loss'``, ``'trailing'``, ``'time'``,
+    ``'data_gap'``.
 
-    The first four reasons are emitted by exit-policy logic (see
-    sub-classes of :class:`ExitPolicy`). ``data_gap`` is a harness-level
-    reason emitted by ``crypto/execution/backtest/harness.py`` when the
-    forward-price stream has a gap of 3+ days inside the hold window
-    (per SPEC.md "Missing data handling").
+    ``tp``/``sl``/``trailing`` are emitted by exit-policy logic (see
+    sub-classes of :class:`ExitPolicy`). ``stop_loss`` is emitted by
+    :class:`AtrStopOverlay` (the entry-time ATR stop overlaid on an inner
+    policy). ``data_gap`` is a harness-level reason emitted by
+    ``crypto/execution/backtest/harness.py`` when the forward-price stream
+    has a gap of 3+ days inside the hold window (per SPEC.md "Missing data
+    handling").
     """
 
     exit_price: float
@@ -97,7 +102,8 @@ class ExitPolicy(abc.ABC):
 
     @abc.abstractmethod
     def step(
-        self, day_idx: int, high: float, low: float, close: float
+        self, day_idx: int, high: float, low: float, close: float,
+        open_: Optional[float] = None,
     ) -> list[ExitEvent]: ...
 
     @property
@@ -125,7 +131,7 @@ class FixedTpNoStop(ExitPolicy):
         self.tp_pct = float(tp_pct)
         self.tp_price = self.entry_price * (1.0 + self.tp_pct)
 
-    def step(self, day_idx, high, low, close):
+    def step(self, day_idx, high, low, close, open_=None):
         if self.is_complete:
             return []
         events: list[ExitEvent] = []
@@ -164,7 +170,7 @@ class FixedTpFixedSl(ExitPolicy):
         self.tp_price = self.entry_price * (1.0 + self.tp_pct)
         self.sl_price = self.entry_price * (1.0 - self.sl_pct)
 
-    def step(self, day_idx, high, low, close):
+    def step(self, day_idx, high, low, close, open_=None):
         if self.is_complete:
             return []
         events: list[ExitEvent] = []
@@ -217,7 +223,7 @@ class FixedTpAtrSl(ExitPolicy):
         self.tp_price = self.entry_price * (1.0 + self.tp_pct)
         self.sl_price = self.entry_price * (1.0 - self.atr_mult * self.atr_pct)
 
-    def step(self, day_idx, high, low, close):
+    def step(self, day_idx, high, low, close, open_=None):
         if self.is_complete:
             return []
         events: list[ExitEvent] = []
@@ -274,7 +280,7 @@ class TrailingStopOnly(ExitPolicy):
         self.activation_pct = float(activation_pct)
         self.activation_price = self.entry_price * (1.0 + self.activation_pct)
 
-    def step(self, day_idx, high, low, close):
+    def step(self, day_idx, high, low, close, open_=None):
         if self.is_complete:
             return []
         events: list[ExitEvent] = []
@@ -340,7 +346,7 @@ class TieredExit(ExitPolicy):
         self.tp_price = self.entry_price * (1.0 + self.tp_pct)
         self.tp_taken: bool = False
 
-    def step(self, day_idx, high, low, close):
+    def step(self, day_idx, high, low, close, open_=None):
         if self.is_complete:
             return []
         events: list[ExitEvent] = []
@@ -371,6 +377,76 @@ class TieredExit(ExitPolicy):
         if day_idx >= self.horizon_days and self.remaining_fraction > 1e-9:
             events.append(ExitEvent(close, self.remaining_fraction, "time"))
             self.remaining_fraction = 0.0
+        return events
+
+
+# ──────────────────────────────────────────────────────────────────────
+# ATR stop-loss overlay — wraps any inner policy with a static entry-time stop
+# ──────────────────────────────────────────────────────────────────────
+
+
+class AtrStopOverlay(ExitPolicy):
+    """Overlay an entry-time **static** ATR stop on an ``inner`` policy.
+
+    Reuses Policy C's level mechanic — ``atr_pct`` is the ``atr_pct_14d``
+    fraction at entry and the stop is set once at entry:
+    ``sl_price = entry_price * (1 - atr_multiple * atr_pct)``. It does not
+    move for the life of the trade.
+
+    Each bar the stop is checked against the day's **low** *before* the
+    inner policy runs, so on a same-bar conflict the ATR stop fires first
+    (it takes priority over the inner trail / take-profit / time stop).
+
+    Gap-through modelling — unlike Policy C (which always fills at the stop
+    level), the overlay fills at ``min(sl_price, open_)`` when the bar's
+    open is supplied. A day that gaps open below the stop fills at the
+    open, the conservative price for a daily-bar backtest. When ``open_``
+    is ``None`` the fill falls back to the stop level.
+
+    Lifecycle (``remaining_fraction`` / ``is_complete``) mirrors the inner
+    policy except when the ATR stop fires, at which point the position is
+    fully closed.
+    """
+
+    def __init__(
+        self,
+        entry_price: float,
+        horizon_days: int,
+        *,
+        inner: ExitPolicy,
+        atr_pct: float,
+        atr_multiple: float = 2.0,
+    ) -> None:
+        super().__init__(entry_price, horizon_days)
+        if atr_pct is None or atr_pct < 0:
+            raise ValueError(
+                f"atr_pct must be a non-negative fraction, got {atr_pct}"
+            )
+        if atr_multiple is None or atr_multiple <= 0:
+            raise ValueError(
+                f"atr_multiple must be positive, got {atr_multiple}"
+            )
+        self.inner = inner
+        self.atr_pct = float(atr_pct)
+        self.atr_multiple = float(atr_multiple)
+        self.sl_price = self.entry_price * (1.0 - self.atr_multiple * self.atr_pct)
+
+    def step(self, day_idx, high, low, close, open_=None):
+        if self.is_complete:
+            return []
+        # ATR stop is checked first → priority over the inner policy on a
+        # same-bar conflict.
+        if low <= self.sl_price:
+            fill = self.sl_price if open_ is None else min(self.sl_price, float(open_))
+            events = [ExitEvent(fill, self.remaining_fraction, "stop_loss")]
+            self.remaining_fraction = 0.0
+            # Close the inner policy too so its lifecycle stays consistent.
+            self.inner.remaining_fraction = 0.0
+            return events
+        # Survived the stop — delegate to the inner policy and mirror its
+        # remaining fraction (handles partial fills, e.g. Policy E).
+        events = self.inner.step(day_idx, high, low, close, open_)
+        self.remaining_fraction = self.inner.remaining_fraction
         return events
 
 

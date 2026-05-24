@@ -62,7 +62,7 @@ logger = logging.getLogger("mhde.crypto.backtest.metrics")
 
 SHARPE_PERIODS_PER_YEAR = 252
 ANNUALIZATION_DAYS_PER_YEAR = 365.0
-EXIT_REASONS = ("tp", "sl", "trailing", "time", "data_gap")
+EXIT_REASONS = ("tp", "sl", "stop_loss", "trailing", "time", "data_gap")
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -89,6 +89,7 @@ class SummaryRow:
     # Exit-reason breakdown (each as fraction of total trades)
     pct_exits_tp: float
     pct_exits_sl: float
+    pct_exits_stop_loss: float
     pct_exits_trailing: float
     pct_exits_time: float
     pct_exits_data_gap: float
@@ -294,6 +295,7 @@ def compute_summary(
         avg_holding_days=avg_holding,
         pct_exits_tp=pct_exits["tp"],
         pct_exits_sl=pct_exits["sl"],
+        pct_exits_stop_loss=pct_exits["stop_loss"],
         pct_exits_trailing=pct_exits["trailing"],
         pct_exits_time=pct_exits["time"],
         pct_exits_data_gap=pct_exits["data_gap"],

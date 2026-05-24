@@ -68,6 +68,7 @@ from crypto.execution.backtest.costs import (
     reset_missing_funding_warnings,
 )
 from crypto.execution.backtest.policies import (
+    AtrStopOverlay,
     ExitEvent,
     ExitPolicy,
     build_policy,
@@ -148,6 +149,9 @@ _RUNS_TABLE_MIGRATIONS = [
     # Summary table — added in step 4 (metrics.py).
     "ALTER TABLE crypto_backtest_summary "
     "ADD COLUMN IF NOT EXISTS total_slippage_paid_pct DOUBLE",
+    # ATR stop-loss overlay — adds a stop_loss share to the exit breakdown.
+    "ALTER TABLE crypto_backtest_summary "
+    "ADD COLUMN IF NOT EXISTS pct_exits_stop_loss DOUBLE",
 ]
 
 SCHEMA_CRYPTO_BACKTEST_TRADES = """
@@ -186,6 +190,7 @@ CREATE TABLE IF NOT EXISTS crypto_backtest_summary (
     avg_holding_days         DOUBLE,
     pct_exits_tp             DOUBLE,
     pct_exits_sl             DOUBLE,
+    pct_exits_stop_loss      DOUBLE,
     pct_exits_trailing       DOUBLE,
     pct_exits_time           DOUBLE,
     pct_exits_data_gap       DOUBLE,
@@ -626,21 +631,58 @@ def _build_position(
     """Build an :class:`ExitPolicy` and wrap in a :class:`Position`.
 
     Returns (Position, None) on success, or (None, reason) if the trade
-    cannot be opened (e.g. Policy C with missing ATR).
+    cannot be opened (e.g. Policy C, or any policy with an ATR stop
+    overlay, when the entry-date ATR is missing).
+
+    The ``stop_mode`` / ``atr_multiple`` / ``require_atr`` keys in
+    ``policy_params`` are consumed here and never forwarded to the inner
+    policy constructor. ``stop_mode`` absent or ``"none"`` = no overlay
+    (control). ``require_atr=True`` forces the same missing-ATR skip a stop
+    run applies, even on a no-stop control — used to give matched
+    control/stop runs an identical ATR-complete entry set.
     """
     params = dict(policy_params)
+    # Pop the overlay / universe controls before building the inner policy —
+    # the inner policy constructors don't accept them.
+    stop_mode = params.pop("stop_mode", "none")
+    atr_multiple = params.pop("atr_multiple", 2.0)
+    require_atr = bool(params.pop("require_atr", False))
+
+    if stop_mode not in ("atr", "none", None):
+        return None, f"unknown stop_mode:{stop_mode!r}"
+
+    # Look up the entry-date ATR once if any consumer needs it: Policy C, the
+    # ATR-stop overlay, or an explicit require_atr universe gate. Missing ATR
+    # skips the trade (reuse the engine's existing skip — no fallback).
+    needs_atr = (
+        exit_policy_id.upper() == "C"
+        or stop_mode == "atr"
+        or require_atr
+    )
+    atr_pct = atr_lookup.get((coin, pred_date)) if needs_atr else None
+    if needs_atr and (atr_pct is None or atr_pct <= 0):
+        return None, "missing_atr"
+
     if exit_policy_id.upper() == "C":
-        atr_pct = atr_lookup.get((coin, pred_date))
-        if atr_pct is None or atr_pct <= 0:
-            return None, "missing_atr"
         params["atr_pct"] = float(atr_pct)
     try:
-        policy = build_policy(
+        policy: ExitPolicy = build_policy(
             exit_policy_id, entry_price=entry_price,
             horizon_days=horizon_days, params=params,
         )
     except Exception as exc:
         return None, f"policy_build_failed:{type(exc).__name__}:{exc}"
+
+    if stop_mode == "atr":
+        # Static entry-time ATR stop overlaid on the inner policy.
+        try:
+            policy = AtrStopOverlay(
+                entry_price=entry_price, horizon_days=horizon_days,
+                inner=policy, atr_pct=float(atr_pct),
+                atr_multiple=float(atr_multiple),
+            )
+        except Exception as exc:
+            return None, f"policy_build_failed:{type(exc).__name__}:{exc}"
 
     return Position(
         trade_id=trade_id, coin=coin, entry_date=entry_date,
@@ -684,20 +726,21 @@ def _walk_position_forward(
                 position.exit_reason = "data_gap"
                 data_gap_exited = True
                 break
-            # Forward-fill (1-2 missing day case).
+            # Forward-fill (1-2 missing day case). No real bar, so the
+            # synthetic open equals the carried-forward close.
             n_forward_fills += 1
             position.forward_fill_days += 1
-            high = low = close = position.last_known_close
+            high = low = close = open_ = position.last_known_close
         else:
             forward_fill_streak = 0
-            _, hi, lo, cl = bar
-            high, low, close = float(hi), float(lo), float(cl)
+            op, hi, lo, cl = bar
+            open_, high, low, close = float(op), float(hi), float(lo), float(cl)
             position.last_known_high = high
             position.last_known_low = low
             position.last_known_close = close
 
         position.days_held = day_idx
-        events = position.policy.step(day_idx, high, low, close)
+        events = position.policy.step(day_idx, high, low, close, open_=open_)
         if events:
             position.exits.extend(events)
             position.exit_date = bar_date
