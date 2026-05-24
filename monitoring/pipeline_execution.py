@@ -194,7 +194,7 @@ def run(conn=None, now: datetime | None = None) -> MonitorResult:
 
     try:
         engines = [
-            ("equity", "ml_predictions", "prediction_date", "ml_model_runs"),
+            # DISABLED 2026-05-18 (equity Telegram paused): ("equity", "ml_predictions", "prediction_date", "ml_model_runs"),
             ("crypto", "crypto_ml_predictions", "prediction_date", "crypto_ml_model_runs"),
             ("fx", "fx_ml_predictions", "datetime_utc", "fx_ml_model_runs"),
         ]
