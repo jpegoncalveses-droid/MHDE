@@ -6,6 +6,77 @@ are at the top.
 
 ---
 
+## 2026-05-27 — STATE.md on-demand snapshot tooling
+
+**Branch:** `chore/state-md-snapshot-tooling` (off `master`, pushed; awaiting operator merge).
+
+**Goal.** Add an on-demand, read-only system-state snapshot so any cold
+session can answer "what is true right now?" without re-deriving it, and
+a canonical `STATE.md` that is refreshed only on explicit operator command.
+
+**What was added.**
+
+- `scripts/snapshot_state.py` — read-only diagnostic. Issues no writes to
+  the DB (`read_only=True`), repo, or systemd. Prints one delimited
+  key:value block grouped by section:
+  - **git**: current branch, HEAD short SHA + dirty flag, ahead/behind
+    `master` (`rev-list --left-right --count master...HEAD`), stash list,
+    top-8 recent branches by committerdate.
+  - **systemd**: `mhde-*` timers with next/last fire for both system
+    (`systemctl list-timers`) and `--user` scopes.
+  - **duckdb** (`data/mhde.duckdb`, read-only): `crypto_universe` row
+    count + active count + last `added_date`/`removed_date` (date column
+    confirmed from `crypto/schema.py`); active crypto model runs
+    (`is_active = true`); orphan tables = live `main` tables minus those
+    declared via `CREATE TABLE IF NOT EXISTS` in `crypto/`, `ml/`, `fx/`
+    `schema.py` (same regex the `audit_orphan_universe_tables.py` and
+    `test_schema_consistency.py` use). Catches the read-only lock failure
+    and prints "DB locked, universe/model/table fields unavailable" then
+    continues — never crashes.
+  - **files**: `active_spec.json` universe.source + strategy parameter
+    block (phase_1b_winner / sizing / risk / runtime); latest
+    `predictions_YYYY-MM-DD.json` by filename date.
+  Reports facts only — no blockers / next-action / divergence text.
+- `STATE.md` at repo root — overwrite-in-place (NOT append-only),
+  refreshed only on explicit "refresh STATE". Machine fields populated
+  from a real `snapshot_state.py` run this session; judgement fields
+  (phase, blockers, next action, deferred queue, paper-trading status,
+  divergences) filled from this session's investigation.
+- `CLAUDE.md` — STATE.md added as Read-first item 1 (rest renumbered);
+  new "Refreshing STATE.md" section documenting the explicit-trigger-only
+  refresh procedure. No session-end auto-refresh.
+
+**First snapshot (live host, 2026-05-27).** `crypto_universe` 60 rows /
+51 active, last added 2026-05-19; active crypto runs
+`crypto_10d_e1edf4e6` + `crypto_5d_306d3f1a`; 67 live tables vs 30
+declared → 37 orphans (equity-side + backtest + experimental, e.g.
+`crypto_regime_daily`); spec v1.0.0 hash 60a2c813…; latest predictions
+`predictions_2026-05-27.json`; 25 `mhde-*` timers (23 system, 2 user).
+
+**Verification.**
+- `scripts/snapshot_state.py` runs clean and prints the full block.
+- `tests/regression/` — 31 passed, including the required
+  `test_no_untracked_production_imports.py` (3/3) given the new tracked
+  `.py`. Two pre-existing failures unrelated to this change, confirmed by
+  rerunning them on a clean `master` tree:
+  `test_dashboard_structure.py::test_no_module_level_connection` and
+  `test_pipeline_execution_weekend.py::test_pipeline_execution_equity_ok_on_monday_morning`
+  (the latter a fallout of `97de692` "Disable equity freshness check" —
+  `result.metrics` no longer carries an `equity` key; the weekend test
+  was not updated).
+
+**Cross-chat note.** This chat started with the host's primary checkout on
+`fix/dashboard-pnl-cumulative-delta` carrying uncommitted dashboard-PnL
+work (another workstream). That work was stashed
+(`park-dashboard-pnl-for-statemd-chat`) to branch cleanly off `master`,
+and must be restored (`git checkout fix/dashboard-pnl-cumulative-delta &&
+git stash pop`) when this branch is handed back. No file overlap between
+the two workstreams.
+
+**Pending.** Operator merges `chore/state-md-snapshot-tooling`; the two
+pre-existing regression failures above remain open (equity-on-hold test
+fallout + dashboard module-level-connection check).
+
 ## 2026-05-19 — Phase 1b: phantom `polling_interval_seconds` removed from MHDE spec emission
 
 **Branch:** `chore/spec-remove-phantom-polling-mhde` (local, not pushed).
