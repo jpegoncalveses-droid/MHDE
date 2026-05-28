@@ -1120,34 +1120,6 @@ def _compute_post_baseline_unrealized_for_date(
     return float(val or 0.0)
 
 
-def _compute_pre_baseline_locked_at_eod(
-    engine_conn: duckdb.DuckDBPyConnection, row_date: date, baseline_date: date,
-) -> float:
-    """SUM(entry_price * qty) for pre-baseline positions OPEN at end of
-    `row_date`. Used to compute equity_attributable per row: the wallet
-    balance minus this locked-pre-baseline amount.
-
-    Mirrors `_compute_post_baseline_unrealized_for_date`'s "open at end
-    of row_date" predicate but filters to `entry_date < baseline_date`
-    and reads cost basis (no snapshot dependency).
-    """
-    val = engine_conn.execute(
-        """
-        SELECT COALESCE(SUM(entry_price * qty), 0.0)
-        FROM positions
-        WHERE entry_date < ?
-          AND entry_date <= ?
-          AND (
-              current_state IN ('entry_filled', 'entry_pending',
-                                'trailing_active', 'exit_pending', 'expired')
-              OR CAST(updated_at AS DATE) > ?
-          )
-        """,
-        [baseline_date, row_date, row_date],
-    ).fetchone()[0]
-    return float(val or 0.0)
-
-
 def get_daily_balance_since_baseline(
     engine_conn: duckdb.DuckDBPyConnection,
     *,
@@ -1166,8 +1138,12 @@ def get_daily_balance_since_baseline(
         unrealized_pnl_usd  — open-position mark-to-market at row time
         daily_delta         — equity − equity_of_prior_present_row;
                               ``None`` for the first in-window row
-        cumulative_delta    — equity − equity_of_first_in_window_row;
-                              ``0.0`` for the first row
+        cumulative_delta    — running sum of ``realized_pnl_usd`` over the
+                              window (inclusive of the first row, so the
+                              first row's cumulative equals its own realized,
+                              not 0). Tracks realized P&L since baseline, not
+                              the wallet-equity curve — meaningful even when
+                              ``equity`` is NaN (no reconciled anchor yet).
         is_preliminary      — ``False`` for reconciled rows pulled from
                               daily_pnl, ``True`` for today's synthesized
                               in-day row
@@ -1193,8 +1169,9 @@ def get_daily_balance_since_baseline(
     engine does not track them granularly; the drift is small enough to
     accept per the operator's call). When ``daily_pnl`` is empty there is
     no prior anchor, so the synthesized row has ``equity = NaN`` and
-    ``daily_delta`` / ``cumulative_delta`` ``NaN`` — only realized and
-    unrealized columns carry meaning until the first reconcile fires.
+    ``daily_delta`` ``NaN`` — but ``cumulative_delta`` still carries the
+    running realized sum (it does not depend on equity), and realized /
+    unrealized columns are meaningful from the first row.
 
     Empty input AND ``today < since`` yields an empty DataFrame with the
     correct schema so the caller can render an "no data" banner.
@@ -1217,7 +1194,7 @@ def get_daily_balance_since_baseline(
         return pd.DataFrame(columns=_DAILY_BALANCE_COLUMNS)
 
     out: list[dict] = []
-    anchor_attributable: float | None = None
+    cum_realized: float = 0.0
     prev_equity: float | None = None
     for d, equity in rows:
         equity = float(equity)
@@ -1227,12 +1204,7 @@ def get_daily_balance_since_baseline(
         unrealized_post = _compute_post_baseline_unrealized_for_date(
             engine_conn, d, baseline_date,
         )
-        locked_pre = _compute_pre_baseline_locked_at_eod(
-            engine_conn, d, baseline_date,
-        )
-        equity_attributable = equity - locked_pre
-        if anchor_attributable is None:
-            anchor_attributable = equity_attributable
+        cum_realized += realized_post
         daily_delta = None if prev_equity is None else equity - prev_equity
         out.append({
             "date": d,
@@ -1240,7 +1212,7 @@ def get_daily_balance_since_baseline(
             "realized_pnl_usd": realized_post,
             "unrealized_pnl_usd": unrealized_post,
             "daily_delta": daily_delta,
-            "cumulative_delta": equity_attributable - anchor_attributable,
+            "cumulative_delta": cum_realized,
             "is_preliminary": False,
         })
         prev_equity = equity
@@ -1252,21 +1224,14 @@ def get_daily_balance_since_baseline(
         today_unrealized = get_open_positions_unrealized_pnl_usd(
             engine_conn, baseline_date=baseline_date,
         )
-        today_locked_pre = _compute_pre_baseline_locked_at_eod(
-            engine_conn, today, baseline_date,
-        )
 
         if rows:
             today_equity = float(rows[-1][1]) + today_realized
         else:
             today_equity = float("nan")
 
-        today_equity_attributable = today_equity - today_locked_pre
-        if anchor_attributable is None:
-            # Bootstrap: row is its own anchor (NaN-NaN=NaN propagates).
-            anchor_attributable = today_equity_attributable
+        cum_realized += today_realized
         daily_delta = None if prev_equity is None else today_equity - prev_equity
-        cumulative_delta = today_equity_attributable - anchor_attributable
 
         out.append({
             "date": today,
@@ -1274,7 +1239,7 @@ def get_daily_balance_since_baseline(
             "realized_pnl_usd": today_realized,
             "unrealized_pnl_usd": today_unrealized,
             "daily_delta": daily_delta,
-            "cumulative_delta": cumulative_delta,
+            "cumulative_delta": cum_realized,
             "is_preliminary": True,
         })
 

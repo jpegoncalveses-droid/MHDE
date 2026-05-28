@@ -321,8 +321,9 @@ def test_daily_balance_columns_and_first_row(monkeypatch):
     """Schema, ordering, and first-row sentinels.
 
     daily_delta is None on the earliest in-window row (no prior to diff
-    against). cumulative_delta is anchored to the earliest in-window
-    equity, so the first row's cumulative is exactly 0.0.
+    against). cumulative_delta is the running sum of realized_pnl_usd; with
+    no closed positions in this fixture every row's realized is 0, so the
+    cumulative stays 0.0 throughout (the equity curve is irrelevant to it).
 
     ``today`` is pinned to the last reconciled date so no preliminary
     row is synthesized — this test exercises the historical-only path.
@@ -347,11 +348,13 @@ def test_daily_balance_columns_and_first_row(monkeypatch):
     # renders as an empty cell.
     import pandas as _pd
     assert _pd.isna(df.iloc[0]["daily_delta"])
-    assert df.iloc[0]["cumulative_delta"] == 0.0
+    # daily_delta still tracks the equity curve.
     assert df.iloc[1]["daily_delta"] == pytest.approx(20.0)
-    assert df.iloc[1]["cumulative_delta"] == pytest.approx(20.0)
     assert df.iloc[2]["daily_delta"] == pytest.approx(-5.0)
-    assert df.iloc[2]["cumulative_delta"] == pytest.approx(15.0)
+    # cumulative_delta is the realized cumsum — 0 everywhere with no closures.
+    assert df.iloc[0]["cumulative_delta"] == 0.0
+    assert df.iloc[1]["cumulative_delta"] == 0.0
+    assert df.iloc[2]["cumulative_delta"] == 0.0
     # No preliminary row — today (5/14) is already reconciled.
     assert not df["is_preliminary"].any()
 
@@ -369,8 +372,9 @@ def test_daily_balance_excludes_pre_baseline_rows():
         e, since=date(2026, 5, 12), today=date(2026, 5, 13)
     )
     assert list(df["date"]) == [date(2026, 5, 12), date(2026, 5, 13)]
-    # cumulative_delta anchored to 5/12 — the pre-baseline 975 is invisible.
-    assert df.iloc[1]["cumulative_delta"] == pytest.approx(10.0)
+    # Pre-baseline rows (5/9, 5/11) are excluded by the date filter. No
+    # closed positions here, so cumulative_delta (realized cumsum) is 0.0.
+    assert df.iloc[1]["cumulative_delta"] == pytest.approx(0.0)
 
 
 def test_daily_balance_empty_table_returns_empty_dataframe():
@@ -393,8 +397,8 @@ def test_daily_balance_empty_table_returns_empty_dataframe():
 
 
 def test_daily_balance_handles_negative_streak():
-    """Equity drops — daily_delta and cumulative_delta both go negative,
-    no special handling required."""
+    """Equity drops — daily_delta (equity-based) goes negative. With no
+    closed positions, cumulative_delta (realized cumsum) stays 0.0."""
     e = _engine_db()
     _daily(e, date(2026, 5, 12), equity=1000.0)
     _daily(e, date(2026, 5, 13), equity=990.0)
@@ -404,7 +408,7 @@ def test_daily_balance_handles_negative_streak():
     )
     assert df.iloc[1]["daily_delta"] == pytest.approx(-10.0)
     assert df.iloc[2]["daily_delta"] == pytest.approx(-15.0)
-    assert df.iloc[2]["cumulative_delta"] == pytest.approx(-25.0)
+    assert df.iloc[2]["cumulative_delta"] == pytest.approx(0.0)
 
 
 def test_daily_balance_preserves_gaps():
@@ -497,6 +501,10 @@ def test_daily_balance_includes_realized_and_unrealized_columns():
     assert df.iloc[0]["unrealized_pnl_usd"] == pytest.approx(10.0)
     assert df.iloc[1]["realized_pnl_usd"] == pytest.approx(70.0)
     assert df.iloc[1]["unrealized_pnl_usd"] == pytest.approx(5.0)
+    # cumulative_delta is the running realized sum, inclusive of the first
+    # row: 5/12 = 50 (its own realized, not 0), 5/13 = 50 + 70 = 120.
+    assert df.iloc[0]["cumulative_delta"] == pytest.approx(50.0)
+    assert df.iloc[1]["cumulative_delta"] == pytest.approx(120.0)
     assert not df["is_preliminary"].any()
 
 
@@ -546,7 +554,9 @@ def test_daily_balance_synthesizes_today_when_missing():
     assert today_row["realized_pnl_usd"] == pytest.approx(8.0)
     assert today_row["unrealized_pnl_usd"] == pytest.approx(20.0)
     assert today_row["daily_delta"] == pytest.approx(8.0)  # 1018 - 1010
-    assert today_row["cumulative_delta"] == pytest.approx(18.0)  # 1018 - 1000
+    # cumulative_delta = realized cumsum: 5/12=0, 5/13=1 (the "yest" closure
+    # attributed to its exit date), 5/14=8 (today's two closures) → 9.0.
+    assert today_row["cumulative_delta"] == pytest.approx(9.0)
 
 
 def test_daily_balance_no_synthesis_when_today_already_reconciled():
@@ -593,7 +603,8 @@ def test_daily_balance_synthesized_today_when_daily_pnl_empty():
     """Bootstrap edge case: no daily_pnl rows, but today >= since.
     A single preliminary row is shown with equity = NaN (no anchor) so
     the operator sees today's realized/unrealized numbers without a
-    misleading made-up wallet balance."""
+    misleading made-up wallet balance. cumulative_delta is the realized
+    cumsum, which is well-defined (5.0) even without an equity anchor."""
     import pandas as _pd
     e = _engine_db()
     today_ts = datetime(2026, 5, 14, 9, 0, 0)
@@ -613,8 +624,9 @@ def test_daily_balance_synthesized_today_when_daily_pnl_empty():
     assert row["is_preliminary"] is True or bool(row["is_preliminary"]) is True
     assert _pd.isna(row["equity"])  # no prior anchor — equity unknown
     assert row["realized_pnl_usd"] == pytest.approx(5.0)
-    assert _pd.isna(row["daily_delta"])
-    assert _pd.isna(row["cumulative_delta"])
+    assert _pd.isna(row["daily_delta"])  # still equity-based → NaN
+    # cumulative_delta does not depend on equity: realized cumsum = 5.0.
+    assert row["cumulative_delta"] == pytest.approx(5.0)
 
 
 def test_daily_balance_is_preliminary_flag_correct():
@@ -769,41 +781,49 @@ def test_daily_balance_filters_realized_to_post_baseline_closures():
     assert df.iloc[0]["realized_pnl_usd"] == pytest.approx(7.0)
 
 
-def test_daily_balance_cumulative_delta_uses_post_baseline_attributable_equity():
-    """starting_equity = wallet_at_first_row - cost_basis_of_pre_baseline_open.
-    Each row's equity_attributable = wallet(D) - cost_basis_pre_baseline_still_open(D).
-    cumulative_delta = equity_attributable(D) - starting_equity_attributable.
+def test_daily_balance_cumulative_delta_excludes_pre_baseline_realized():
+    """cumulative_delta is the running sum of post-baseline realized P&L.
+    A *pre-baseline* position's realized P&L must NOT leak into it (the
+    realized column already filters entry_date >= baseline), while a
+    post-baseline closure does count.
 
     Concretely:
-      Pre-baseline open: cost basis = $1000 at baseline.
-      First-row cumulative_delta must be 0.0 (no time has passed).
-      If the pre-baseline position closes on day +1 with $50 realized,
-      day +1 wallet = first_wallet + 50, locked_pre on day +1 = 0,
-      equity_attributable(day +1) = first_wallet + 50 - 0,
-      cumulative_delta(day +1) = (first_wallet + 50) - (first_wallet - 1000) = 1050.
+      Pre-baseline position (entry 5/12 < baseline 5/14) closes 5/15 with
+      $50 realized — excluded. Post-baseline position (entry 5/14) closes
+      5/15 with $30 realized — included. So cumulative_delta = 0.0 on 5/14
+      (no post-baseline closures) and 30.0 on 5/15. The pre-baseline $50
+      (and the wallet bump it caused) is invisible to the strategy curve.
     """
     e = _engine_db()
     baseline = date(2026, 5, 14)
     _daily(e, date(2026, 5, 14), equity=10000.0)
-    _daily(e, date(2026, 5, 15), equity=10050.0)  # +50 from pre-baseline closure
-    # Pre-baseline open at baseline; closes on 5/15
+    _daily(e, date(2026, 5, 15), equity=10080.0)  # +50 pre + 30 post
+    # Pre-baseline closure on 5/15 — excluded from realized cumsum.
     _pos(e, "pre1", "PREUSDT", "exit_filled",
          entry_date=date(2026, 5, 12),
          entry_price=100.0, qty=10.0, peak_price=105.0,
          exit_price=105.0, realized_pnl_usd=50.0,
+         updated_at=datetime(2026, 5, 15, 9, 0))
+    # Post-baseline closure on 5/15 — counted.
+    _pos(e, "post1", "POSTUSDT", "exit_filled",
+         entry_date=date(2026, 5, 14),
+         entry_price=10.0, qty=10.0, peak_price=13.0,
+         exit_price=13.0, realized_pnl_usd=30.0,
          updated_at=datetime(2026, 5, 15, 9, 0))
 
     df = q.get_daily_balance_since_baseline(
         e, since=baseline, today=date(2026, 5, 15), baseline_date=baseline,
     )
     assert df.iloc[0]["cumulative_delta"] == pytest.approx(0.0)
-    assert df.iloc[1]["cumulative_delta"] == pytest.approx(1050.0)
+    assert df.iloc[1]["cumulative_delta"] == pytest.approx(30.0)
 
 
-def test_daily_balance_no_baseline_no_positions_falls_back_to_current_behavior():
-    """When no pre-baseline positions exist, the new filter is a no-op
-    and the historical behavior (cumulative_delta starts at 0, equity
-    pass-through) is preserved.
+def test_daily_balance_realized_comes_from_positions_not_daily_pnl():
+    """The strip's realized_pnl_usd (and hence cumulative_delta) is
+    recomputed from the positions table, NOT passed through from
+    daily_pnl.realized_pnl_usd. With no positions seeded, both are 0.0
+    even though daily_pnl carries a realized=20.0 value — confirming the
+    daily_pnl realized column does not feed the strip.
     """
     e = _engine_db()
     _daily(e, date(2026, 5, 14), equity=1000.0)
@@ -812,12 +832,13 @@ def test_daily_balance_no_baseline_no_positions_falls_back_to_current_behavior()
         e, since=date(2026, 5, 14), today=date(2026, 5, 15),
         baseline_date=date(2026, 5, 14),
     )
-    # No positions seeded → filtered realized/unrealized = 0.0 on each row
+    # No positions seeded → filtered realized = 0.0 on each row (daily_pnl's
+    # realized=20.0 is ignored — the strip reads positions, not daily_pnl).
     assert df.iloc[0]["realized_pnl_usd"] == pytest.approx(0.0)
     assert df.iloc[1]["realized_pnl_usd"] == pytest.approx(0.0)
-    # cumulative_delta unaffected (no cost basis to subtract)
+    # cumulative_delta is the realized cumsum → 0.0 throughout.
     assert df.iloc[0]["cumulative_delta"] == pytest.approx(0.0)
-    assert df.iloc[1]["cumulative_delta"] == pytest.approx(20.0)
+    assert df.iloc[1]["cumulative_delta"] == pytest.approx(0.0)
 
 
 def test_daily_balance_synthesized_today_filters_open_positions_by_baseline():

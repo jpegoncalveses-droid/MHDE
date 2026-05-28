@@ -24,6 +24,8 @@ paper_trading_drift:
       reason: "Variant D filter shipped: added ret5 < -0.30 short-window momentum exclusion to post-parabolic gate (Rule B). Strategy character changes from this date forward."
     - date: "2026-05-18"
       reason: "Hard floor tightened from -8.6% to -5%; reduceOnly enforcement added on exit orders (RAVEUSDT incident fix). Strategy character changes from this date forward."
+    - date: "2026-05-29"
+      reason: "Post-reset to 5000: paper account reset to 5000 on 2026-05-28, first positions open 2026-05-29. Strategy unchanged; re-baseline clears pre-reset capital/PnL from the daily-balance chart and drift attribution."
 
 alert_throttle:
   enabled: true

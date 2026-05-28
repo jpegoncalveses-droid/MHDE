@@ -1097,12 +1097,12 @@ with tab_paper:
                 "`unrealized` are recomputed from `positions` filtered to "
                 "`entry_date >= baseline_date` "
                 "(fix-daily-balance-baseline-awareness). `daily Δ` = equity − "
-                "prior present row; `cumulative Δ` is anchored to the "
-                "baseline-attributable equity (= wallet − pre-baseline locked "
-                "cost basis). Today's row is synthesized in-process and updates "
-                "live until reconcile fires at 23:00 UTC. Funding and fees are "
-                "not subtracted — the drift vs the eventual reconciled wallet "
-                "balance is small and acceptable."
+                "prior present row; `cumulative Δ` is the running sum of "
+                "`realized` P&L since baseline (inclusive of the first row). "
+                "Today's row is synthesized in-process and updates "
+                "live until reconcile fires at 23:00 UTC. `realized` is gross "
+                "of funding/fees, so it diverges from the wallet `equity` "
+                "curve by the accrued cost drag."
             )
 
             _summary = get_paper_engine_runs_summary(_engine_conn)
