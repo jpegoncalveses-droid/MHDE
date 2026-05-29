@@ -1,8 +1,8 @@
 # Known Issues
 
-**19 open observations** (KI-122, KI-123, KI-126, KI-131, KI-132,
+**20 open observations** (KI-122, KI-123, KI-126, KI-131, KI-132,
 KI-134, KI-136, KI-137, KI-139, KI-144, KI-145,
-KI-146, KI-147, KI-148, KI-149, KI-151, KI-152, KI-153, KI-155). KI-122/123 are cosmetic; KI-126 is a future
+KI-146, KI-147, KI-148, KI-149, KI-151, KI-152, KI-153, KI-155, KI-156). KI-122/123 are cosmetic; KI-126 is a future
 Phase 0 enhancement deferred until weekly reliability snapshots
 accumulate; KI-131 is a low-priority single-day production-model
 row-count dip; KI-132 is a dashboard-deployment-process gap (no
@@ -54,7 +54,14 @@ investigation — `*-pipeline-monitor.service` units exit 1 by design
 when the pipeline they monitor is red, which `systemctl status`
 reports as `Active: failed (Result: exit-code)` and is
 indistinguishable from a real monitor crash; the initial KI-150
-diagnosis confused the two and prescribed a fix for a non-bug.
+diagnosis confused the two and prescribed a fix for a non-bug. KI-156
+is the post-parabolic filter's live-vs-validation divergence surfaced by
+the 2026-05-29 audit — the filter over-fires the top-6 (~2.6 removals/day
+vs ADR-021's "never more than 2") and the excluded-vs-retained drawdown
+separation that justified Rule A has collapsed from 21pp to 2.4pp on the
+completed-horizon live sample; the verdict is gated on a filter ON-vs-OFF
+paired backtest because the proxies are price-path stats, not realized
+Policy-D P&L, with Rule A's lagging `return_60d` window the prime suspect.
 
 **KI-138** opened + resolved (option A) 2026-05-12 — the cap-at-today-1
 OHLCV ingestion fix (commit 8f9d707) made `MAX(trade_date)` in
@@ -1219,6 +1226,53 @@ the column was intentionally removed). Decision needs whoever owns
   not include `promotion_status`.
 - [[KI-135]] — retrain auto-promotion gating (resolved); related
   but historically distinct.
+
+### KI-156 — Post-parabolic filter live behavior diverges from ADR-021/028 validation envelope (over-fires top-6; drawdown separation collapsed)
+
+**Severity: medium.** Discovered 2026-05-29 via live audit of
+`crypto_signal_exclusions` against the daily predictions exports and
+realized 10d outcomes in `crypto_ml_predictions`.
+
+**Symptom — two measurable divergences from validation.**
+
+1. *Top-6 displacement rate.* ADR-021 claimed the filter "never removed
+   more than 2 of the top-6 on any day." Live reconstruction (survivors
+   ∪ filter-excluded, ranked by calibrated probability, top-6) shows 3-4
+   displacements on 2026-05-15, -16, -17 and -23. 44 top-6 entries
+   removed across 2026-05-13 → 05-29 (~2.6/day) on a 6-slot book.
+
+2. *Drawdown separation collapsed.* ADR-021 justified Rule A on an
+   excluded-set avg max-DD of -25% vs retained -4%. On the completed-
+   horizon live sample (n=19 suppressed would-be-top-6 vs n=33 actually
+   traded top-6): suppressed avg_max_dd -0.255 vs traded -0.231 (2.4pp,
+   not 21pp). avg_max_ret near-identical (+0.101 vs +0.104). Suppressed
+   hit rate is *higher* (0.47 vs 0.36).
+
+**Interpretation.** In the current regime the filter removes coins
+statistically indistinguishable from the rest of the book on the
+drawdown axis. Clear blocked winners present (FHEUSDT 2026-05-16
+max_ret +0.295 with max_dd +0.14, never underwater; UBUSDT 05-20 +0.73,
+05-19 +0.53). Genuine saves also present (NAORISUSDT 05-15 max_dd -0.52;
+SKYAIUSDT 05-14 -0.39). Net effect unresolved by proxies.
+
+**Caveat (why this is not yet a verdict).** `actual_max_return` /
+`actual_max_drawdown` are price-path stats, not realized Policy-D
+(trailing 0.30 / activation 0.01 + time exit) trade P&L. Path ordering
+can turn a deep-max_dd coin into a winning trade. A verdict requires a
+filter ON vs OFF paired backtest over 2026-05-13 → present.
+
+**Prime suspect: Rule A.** The lagging `return_60d` window keeps
+post-top coins (UBUSDT, LABUSDT, SKYAIUSDT) suppressed for 9-14
+consecutive days, because the run-up stays inside the 60d window for
+weeks. Rule B (`return_5d < -0.30`, acute) targets actively-collapsing
+coins and remains defensible.
+
+**Next action.** Run the paired backtest (toggle on
+`feat-backtest-postparabolic-toggle`; verify merge status first). Do not
+retune Rule A constants until realized-P&L confirms direction.
+
+**References.** ADR-021, ADR-028, `crypto_signal_exclusions`, this audit
+(2026-05-29).
 
 ## Recently resolved (post-Session-7)
 

@@ -6,6 +6,14 @@ are at the top.
 
 ---
 
+## 2026-05-29 — Logged KI-156 (post-parabolic filter live drift)
+
+**Branch:** `chore/ki-postparabolic-filter-drift` (off `master`, pushed; awaiting operator review).
+
+Logged KI-156 in `KNOWN_ISSUES.md` (open-issue count 19 → 20). A 2026-05-29 live audit of `crypto_signal_exclusions` against the predictions exports + realized 10d outcomes found the post-parabolic filter diverging from its ADR-021/028 validation envelope: top-6 over-firing (~2.6 removals/day vs "never >2") and the Rule A drawdown separation collapsed from 21pp to 2.4pp. Verdict gated on a filter ON-vs-OFF paired backtest; no retune until realized P&L confirms direction.
+
+---
+
 ## 2026-05-27 — STATE.md on-demand snapshot tooling
 
 **Branch:** `chore/state-md-snapshot-tooling` (off `master`, pushed; awaiting operator merge).
