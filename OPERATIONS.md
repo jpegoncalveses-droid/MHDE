@@ -392,23 +392,56 @@ sudo docker exec homeboard-nginx-1 nginx -s reload  # last resort
 
 ### Paper Trading dashboard tab
 
-The dashboard's "Paper Trading" tab (Gap 3) reads the crypto-trading-engine
-DuckDB **read-only** via `CRYPTO_ENGINE_DB_PATH` (default
-`/home/jpcg/crypto-trading-engine/data/trading_engine.duckdb`) — see ADR-020.
-The `mhde-streamlit.service` unit's `Environment=` must include
+The "Paper Trading" tab is the **first/default tab** (paper-tab-overhaul). It
+reads the crypto-trading-engine DuckDB **read-only** via `CRYPTO_ENGINE_DB_PATH`
+(default `/home/jpcg/crypto-trading-engine/data/trading_engine.duckdb`) — see
+ADR-020. The `mhde-streamlit.service` unit's `Environment=` must include
 `CRYPTO_ENGINE_DB_PATH=...` if the engine repo isn't at the default path; if
-the file is unreadable the tab shows a "engine database not available" warning
-and the rest of the dashboard is unaffected. Closed-position `exit_price` /
-`realized_pnl` read from the engine's `positions.exit_price` /
-`positions.realized_pnl_usd` columns (EXIT-PRICE-001), falling back to
-**"uncomputable (KI-136)"** only when the engine never recorded an exit fill
-— pre-EXIT-PRICE-001 closes the reconcile backfill hasn't healed yet, and
-reconcile auto-closes of orphaned positions. It still surfaces, not hides,
-the remaining gap: there's no live-mark / unrealised-P&L column
-(`price_snapshots` unpopulated — PRICE-SNAPSHOTS-001). The drift-monitor banner re-runs
+the file is unreadable the tab shows an "engine database not available" warning
+and the rest of the dashboard is unaffected. (The engine holds a write lock
+during its monitor cycle; the read-only connect can briefly fail and degrades
+to that same warning — it self-heals on the next render.)
+
+Below the daily-balance strip and engine-liveness metrics, the **Today's
+positions** section shows the cohort opened today (UTC) that reached the market
+(`entry_filled` or beyond — `failed`/`cancelled` stay in **Rejected entries**),
+open positions first then closed by exit time desc:
+
+- A table — `Symbol | Entry | Exit | Opened $ | PnL $ | PnL %`. `Opened $` =
+  `entry_price × qty`. Closed `PnL $` = gross `realized_pnl_usd` (FUNDING-001).
+  Open rows show `Exit="open"` and an UNREALIZED live mark
+  `((latest price_snapshot − entry) × qty)`, suffixed `*`.
+- One price chart per row (dynamic N): blue = price snapshots, gray dashed =
+  entry, red = the exit reference — the **activation** line `entry×(1+activation_pct)`
+  while the trailing stop hasn't armed (peak below threshold), or the stepwise
+  **trail-stop** line `running_peak − trail_pct·(running_peak − entry)` once
+  armed (engine SPEC §3.2). `activation_pct`/`trail_pct` are read from the
+  adopted `data/exports/active_spec.json` (Phase-1B-D defaults if absent).
+  Each series is downsampled to ≤400 points (global min/max preserved) for
+  mobile.
+
+`price_snapshots` are written each engine monitor cycle (~60 s fresh), so the
+open-position live mark is current (PRICE-SNAPSHOTS-001 resolved). Closed-position
+`exit_price` / `realized_pnl` still read from the engine's `positions` columns
+(EXIT-PRICE-001). The drift-monitor banner re-runs
 `monitoring/paper_trading_drift.py`'s `run()` (read-only, no Telegram), cached
 60 s. Smoke-test the tab's queries with the dashboard-query smoke command (it
-now also exercises the four `get_paper_*` functions against the engine DB).
+exercises the `get_paper_*` helpers plus `get_paper_today_cohort` /
+`get_paper_position_snapshots` / `build_position_chart_frame` against the engine DB).
+
+**Auth survives refresh.** On successful login the dashboard sets a signed,
+expiring cookie (`mhde_auth`) so a browser hard-refresh or mobile-PWA
+force-close/reopen no longer forces a re-login. The cookie carries only
+`subject|expiry` + an HMAC signature (never the password/hash) keyed by
+`MHDE_DASHBOARD_COOKIE_SECRET`, validated server-side every load. **Fail
+closed:** with that env var unset the cookie path is inert and the dashboard
+prompts on every refresh exactly as before. **Operator step to enable:** add a
+strong random `MHDE_DASHBOARD_COOKIE_SECRET=...` (and optionally
+`MHDE_DASHBOARD_COOKIE_TTL_HOURS`, default 168 = 7 days) to
+`mhde-streamlit.service` `Environment=`, then `systemctl --user daemon-reload &&
+systemctl --user restart mhde-streamlit`. The cookie is set from JS so it cannot
+be HttpOnly; since it carries no credential the bounded-TTL signed token limits
+replay exposure.
 
 ---
 

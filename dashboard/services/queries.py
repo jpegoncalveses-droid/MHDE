@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import duckdb
+import numpy as np
 import pandas as pd
 
 
@@ -1244,3 +1245,225 @@ def get_daily_balance_since_baseline(
         })
 
     return pd.DataFrame(out, columns=_DAILY_BALANCE_COLUMNS)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Paper Trading — today's opened cohort + per-position price charts
+# (paper-tab-overhaul). Read-only against the engine DuckDB (ADR-020).
+#
+# Cohort = positions whose entry_date is "today" (UTC) that reached the
+# market (entry_filled or beyond — i.e. any state EXCEPT failed/cancelled/
+# candidate). Open positions first, then closed ones newest-exit-first.
+# failed/cancelled stay out (they have no fills and no snapshots; the tab
+# lists them separately under "Rejected entries").
+# ──────────────────────────────────────────────────────────────────────
+
+# States in the cohort: reached entry_filled or beyond. entry_pending is the
+# brief pre-fill state; include it so a just-opened position isn't missed.
+_PAPER_COHORT_STATES = (
+    "entry_pending", "entry_filled", "trailing_active", "exit_pending", "exit_filled",
+)
+
+_COHORT_COLUMNS = [
+    "id", "symbol", "current_state", "is_open", "entry_ts", "exit_ts",
+    "entry_price", "qty", "peak_price", "exit_price",
+    "opened_usd", "pnl_usd", "pnl_pct",
+]
+
+
+def _latest_prices_for(engine_conn, position_ids: list) -> dict:
+    """Map position_id → most-recent snapshot price for the given ids.
+
+    Returns an empty dict for an empty id list. Positions without any
+    snapshot simply don't appear in the result.
+    """
+    if not position_ids:
+        return {}
+    placeholders = ",".join("?" for _ in position_ids)
+    rows = engine_conn.execute(
+        f"""
+        SELECT ps.position_id, ps.price
+        FROM price_snapshots ps
+        WHERE (ps.position_id, ps.timestamp) IN (
+            SELECT position_id, MAX(timestamp)
+            FROM price_snapshots
+            WHERE position_id IN ({placeholders})
+            GROUP BY position_id
+        )
+        """,
+        list(position_ids),
+    ).fetchall()
+    return {pid: price for pid, price in rows}
+
+
+def get_paper_today_cohort(
+    engine_conn: duckdb.DuckDBPyConnection, *, today: date | None = None
+) -> pd.DataFrame:
+    """Today's opened cohort for the Paper Trading positions table.
+
+    One row per position with ``entry_date == today`` that reached the market
+    (``failed`` / ``cancelled`` excluded). Ordering: open positions first,
+    then closed ones by exit time descending.
+
+    Dollar columns (all gross — FUNDING-001):
+      * ``opened_usd`` = ``entry_price * qty`` (per-position deployed dollars;
+        the engine has no stored notional column, and entry_price*qty matches
+        the engine's sizing — every cohort row deploys ~equity*0.8/N).
+      * Closed: ``pnl_usd`` = ``realized_pnl_usd``; ``exit_price`` from the
+        column; ``pnl_pct`` = ``pnl_usd / opened_usd * 100``.
+      * Open: ``pnl_usd`` = ``(latest_snapshot_price - entry_price) * qty``
+        (UNREALIZED, live mark); ``exit_price`` is NaN; ``pnl_pct`` likewise.
+        An open position with no snapshot yet gets NaN pnl (never a fake 0).
+    """
+    today = today or _utcnow_naive().date()
+    placeholders = ",".join("?" for _ in _PAPER_COHORT_STATES)
+    rows = engine_conn.execute(
+        f"""
+        SELECT id, symbol, current_state, entry_price, qty, peak_price,
+               exit_price, realized_pnl_usd, created_at,
+               COALESCE(closed_at, updated_at) AS exit_ts
+        FROM positions
+        WHERE entry_date = ?
+          AND current_state IN ({placeholders})
+        """,
+        [today, *_PAPER_COHORT_STATES],
+    ).fetchall()
+
+    open_ids = [r[0] for r in rows if r[2] != "exit_filled"]
+    latest = _latest_prices_for(engine_conn, open_ids)
+
+    out = []
+    for (pid, symbol, state, entry_price, qty, peak_price, exit_price,
+         realized_pnl_usd, created_at, exit_ts) in rows:
+        is_open = state != "exit_filled"
+        opened_usd = (
+            entry_price * qty
+            if entry_price is not None and qty is not None
+            else float("nan")
+        )
+        if is_open:
+            mark = latest.get(pid)
+            if mark is not None and entry_price is not None and qty is not None:
+                pnl_usd = (mark - entry_price) * qty
+            else:
+                pnl_usd = float("nan")
+            exit_price_out = float("nan")
+        else:
+            pnl_usd = (
+                float(realized_pnl_usd) if realized_pnl_usd is not None else float("nan")
+            )
+            exit_price_out = (
+                float(exit_price) if exit_price is not None else float("nan")
+            )
+        pnl_pct = (
+            pnl_usd / opened_usd * 100.0
+            if opened_usd and not np.isnan(opened_usd) and not np.isnan(pnl_usd)
+            else float("nan")
+        )
+        out.append({
+            "id": pid,
+            "symbol": symbol,
+            "current_state": state,
+            "is_open": is_open,
+            "entry_ts": created_at,
+            "exit_ts": None if is_open else exit_ts,
+            "entry_price": entry_price if entry_price is not None else float("nan"),
+            "qty": qty if qty is not None else float("nan"),
+            "peak_price": peak_price if peak_price is not None else float("nan"),
+            "exit_price": exit_price_out,
+            "opened_usd": opened_usd,
+            "pnl_usd": pnl_usd,
+            "pnl_pct": pnl_pct,
+        })
+
+    df = pd.DataFrame(out, columns=_COHORT_COLUMNS)
+    if df.empty:
+        return df
+    # Open first, then closed by exit time descending. Stable sort keeps a
+    # deterministic order within each group.
+    df = df.sort_values(
+        by=["is_open", "exit_ts"], ascending=[False, False], kind="stable",
+        na_position="last",
+    ).reset_index(drop=True)
+    return df
+
+
+def get_paper_position_snapshots(
+    engine_conn: duckdb.DuckDBPyConnection, position_id, *, max_points: int = 400
+) -> pd.DataFrame:
+    """Per-position price series (``timestamp``, ``price``), ordered ascending.
+
+    Downsampled to at most ``max_points`` rows for mobile rendering while
+    preserving the first/last points AND the global min and max prices, so the
+    peak / activation-touch geometry stays faithful (the largest live series is
+    ~14.8k points). Returns an empty 2-column frame when the position has no
+    snapshots (failed/cancelled positions never get any).
+    """
+    rows = engine_conn.execute(
+        "SELECT timestamp, price FROM price_snapshots "
+        "WHERE position_id = ? ORDER BY timestamp",
+        [position_id],
+    ).fetchall()
+    df = pd.DataFrame(rows, columns=["timestamp", "price"])
+    if df.empty or len(df) <= max_points:
+        return df
+
+    n = len(df)
+    # Evenly spaced indices over a budget of max_points-4, then force-include
+    # endpoints + global min/max so the rendered curve never clips the peak or
+    # the trough. Reserving the 4 slots keeps the result <= max_points.
+    budget = max(2, max_points - 4)
+    idx = set(np.linspace(0, n - 1, budget).round().astype(int).tolist())
+    idx.add(0)
+    idx.add(n - 1)
+    idx.add(int(df["price"].idxmin()))
+    idx.add(int(df["price"].idxmax()))
+    keep = sorted(idx)
+    return df.iloc[keep].reset_index(drop=True)
+
+
+def position_is_armed(*, entry_price, peak_price, activation_pct: float) -> bool:
+    """True once the trailing stop has armed: the running peak has cleared the
+    activation threshold ``entry_price * (1 + activation_pct)``. Matches the
+    engine SPEC §3.2 activation rule. False when prices are missing."""
+    if entry_price is None or peak_price is None:
+        return False
+    try:
+        if np.isnan(entry_price) or np.isnan(peak_price):
+            return False
+    except TypeError:
+        return False
+    return peak_price >= entry_price * (1.0 + activation_pct)
+
+
+def build_position_chart_frame(
+    snapshots: pd.DataFrame, *, entry_price, peak_price,
+    trail_pct: float, activation_pct: float,
+) -> pd.DataFrame:
+    """Per-position chart geometry: ``timestamp, price, entry, exit_ref``.
+
+    * ``entry`` — flat line at ``entry_price``.
+    * ``exit_ref`` — the red reference line, state-dependent:
+        - NOT yet armed (``peak_price < entry*(1+activation_pct)``):
+          the flat ACTIVATION line ``entry*(1+activation_pct)``.
+        - armed: the stepwise TRAIL-STOP line, per snapshot
+          ``running_peak(t) - (running_peak(t) - entry) * trail_pct`` where
+          ``running_peak(t) = cummax(price)`` over snapshots ordered by time.
+          (Engine SPEC §3.2.)
+
+    Returns an empty 4-column frame when ``snapshots`` is empty.
+    """
+    cols = ["timestamp", "price", "entry", "exit_ref"]
+    if snapshots is None or snapshots.empty:
+        return pd.DataFrame(columns=cols)
+
+    df = snapshots.copy().reset_index(drop=True)
+    df["entry"] = entry_price
+    if position_is_armed(
+        entry_price=entry_price, peak_price=peak_price, activation_pct=activation_pct
+    ):
+        running_peak = df["price"].cummax()
+        df["exit_ref"] = running_peak - (running_peak - entry_price) * trail_pct
+    else:
+        df["exit_ref"] = entry_price * (1.0 + activation_pct)
+    return df[cols]
