@@ -475,6 +475,27 @@ def test_positions_failed_falls_back_to_symbol_when_no_code():
     assert "WIFUSDT (" not in r.detail  # no code parenthetical
 
 
+def test_positions_failed_falls_back_when_events_table_absent():
+    """Symbol-only fallback when the engine events table does not exist at all.
+
+    The LATERAL events lookup raises (table missing); _failed_entries_today
+    must swallow it and degrade to a positions-only query rather than blow up
+    the whole step. Distinct from the per-row no-event case above.
+    """
+    eng = duckdb.connect(":memory:")
+    eng.execute(
+        "CREATE TABLE positions (id VARCHAR, symbol VARCHAR, entry_date DATE, "
+        "entry_price DOUBLE, qty DOUBLE, current_state VARCHAR)"
+    )  # note: no events table
+    _add_position(eng, "p0", "S1USDT", TODAY, "entry_filled")
+    _add_position(eng, "pf", "DOGSUSDT", TODAY, "failed")
+    r = C.check_engine_positions(eng, NOW, spec_path=None)
+    assert r.status is Status.GREEN
+    assert "1 opened, 1 failed today" in r.detail
+    assert "DOGSUSDT" in r.detail
+    assert "DOGSUSDT (" not in r.detail  # no code parenthetical
+
+
 def test_positions_all_opened_no_failures_message():
     """The all-opened path keeps the original singular-count message."""
     eng = _new_engine_db()
