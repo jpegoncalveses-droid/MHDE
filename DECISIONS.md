@@ -952,6 +952,11 @@ remote DB, this monitor's `_open_engine_db()` is the single point that
 changes. The dashboard's Gap 3 paper-trading tab is expected to take
 the same read-only-DuckDB approach under this ADR.
 
+**Addendum (2026-05-31).** The dashboard Paper-Trading tab now reads
+`orders`, `funding_log`, and `engine_runs` read-only (in addition to
+`positions` / `price_snapshots`) for the today's-cohort Funding /
+Commission / Net PnL columns; same constraints apply.
+
 ---
 
 ## ADR-021 — Post-parabolic exclusion filter at the prediction-export step
