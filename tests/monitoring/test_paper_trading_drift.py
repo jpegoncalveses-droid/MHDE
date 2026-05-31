@@ -439,6 +439,24 @@ def test_run_degrades_gracefully_when_engine_open_fails(temp_db, monkeypatch):
     assert temp_db.execute("SELECT 1").fetchone()[0] == 1
 
 
+def test_run_closes_internally_opened_mhde_conn_on_degraded_path(monkeypatch):
+    # Complement of the test above: when run() opened the mhde conn itself
+    # (mhde_conn=None) and the engine open then fails, the degraded short-
+    # circuit must still close that internally-owned mhde connection.
+    def _boom():
+        raise duckdb.IOException("IO Error: Could not set lock on file: held")
+
+    owned_mhde = _new_engine_db()  # any real duckdb conn; we only check it closes
+    monkeypatch.setattr(ptd, "_open_engine_db", _boom)
+    monkeypatch.setattr(ptd, "_open_mhde_db", lambda: owned_mhde)
+
+    res = ptd.run(engine_conn=None, mhde_conn=None, now=NOW)
+
+    assert res.status == "warn"
+    with pytest.raises(Exception):  # duckdb raises on use of a closed connection
+        owned_mhde.execute("SELECT 1")
+
+
 def test_main_returns_nonzero_on_problem(temp_db, monkeypatch):
     eng = _new_engine_db()  # nothing ran → critical
     monkeypatch.setattr(ptd, "_utcnow_naive", lambda: NOW)
