@@ -33,12 +33,14 @@ from dashboard.services.queries import (
     get_equity_predictions,
     get_equity_recent_outcomes,
     get_fx_recent_predictions,
-    get_paper_closed_trades,
+    build_position_chart_frame,
     get_paper_engine_runs_summary,
     get_pre_baseline_open_summary,
     get_paper_failed_entries,
-    get_paper_open_positions,
+    get_paper_position_snapshots,
+    get_paper_today_cohort,
     paper_baseline_date,
+    position_is_armed,
 )
 
 st.set_page_config(
@@ -63,6 +65,13 @@ def _open_conn():
         st.stop()
 
 
+def _open_engine_conn():
+    """Fresh read-only connection to the crypto-trading-engine DuckDB
+    (ADR-020). Acquired per render (KI-105) so the Paper Trading tab never
+    caches a stale handle or holds a write lock against the engine."""
+    return duckdb.connect(engine_db_path(), read_only=True)
+
+
 # --- System Health: Data Freshness (all engines) ---
 from pipelines.freshness import check_all as _check_all_freshness
 
@@ -84,8 +93,9 @@ with st.expander(
                 st.warning(report.message)
 conn.close()
 
-tab_equities, tab_crypto, tab_fx, tab_paper = st.tabs(
-    ["Equities", "Crypto", "FX", "Paper Trading"]
+# Paper Trading first so it is the default tab on open (paper-tab-overhaul).
+tab_paper, tab_equities, tab_crypto, tab_fx = st.tabs(
+    ["Paper Trading", "Equities", "Crypto", "FX"]
 )
 
 # ===============================================================================
@@ -1032,12 +1042,59 @@ def _paper_trail_params() -> tuple[float, float, bool]:
         return 0.30, 0.01, False
 
 
+def _paper_fmt_price(v) -> str:
+    """Compact price string; '—' for missing. Crypto prices span 0.007–0.5+,
+    so 6 significant figures keeps small-tick symbols readable."""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return "—"
+    return f"{v:.6g}"
+
+
+def _paper_fmt_usd(v) -> str:
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return "—"
+    return f"${v:,.2f}"
+
+
+def _paper_fmt_signed_usd(v, *, unrealized: bool) -> str:
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return "—"
+    return f"{v:+,.2f}" + ("*" if unrealized else "")
+
+
+def _paper_fmt_pct(v, *, unrealized: bool) -> str:
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return "—"
+    return f"{v:+.2f}%" + ("*" if unrealized else "")
+
+
+def _paper_position_chart(frame, *, armed: bool):
+    """Layered altair chart for one position: price (blue), entry (gray dashed),
+    and the red exit reference (stepwise trail-stop when armed, else the flat
+    activation line). Returns None when the frame is empty."""
+    import altair as alt
+
+    if frame.empty:
+        return None
+    base = alt.Chart(frame).encode(
+        x=alt.X("timestamp:T", title=None)
+    )
+    price = base.mark_line(color="#1f77b4").encode(
+        y=alt.Y("price:Q", title="price", scale=alt.Scale(zero=False))
+    )
+    entry = base.mark_line(color="#888888", strokeDash=[4, 3]).encode(y="entry:Q")
+    ref = base.mark_line(
+        color="#d62728", interpolate="step-after"
+    ).encode(y="exit_ref:Q")
+    return (price + entry + ref).properties(height=190)
+
+
 with tab_paper:
     st.title("Paper Trading")
     st.caption(
         f"Crypto-trading-engine state, read-only — `{engine_db_path()}` (ADR-020). "
-        "No live-mark / unrealised-P&L column: the engine doesn't populate "
-        "`price_snapshots` yet (PRICE-SNAPSHOTS-001)."
+        "Open-position P&L is an UNREALIZED live mark from the engine's "
+        "`price_snapshots` (written each monitor cycle, ~60 s fresh)."
     )
 
     # --- Drift-monitor status banner (cached 60s) ---
@@ -1050,7 +1107,7 @@ with tab_paper:
 
     # --- Engine connection (per render; read-only) ---
     try:
-        _engine_conn = duckdb.connect(engine_db_path(), read_only=True)
+        _engine_conn = _open_engine_conn()
     except Exception as _e:
         st.warning(
             f"Paper-trading engine database not available at `{engine_db_path()}` "
@@ -1088,8 +1145,8 @@ with tab_paper:
                         f"position(s) excluded "
                         f"(${_pre['pre_baseline_unrealized_pnl_usd']:+,.2f} "
                         f"unrealized, ${_pre['pre_baseline_cost_basis_usd']:,.2f} "
-                        f"cost basis locked). See **Open positions** below "
-                        f"for full wallet state."
+                        f"cost basis locked). See **Today's positions** below "
+                        f"for the current cohort."
                     )
             st.caption(
                 "Source: crypto-trading-engine `daily_pnl` (ADR-020, read-only) "
@@ -1114,34 +1171,79 @@ with tab_paper:
 
             _trail_pct, _activation_pct, _from_spec = _paper_trail_params()
 
-            st.subheader("Open positions")
-            _open_df = get_paper_open_positions(
-                _engine_conn, trail_pct=_trail_pct, activation_pct=_activation_pct
-            )
-            if _open_df.empty:
-                st.info("No open positions.")
+            # ── Today's opened cohort: table + per-position price charts ──
+            _cohort = get_paper_today_cohort(_engine_conn)
+            _n = len(_cohort)
+            st.subheader(f"Today's positions ({_n})")
+            if _cohort.empty:
+                st.info(
+                    "No positions opened today yet — the entry phase runs at "
+                    "06:30 UTC. Failed/cancelled entries (if any) are listed "
+                    "under **Rejected entries** below."
+                )
             else:
-                st.dataframe(_open_df, use_container_width=True, hide_index=True)
-            st.caption(
-                f"`calc_stop` = peak − {_trail_pct:.0%}·(peak − entry), shown once the trailing "
-                f"stop activates (peak ≥ entry·{1 + _activation_pct:.2f})"
-                + ("" if _from_spec else " — active_spec.json missing, using Phase-1B-D defaults")
-                + "."
-            )
+                _disp = pd.DataFrame({
+                    "Symbol": _cohort["symbol"],
+                    "Entry": _cohort["entry_price"].map(_paper_fmt_price),
+                    "Exit": [
+                        "open" if o else _paper_fmt_price(x)
+                        for o, x in zip(_cohort["is_open"], _cohort["exit_price"])
+                    ],
+                    "Opened $": _cohort["opened_usd"].map(_paper_fmt_usd),
+                    "PnL $": [
+                        _paper_fmt_signed_usd(p, unrealized=o)
+                        for p, o in zip(_cohort["pnl_usd"], _cohort["is_open"])
+                    ],
+                    "PnL %": [
+                        _paper_fmt_pct(p, unrealized=o)
+                        for p, o in zip(_cohort["pnl_pct"], _cohort["is_open"])
+                    ],
+                })
+                st.dataframe(_disp, use_container_width=True, hide_index=True)
+                st.caption(
+                    "Open positions first, then closed by exit time (newest first). "
+                    "`Opened $` = entry price × qty (per-position deployed dollars). "
+                    "Closed `PnL $` = gross `realized_pnl_usd` (funding/fees not "
+                    "subtracted — FUNDING-001). `*` = unrealized live mark "
+                    "((latest snapshot − entry) × qty) for still-open positions."
+                    + ("" if _from_spec else
+                       " active_spec.json missing — charts use Phase-1B-D defaults.")
+                )
 
-            st.subheader("Recent closed positions")
-            _closed_df = get_paper_closed_trades(_engine_conn, limit=30)
-            if _closed_df.empty:
-                st.info("No closed positions yet.")
-            else:
-                st.dataframe(_closed_df, use_container_width=True, hide_index=True)
-            st.caption(
-                "`exit_price` = the engine-recorded SELL-fill weighted-average price; "
-                "`realized_pnl` = gross `(exit_price − entry_price)·qty` in USD (funding/fees "
-                "not subtracted — FUNDING-001). A cell reads 'uncomputable (KI-136)' only when "
-                "the engine never recorded an exit fill — pre-EXIT-PRICE-001 closes and reconcile "
-                "auto-closes of orphaned positions."
-            )
+                # Stacked charts, one per cohort row (dynamic N), same order.
+                for _, _row in _cohort.iterrows():
+                    _armed = position_is_armed(
+                        entry_price=_row["entry_price"],
+                        peak_price=_row["peak_price"],
+                        activation_pct=_activation_pct,
+                    )
+                    _snaps = get_paper_position_snapshots(
+                        _engine_conn, _row["id"], max_points=400
+                    )
+                    _frame = build_position_chart_frame(
+                        _snaps,
+                        entry_price=_row["entry_price"],
+                        peak_price=_row["peak_price"],
+                        trail_pct=_trail_pct,
+                        activation_pct=_activation_pct,
+                    )
+                    _state = "open" if _row["is_open"] else "closed"
+                    _ref = (
+                        f"trail-stop (peak − {_trail_pct:.0%}·(peak − entry))"
+                        if _armed
+                        else f"activation (entry × {1 + _activation_pct:.2f})"
+                    )
+                    st.markdown(f"**{_row['symbol']}** — {_state}")
+                    _chart = _paper_position_chart(_frame, armed=_armed)
+                    if _chart is None:
+                        st.caption("No price snapshots recorded for this position.")
+                    else:
+                        st.altair_chart(_chart, use_container_width=True)
+                        st.caption(
+                            f"Blue = price · gray dashed = entry · red = {_ref}. "
+                            "Series downsampled to ≤400 points (global min/max "
+                            "preserved)."
+                        )
 
             with st.expander("Rejected entries", expanded=False):
                 _failed_df = get_paper_failed_entries(_engine_conn, limit=20)

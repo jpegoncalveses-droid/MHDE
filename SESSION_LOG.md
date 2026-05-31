@@ -6,6 +6,58 @@ are at the top.
 
 ---
 
+## 2026-05-31 — Paper Trading tab rebuild + auth survives refresh
+
+**Branch:** `feat/paper-trading-tab-overhaul` (off `master`, draft PR;
+**awaiting operator approval — DO NOT merge** per the task workflow).
+
+**Goal.** (1) Keep the dashboard login across a browser hard-refresh and a
+mobile-PWA force-close/reopen. (2) Rebuild the Paper Trading positions view
+into today's-cohort table + per-position price charts, and make Paper Trading
+the default (first) tab.
+
+**Commit 1 — auth survives refresh (`dashboard/auth.py`).** On successful login
+set a signed, expiring cookie (`mhde_auth`); on load skip the prompt when a
+valid unexpired cookie is present. HMAC-SHA256 over `subject|expiry` keyed by
+`MHDE_DASHBOARD_COOKIE_SECRET`; the password/hash is never in the cookie.
+Validated server-side every load. **Fail closed:** secret unset → cookie path
+inert, prompt every refresh (unchanged behaviour); never fails open, never
+crashes on a malformed cookie. TTL via `MHDE_DASHBOARD_COOKIE_TTL_HOURS`
+(default 7 d). Cookie read via `st.context.cookies`, written via a
+`components.html` srcdoc iframe (so it can't be HttpOnly — bounded-TTL signed
+token, no credential, documented tradeoff). 17 unit tests on the pure
+mint/verify + decision helpers.
+
+**Commits 2+ — positions view (`dashboard/services/queries.py`, `app.py`).**
+New read-only helpers: `get_paper_today_cohort` (entry_date=today, reached
+`entry_filled`+, excludes failed/cancelled; open-first then closed by exit
+desc; `Opened $`=entry×qty, closed PnL from `realized_pnl_usd`, open PnL =
+unrealized mark from latest `price_snapshot`), `get_paper_position_snapshots`
+(downsample ≤400 pts preserving global min/max), `build_position_chart_frame` +
+`position_is_armed` (entry line + activation-or-stepwise-trail exit ref, SPEC
+§3.2; `activation_pct`/`trail_pct` read from `active_spec.json`). App: Paper
+Trading is now the **first** tab; **Today's positions** table + one altair
+chart per cohort row replace the old open/closed tables. Existing `get_paper_*`
+helpers kept (smoke + monitors). Engine connect moved into `_open_engine_conn()`
+(fixes the pre-existing KI-105 module-level-connection regression-test failure
+in `app.py`).
+
+**Verification.** `make test` green; dashboard-query smoke green incl. the new
+helpers against the live engine DB (cohort=5: RAVE open + 4 closed today,
+DOGS failed excluded); live spot-check — RAVE (open, not armed) shows the
+activation line, the closed armed positions show the trail line,
+`cummax(snapshots) ≈ peak_price`.
+
+**Operator step (PR inert until done).** Add `MHDE_DASHBOARD_COOKIE_SECRET`
+(strong random) to `mhde-streamlit.service` `Environment=`, `daemon-reload`,
+restart. Streamlit doesn't auto-reload — after merge+pull
+`systemctl --user restart mhde-streamlit` (KI-132).
+
+**Pending.** Draft PR → read-only merge-reviewer (auth flagged for security)
+→ mark ready → operator approves/merges.
+
+---
+
 ## 2026-05-27 — STATE.md on-demand snapshot tooling
 
 **Branch:** `chore/state-md-snapshot-tooling` (off `master`, pushed; awaiting operator merge).
