@@ -1068,6 +1068,22 @@ def _paper_fmt_pct(v, *, unrealized: bool) -> str:
     return f"{v:+.2f}%" + ("*" if unrealized else "")
 
 
+def _paper_fmt_net(v, *, pending: bool, kind: str, unrealized: bool = False) -> str:
+    """Render a net-column cell. ``pending`` (no reconcile since the last fill)
+    wins over any value; a NULL value once reconciled shows "—", never 0.
+    ``kind``: ``signed`` (+/-), ``pct`` (+/-%), or ``usd`` (cost, $)."""
+    if pending:
+        return "pending"
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return "—"
+    star = "*" if unrealized else ""
+    if kind == "pct":
+        return f"{v:+.2f}%" + star
+    if kind == "signed":
+        return f"{v:+,.2f}" + star
+    return f"${v:,.2f}"
+
+
 def _paper_position_chart(frame, *, armed: bool):
     """Layered altair chart for one position: price (blue), entry (gray dashed),
     and the red exit reference (stepwise trail-stop when armed, else the flat
@@ -1198,6 +1214,34 @@ with tab_paper:
                         _paper_fmt_pct(p, unrealized=o)
                         for p, o in zip(_cohort["pnl_pct"], _cohort["is_open"])
                     ],
+                    "Funding": [
+                        _paper_fmt_net(f, pending=bool(pend), kind="signed")
+                        for f, pend in zip(
+                            _cohort["funding_usd"], _cohort["net_pending"]
+                        )
+                    ],
+                    "Commission": [
+                        _paper_fmt_net(c, pending=bool(pend), kind="usd")
+                        for c, pend in zip(
+                            _cohort["commission_usd"], _cohort["net_pending"]
+                        )
+                    ],
+                    "Net PnL": [
+                        _paper_fmt_net(n, pending=bool(pend), kind="signed",
+                                       unrealized=o)
+                        for n, pend, o in zip(
+                            _cohort["net_pnl_usd"], _cohort["net_pending"],
+                            _cohort["is_open"],
+                        )
+                    ],
+                    "%Net PnL": [
+                        _paper_fmt_net(n, pending=bool(pend), kind="pct",
+                                       unrealized=o)
+                        for n, pend, o in zip(
+                            _cohort["net_pnl_pct"], _cohort["net_pending"],
+                            _cohort["is_open"],
+                        )
+                    ],
                 })
                 st.dataframe(_disp, use_container_width=True, hide_index=True)
                 st.caption(
@@ -1205,7 +1249,12 @@ with tab_paper:
                     "`Opened $` = entry price × qty (per-position deployed dollars). "
                     "Closed `PnL $` = gross `realized_pnl_usd` (funding/fees not "
                     "subtracted — FUNDING-001). `*` = unrealized live mark "
-                    "((latest snapshot − entry) × qty) for still-open positions."
+                    "((latest snapshot − entry) × qty) for still-open positions. "
+                    "`Net PnL` = gross + funding − commission (ADR-002); funding/"
+                    "commission are backfilled by the nightly 23:00 UTC reconcile, "
+                    "so today's fresh fills read **pending** until then. Per-position "
+                    "net is best-effort (FUNDING-002 attribution gaps) — the "
+                    "authoritative daily net is `daily_pnl.net_pnl_usd`."
                     + ("" if _from_spec else
                        " active_spec.json missing — charts use Phase-1B-D defaults.")
                 )

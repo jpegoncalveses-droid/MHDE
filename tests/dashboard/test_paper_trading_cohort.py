@@ -27,6 +27,11 @@ from dashboard.services import queries as q
 
 TODAY = date(2026, 5, 31)
 NOON = datetime(2026, 5, 31, 12, 0, 0)
+# Net-column gate reference points: a reconcile completion, a fill that
+# predates it (reconciled), and a fill that postdates it (pending).
+LAST_RECON = datetime(2026, 5, 31, 10, 0, 0)
+FILL_BEFORE = datetime(2026, 5, 31, 9, 0, 0)
+FILL_AFTER = datetime(2026, 5, 31, 11, 0, 0)
 
 
 def _engine_db() -> duckdb.DuckDBPyConnection:
@@ -44,7 +49,53 @@ def _engine_db() -> duckdb.DuckDBPyConnection:
             timestamp   TIMESTAMP NOT NULL,
             price       DOUBLE NOT NULL
         )""")
+    # Net-column sources (mirror the live engine schema, minimal columns).
+    conn.execute("""
+        CREATE TABLE orders (
+            position_id    VARCHAR,
+            side           VARCHAR,
+            status         VARCHAR,
+            commission_usd DOUBLE,
+            placed_at      TIMESTAMP,
+            filled_at      TIMESTAMP
+        )""")
+    conn.execute("""
+        CREATE TABLE funding_log (
+            position_id VARCHAR,
+            amount_usd  DOUBLE,
+            ts          TIMESTAMP
+        )""")
+    conn.execute("""
+        CREATE TABLE engine_runs (
+            phase        VARCHAR,
+            completed_at TIMESTAMP,
+            success      BOOLEAN
+        )""")
     return conn
+
+
+def _order(conn, position_id, *, side="BUY", status="FILLED",
+           commission_usd=None, placed_at=NOON, filled_at=None):
+    conn.execute(
+        "INSERT INTO orders (position_id, side, status, commission_usd, "
+        "placed_at, filled_at) VALUES (?,?,?,?,?,?)",
+        [position_id, side, status, commission_usd, placed_at,
+         filled_at if filled_at is not None else placed_at],
+    )
+
+
+def _funding(conn, position_id, amount_usd, ts=NOON):
+    conn.execute(
+        "INSERT INTO funding_log (position_id, amount_usd, ts) VALUES (?,?,?)",
+        [position_id, amount_usd, ts],
+    )
+
+
+def _reconcile_run(conn, completed_at, *, success=True, phase="reconcile"):
+    conn.execute(
+        "INSERT INTO engine_runs (phase, completed_at, success) VALUES (?,?,?)",
+        [phase, completed_at, success],
+    )
 
 
 def _pos(conn, id, symbol, state, *, entry_date=TODAY, entry_price=None, qty=None,
@@ -174,8 +225,103 @@ def test_cohort_empty_returns_empty_frame_with_columns():
     df = q.get_paper_today_cohort(e, today=TODAY)
     assert df.empty
     for col in ("id", "symbol", "is_open", "entry_price", "exit_price",
-                "opened_usd", "pnl_usd", "pnl_pct"):
+                "opened_usd", "pnl_usd", "pnl_pct",
+                "funding_usd", "commission_usd", "net_pnl_usd", "net_pnl_pct",
+                "net_pending"):
         assert col in df.columns
+
+
+# ── get_paper_today_cohort: net columns (funding / commission / net) ──
+# ADR-002: net = realized + funding - commission. Gate on reconciled-since-
+# last-fill so today's fresh fills (no reconcile yet) read "pending", not 0.
+
+def test_cohort_net_pending_when_fill_after_last_reconcile():
+    e = _engine_db()
+    _pos(e, "p", "PUSDT", "exit_filled", entry_price=1.0, qty=100.0, peak_price=1.1,
+         exit_price=1.05, realized_pnl_usd=5.0, closed_at=FILL_AFTER)
+    _order(e, "p", side="BUY", commission_usd=0.40, filled_at=FILL_AFTER)
+    _reconcile_run(e, LAST_RECON)  # reconcile predates the fill → pending
+    row = q.get_paper_today_cohort(e, today=TODAY).iloc[0]
+    assert bool(row["net_pending"]) is True
+    assert np.isnan(row["funding_usd"])
+    assert np.isnan(row["commission_usd"])
+    assert np.isnan(row["net_pnl_usd"])
+    assert np.isnan(row["net_pnl_pct"])
+
+
+def test_cohort_net_values_when_reconciled_since_fill():
+    e = _engine_db()
+    _pos(e, "p", "PUSDT", "exit_filled", entry_price=1.0, qty=100.0, peak_price=1.1,
+         exit_price=1.05, realized_pnl_usd=5.0, closed_at=FILL_BEFORE)
+    # entry + exit commissions across two orders, both before the reconcile
+    _order(e, "p", side="BUY", commission_usd=0.30,
+           filled_at=FILL_BEFORE - timedelta(hours=1))
+    _order(e, "p", side="SELL", commission_usd=0.20, filled_at=FILL_BEFORE)
+    _funding(e, "p", -0.10)
+    _reconcile_run(e, LAST_RECON)
+    row = q.get_paper_today_cohort(e, today=TODAY).iloc[0]
+    assert bool(row["net_pending"]) is False
+    assert row["funding_usd"] == pytest.approx(-0.10)
+    assert row["commission_usd"] == pytest.approx(0.50)
+    # net = gross 5.0 + funding(-0.10) - commission(0.50) = 4.40
+    assert row["net_pnl_usd"] == pytest.approx(4.40)
+    assert row["net_pnl_pct"] == pytest.approx(4.40 / (1.0 * 100.0) * 100.0)
+
+
+def test_cohort_funding_real_zero_when_reconciled():
+    # No funding rows + reconciled → funding is a real 0, not pending, not NaN.
+    e = _engine_db()
+    _pos(e, "p", "PUSDT", "exit_filled", entry_price=1.0, qty=100.0, peak_price=1.1,
+         exit_price=1.05, realized_pnl_usd=5.0, closed_at=FILL_BEFORE)
+    _order(e, "p", side="BUY", commission_usd=0.40, filled_at=FILL_BEFORE)
+    _reconcile_run(e, LAST_RECON)
+    row = q.get_paper_today_cohort(e, today=TODAY).iloc[0]
+    assert bool(row["net_pending"]) is False
+    assert not np.isnan(row["funding_usd"])
+    assert row["funding_usd"] == 0.0
+    assert row["commission_usd"] == pytest.approx(0.40)
+    assert row["net_pnl_usd"] == pytest.approx(5.0 - 0.40)
+
+
+def test_cohort_null_commission_not_rendered_zero_when_reconciled():
+    # Reconciled-since-fill but commission still NULL → NaN (missing), never 0.
+    e = _engine_db()
+    _pos(e, "p", "PUSDT", "exit_filled", entry_price=1.0, qty=100.0, peak_price=1.1,
+         exit_price=1.05, realized_pnl_usd=5.0, closed_at=FILL_BEFORE)
+    _order(e, "p", side="BUY", commission_usd=None, filled_at=FILL_BEFORE)
+    _funding(e, "p", 0.10)
+    _reconcile_run(e, LAST_RECON)
+    row = q.get_paper_today_cohort(e, today=TODAY).iloc[0]
+    assert bool(row["net_pending"]) is False
+    assert np.isnan(row["commission_usd"])   # NULL → NaN, not 0
+    assert np.isnan(row["net_pnl_usd"])       # net unknown without commission
+    assert np.isnan(row["net_pnl_pct"])
+    assert row["funding_usd"] == pytest.approx(0.10)
+
+
+def test_cohort_net_pending_when_no_successful_reconcile():
+    # Only a FAILED reconcile exists → nothing trustworthy → pending.
+    e = _engine_db()
+    _pos(e, "p", "PUSDT", "exit_filled", entry_price=1.0, qty=100.0, peak_price=1.1,
+         exit_price=1.05, realized_pnl_usd=5.0, closed_at=FILL_BEFORE)
+    _order(e, "p", side="BUY", commission_usd=0.40, filled_at=FILL_BEFORE)
+    _reconcile_run(e, LAST_RECON, success=False)
+    row = q.get_paper_today_cohort(e, today=TODAY).iloc[0]
+    assert bool(row["net_pending"]) is True
+    assert np.isnan(row["commission_usd"])
+
+
+def test_cohort_open_position_net_uses_unrealized_when_reconciled():
+    e = _engine_db()
+    _pos(e, "o", "OUSDT", "entry_filled", entry_price=1.0, qty=100.0, peak_price=1.0)
+    _snap(e, "o", 1.02, NOON)  # unrealized = (1.02 - 1.0) * 100 = 2.0
+    _order(e, "o", side="BUY", commission_usd=0.20, filled_at=FILL_BEFORE)
+    _funding(e, "o", 0.05)
+    _reconcile_run(e, LAST_RECON)
+    row = q.get_paper_today_cohort(e, today=TODAY).iloc[0]
+    assert bool(row["net_pending"]) is False
+    # net = unrealized 2.0 + funding 0.05 - commission 0.20 = 1.85
+    assert row["net_pnl_usd"] == pytest.approx(1.85)
 
 
 # ── get_paper_position_snapshots: downsampling ───────────────────────

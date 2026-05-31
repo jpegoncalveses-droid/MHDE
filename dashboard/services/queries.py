@@ -1268,6 +1268,8 @@ _COHORT_COLUMNS = [
     "id", "symbol", "current_state", "is_open", "entry_ts", "exit_ts",
     "entry_price", "qty", "peak_price", "exit_price",
     "opened_usd", "pnl_usd", "pnl_pct",
+    "funding_usd", "commission_usd", "net_pnl_usd", "net_pnl_pct",
+    "net_pending",
 ]
 
 
@@ -1296,6 +1298,68 @@ def _latest_prices_for(engine_conn, position_ids: list) -> dict:
     return {pid: price for pid, price in rows}
 
 
+def _last_reconcile_completed_at(engine_conn) -> datetime | None:
+    """Completion time of the most recent SUCCESSFUL reconcile run, or None.
+
+    The nightly reconcile (``engine_runs`` phase ``reconcile``) is what
+    backfills ``orders.commission_usd`` and pulls ``funding_log`` for the day's
+    fills (ADR-002). A position whose latest fill postdates this hasn't been
+    reconciled yet, so its funding/commission/net read "pending" instead of a
+    misleading 0.
+    """
+    row = engine_conn.execute(
+        "SELECT MAX(completed_at) FROM engine_runs "
+        "WHERE phase = 'reconcile' AND success"
+    ).fetchone()
+    return row[0] if row and row[0] is not None else None
+
+
+def _net_components_for(engine_conn, position_ids: list) -> dict:
+    """Map position_id → ``(commission_sum, funding_sum, latest_activity_ts)``.
+
+    * ``commission_sum``: ``SUM(orders.commission_usd)`` — None when every
+      contributing order has NULL commission (genuinely missing; the caller
+      never coerces this to 0).
+    * ``funding_sum``: signed ``SUM(funding_log.amount_usd)`` — None when the
+      position has no funding rows (the caller renders a real 0 once
+      reconciled; funding can legitimately be 0, +, or -).
+    * ``latest_activity_ts``: ``MAX(COALESCE(filled_at, placed_at))`` over the
+      position's orders — the fill-recency anchor for the reconcile gate,
+      mirroring the engine's own commission gap-fill anchor.
+    """
+    if not position_ids:
+        return {}
+    ph = ",".join("?" for _ in position_ids)
+    comm_rows = engine_conn.execute(
+        f"""
+        SELECT position_id, SUM(commission_usd),
+               MAX(COALESCE(filled_at, placed_at))
+        FROM orders
+        WHERE position_id IN ({ph})
+        GROUP BY position_id
+        """,
+        list(position_ids),
+    ).fetchall()
+    fund_rows = engine_conn.execute(
+        f"""
+        SELECT position_id, SUM(amount_usd)
+        FROM funding_log
+        WHERE position_id IN ({ph})
+        GROUP BY position_id
+        """,
+        list(position_ids),
+    ).fetchall()
+    funding_by_id = {pid: s for pid, s in fund_rows}
+    out: dict = {}
+    for pid, comm_sum, last_act in comm_rows:
+        out[pid] = (comm_sum, funding_by_id.get(pid), last_act)
+    # Funding present but no orders (not expected for a cohort member that
+    # reached the market, but keep funding visible if it ever happens).
+    for pid, s in funding_by_id.items():
+        out.setdefault(pid, (None, s, None))
+    return out
+
+
 def get_paper_today_cohort(
     engine_conn: duckdb.DuckDBPyConnection, *, today: date | None = None
 ) -> pd.DataFrame:
@@ -1314,6 +1378,17 @@ def get_paper_today_cohort(
       * Open: ``pnl_usd`` = ``(latest_snapshot_price - entry_price) * qty``
         (UNREALIZED, live mark); ``exit_price`` is NaN; ``pnl_pct`` likewise.
         An open position with no snapshot yet gets NaN pnl (never a fake 0).
+
+    Net columns (``funding_usd``, ``commission_usd``, ``net_pnl_usd``,
+    ``net_pnl_pct``, ``net_pending``) follow ADR-002: net = gross + funding -
+    commission, with funding signed (FUNDING-002 best-effort attribution).
+    They are gated on ``net_pending`` — True until a successful reconcile has
+    completed at or after the position's latest fill, because commission/funding
+    are only backfilled by the nightly reconcile. While pending, all four
+    numeric net fields are NaN so the UI can render "pending" rather than a
+    misleading 0. Once reconciled, a missing funding row reads as a real 0 but a
+    NULL commission stays NaN (never shown as a free trade). Per-position net is
+    best-effort; the authoritative daily figure is ``daily_pnl.net_pnl_usd``.
     """
     today = today or _utcnow_naive().date()
     placeholders = ",".join("?" for _ in _PAPER_COHORT_STATES)
@@ -1331,6 +1406,11 @@ def get_paper_today_cohort(
 
     open_ids = [r[0] for r in rows if r[2] != "exit_filled"]
     latest = _latest_prices_for(engine_conn, open_ids)
+
+    # Net P&L inputs (ADR-002: net = gross + funding - commission), gated on
+    # whether the nightly reconcile has run since each position's last fill.
+    last_recon = _last_reconcile_completed_at(engine_conn)
+    net_parts = _net_components_for(engine_conn, [r[0] for r in rows])
 
     out = []
     for (pid, symbol, state, entry_price, qty, peak_price, exit_price,
@@ -1360,6 +1440,39 @@ def get_paper_today_cohort(
             if opened_usd and not np.isnan(opened_usd) and not np.isnan(pnl_usd)
             else float("nan")
         )
+
+        # Net columns. Gate: reconciled iff a successful reconcile completed at
+        # or after this position's latest fill. Until then every component is
+        # "pending" (NaN + net_pending=True) — today's fresh fills land here.
+        comm_sum, funding_sum, last_act = net_parts.get(pid, (None, None, None))
+        reconciled = last_recon is not None and (
+            last_act is None or last_act <= last_recon
+        )
+        if not reconciled:
+            funding_usd = float("nan")
+            commission_usd = float("nan")
+            net_pnl_usd = float("nan")
+            net_pnl_pct = float("nan")
+        else:
+            # Funding: real 0 when no rows (legit per FUNDING-002); signed.
+            funding_usd = float(funding_sum) if funding_sum is not None else 0.0
+            # Commission: NULL stays NaN — never rendered as a free trade.
+            commission_usd = (
+                float(comm_sum) if comm_sum is not None else float("nan")
+            )
+            net_pnl_usd = (
+                pnl_usd + funding_usd - commission_usd
+                if not np.isnan(pnl_usd) and not np.isnan(commission_usd)
+                else float("nan")
+            )
+            net_pnl_pct = (
+                net_pnl_usd / opened_usd * 100.0
+                if opened_usd
+                and not np.isnan(opened_usd)
+                and not np.isnan(net_pnl_usd)
+                else float("nan")
+            )
+
         out.append({
             "id": pid,
             "symbol": symbol,
@@ -1374,6 +1487,11 @@ def get_paper_today_cohort(
             "opened_usd": opened_usd,
             "pnl_usd": pnl_usd,
             "pnl_pct": pnl_pct,
+            "funding_usd": funding_usd,
+            "commission_usd": commission_usd,
+            "net_pnl_usd": net_pnl_usd,
+            "net_pnl_pct": net_pnl_pct,
+            "net_pending": not reconciled,
         })
 
     df = pd.DataFrame(out, columns=_COHORT_COLUMNS)
