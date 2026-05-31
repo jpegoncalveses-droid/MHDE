@@ -100,5 +100,5 @@ def test_engine_db_unreachable_is_red(temp_db, mocker):
     mocker.patch.object(CR.C, "open_engine_db", side_effect=RuntimeError("no such file"))
     res = CR.run_continuous(mhde_conn=temp_db, now=NOW)
     assert res.has_red
-    assert res.steps[1].status is Status.RED and "not reachable" in res.steps[1].detail
+    assert res.steps[1].status is Status.RED and "unreadable after retries" in res.steps[1].detail
     assert res.steps[2].status is Status.RED

@@ -29,13 +29,20 @@ from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Optional
 
+from monitoring.engine_db import (
+    DEFAULT_ENGINE_DB,
+    ENGINE_DB_ENV,
+    ENGINE_DB_UNREADABLE_MSG,
+    open_engine_db_readonly,
+)
 from monitoring.pipeline_monitor.core import Status, StepResult
 
 # ── default paths ─────────────────────────────────────────────────────
 DEFAULT_EXPORTS_DIR = Path("data/exports")
 DEFAULT_SPEC_PATH = Path("data/exports/active_spec.json")
-DEFAULT_ENGINE_DB = "/home/jpcg/crypto-trading-engine/data/trading_engine.duckdb"
-ENGINE_DB_ENV = "CRYPTO_ENGINE_DB_PATH"
+# DEFAULT_ENGINE_DB / ENGINE_DB_ENV are owned by monitoring.engine_db (the
+# single source of truth for engine-DB read-only opens) and re-exported above
+# for backward compatibility with callers that import them from here.
 
 # ── step display names (imported by the daily runner) ─────────────────
 OHLCV_INGESTION = "OHLCV ingestion (crypto_prices_daily)"
@@ -79,10 +86,14 @@ def _utc_date(now: datetime):
 
 
 def open_engine_db(path: Optional[str] = None):
-    """Open the crypto-trading-engine DuckDB read-only. Raises on failure."""
-    import duckdb
+    """Open the crypto-trading-engine DuckDB read-only (retry-aware). Raises on failure.
 
-    return duckdb.connect(path or os.environ.get(ENGINE_DB_ENV, DEFAULT_ENGINE_DB), read_only=True)
+    Thin wrapper over :func:`monitoring.engine_db.open_engine_db_readonly` —
+    kept for the callers that already import ``C.open_engine_db`` (continuous /
+    daily runners). All engine-DB read-only opens go through that one helper so
+    a transient engine write-lock no longer surfaces as a false RED.
+    """
+    return open_engine_db_readonly(path)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -277,7 +288,7 @@ def check_export_predictions(now: datetime, exports_dir: Optional[Path] = None) 
 # ──────────────────────────────────────────────────────────────────────
 def check_engine_ingest(engine_conn, now: datetime) -> StepResult:
     if engine_conn is None:
-        return StepResult(ENGINE_INGEST, Status.RED, "engine DuckDB not reachable")
+        return StepResult(ENGINE_INGEST, Status.RED, ENGINE_DB_UNREADABLE_MSG)
     today = _utc_date(now)
     midnight = datetime.combine(today, time.min)
     row = engine_conn.execute(
@@ -355,7 +366,7 @@ def _render_failures(failures: list[tuple[str, Optional[int]]]) -> str:
 
 def check_engine_positions(engine_conn, now: datetime, spec_path: Optional[Path] = None) -> StepResult:
     if engine_conn is None:
-        return StepResult(ENGINE_POSITIONS, Status.RED, "engine DuckDB not reachable")
+        return StepResult(ENGINE_POSITIONS, Status.RED, ENGINE_DB_UNREADABLE_MSG)
     today = _utc_date(now)
     opened_placeholders = ",".join("?" * len(_NEVER_OPENED_STATES))
     n_opened = engine_conn.execute(
