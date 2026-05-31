@@ -35,13 +35,18 @@ Schedule: every 15 minutes (``mhde-monitor-paper-trading-drift.timer``).
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 from monitoring.alert import MonitorResult, send_alert
+from monitoring.engine_db import (
+    DEFAULT_ENGINE_DB,
+    ENGINE_DB_ENV,
+    ENGINE_DB_UNREADABLE_MSG,
+    open_engine_db_readonly,
+)
 
 logger = logging.getLogger("mhde.monitoring.paper_trading_drift")
 
@@ -93,8 +98,8 @@ def _latest_baseline_date() -> Optional[date]:
     return max(parsed) if parsed else None
 
 # ── config ───────────────────────────────────────────────────────────
-DEFAULT_ENGINE_DB = "/home/jpcg/crypto-trading-engine/data/trading_engine.duckdb"
-ENGINE_DB_ENV = "CRYPTO_ENGINE_DB_PATH"
+# DEFAULT_ENGINE_DB / ENGINE_DB_ENV are imported from monitoring.engine_db
+# (single source of truth for engine-DB read-only opens).
 
 ROLLING_WINDOW_DAYS = 14
 MIN_CLOSED_FOR_HITRATE = 20
@@ -132,9 +137,8 @@ def _utcnow_naive() -> datetime:
 
 
 def _open_engine_db():
-    import duckdb
-    path = os.environ.get(ENGINE_DB_ENV, DEFAULT_ENGINE_DB)
-    return duckdb.connect(path, read_only=True)
+    """Open the engine DuckDB read-only (retry-aware). See monitoring.engine_db."""
+    return open_engine_db_readonly()
 
 
 def _open_mhde_db():
@@ -440,11 +444,33 @@ def run(engine_conn=None, mhde_conn=None, now: datetime | None = None) -> Monito
 
     close_eng = close_mhde = False
     if engine_conn is None:
-        engine_conn = _open_engine_db()
-        close_eng = True
+        try:
+            engine_conn = _open_engine_db()
+            close_eng = True
+        except Exception as exc:  # noqa: BLE001 — a failed open must not crash the unit
+            logger.warning("paper_trading_drift: engine DuckDB unavailable: %s", exc)
+            engine_conn = None
     if mhde_conn is None:
         mhde_conn = _open_mhde_db()
         close_mhde = True
+
+    # Every check needs the engine connection, so if the opener exhausted its
+    # retries we short-circuit with one honest finding rather than letting four
+    # checks each blow up on a None connection. This mirrors the graceful-
+    # degrade intent of the continuous/daily runners (which pass None to
+    # per-check RED guards); paper_trading_drift's checks have no such guards,
+    # so we degrade here at the orchestration level instead.
+    if engine_conn is None:
+        if close_mhde:
+            mhde_conn.close()
+        return MonitorResult(
+            monitor="paper_trading_drift",
+            status="warn", severity="warn",
+            title="paper-trading: engine DB unreadable",
+            body="- " + ENGINE_DB_UNREADABLE_MSG,
+            metrics={}, started_at=started,
+            finished_at=datetime.now(timezone.utc),
+        )
 
     metrics: dict[str, Any] = {}
     try:

@@ -6,6 +6,70 @@ are at the top.
 
 ---
 
+## 2026-05-31 — Monitor false-red fix: retry + graceful-degrade on engine-DB read-only open
+
+**Branch:** `fix/monitor-engine-db-readonly-retry` (off `master`, draft PR;
+**awaiting operator — DO NOT merge** per the task workflow).
+
+**Symptom.** The MHDE monitors intermittently fired false "engine DuckDB not
+reachable" reds (continuous + crypto-daily runners) and, separately,
+`paper_trading_drift` could crash its 15-min systemd unit outright — both while
+the crypto engine was perfectly healthy.
+
+**Root cause.** The monitors open the engine's DuckDB **read-only** (ADR-020)
+with no retry. The engine's per-minute `monitor` / daily `entry` phase briefly
+holds the write lock; a read-only open landing in that window raises
+`duckdb.IOException("... Could not set lock ...")`. The runners caught it →
+`engine_conn=None` → RED; `paper_trading_drift.run()` didn't guard the open at
+all → the exception propagated and failed the unit.
+
+**Step 0 (diagnostic, captured in the PR).** Reproduced both exceptions on a
+throwaway `/tmp` DuckDB (never touched the engine DB): lock collision is
+`duckdb.IOException` whose message contains `Could not set lock` (no "does not
+exist"); a missing DB is `duckdb.IOException` … `database does not exist`. So
+the retry predicate is: retry iff IOException and `"lock" in msg` and not
+`"does not exist"` — fail fast on a genuinely missing DB. (duckdb 1.5.2.)
+
+**Change.**
+- New `monitoring/engine_db.py` — single source of truth for engine-DB
+  read-only opens. `open_engine_db_readonly(path=None)` resolves
+  `CRYPTO_ENGINE_DB_PATH`, opens `read_only=True`, retries a lock conflict with
+  **sub-second** backoff `(0.1, 0.25, 0.5, 1.0)` ≈ 1.85 s total (deliberately
+  *not* `storage/db.py`'s 30/60/120 s, which targets MHDE's own nightly
+  writer), WARNs per retry, fails fast on missing DB. Owns
+  `DEFAULT_ENGINE_DB` / `ENGINE_DB_ENV` / `ENGINE_DB_UNREADABLE_MSG`.
+- `checks/crypto.open_engine_db` and `paper_trading_drift._open_engine_db` now
+  delegate to it; both modules import the constants from there (re-exported for
+  back-compat). `continuous_runner` reaches the engine only via
+  `C.open_engine_db()`, so it's covered automatically.
+- `paper_trading_drift.run()` wraps the open in try/except → `engine_conn=None`,
+  then short-circuits with one honest **warn** `MonitorResult` (the checks have
+  no per-check None-guards, so we degrade at the orchestration level).
+- Honest message: every `engine_conn is None` RED branch (continuous_runner ×3,
+  checks/crypto ×2) now reads `ENGINE_DB_UNREADABLE_MSG` ("engine DB unreadable
+  after retries (lock contention or engine down); timer state unknown") — still
+  RED, just no longer blaming the engine timers.
+
+**Call-graph note (spec correction).** The spec asked to remove "duplicate
+connect() at continuous_runner ~58 / daily_runner ~45". Verified those are
+`_open_mhde_db` (MHDE's *own* DB read-only), **not** engine opens — left
+untouched. The only two engine read-only open sites are
+`checks/crypto.open_engine_db` and `paper_trading_drift._open_engine_db`.
+(MHDE-side read-only opens colliding with MHDE's nightly writer are a separate,
+out-of-scope concern.)
+
+**Verification.** TDD throughout: `monitoring/engine_db.py` written test-first
+(5 tests: clean open / retry-then-succeed / persistent-lock-reraise /
+missing-DB-fail-fast / env-path); `paper_trading_drift` graceful-degrade test
+watched fail (un-guarded `run()` propagated the IOException) then pass.
+`pytest tests/monitoring` → **153 passed**. `make test-unit` / `make
+test-regression` pending in the runner.
+
+**Pending.** Draft PR → read-only merge-reviewer → mark ready → operator
+approves/merges.
+
+---
+
 ## 2026-05-31 — Paper Trading tab rebuild + auth survives refresh
 
 **Branch:** `feat/paper-trading-tab-overhaul` (off `master`, draft PR;

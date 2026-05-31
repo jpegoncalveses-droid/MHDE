@@ -420,6 +420,25 @@ def test_engine_db_path_from_env_var(temp_db, tmp_path, monkeypatch):
     assert res.severity == "critical"
 
 
+def test_run_degrades_gracefully_when_engine_open_fails(temp_db, monkeypatch):
+    # Opener exhausted its retries (engine down, or the write lock outlived the
+    # backoff budget): run() must NOT propagate — it returns one honest warn
+    # finding so the 15-min systemd unit degrades instead of crashing.
+    def _boom():
+        raise duckdb.IOException(
+            'IO Error: Could not set lock on file "x": Conflicting lock is held'
+        )
+
+    monkeypatch.setattr(ptd, "_open_engine_db", _boom)
+    res = ptd.run(engine_conn=None, mhde_conn=temp_db, now=NOW)
+
+    assert res.status == "warn"
+    assert res.severity == "warn"
+    assert "unreadable after retries" in res.body
+    # the caller-supplied mhde connection is left open (run didn't own it)
+    assert temp_db.execute("SELECT 1").fetchone()[0] == 1
+
+
 def test_main_returns_nonzero_on_problem(temp_db, monkeypatch):
     eng = _new_engine_db()  # nothing ran → critical
     monkeypatch.setattr(ptd, "_utcnow_naive", lambda: NOW)

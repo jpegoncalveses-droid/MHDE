@@ -24,6 +24,7 @@ from datetime import datetime, time, timezone
 from typing import Optional
 
 from monitoring import alert
+from monitoring.engine_db import ENGINE_DB_UNREADABLE_MSG
 from monitoring.pipeline_monitor.checks import crypto as C
 from monitoring.pipeline_monitor.checks import fx as F
 from monitoring.pipeline_monitor.core import (
@@ -70,7 +71,7 @@ def check_fx_freshness_step(mhde_conn, now: datetime) -> StepResult:
 
 def check_engine_monitor_timer(engine_conn, now: datetime) -> StepResult:
     if engine_conn is None:
-        return StepResult(CONT_ENGINE_MONITOR, Status.RED, "engine DuckDB not reachable")
+        return StepResult(CONT_ENGINE_MONITOR, Status.RED, ENGINE_DB_UNREADABLE_MSG)
     last = engine_conn.execute(
         "SELECT MAX(started_at) FROM engine_runs WHERE phase = 'monitor' AND success = TRUE"
     ).fetchone()[0]
@@ -87,7 +88,7 @@ def check_engine_monitor_timer(engine_conn, now: datetime) -> StepResult:
 
 def check_engine_entry_timer(engine_conn, now: datetime) -> StepResult:
     if engine_conn is None:
-        return StepResult(CONT_ENGINE_ENTRY, Status.RED, "engine DuckDB not reachable")
+        return StepResult(CONT_ENGINE_ENTRY, Status.RED, ENGINE_DB_UNREADABLE_MSG)
     nn = _naive(now)
     if nn.time() < ENGINE_ENTRY_CUTOFF_UTC:
         return StepResult(
@@ -109,7 +110,7 @@ def check_engine_entry_timer(engine_conn, now: datetime) -> StepResult:
 
 def check_engine_reconcile_timer(engine_conn, now: datetime) -> StepResult:
     if engine_conn is None:
-        return StepResult(CONT_ENGINE_RECONCILE, Status.RED, "engine DuckDB not reachable")
+        return StepResult(CONT_ENGINE_RECONCILE, Status.RED, ENGINE_DB_UNREADABLE_MSG)
     last = engine_conn.execute(
         "SELECT MAX(started_at) FROM engine_runs WHERE phase = 'reconcile' AND success = TRUE"
     ).fetchone()[0]
