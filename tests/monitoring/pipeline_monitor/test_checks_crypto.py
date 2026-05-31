@@ -121,6 +121,13 @@ def _add_position(eng, pid, symbol, entry_date, state="entry_filled"):
     )
 
 
+def _add_event(eng, position_id, event_type, payload, timestamp):
+    eng.execute(
+        "INSERT INTO events (id, timestamp, position_id, event_type, payload) VALUES (?,?,?,?,?)",
+        [f"e-{position_id}-{timestamp.isoformat()}", timestamp, position_id, event_type, payload],
+    )
+
+
 @pytest.fixture
 def seeded_db(temp_db):
     """temp_db with a fully-healthy crypto pipeline state at NOW."""
@@ -434,3 +441,67 @@ def test_positions_red_when_zero_and_no_spec(tmp_path):
 
 def test_positions_red_when_db_unreachable():
     assert C.check_engine_positions(None, NOW).status is Status.RED
+
+
+def test_positions_opened_count_excludes_failed_and_surfaces_code():
+    """6 rows entered today, 1 venue-rejected → '5 opened, 1 failed' with code.
+
+    Mirrors the 2026-05-31 DOGSUSDT -2019 reject that the old all-rows count
+    reported as a 6th open. exit_filled DID open and must still be counted.
+    """
+    eng = _new_engine_db()
+    for i, s in enumerate(("S1USDT", "S2USDT", "S3USDT", "S4USDT")):
+        _add_position(eng, f"p{i}", s, TODAY, "exit_filled")
+    _add_position(eng, "p4", "S5USDT", TODAY, "entry_filled")
+    _add_position(eng, "pf", "DOGSUSDT", TODAY, "failed")
+    _add_event(eng, "pf", "order_cancelled",
+               '{"reason": "binance_rejection", "code": -2019, "msg": "Margin is insufficient."}',
+               datetime(TODAY.year, TODAY.month, TODAY.day, 0, 45, 21))
+    r = C.check_engine_positions(eng, NOW, spec_path=None)
+    assert r.status is Status.GREEN
+    assert "5 opened, 1 failed today" in r.detail
+    assert "DOGSUSDT (-2019)" in r.detail
+
+
+def test_positions_failed_falls_back_to_symbol_when_no_code():
+    """A failed entry with no order_cancelled event renders symbol-only."""
+    eng = _new_engine_db()
+    _add_position(eng, "p0", "S1USDT", TODAY, "entry_filled")
+    _add_position(eng, "pf", "WIFUSDT", TODAY, "failed")  # no event row
+    r = C.check_engine_positions(eng, NOW, spec_path=None)
+    assert r.status is Status.GREEN
+    assert "1 opened, 1 failed today" in r.detail
+    assert "WIFUSDT" in r.detail
+    assert "WIFUSDT (" not in r.detail  # no code parenthetical
+
+
+def test_positions_failed_falls_back_when_events_table_absent():
+    """Symbol-only fallback when the engine events table does not exist at all.
+
+    The LATERAL events lookup raises (table missing); _failed_entries_today
+    must swallow it and degrade to a positions-only query rather than blow up
+    the whole step. Distinct from the per-row no-event case above.
+    """
+    eng = duckdb.connect(":memory:")
+    eng.execute(
+        "CREATE TABLE positions (id VARCHAR, symbol VARCHAR, entry_date DATE, "
+        "entry_price DOUBLE, qty DOUBLE, current_state VARCHAR)"
+    )  # note: no events table
+    _add_position(eng, "p0", "S1USDT", TODAY, "entry_filled")
+    _add_position(eng, "pf", "DOGSUSDT", TODAY, "failed")
+    r = C.check_engine_positions(eng, NOW, spec_path=None)
+    assert r.status is Status.GREEN
+    assert "1 opened, 1 failed today" in r.detail
+    assert "DOGSUSDT" in r.detail
+    assert "DOGSUSDT (" not in r.detail  # no code parenthetical
+
+
+def test_positions_all_opened_no_failures_message():
+    """The all-opened path keeps the original singular-count message."""
+    eng = _new_engine_db()
+    for i, s in enumerate(("S1USDT", "S2USDT", "S3USDT")):
+        _add_position(eng, f"p{i}", s, TODAY, "entry_filled")
+    r = C.check_engine_positions(eng, NOW, spec_path=None)
+    assert r.status is Status.GREEN
+    assert "3 position(s) opened today" in r.detail
+    assert "failed" not in r.detail
