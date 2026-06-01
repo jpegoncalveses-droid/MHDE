@@ -6,6 +6,42 @@ are at the top.
 
 ---
 
+## 2026-06-01 — Align spec runtime.entry_time_utc to the entry timer (06:30 → 00:45)
+
+**Branch:** `chore/spec-entry-time-align` (off `master` *after* PR #13 leverage
+merge; draft PR; **awaiting operator — DO NOT merge**).
+
+**Why.** `runtime.entry_time_utc` advertised `06:30` while the real
+`trading-engine-entry.timer` fires daily at **00:45 UTC** — surfaced while
+deploying the leverage-2x change. The field is **descriptive only**: the engine
+parses it into the `Runtime` dataclass (`engine/spec/loader.py:132`) but never
+uses it to schedule or gate entry (scheduling = the systemd timer; the only
+freshness gate is the handler's 4h prediction-age check). `06:30` was stale
+legacy that would mislead anyone wiring it, and would fail the 4h freshness gate
+relative to the 00:45 run if ever used.
+
+**STEP 0 (cleared).** Grepped both repos for `entry_time_utc`: engine references
+are only `spec/types.py:50` (field), `spec/schema.py:100,105` (required + the
+`^\d{2}:\d{2}$` pattern), `spec/loader.py:132` (parse). No handler reads
+`spec.runtime.entry_time_utc` for behaviour; the validator does no semantic
+check on it. MHDE writes it only at `spec_config.py:42`. → descriptive-only,
+MHDE-only value fix.
+
+**Change.**
+- `crypto/exports/spec_config.py` — `RUNTIME["entry_time_utc"] 06:30 → 00:45`
+  with a DESCRIPTIVE-ONLY comment naming the systemd timer as the source of
+  truth.
+- Regenerated `data/exports/active_spec.json` (gitignored; regenerates on host).
+  Diff vs prior on-disk spec: only `runtime.entry_time_utc`, `generated_at`,
+  `spec_hash` (leverage stays 2.0). Hash self-check passes.
+- **Companion (engine repo):** `crypto-trading-engine/docs/INTERFACE.md` §2 —
+  example value 06:30→00:45 + a "descriptive only" note. Lives in the engine
+  repo's contract doc, so it is a separate small PR there (not in the MHDE
+  diff). No schema/hash-canonicalization change, so not a coordinated contract
+  change.
+
+**No ADR** — value/doc correction, not an architectural decision.
+
 ## 2026-06-01 — Execution leverage 1x → 2x (ADR-033)
 
 **Branch:** `chore/spec-leverage-2x` (off `master`, draft PR;
