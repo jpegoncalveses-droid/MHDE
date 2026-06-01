@@ -20,7 +20,7 @@ SIZING = {
     "reserve_pct": 0.20,
     "max_concurrent": 6,
     "min_concurrent": 5,
-    "leverage": 1.0,
+    "leverage": 2.0,
     "margin_mode": "isolated",
 }
 
