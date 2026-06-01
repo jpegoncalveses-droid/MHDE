@@ -39,7 +39,11 @@ UNIVERSE = {
 RUNTIME = {
     "monitoring_window_hours": 24,
     "reconciliation_time_utc": "23:00",
-    "entry_time_utc": "06:30",
+    # DESCRIPTIVE ONLY. The engine parses entry_time_utc into Runtime but never
+    # uses it to schedule or gate entry; the systemd `trading-engine-entry.timer`
+    # (00:45 UTC) is the real source of truth. Keep this in sync if that timer
+    # ever changes. See INTERFACE.md §2.
+    "entry_time_utc": "00:45",
 }
 
 DIVERGENCE_ALERT_THRESHOLD_PCT = 0.20
