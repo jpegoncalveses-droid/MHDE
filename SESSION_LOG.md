@@ -6,6 +6,47 @@ are at the top.
 
 ---
 
+## 2026-06-01 — Execution leverage 1x → 2x (ADR-033)
+
+**Branch:** `chore/spec-leverage-2x` (off `master`, draft PR;
+**awaiting operator — DO NOT merge** per the task workflow).
+
+**Why.** Live entries hit Binance `-2019 "Margin is insufficient"`
+(recurring on DOGSUSDT) because at `leverage = 1.0` each position needs
+initial margin equal to its full notional, and the engine sizes against
+*total* wallet without consulting `availableBalance` at placement. 2x
+halves per-position initial margin (~40% utilisation), clearing `-2019`
+with headroom. Notional unchanged → exposure/P&L unchanged; isolated
+liquidation ~−50%, well clear of normal exits.
+
+**STEP 0 (cleared before branching).** Read the engine's spec
+validation path: `engine/spec/loader.py` → `validate_spec` →
+`compute_spec_hash` **recomputes** the hash from file content and
+accepts any internally-consistent spec (no pinned hash). So the hash
+side is MHDE-only. **But** the validator pins
+`_VALID_LEVERAGE = {1.0, 2.0}` and `INTERFACE.md §2` locks
+`leverage ∈ {1.0, 2.0}` — so the originally-requested **3x was
+rejected** (would `SpecLoadError` → abort entries for every symbol;
+needs a coordinated two-repo change). Shipped 2x, the contract max.
+
+**Change.**
+- `crypto/exports/spec_config.py` — `SIZING["leverage"] 1.0 → 2.0`
+  (single source of truth). `write_active_spec.py:120` backtest-sim
+  `leverage=1.0` left untouched (deliberately decoupled).
+- Regenerated `data/exports/active_spec.json` via
+  `venv/bin/python main.py crypto export-spec`. The file is
+  **gitignored** (not committed; regenerates on host at deploy).
+  Verified diff vs the prior on-disk spec: only `sizing.leverage`
+  (1.0→2.0), recomputed `spec_hash`, `generated_at`, and the
+  `generated_by_mhde_commit` stamp (d8ba573→b7d1506) changed — **no
+  `backtest_expectations` re-sim churn**. Hash self-check passes
+  against the engine canonicalization.
+- `DECISIONS.md` — ADR-033.
+
+**Out of scope.** Does NOT add the engine's missing available-margin
+(`availableBalance`-aware) sizing check — the true `-2019` root cause;
+2x only reduces how often it bites. Separate engine-side lever.
+
 ## 2026-05-31 — Monitor false-red fix: retry + graceful-degrade on engine-DB read-only open
 
 **Branch:** `fix/monitor-engine-db-readonly-retry` (off `master`, draft PR;
