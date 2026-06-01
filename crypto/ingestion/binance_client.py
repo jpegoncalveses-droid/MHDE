@@ -70,6 +70,57 @@ class BinanceClient:
 
         return all_rows
 
+    def _parse_intraday_kline(self, raw: list) -> dict:
+        """Parse a raw Binance kline into an intraday OHLCV row.
+
+        Unlike :meth:`_parse_kline` (which keys on the calendar ``trade_date``
+        and stores quote-asset volume for the daily pipeline), this keeps the
+        full ``open_time`` timestamp and base-asset volume — what the intraday
+        replay needs.
+        """
+        open_time_ms = raw[0]
+        return {
+            "open_time": datetime.fromtimestamp(open_time_ms / 1000, tz=timezone.utc),
+            "open": float(raw[1]),
+            "high": float(raw[2]),
+            "low": float(raw[3]),
+            "close": float(raw[4]),
+            "volume": float(raw[5]),
+        }
+
+    def fetch_klines(self, symbol: str, interval: str,
+                     start_dt: datetime | None = None,
+                     end_dt: datetime | None = None,
+                     futures: bool = True) -> list[dict]:
+        """Fetch paginated klines at an arbitrary ``interval`` (e.g. ``"1m"``).
+
+        Paginates 1000 rows/request, advancing ``startTime`` past the last
+        ``open_time`` until a short page is returned. Rate-limited via the
+        shared ``_get`` delay. Returns intraday OHLCV rows (see
+        :meth:`_parse_intraday_kline`). Used by the intraday-replay backfill;
+        the existing daily/funding/OI methods are unaffected.
+        """
+        base = BINANCE_FUTURES_BASE if futures else BINANCE_SPOT_BASE
+        endpoint = f"{base}/fapi/v1/klines" if futures else f"{base}/api/v3/klines"
+
+        start_ms = int(start_dt.timestamp() * 1000) if start_dt else None
+        end_ms = int(end_dt.timestamp() * 1000) if end_dt else None
+
+        all_rows: list[dict] = []
+        while True:
+            params = self._klines_params(symbol, interval, limit=1000,
+                                         start_ms=start_ms, end_ms=end_ms)
+            data = self._get(endpoint, params)
+            if not data:
+                break
+            for raw in data:
+                all_rows.append(self._parse_intraday_kline(raw))
+            if len(data) < 1000:
+                break
+            start_ms = data[-1][0] + 1
+
+        return all_rows
+
     # -- Funding rates --
 
     def _parse_funding_rate(self, raw: dict) -> dict:

@@ -17,6 +17,9 @@ venv/
 # Databases — never track
 data/*.duckdb
 data/*.db
+# Intraday-replay research artifacts (separate research DB + generated reports)
+data/research/
+data/reports/
 
 # Monitor alert-throttle state (KI-150 fix — JSON sidecar runtime state)
 data/monitor_alert_state.json
