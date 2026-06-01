@@ -1747,6 +1747,176 @@ def crypto_backfill_prices():
         conn.close()
 
 
+@crypto.command("backfill-intraday")
+@click.option("--interval", default="1m", show_default=True,
+              help="Kline interval (1m for the faithful replay).")
+@click.option("--start", "start_str", default=None,
+              help="First prediction_date YYYY-MM-DD (inclusive). "
+                   "Default: min walkfold-10d prediction_date.")
+@click.option("--end", "end_str", default=None,
+              help="Last prediction_date YYYY-MM-DD (inclusive). "
+                   "Default: max walkfold-10d prediction_date.")
+@click.option("--symbols", default=None,
+              help="Comma-separated symbol override. Default: DISTINCT walkfold-10d "
+                   "prediction symbols in the window.")
+@click.option("--research-db", default=None,
+              help="Research DB path. Default: crypto.execution.backtest."
+                   "intraday_klines.RESEARCH_DB_PATH.")
+@click.option("--force", is_flag=True, default=False,
+              help="Bypass the live-window guard (22:00-23:30 / 00:25-00:50 UTC).")
+def crypto_backfill_intraday(interval, start_str, end_str, symbols, research_db, force):
+    """Backfill 1-minute klines into the SEPARATE research DB for the intraday
+    faithful replay. Never writes mhde.duckdb. Paginated + idempotent; run
+    paced and OUTSIDE the live predict/export windows.
+    """
+    from datetime import (
+        date as _date_cls, datetime as _dt, timedelta, timezone as _tz,
+    )
+
+    import duckdb
+
+    from storage.config import load_engine_config
+    from crypto.ingestion.binance_client import BinanceClient
+    from crypto.execution.backtest.intraday_klines import (
+        RESEARCH_DB_PATH, backfill_intraday, connect_research_db,
+    )
+
+    # Live-window guard — avoid contending with the 22:00-23:30 predict path
+    # and the 00:25-00:50 export/entry path.
+    now = _dt.now(tz=_tz.utc).time()
+    in_live = ((now.hour == 22) or (now.hour == 23 and now.minute <= 30)
+               or (now.hour == 0 and 25 <= now.minute <= 50))
+    if in_live and not force:
+        raise click.ClickException(
+            f"Refusing to run during a live window (now {now.strftime('%H:%M')} "
+            "UTC). Re-run outside 22:00-23:30 / 00:25-00:50 UTC, or pass --force."
+        )
+
+    db_path = load_engine_config()["db_path"]
+    mhde = duckdb.connect(db_path, read_only=True)
+    try:
+        if start_str:
+            start_date = _date_cls.fromisoformat(start_str)
+        else:
+            start_date = mhde.execute(
+                "SELECT MIN(prediction_date) FROM crypto_ml_predictions "
+                "WHERE model_id LIKE '%walkfold%' AND model_id LIKE '%10d%'"
+            ).fetchone()[0]
+        if end_str:
+            end_date = _date_cls.fromisoformat(end_str)
+        else:
+            end_date = mhde.execute(
+                "SELECT MAX(prediction_date) FROM crypto_ml_predictions "
+                "WHERE model_id LIKE '%walkfold%' AND model_id LIKE '%10d%'"
+            ).fetchone()[0]
+
+        if symbols:
+            sym_list = [s.strip() for s in symbols.split(",") if s.strip()]
+        else:
+            rows = mhde.execute(
+                "SELECT DISTINCT symbol FROM crypto_ml_predictions "
+                "WHERE model_id LIKE '%walkfold%' AND model_id LIKE '%10d%' "
+                "AND prediction_date BETWEEN ? AND ? ORDER BY symbol",
+                [start_date, end_date],
+            ).fetchall()
+            sym_list = [r[0] for r in rows]
+    finally:
+        mhde.close()
+
+    # Klines window: entries run prediction_date+1, horizon +10d → pad to +13d.
+    fetch_start = _dt.combine(start_date, _dt.min.time(), tzinfo=_tz.utc)
+    fetch_end = _dt.combine(end_date, _dt.min.time(), tzinfo=_tz.utc) + timedelta(days=13)
+
+    click.echo(
+        f"backfill-intraday: {len(sym_list)} symbols, interval={interval}, "
+        f"klines [{fetch_start.date()} → {fetch_end.date()}] "
+        f"(pred window {start_date} → {end_date})"
+    )
+
+    research = connect_research_db(research_db or RESEARCH_DB_PATH)
+    try:
+        client = BinanceClient()
+        summary = backfill_intraday(
+            client, research, symbols=sym_list, interval=interval,
+            start=fetch_start, end=fetch_end,
+        )
+    finally:
+        research.close()
+
+    click.echo(
+        f"backfill-intraday done: {summary['rows_written']:,} rows, "
+        f"{summary['symbols_ok']} ok, {len(summary['symbols_skipped'])} skipped, "
+        f"{summary['gaps']} gaps"
+    )
+    if summary["symbols_skipped"]:
+        click.echo(f"  skipped: {', '.join(summary['symbols_skipped'])}")
+
+
+@crypto.command("intraday-replay")
+@click.option("--start", "start_str", required=True,
+              help="First prediction_date YYYY-MM-DD (inclusive).")
+@click.option("--end", "end_str", required=True,
+              help="Last prediction_date YYYY-MM-DD (inclusive).")
+@click.option("--research-db", default=None, help="Research klines DB path.")
+@click.option("--top-n", default=6, show_default=True, type=int,
+              help="Daily top-N post-parabolic-filter traded subset size.")
+@click.option("--day-offset", default=1, show_default=True, type=int,
+              help="Entry day offset from prediction_date (KI-141: live is +1).")
+@click.option("--entry-offset-hours", default=None, type=int,
+              help="If set, use FixedOffsetEntry(hours) instead of DeployedEntry "
+                   "(00:45). Interface demo only — not swept here.")
+@click.option("--out-dir", default="data/reports", show_default=True,
+              help="Directory for the generated markdown report (gitignored).")
+def crypto_intraday_replay(start_str, end_str, research_db, top_n, day_offset,
+                           entry_offset_hours, out_dir):
+    """Replay walk-forward predictions against 1-minute klines under the
+    deployed trail + arm-aware hard floor. Reads mhde.duckdb and the research
+    DB strictly read-only; writes only the gitignored markdown report.
+    """
+    import os
+    from datetime import date as _date_cls, datetime as _dt, timezone as _tz
+
+    import duckdb
+
+    from storage.config import load_engine_config
+    from crypto.execution.backtest.intraday_klines import (
+        RESEARCH_DB_PATH, connect_research_db,
+    )
+    from crypto.execution.backtest.intraday_replay import (
+        DeployedEntry, FixedOffsetEntry, render_report, run_intraday_replay,
+    )
+
+    start_date = _date_cls.fromisoformat(start_str)
+    end_date = _date_cls.fromisoformat(end_str)
+
+    if entry_offset_hours is not None:
+        entry_rule = FixedOffsetEntry(entry_offset_hours, day_offset=day_offset)
+    else:
+        entry_rule = DeployedEntry(day_offset=day_offset)
+
+    db_path = load_engine_config()["db_path"]
+    mhde = duckdb.connect(db_path, read_only=True)
+    research = connect_research_db(research_db or RESEARCH_DB_PATH, read_only=True)
+    try:
+        report = run_intraday_replay(
+            mhde, research, start_date=start_date, end_date=end_date,
+            entry_rule=entry_rule, top_n=top_n,
+        )
+    finally:
+        mhde.close()
+        research.close()
+
+    as_of = _dt.now(tz=_tz.utc).date()
+    text = render_report(report, as_of=as_of)
+    click.echo(text)
+
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, f"intraday_replay_{as_of.isoformat()}.md")
+    with open(out_path, "w") as fh:
+        fh.write(text)
+    click.echo(f"\n[report written to {out_path}]")
+
+
 @crypto.command("check-data-quality")
 @click.option("--date", "date_str", default=None,
               help="Date to check (YYYY-MM-DD). Default: latest in crypto_prices_daily.")

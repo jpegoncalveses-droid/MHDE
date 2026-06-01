@@ -42,7 +42,7 @@ from typing import Any, Optional
 
 
 VALID_EXIT_REASONS = frozenset(
-    {"tp", "sl", "stop_loss", "trailing", "time", "data_gap"}
+    {"tp", "sl", "stop_loss", "trailing", "time", "data_gap", "hard_floor"}
 )
 
 
@@ -280,6 +280,23 @@ class TrailingStopOnly(ExitPolicy):
         self.activation_pct = float(activation_pct)
         self.activation_price = self.entry_price * (1.0 + self.activation_pct)
 
+    @property
+    def is_armed(self) -> bool:
+        """True once the trail has armed — i.e. the peak has reached the
+        activation threshold *and* is strictly above entry.
+
+        Read **before** a bar's ``step`` is applied it reflects the peak set
+        by prior bars (the trail does not arm on the bar that first reaches
+        the threshold, since ``peak_high`` updates only after that bar's
+        check survives). The :class:`HardFloorOverlay` arm-aware mode uses
+        this to decide whether the floor or the inner trail has same-bar
+        priority.
+        """
+        return (
+            self.peak_high >= self.activation_price
+            and self.peak_high > self.entry_price
+        )
+
     def step(self, day_idx, high, low, close, open_=None):
         if self.is_complete:
             return []
@@ -444,6 +461,97 @@ class AtrStopOverlay(ExitPolicy):
             self.inner.remaining_fraction = 0.0
             return events
         # Survived the stop — delegate to the inner policy and mirror its
+        # remaining fraction (handles partial fills, e.g. Policy E).
+        events = self.inner.step(day_idx, high, low, close, open_)
+        self.remaining_fraction = self.inner.remaining_fraction
+        return events
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Hard-floor overlay — engine-side catastrophic stop modelled in backtest
+# ──────────────────────────────────────────────────────────────────────
+
+
+class HardFloorOverlay(ExitPolicy):
+    """Overlay a fixed **hard floor** catastrophic stop on an ``inner`` policy.
+
+    Mirrors :class:`AtrStopOverlay` but the stop level is a flat percentage
+    of entry rather than an ATR multiple. The floor is the engine-side
+    ``HARD_FLOOR_EXIT_PCT`` client-side market exit (see the
+    crypto-trading-engine ``monitor.py``); it is NOT part of the MHDE Phase
+    1B contract and Policy D does not model it. This overlay exists so a
+    backtest can run all configs under the same exit rules the live engine
+    applies, instead of letting losers ride to the time stop.
+
+    ``hard_floor_pct`` is a negative fraction (e.g. ``-0.05`` = −5%). The
+    stop level is set once at entry: ``floor_price = entry * (1 +
+    hard_floor_pct)`` and does not move.
+
+    Each bar the floor is checked against the day's **low** *before* the
+    inner policy runs, so on a same-bar conflict the floor fires first (it
+    takes priority over the inner trail / time stop). Fill is at
+    ``min(floor_price, open_)`` — a bar that gaps open below the floor fills
+    at the open, the conservative price for a daily-bar backtest; when
+    ``open_`` is ``None`` the fill falls back to the floor level.
+
+    **Intraday arm-aware mode** (``intraday_arm_aware=True``) — used by the
+    1-minute intraday replay. The floor-first priority holds only while the
+    inner trail is *unarmed*; once the inner reports ``is_armed`` the inner
+    (trail) is checked first and wins. This is faithful to the live engine,
+    which arms a trailing stop and thereafter exits at the trail rather than
+    the catastrophic floor. Because the armed trail sits at or above entry
+    (and therefore strictly above the −5% floor), a bar that breaches the
+    floor while armed also breaches the trail, so delegating to the inner
+    yields a ``trailing`` exit. The bar that *first* arms the trail is still
+    treated as unarmed at its start (``is_armed`` reflects prior bars), so a
+    bar that both arms and breaches the floor resolves **adverse-first**: the
+    floor fires. Daily mode (the default) is unchanged.
+    """
+
+    def __init__(
+        self,
+        entry_price: float,
+        horizon_days: int,
+        *,
+        inner: ExitPolicy,
+        hard_floor_pct: float,
+        intraday_arm_aware: bool = False,
+    ) -> None:
+        super().__init__(entry_price, horizon_days)
+        if hard_floor_pct is None or hard_floor_pct >= 0:
+            raise ValueError(
+                f"hard_floor_pct must be a negative fraction, got {hard_floor_pct}"
+            )
+        self.inner = inner
+        self.hard_floor_pct = float(hard_floor_pct)
+        self.floor_price = self.entry_price * (1.0 + self.hard_floor_pct)
+        self.intraday_arm_aware = bool(intraday_arm_aware)
+
+    def step(self, day_idx, high, low, close, open_=None):
+        if self.is_complete:
+            return []
+        # Arm-aware intraday mode: once the inner trail is armed it takes
+        # same-bar priority over the floor (trail sits above the floor, so a
+        # floor breach is also a trail breach → a ``trailing`` exit). The
+        # arming bar itself is still unarmed at its start, so a bar that both
+        # arms and breaches the floor falls through to the floor check below
+        # (adverse-first).
+        if self.intraday_arm_aware and getattr(self.inner, "is_armed", False):
+            events = self.inner.step(day_idx, high, low, close, open_)
+            self.remaining_fraction = self.inner.remaining_fraction
+            return events
+        # Floor is checked first → priority over the inner policy on a
+        # same-bar conflict.
+        if low <= self.floor_price:
+            fill = (
+                self.floor_price if open_ is None
+                else min(self.floor_price, float(open_))
+            )
+            events = [ExitEvent(fill, self.remaining_fraction, "hard_floor")]
+            self.remaining_fraction = 0.0
+            self.inner.remaining_fraction = 0.0
+            return events
+        # Survived the floor — delegate to the inner policy and mirror its
         # remaining fraction (handles partial fills, e.g. Policy E).
         events = self.inner.step(day_idx, high, low, close, open_)
         self.remaining_fraction = self.inner.remaining_fraction

@@ -71,6 +71,7 @@ from crypto.execution.backtest.policies import (
     AtrStopOverlay,
     ExitEvent,
     ExitPolicy,
+    HardFloorOverlay,
     build_policy,
 )
 from crypto.execution.backtest.selection import (
@@ -647,6 +648,10 @@ def _build_position(
     stop_mode = params.pop("stop_mode", "none")
     atr_multiple = params.pop("atr_multiple", 2.0)
     require_atr = bool(params.pop("require_atr", False))
+    # Hard-floor overlay control — engine-side HARD_FLOOR_EXIT_PCT modelled
+    # in backtest. None/absent = no floor (baseline). Negative fraction
+    # (e.g. -0.05) arms a catastrophic stop checked before the inner policy.
+    hard_floor_pct = params.pop("hard_floor_pct", None)
 
     if stop_mode not in ("atr", "none", None):
         return None, f"unknown stop_mode:{stop_mode!r}"
@@ -680,6 +685,17 @@ def _build_position(
                 entry_price=entry_price, horizon_days=horizon_days,
                 inner=policy, atr_pct=float(atr_pct),
                 atr_multiple=float(atr_multiple),
+            )
+        except Exception as exc:
+            return None, f"policy_build_failed:{type(exc).__name__}:{exc}"
+
+    if hard_floor_pct is not None:
+        # Catastrophic hard floor overlaid outermost — checked before the
+        # inner policy (and before any ATR stop) so it has same-bar priority.
+        try:
+            policy = HardFloorOverlay(
+                entry_price=entry_price, horizon_days=horizon_days,
+                inner=policy, hard_floor_pct=float(hard_floor_pct),
             )
         except Exception as exc:
             return None, f"policy_build_failed:{type(exc).__name__}:{exc}"

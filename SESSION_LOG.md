@@ -6,6 +6,93 @@ are at the top.
 
 ---
 
+## 2026-06-01 — Intraday faithful replay of Phase 1B predictions (pipeline + first pass)
+
+**Branch:** `feat-intraday-replay-eval`, **based off `exp/trailstop-sweep`**
+(not master) so the inherited `HardFloorOverlay` is reused rather than
+duplicated. `exp/trailstop-sweep` was pushed to origin first to preserve
+lineage. Worked in a **separate worktree** (`../mhde-intraday`) so the
+production checkout at `/home/jpcg/MHDE` stayed on master and the live
+predict/export timers were never switched onto a feature branch. MHDE-only;
+no engine/INTERFACE/spec/hash changes; no production-DB writes.
+
+**Goal.** Replay each daily walk-forward 10d prediction against **1-minute**
+klines under the live engine's exit stack to get a per-probability-bin read
+on realized intraday performance (vs the daily-bar Phase 1B backtest).
+
+### Key decisions / assumptions (flagged)
+
+- **Reused, not reimplemented:** `policies.py::TrailingStopOnly`
+  (trail=0.30, activation=0.01), `costs.py`, and the base branch's
+  `HardFloorOverlay` (−0.05). No second floor was added.
+- **Intraday arm-aware floor extension.** `HardFloorOverlay` gained an
+  additive `intraday_arm_aware` flag (default `False` → daily floor-first
+  behaviour unchanged, existing 8 tests green). When `True`: while the
+  inner trail is UNARMED the −5% floor is the stop; once ARMED the
+  give-back trail (which sits ≥ entry, above the floor) is checked first
+  and wins. `TrailingStopOnly` gained an additive `is_armed` property.
+  Within-bar arm+floor ties resolve **adverse-first** (down-move before
+  up-move → floor fires). The −5% floor models the engine
+  `HARD_FLOOR_EXIT_PCT` (operator-confirmed); it is NOT part of Phase 1B.
+- **Entry anchor (KI-141, confirmed).** `crypto_ml_predictions.prediction_date`
+  is the features-as-of T-1 day (`MAX(trade_date) FROM crypto_ml_features`),
+  and all walk-forward rows have `predicted_at` NULL — there is no run-time
+  stamp. The live engine enters at 00:45 UTC on `export_date =
+  prediction_date + 1` (`write_daily_predictions.py`, engine INTERFACE.md
+  §3.1). The **default `DeployedEntry` therefore anchors at
+  prediction_date + 1 day @ 00:45 UTC**, fill = open of that 1-minute bar.
+  This `day_offset` is a parameter, so an alternative anchor is a config
+  change, not a rebuild.
+- **Pluggable entry interface.** `EntryRule` ABC →
+  `DeployedEntry` (baseline, default) + `FixedOffsetEntry(hours)` (wired to
+  prove pluggability, **not swept** here). Conditional/intraday entry rules
+  and fixed-hour sweeps are a config-change follow-on with OOS discipline.
+- **Separate research DB.** 1-minute klines live in
+  `data/research/intraday.duckdb` (`crypto_klines_intraday`,
+  PK `(symbol, interval, open_time)`), created on demand —
+  **NOT** in `ALL_SCHEMAS`, never in `mhde.duckdb`. The replay opens both
+  DBs **read-only** (two read-only connections; equivalent isolation to the
+  spec's ATTACH).
+
+### What was added (all MHDE)
+
+- `crypto/execution/backtest/policies.py` — additive `is_armed` +
+  `intraday_arm_aware` (no behavioural change to existing callers).
+- `crypto/ingestion/binance_client.py` — additive `fetch_klines` +
+  `_parse_intraday_kline` (existing daily/funding/OI methods untouched).
+- `crypto/execution/backtest/intraday_klines.py` — research-DB schema +
+  idempotent UPSERT + `backfill_intraday` driver (injected client;
+  skip+log on per-symbol failure; gap tally).
+- `crypto/execution/backtest/intraday_replay.py` — entry rules, 1-minute
+  exit walk (`simulate_intraday_trade`), net-return, per-bin aggregation,
+  the DB-backed `run_intraday_replay` driver, and `render_report`.
+- `main.py` — `crypto backfill-intraday` (live-window guard 22:00-23:30 /
+  00:25-00:50 UTC, `--force` to bypass) and `crypto intraday-replay`.
+- Tests: 50 new/covered (floor reuse + intraday-mode, trail parity, first
+  touch, entry-rule selection, fee accounting, within-bar tie, backfill
+  idempotency + pagination + skip, driver end-to-end). Green. The two
+  repo-wide failures (`test_systemd_units::...23_00_utc`,
+  `test_schema_promotion_status::test_migration_backfills_pre_existing_db`)
+  **pre-exist on the base commit** and are unrelated.
+- `.gitignore` — `data/research/` + `data/reports/`.
+
+### First pass (scope + window)
+
+- **Window:** last 90 days of the walk-forward OOS set —
+  **prediction_date 2026-02-06 → 2026-05-07** (4,362 predictions, 48
+  symbols, 91 dates). Bounded validation BEFORE any full-window backfill.
+- Pipeline validated end-to-end on real Binance data (BTCUSDT smoke: 18,721
+  1-minute bars, 0 gaps; replay produced a trailing exit). Full 90d × 48
+  symbol backfill into the research DB + the per-bin report:
+  `data/reports/intraday_replay_<date>.md` (gitignored).
+
+**Pending.** PR is DRAFT pending merge-reviewer + explicit JP approval —
+do NOT merge. `exp/parabolic-filter-ab` + `stash@{2}` (harness rule-gating
+WIP) remain untouched and still overlap `harness.py` for a future
+reconcile. Entry-time / condition sweeps are out of scope (interface only).
+
+---
+
 ## 2026-06-01 — Align spec runtime.entry_time_utc to the entry timer (06:30 → 00:45)
 
 **Branch:** `chore/spec-entry-time-align` (off `master` *after* PR #13 leverage
