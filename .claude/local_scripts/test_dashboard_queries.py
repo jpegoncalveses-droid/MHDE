@@ -27,6 +27,10 @@ from dashboard.services.queries import (
     get_paper_closed_trades,
     get_paper_failed_entries,
     get_paper_engine_runs_summary,
+    get_paper_today_cohort,
+    get_paper_position_snapshots,
+    build_position_chart_frame,
+    position_is_armed,
 )
 
 conn = duckdb.connect("data/mhde.duckdb", read_only=True)
@@ -73,6 +77,23 @@ else:
           lambda: get_paper_open_positions(eng, trail_pct=0.30, activation_pct=0.01))
     check("paper_closed_trades", lambda: get_paper_closed_trades(eng, limit=30))
     check("paper_failed_entries", lambda: get_paper_failed_entries(eng, limit=20))
+    # Rebuilt positions view (paper-tab-overhaul): cohort + per-position charts.
+    cohort = check("paper_today_cohort", lambda: get_paper_today_cohort(eng))
+    if cohort is not None and len(cohort) > 0:
+        _id = cohort.iloc[0]["id"]
+        _snaps = check("paper_position_snapshots",
+                       lambda: get_paper_position_snapshots(eng, _id, max_points=400))
+        check("position_is_armed",
+              lambda: position_is_armed(
+                  entry_price=cohort.iloc[0]["entry_price"],
+                  peak_price=cohort.iloc[0]["peak_price"],
+                  activation_pct=0.01))
+        if _snaps is not None:
+            check("build_position_chart_frame",
+                  lambda: build_position_chart_frame(
+                      _snaps, entry_price=cohort.iloc[0]["entry_price"],
+                      peak_price=cohort.iloc[0]["peak_price"],
+                      trail_pct=0.30, activation_pct=0.01))
     eng.close()
 
 print(f"\n{'='*40}")

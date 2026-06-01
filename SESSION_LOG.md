@@ -93,6 +93,270 @@ reconcile. Entry-time / condition sweeps are out of scope (interface only).
 
 ---
 
+## 2026-06-01 — Align spec runtime.entry_time_utc to the entry timer (06:30 → 00:45)
+
+**Branch:** `chore/spec-entry-time-align` (off `master` *after* PR #13 leverage
+merge; draft PR; **awaiting operator — DO NOT merge**).
+
+**Why.** `runtime.entry_time_utc` advertised `06:30` while the real
+`trading-engine-entry.timer` fires daily at **00:45 UTC** — surfaced while
+deploying the leverage-2x change. The field is **descriptive only**: the engine
+parses it into the `Runtime` dataclass (`engine/spec/loader.py:132`) but never
+uses it to schedule or gate entry (scheduling = the systemd timer; the only
+freshness gate is the handler's 4h prediction-age check). `06:30` was stale
+legacy that would mislead anyone wiring it, and would fail the 4h freshness gate
+relative to the 00:45 run if ever used.
+
+**STEP 0 (cleared).** Grepped both repos for `entry_time_utc`: engine references
+are only `spec/types.py:50` (field), `spec/schema.py:100,105` (required + the
+`^\d{2}:\d{2}$` pattern), `spec/loader.py:132` (parse). No handler reads
+`spec.runtime.entry_time_utc` for behaviour; the validator does no semantic
+check on it. MHDE writes it only at `spec_config.py:42`. → descriptive-only,
+MHDE-only value fix.
+
+**Change.**
+- `crypto/exports/spec_config.py` — `RUNTIME["entry_time_utc"] 06:30 → 00:45`
+  with a DESCRIPTIVE-ONLY comment naming the systemd timer as the source of
+  truth.
+- Regenerated `data/exports/active_spec.json` (gitignored; regenerates on host).
+  Diff vs prior on-disk spec: only `runtime.entry_time_utc`, `generated_at`,
+  `spec_hash` (leverage stays 2.0). Hash self-check passes.
+- **Companion (engine repo):** `crypto-trading-engine/docs/INTERFACE.md` §2 —
+  example value 06:30→00:45 + a "descriptive only" note. Lives in the engine
+  repo's contract doc, so it is a separate small PR there (not in the MHDE
+  diff). No schema/hash-canonicalization change, so not a coordinated contract
+  change.
+
+**No ADR** — value/doc correction, not an architectural decision.
+
+## 2026-06-01 — Execution leverage 1x → 2x (ADR-033)
+
+**Branch:** `chore/spec-leverage-2x` (off `master`, draft PR;
+**awaiting operator — DO NOT merge** per the task workflow).
+
+**Why.** Live entries hit Binance `-2019 "Margin is insufficient"`
+(recurring on DOGSUSDT) because at `leverage = 1.0` each position needs
+initial margin equal to its full notional, and the engine sizes against
+*total* wallet without consulting `availableBalance` at placement. 2x
+halves per-position initial margin (~40% utilisation), clearing `-2019`
+with headroom. Notional unchanged → exposure/P&L unchanged; isolated
+liquidation ~−50%, well clear of normal exits.
+
+**STEP 0 (cleared before branching).** Read the engine's spec
+validation path: `engine/spec/loader.py` → `validate_spec` →
+`compute_spec_hash` **recomputes** the hash from file content and
+accepts any internally-consistent spec (no pinned hash). So the hash
+side is MHDE-only. **But** the validator pins
+`_VALID_LEVERAGE = {1.0, 2.0}` and `INTERFACE.md §2` locks
+`leverage ∈ {1.0, 2.0}` — so the originally-requested **3x was
+rejected** (would `SpecLoadError` → abort entries for every symbol;
+needs a coordinated two-repo change). Shipped 2x, the contract max.
+
+**Change.**
+- `crypto/exports/spec_config.py` — `SIZING["leverage"] 1.0 → 2.0`
+  (single source of truth). `write_active_spec.py:120` backtest-sim
+  `leverage=1.0` left untouched (deliberately decoupled).
+- Regenerated `data/exports/active_spec.json` via
+  `venv/bin/python main.py crypto export-spec`. The file is
+  **gitignored** (not committed; regenerates on host at deploy).
+  Verified diff vs the prior on-disk spec: only `sizing.leverage`
+  (1.0→2.0), recomputed `spec_hash`, `generated_at`, and the
+  `generated_by_mhde_commit` stamp (d8ba573→b7d1506) changed — **no
+  `backtest_expectations` re-sim churn**. Hash self-check passes
+  against the engine canonicalization.
+- `DECISIONS.md` — ADR-033.
+
+**Out of scope.** Does NOT add the engine's missing available-margin
+(`availableBalance`-aware) sizing check — the true `-2019` root cause;
+2x only reduces how often it bites. Separate engine-side lever.
+
+## 2026-05-31 — Monitor false-red fix: retry + graceful-degrade on engine-DB read-only open
+
+**Branch:** `fix/monitor-engine-db-readonly-retry` (off `master`, draft PR;
+**awaiting operator — DO NOT merge** per the task workflow).
+
+**Symptom.** The MHDE monitors intermittently fired false "engine DuckDB not
+reachable" reds (continuous + crypto-daily runners) and, separately,
+`paper_trading_drift` could crash its 15-min systemd unit outright — both while
+the crypto engine was perfectly healthy.
+
+**Root cause.** The monitors open the engine's DuckDB **read-only** (ADR-020)
+with no retry. The engine's per-minute `monitor` / daily `entry` phase briefly
+holds the write lock; a read-only open landing in that window raises
+`duckdb.IOException("... Could not set lock ...")`. The runners caught it →
+`engine_conn=None` → RED; `paper_trading_drift.run()` didn't guard the open at
+all → the exception propagated and failed the unit.
+
+**Step 0 (diagnostic, captured in the PR).** Reproduced both exceptions on a
+throwaway `/tmp` DuckDB (never touched the engine DB): lock collision is
+`duckdb.IOException` whose message contains `Could not set lock` (no "does not
+exist"); a missing DB is `duckdb.IOException` … `database does not exist`. So
+the retry predicate is: retry iff IOException and `"lock" in msg` and not
+`"does not exist"` — fail fast on a genuinely missing DB. (duckdb 1.5.2.)
+
+**Change.**
+- New `monitoring/engine_db.py` — single source of truth for engine-DB
+  read-only opens. `open_engine_db_readonly(path=None)` resolves
+  `CRYPTO_ENGINE_DB_PATH`, opens `read_only=True`, retries a lock conflict with
+  **sub-second** backoff `(0.1, 0.25, 0.5, 1.0)` ≈ 1.85 s total (deliberately
+  *not* `storage/db.py`'s 30/60/120 s, which targets MHDE's own nightly
+  writer), WARNs per retry, fails fast on missing DB. Owns
+  `DEFAULT_ENGINE_DB` / `ENGINE_DB_ENV` / `ENGINE_DB_UNREADABLE_MSG`.
+- `checks/crypto.open_engine_db` and `paper_trading_drift._open_engine_db` now
+  delegate to it; both modules import the constants from there (re-exported for
+  back-compat). `continuous_runner` reaches the engine only via
+  `C.open_engine_db()`, so it's covered automatically.
+- `paper_trading_drift.run()` wraps the open in try/except → `engine_conn=None`,
+  then short-circuits with one honest **warn** `MonitorResult` (the checks have
+  no per-check None-guards, so we degrade at the orchestration level).
+- Honest message: every `engine_conn is None` RED branch (continuous_runner ×3,
+  checks/crypto ×2) now reads `ENGINE_DB_UNREADABLE_MSG` ("engine DB unreadable
+  after retries (lock contention or engine down); timer state unknown") — still
+  RED, just no longer blaming the engine timers.
+
+**Call-graph note (spec correction).** The spec asked to remove "duplicate
+connect() at continuous_runner ~58 / daily_runner ~45". Verified those are
+`_open_mhde_db` (MHDE's *own* DB read-only), **not** engine opens — left
+untouched. The only two engine read-only open sites are
+`checks/crypto.open_engine_db` and `paper_trading_drift._open_engine_db`.
+(MHDE-side read-only opens colliding with MHDE's nightly writer are a separate,
+out-of-scope concern.)
+
+**Verification.** TDD throughout: `monitoring/engine_db.py` written test-first
+(5 tests: clean open / retry-then-succeed / persistent-lock-reraise /
+missing-DB-fail-fast / env-path); `paper_trading_drift` graceful-degrade test
+watched fail (un-guarded `run()` propagated the IOException) then pass.
+`pytest tests/monitoring` → **153 passed**. `make test-unit` / `make
+test-regression` pending in the runner.
+
+**Pending.** Draft PR → read-only merge-reviewer → mark ready → operator
+approves/merges.
+
+---
+
+## 2026-05-31 — Paper Trading tab rebuild + auth survives refresh
+
+**Branch:** `feat/paper-trading-tab-overhaul` (off `master`, draft PR;
+**awaiting operator approval — DO NOT merge** per the task workflow).
+
+**Goal.** (1) Keep the dashboard login across a browser hard-refresh and a
+mobile-PWA force-close/reopen. (2) Rebuild the Paper Trading positions view
+into today's-cohort table + per-position price charts, and make Paper Trading
+the default (first) tab.
+
+**Commit 1 — auth survives refresh (`dashboard/auth.py`).** On successful login
+set a signed, expiring cookie (`mhde_auth`); on load skip the prompt when a
+valid unexpired cookie is present. HMAC-SHA256 over `subject|expiry` keyed by
+`MHDE_DASHBOARD_COOKIE_SECRET`; the password/hash is never in the cookie.
+Validated server-side every load. **Fail closed:** secret unset → cookie path
+inert, prompt every refresh (unchanged behaviour); never fails open, never
+crashes on a malformed cookie. TTL via `MHDE_DASHBOARD_COOKIE_TTL_HOURS`
+(default 7 d). Cookie read via `st.context.cookies`, written via a
+`components.html` srcdoc iframe (so it can't be HttpOnly — bounded-TTL signed
+token, no credential, documented tradeoff). 17 unit tests on the pure
+mint/verify + decision helpers.
+
+**Commits 2+ — positions view (`dashboard/services/queries.py`, `app.py`).**
+New read-only helpers: `get_paper_today_cohort` (entry_date=today, reached
+`entry_filled`+, excludes failed/cancelled; open-first then closed by exit
+desc; `Opened $`=entry×qty, closed PnL from `realized_pnl_usd`, open PnL =
+unrealized mark from latest `price_snapshot`), `get_paper_position_snapshots`
+(downsample ≤400 pts preserving global min/max), `build_position_chart_frame` +
+`position_is_armed` (entry line + activation-or-stepwise-trail exit ref, SPEC
+§3.2; `activation_pct`/`trail_pct` read from `active_spec.json`). App: Paper
+Trading is now the **first** tab; **Today's positions** table + one altair
+chart per cohort row replace the old open/closed tables. Existing `get_paper_*`
+helpers kept (smoke + monitors). Engine connect moved into `_open_engine_conn()`
+(fixes the pre-existing KI-105 module-level-connection regression-test failure
+in `app.py`).
+
+**Verification.** `make test` green; dashboard-query smoke green incl. the new
+helpers against the live engine DB (cohort=5: RAVE open + 4 closed today,
+DOGS failed excluded); live spot-check — RAVE (open, not armed) shows the
+activation line, the closed armed positions show the trail line,
+`cummax(snapshots) ≈ peak_price`.
+
+**Operator step (PR inert until done).** Add `MHDE_DASHBOARD_COOKIE_SECRET`
+(strong random) to `mhde-streamlit.service` `Environment=`, `daemon-reload`,
+restart. Streamlit doesn't auto-reload — after merge+pull
+`systemctl --user restart mhde-streamlit` (KI-132).
+
+**Pending.** Draft PR → read-only merge-reviewer (auth flagged for security)
+→ mark ready → operator approves/merges.
+
+---
+
+## 2026-05-27 — STATE.md on-demand snapshot tooling
+
+**Branch:** `chore/state-md-snapshot-tooling` (off `master`, pushed; awaiting operator merge).
+
+**Goal.** Add an on-demand, read-only system-state snapshot so any cold
+session can answer "what is true right now?" without re-deriving it, and
+a canonical `STATE.md` that is refreshed only on explicit operator command.
+
+**What was added.**
+
+- `scripts/snapshot_state.py` — read-only diagnostic. Issues no writes to
+  the DB (`read_only=True`), repo, or systemd. Prints one delimited
+  key:value block grouped by section:
+  - **git**: current branch, HEAD short SHA + dirty flag, ahead/behind
+    `master` (`rev-list --left-right --count master...HEAD`), stash list,
+    top-8 recent branches by committerdate.
+  - **systemd**: `mhde-*` timers with next/last fire for both system
+    (`systemctl list-timers`) and `--user` scopes.
+  - **duckdb** (`data/mhde.duckdb`, read-only): `crypto_universe` row
+    count + active count + last `added_date`/`removed_date` (date column
+    confirmed from `crypto/schema.py`); active crypto model runs
+    (`is_active = true`); orphan tables = live `main` tables minus those
+    declared via `CREATE TABLE IF NOT EXISTS` in `crypto/`, `ml/`, `fx/`
+    `schema.py` (same regex the `audit_orphan_universe_tables.py` and
+    `test_schema_consistency.py` use). Catches the read-only lock failure
+    and prints "DB locked, universe/model/table fields unavailable" then
+    continues — never crashes.
+  - **files**: `active_spec.json` universe.source + strategy parameter
+    block (phase_1b_winner / sizing / risk / runtime); latest
+    `predictions_YYYY-MM-DD.json` by filename date.
+  Reports facts only — no blockers / next-action / divergence text.
+- `STATE.md` at repo root — overwrite-in-place (NOT append-only),
+  refreshed only on explicit "refresh STATE". Machine fields populated
+  from a real `snapshot_state.py` run this session; judgement fields
+  (phase, blockers, next action, deferred queue, paper-trading status,
+  divergences) filled from this session's investigation.
+- `CLAUDE.md` — STATE.md added as Read-first item 1 (rest renumbered);
+  new "Refreshing STATE.md" section documenting the explicit-trigger-only
+  refresh procedure. No session-end auto-refresh.
+
+**First snapshot (live host, 2026-05-27).** `crypto_universe` 60 rows /
+51 active, last added 2026-05-19; active crypto runs
+`crypto_10d_e1edf4e6` + `crypto_5d_306d3f1a`; 67 live tables vs 30
+declared → 37 orphans (equity-side + backtest + experimental, e.g.
+`crypto_regime_daily`); spec v1.0.0 hash 60a2c813…; latest predictions
+`predictions_2026-05-27.json`; 25 `mhde-*` timers (23 system, 2 user).
+
+**Verification.**
+- `scripts/snapshot_state.py` runs clean and prints the full block.
+- `tests/regression/` — 31 passed, including the required
+  `test_no_untracked_production_imports.py` (3/3) given the new tracked
+  `.py`. Two pre-existing failures unrelated to this change, confirmed by
+  rerunning them on a clean `master` tree:
+  `test_dashboard_structure.py::test_no_module_level_connection` and
+  `test_pipeline_execution_weekend.py::test_pipeline_execution_equity_ok_on_monday_morning`
+  (the latter a fallout of `97de692` "Disable equity freshness check" —
+  `result.metrics` no longer carries an `equity` key; the weekend test
+  was not updated).
+
+**Cross-chat note.** This chat started with the host's primary checkout on
+`fix/dashboard-pnl-cumulative-delta` carrying uncommitted dashboard-PnL
+work (another workstream). That work was stashed
+(`park-dashboard-pnl-for-statemd-chat`) to branch cleanly off `master`,
+and must be restored (`git checkout fix/dashboard-pnl-cumulative-delta &&
+git stash pop`) when this branch is handed back. No file overlap between
+the two workstreams.
+
+**Pending.** Operator merges `chore/state-md-snapshot-tooling`; the two
+pre-existing regression failures above remain open (equity-on-hold test
+fallout + dashboard module-level-connection check).
+
 ## 2026-05-19 — Phase 1b: phantom `polling_interval_seconds` removed from MHDE spec emission
 
 **Branch:** `chore/spec-remove-phantom-polling-mhde` (local, not pushed).

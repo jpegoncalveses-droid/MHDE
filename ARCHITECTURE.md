@@ -268,17 +268,24 @@ streamlit-relay → 127.0.0.1:8501).
 Single-page multi-tab app. The 19 legacy multi-page-app pages are now
 in `legacy/dashboard/pages/_legacy/`; their content was rewritten as
 tabs in `app.py` for the engines that survived (ML / crypto / FX), plus
-a **Paper Trading** tab (Gap 3) that reads the crypto-trading-engine
-DuckDB read-only via `CRYPTO_ENGINE_DB_PATH` (ADR-020) — open positions
-with the Policy-D calculated stop, recent closed positions (`exit_price` /
-`realized_pnl` from the engine's `positions` columns per EXIT-PRICE-001,
-"uncomputable (KI-136)" only when no exit fill was recorded), a
-rejected-entries list, and a drift-monitor status banner re-running
+a **Paper Trading** tab that reads the crypto-trading-engine
+DuckDB read-only via `CRYPTO_ENGINE_DB_PATH` (ADR-020). Paper Trading is
+the first/default tab (paper-tab-overhaul). It shows a daily-balance strip,
+engine-liveness metrics, then **Today's positions** — the cohort opened
+today that reached the market (open first, then closed by exit desc),
+rendered as a `Symbol|Entry|Exit|Opened $|PnL $|PnL %` table (open rows show
+an unrealized live mark from `price_snapshots`) plus one price chart per row
+(dynamic N): price + entry + the state-dependent exit reference (flat
+activation line until armed, else the stepwise Policy-D trail stop; SPEC §3.2),
+each series downsampled to ≤400 points preserving global min/max. Closed
+`exit_price`/`realized_pnl` come from the engine's `positions` columns
+(EXIT-PRICE-001, "uncomputable (KI-136)" only when no exit fill was recorded).
+Also a rejected-entries list and a drift-monitor status banner re-running
 `monitoring/paper_trading_drift.py` (cached 60 s).
 
 ```
 dashboard/app.py
-├── auth.py                  password gate (sha256, MHDE_DASHBOARD_*)
+├── auth.py                  password gate (sha256) + signed-cookie session (MHDE_DASHBOARD_*)
 ├── components/              tables, badges, charts, filters, candidate cards
 ├── services/queries.py      DuckDB read-only connection per page render
 ├── services/actions.py      write-side helpers for outcome review
@@ -293,7 +300,11 @@ pattern caused stale reads when the underlying file rotated; see
 **Auth.** `MHDE_DASHBOARD_AUTH_ENABLED=true` and
 `MHDE_DASHBOARD_PASSWORD_HASH` are baked into the systemd unit
 `Environment=` lines, not `.env`. Dev / smoke runs disable auth via
-`MHDE_DASHBOARD_AUTH_ENABLED=false`.
+`MHDE_DASHBOARD_AUTH_ENABLED=false`. On successful login a signed, expiring
+cookie (`mhde_auth`: HMAC over `subject|expiry`, never the password) is set so
+hard refresh / PWA reopen keep the session; validated server-side every load.
+Fail-closed: with `MHDE_DASHBOARD_COOKIE_SECRET` unset the cookie path is inert
+and the prompt returns on every refresh (legacy behaviour).
 
 **No auto-refresh.** Streamlit doesn't poll. The FX tab has an explicit
 ↻ Refresh button + "Data as of bar" caption; the other tabs require a

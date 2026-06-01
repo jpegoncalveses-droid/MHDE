@@ -29,13 +29,20 @@ from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Optional
 
+from monitoring.engine_db import (
+    DEFAULT_ENGINE_DB,
+    ENGINE_DB_ENV,
+    ENGINE_DB_UNREADABLE_MSG,
+    open_engine_db_readonly,
+)
 from monitoring.pipeline_monitor.core import Status, StepResult
 
 # ── default paths ─────────────────────────────────────────────────────
 DEFAULT_EXPORTS_DIR = Path("data/exports")
 DEFAULT_SPEC_PATH = Path("data/exports/active_spec.json")
-DEFAULT_ENGINE_DB = "/home/jpcg/crypto-trading-engine/data/trading_engine.duckdb"
-ENGINE_DB_ENV = "CRYPTO_ENGINE_DB_PATH"
+# DEFAULT_ENGINE_DB / ENGINE_DB_ENV are owned by monitoring.engine_db (the
+# single source of truth for engine-DB read-only opens) and re-exported above
+# for backward compatibility with callers that import them from here.
 
 # ── step display names (imported by the daily runner) ─────────────────
 OHLCV_INGESTION = "OHLCV ingestion (crypto_prices_daily)"
@@ -61,16 +68,32 @@ _HORIZON_DAYS_CASE = (
 # states in the engine `positions` table that mean "not an open position"
 _CLOSED_POSITION_STATES = ("exit_filled", "failed", "closed", "exited", "cancelled")
 
+# states that mean the entry never actually opened a position today. Distinct
+# from _CLOSED_POSITION_STATES on purpose: that set includes ``exit_filled``,
+# which DID open (then closed) and must still count as "opened today". A row
+# only fails to count as opened if it was rejected/cancelled at the venue
+# (``failed``/``cancelled``) or is still mid-flight (``candidate``/``entry_pending``).
+_NEVER_OPENED_STATES = ("failed", "cancelled", "candidate", "entry_pending")
+
+# subset of the above where the entry was rejected/cancelled at the venue —
+# surfaced inline (with the binance reject code) but kept GREEN: a venue reject
+# is not a pipeline failure and these recur ~weekly on testnet (cf KI-128).
+_FAILED_ENTRY_STATES = ("failed", "cancelled")
+
 
 def _utc_date(now: datetime):
     return now.date()
 
 
 def open_engine_db(path: Optional[str] = None):
-    """Open the crypto-trading-engine DuckDB read-only. Raises on failure."""
-    import duckdb
+    """Open the crypto-trading-engine DuckDB read-only (retry-aware). Raises on failure.
 
-    return duckdb.connect(path or os.environ.get(ENGINE_DB_ENV, DEFAULT_ENGINE_DB), read_only=True)
+    Thin wrapper over :func:`monitoring.engine_db.open_engine_db_readonly` —
+    kept for the callers that already import ``C.open_engine_db`` (continuous /
+    daily runners). All engine-DB read-only opens go through that one helper so
+    a transient engine write-lock no longer surfaces as a false RED.
+    """
+    return open_engine_db_readonly(path)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -265,7 +288,7 @@ def check_export_predictions(now: datetime, exports_dir: Optional[Path] = None) 
 # ──────────────────────────────────────────────────────────────────────
 def check_engine_ingest(engine_conn, now: datetime) -> StepResult:
     if engine_conn is None:
-        return StepResult(ENGINE_INGEST, Status.RED, "engine DuckDB not reachable")
+        return StepResult(ENGINE_INGEST, Status.RED, ENGINE_DB_UNREADABLE_MSG)
     today = _utc_date(now)
     midnight = datetime.combine(today, time.min)
     row = engine_conn.execute(
@@ -299,15 +322,67 @@ def _read_max_concurrent(spec_path: Optional[Path]) -> Optional[int]:
         return None
 
 
+def _failed_entries_today(engine_conn, today) -> list[tuple[str, Optional[int]]]:
+    """Return ``[(symbol, reject_code_or_None), ...]`` for entries that were
+    rejected/cancelled at the venue today, newest reject code per position.
+
+    Reads the engine ``events`` table read-only (ADR-020) for the latest
+    ``order_cancelled`` payload code. Falls back to symbol-only (code ``None``)
+    if the events lookup is not cheaply available (missing table / unparsable
+    payload); the join is left-outer so a failed row with no event still lists.
+    """
+    placeholders = ",".join("?" * len(_FAILED_ENTRY_STATES))
+    try:
+        rows = engine_conn.execute(
+            "SELECT p.symbol, "
+            "  CAST(json_extract(e.payload, '$.code') AS BIGINT) AS code "
+            "FROM positions p "
+            "LEFT JOIN LATERAL ("
+            "  SELECT payload FROM events ev "
+            "  WHERE ev.position_id = p.id AND ev.event_type = 'order_cancelled' "
+            "  ORDER BY ev.timestamp DESC LIMIT 1"
+            ") e ON TRUE "
+            f"WHERE p.entry_date = ? AND lower(p.current_state) IN ({placeholders}) "
+            "ORDER BY p.symbol",
+            [today, *_FAILED_ENTRY_STATES],
+        ).fetchall()
+        return [(sym, int(code) if code is not None else None) for sym, code in rows]
+    except Exception:
+        # events table absent or payload not extractable — degrade to symbol-only
+        rows = engine_conn.execute(
+            "SELECT symbol FROM positions "
+            f"WHERE entry_date = ? AND lower(current_state) IN ({placeholders}) "
+            "ORDER BY symbol",
+            [today, *_FAILED_ENTRY_STATES],
+        ).fetchall()
+        return [(sym, None) for (sym,) in rows]
+
+
+def _render_failures(failures: list[tuple[str, Optional[int]]]) -> str:
+    return ", ".join(
+        f"{sym} ({code})" if code is not None else sym for sym, code in failures
+    )
+
+
 def check_engine_positions(engine_conn, now: datetime, spec_path: Optional[Path] = None) -> StepResult:
     if engine_conn is None:
-        return StepResult(ENGINE_POSITIONS, Status.RED, "engine DuckDB not reachable")
+        return StepResult(ENGINE_POSITIONS, Status.RED, ENGINE_DB_UNREADABLE_MSG)
     today = _utc_date(now)
-    n_today = engine_conn.execute(
-        "SELECT COUNT(*) FROM positions WHERE entry_date = ?", [today]
+    opened_placeholders = ",".join("?" * len(_NEVER_OPENED_STATES))
+    n_opened = engine_conn.execute(
+        f"SELECT COUNT(*) FROM positions "
+        f"WHERE entry_date = ? AND lower(current_state) NOT IN ({opened_placeholders})",
+        [today, *_NEVER_OPENED_STATES],
     ).fetchone()[0]
-    if n_today > 0:
-        return StepResult(ENGINE_POSITIONS, Status.GREEN, f"{n_today} position(s) opened today ({today})")
+    if n_opened > 0:
+        failures = _failed_entries_today(engine_conn, today)
+        if failures:
+            return StepResult(
+                ENGINE_POSITIONS, Status.GREEN,
+                f"{n_opened} opened, {len(failures)} failed today ({today}): "
+                f"{_render_failures(failures)}",
+            )
+        return StepResult(ENGINE_POSITIONS, Status.GREEN, f"{n_opened} position(s) opened today ({today})")
 
     placeholders = ",".join("?" * len(_CLOSED_POSITION_STATES))
     open_now = engine_conn.execute(

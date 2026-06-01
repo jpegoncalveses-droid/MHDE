@@ -2,16 +2,20 @@
 
 Before doing any work in this repo — debugging, refactoring, adding features, or operational tasks — read these files:
 
-1. `ARCHITECTURE.md` — top-down system architecture; the three engines + daily-analysis path + dashboard.
-2. `INFRASTRUCTURE.md` — VPS, services, reverse proxy, schedules, secrets locations.
-3. `OPERATIONS.md` — runbook: manual pipeline invocations, recovery procedures, deploy steps.
-4. `DATABASE_SCHEMA.md` — every table, columns, types, reader/writer modules.
-5. `KNOWN_ISSUES.md` — open and resolved bug tracker.
-6. `DECISIONS.md` — architecture decision records.
-7. `HARDENING_PLAN.md` — multi-session roadmap; check the current session number before starting work.
-8. `SESSION_LOG.md` — append-only log of what was done each session (read the most recent 3 entries at session start).
-9. `docs/PATH_TO_LIVE_PLAN.md` — canonical 5-phase plan from current state to $1000 live trading on Binance Futures. Phase 0 (calibration validation) is parallel; Phases 1A/1B (backfill + execution backtest) drive Phase 2 (execution-layer build) which gates Phase 3 (paper trading) which gates Phase 4 (live). Read before any crypto-execution / Phase 1+ work.
-10. `/home/jpcg/crypto-trading-engine/docs/INTERFACE.md` — file-based contract MHDE must respect when producing `data/exports/active_spec.json` and the daily `data/exports/predictions_YYYY-MM-DD.json` files. Both files are produced by `crypto/exports/` (see `crypto export-spec` and `crypto export-predictions` CLI commands plus the `mhde-crypto-export-predictions.timer` systemd unit). Schema or hash-canonicalization changes require a coordinated commit on both repos.
+1. `STATE.md` - current system state: live branch, in-flight work,
+   active config, blockers, next action. Read first. Treat as stale
+   until verified against the host. On any conflict: host wins, then
+   SESSION_LOG.md, then STATE.md.
+2. `ARCHITECTURE.md` — top-down system architecture; the three engines + daily-analysis path + dashboard.
+3. `INFRASTRUCTURE.md` — VPS, services, reverse proxy, schedules, secrets locations.
+4. `OPERATIONS.md` — runbook: manual pipeline invocations, recovery procedures, deploy steps.
+5. `DATABASE_SCHEMA.md` — every table, columns, types, reader/writer modules.
+6. `KNOWN_ISSUES.md` — open and resolved bug tracker.
+7. `DECISIONS.md` — architecture decision records.
+8. `HARDENING_PLAN.md` — multi-session roadmap; check the current session number before starting work.
+9. `SESSION_LOG.md` — append-only log of what was done each session (read the most recent 3 entries at session start).
+10. `docs/PATH_TO_LIVE_PLAN.md` — canonical 5-phase plan from current state to $1000 live trading on Binance Futures. Phase 0 (calibration validation) is parallel; Phases 1A/1B (backfill + execution backtest) drive Phase 2 (execution-layer build) which gates Phase 3 (paper trading) which gates Phase 4 (live). Read before any crypto-execution / Phase 1+ work.
+11. `/home/jpcg/crypto-trading-engine/docs/INTERFACE.md` — file-based contract MHDE must respect when producing `data/exports/active_spec.json` and the daily `data/exports/predictions_YYYY-MM-DD.json` files. Both files are produced by `crypto/exports/` (see `crypto export-spec` and `crypto export-predictions` CLI commands plus the `mhde-crypto-export-predictions.timer` systemd unit). Schema or hash-canonicalization changes require a coordinated commit on both repos.
 
 These describe the deployment topology and the code layout. They override assumptions from training data.
 
@@ -50,6 +54,24 @@ Do not use inline `python -c` blocks for DuckDB smoke tests.
 Use this command instead:
 
 `venv/bin/python .claude/local_scripts/test_duckdb_failed_alter.py`
+
+## Refreshing STATE.md
+
+Trigger: only when the operator explicitly says "refresh STATE".
+Never refresh it automatically, including at session end.
+
+Procedure:
+1. Run venv/bin/python scripts/snapshot_state.py
+2. Overwrite STATE.md in place. Machine fields from the script output;
+   judgement fields (blockers, next action, deferred queue, repo/host
+   divergences, paper-trading status) from the current session, or ask
+   the operator.
+3. Always verify against the host. Never rewrite STATE.md from memory
+   or from possibly-stale docs.
+
+STATE.md is only refreshed on explicit operator command, so any session
+must treat it as potentially stale and verify against the host before
+trusting it.
 
 ## Cross-chat protocol
 

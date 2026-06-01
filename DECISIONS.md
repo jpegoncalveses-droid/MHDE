@@ -952,6 +952,11 @@ remote DB, this monitor's `_open_engine_db()` is the single point that
 changes. The dashboard's Gap 3 paper-trading tab is expected to take
 the same read-only-DuckDB approach under this ADR.
 
+**Addendum (2026-05-31).** The dashboard Paper-Trading tab now reads
+`orders`, `funding_log`, and `engine_runs` read-only (in addition to
+`positions` / `price_snapshots`) for the today's-cohort Funding /
+Commission / Net PnL columns; same constraints apply.
+
 ---
 
 ## ADR-021 — Post-parabolic exclusion filter at the prediction-export step
@@ -2047,3 +2052,73 @@ spec repoint, not follow it.
   the live kill-switch envelope the safety floor is set 5pp under.
 - ADR-024 (knockout label validation methodology) — adjacent precedent
   for "walkfold isn't the whole gate."
+
+## ADR-033 — Execution leverage 1x → 2x
+
+**Status:** accepted 2026-06-01. MHDE-only change (single line in
+`crypto/exports/spec_config.py`, regenerated `active_spec.json`); no
+engine change required. Branch `chore/spec-leverage-2x`, draft PR
+awaiting operator.
+
+**Context.** With `sizing.leverage = 1.0`, each position's initial
+margin equals its full notional. Live entries observed Binance
+`-2019 "Margin is insufficient"` rejections — DOGSUSDT was the
+recurring case — once prior open positions had consumed enough of the
+wallet that the next sized notional could not be margined 1:1. The
+engine sizes positions against *total* wallet (`position_size_max_pct`
+of wallet) but does **not** consult `availableBalance` at placement
+(`engine/execution/executor.py` computes `raw_qty =
+position_size_usd / current_price` with only `min_qty` / `minNotional`
+filter checks), so the rejection surfaces only at the venue.
+
+**Decision.** Raise execution leverage to **2.0** in the spec's single
+source of truth, `crypto/exports/spec_config.py:SIZING["leverage"]`,
+and regenerate `active_spec.json` via `crypto export-spec` (hash
+recomputed by `compute_spec_hash`; the JSON is gitignored and
+regenerates on the host at deploy). At fixed notional, 2x halves the
+initial margin required per position (~40% wallet utilisation at the
+current concurrency envelope), clearing the `-2019` rejections with
+large headroom. **Notional is unchanged, so exposure and realised
+P&L are unchanged** — this is a margin-efficiency knob, not a
+risk-gearing knob. Isolated-margin liquidation moves from effectively
+unreachable (1x) to roughly **−50%** adverse, still far clear of the
+Policy D exit behaviour and the engine's `-5%`-class stop geometry, so
+the change buys margin headroom without bringing liquidation into
+contact with normal exits.
+
+**3x considered and rejected.** The engine validator pins an allowed
+set `_VALID_LEVERAGE = {1.0, 2.0}` (`engine/spec/validator.py`), and
+`INTERFACE.md §2` documents `leverage ∈ {1.0, 2.0}` as a *locked
+decision*. A spec with `leverage = 3.0` would fail `load_spec` →
+`SpecLoadError` → the entry handler aborts for **every** symbol, which
+is strictly worse than the single-symbol `-2019` it was meant to
+relieve. 3x would therefore be a coordinated two-repo change (widen the
+allowlist + the JSON-schema-adjacent contract + INTERFACE.md) for
+headroom the 2x utilisation figure shows is not needed.
+
+**Scope boundaries.**
+
+- **Backtest sim leverage left at 1x.** `write_active_spec.py:120`
+  (`simulate_portfolio(..., leverage=1.0)`) drives only
+  `backtest_expectations`; it is deliberately decoupled from execution
+  leverage. Execution leverage at fixed notional does not change the
+  P&L path a backtest measures, so the published expectations remain a
+  faithful 1x baseline. (Confirmed: regenerating the spec produced **no
+  `backtest_expectations` churn** — only `sizing.leverage`,
+  `spec_hash`, `generated_at`, and the `generated_by_mhde_commit`
+  stamp changed.)
+- **Does not add the available-margin check.** The missing
+  `availableBalance`-aware sizing in the engine remains the true root
+  cause of `-2019`; 2x only reduces how often the gap bites. That check
+  is a separate engine-side lever, out of scope here.
+
+**References.**
+
+- `crypto/exports/spec_config.py` — `SIZING["leverage"]`, the single
+  source of truth changed by this ADR.
+- `crypto-trading-engine/engine/spec/validator.py` — `_VALID_LEVERAGE`
+  allowlist that bounds the contract at 2.0.
+- `crypto-trading-engine/docs/INTERFACE.md §2` — the locked
+  `leverage ∈ {1.0, 2.0}` decision.
+- `crypto-trading-engine/engine/execution/executor.py` — sizing /
+  placement path lacking the available-margin check.

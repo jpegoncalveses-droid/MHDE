@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import duckdb
+import numpy as np
 import pandas as pd
 
 
@@ -1120,34 +1121,6 @@ def _compute_post_baseline_unrealized_for_date(
     return float(val or 0.0)
 
 
-def _compute_pre_baseline_locked_at_eod(
-    engine_conn: duckdb.DuckDBPyConnection, row_date: date, baseline_date: date,
-) -> float:
-    """SUM(entry_price * qty) for pre-baseline positions OPEN at end of
-    `row_date`. Used to compute equity_attributable per row: the wallet
-    balance minus this locked-pre-baseline amount.
-
-    Mirrors `_compute_post_baseline_unrealized_for_date`'s "open at end
-    of row_date" predicate but filters to `entry_date < baseline_date`
-    and reads cost basis (no snapshot dependency).
-    """
-    val = engine_conn.execute(
-        """
-        SELECT COALESCE(SUM(entry_price * qty), 0.0)
-        FROM positions
-        WHERE entry_date < ?
-          AND entry_date <= ?
-          AND (
-              current_state IN ('entry_filled', 'entry_pending',
-                                'trailing_active', 'exit_pending', 'expired')
-              OR CAST(updated_at AS DATE) > ?
-          )
-        """,
-        [baseline_date, row_date, row_date],
-    ).fetchone()[0]
-    return float(val or 0.0)
-
-
 def get_daily_balance_since_baseline(
     engine_conn: duckdb.DuckDBPyConnection,
     *,
@@ -1166,8 +1139,12 @@ def get_daily_balance_since_baseline(
         unrealized_pnl_usd  — open-position mark-to-market at row time
         daily_delta         — equity − equity_of_prior_present_row;
                               ``None`` for the first in-window row
-        cumulative_delta    — equity − equity_of_first_in_window_row;
-                              ``0.0`` for the first row
+        cumulative_delta    — running sum of ``realized_pnl_usd`` over the
+                              window (inclusive of the first row, so the
+                              first row's cumulative equals its own realized,
+                              not 0). Tracks realized P&L since baseline, not
+                              the wallet-equity curve — meaningful even when
+                              ``equity`` is NaN (no reconciled anchor yet).
         is_preliminary      — ``False`` for reconciled rows pulled from
                               daily_pnl, ``True`` for today's synthesized
                               in-day row
@@ -1193,8 +1170,9 @@ def get_daily_balance_since_baseline(
     engine does not track them granularly; the drift is small enough to
     accept per the operator's call). When ``daily_pnl`` is empty there is
     no prior anchor, so the synthesized row has ``equity = NaN`` and
-    ``daily_delta`` / ``cumulative_delta`` ``NaN`` — only realized and
-    unrealized columns carry meaning until the first reconcile fires.
+    ``daily_delta`` ``NaN`` — but ``cumulative_delta`` still carries the
+    running realized sum (it does not depend on equity), and realized /
+    unrealized columns are meaningful from the first row.
 
     Empty input AND ``today < since`` yields an empty DataFrame with the
     correct schema so the caller can render an "no data" banner.
@@ -1217,7 +1195,7 @@ def get_daily_balance_since_baseline(
         return pd.DataFrame(columns=_DAILY_BALANCE_COLUMNS)
 
     out: list[dict] = []
-    anchor_attributable: float | None = None
+    cum_realized: float = 0.0
     prev_equity: float | None = None
     for d, equity in rows:
         equity = float(equity)
@@ -1227,12 +1205,7 @@ def get_daily_balance_since_baseline(
         unrealized_post = _compute_post_baseline_unrealized_for_date(
             engine_conn, d, baseline_date,
         )
-        locked_pre = _compute_pre_baseline_locked_at_eod(
-            engine_conn, d, baseline_date,
-        )
-        equity_attributable = equity - locked_pre
-        if anchor_attributable is None:
-            anchor_attributable = equity_attributable
+        cum_realized += realized_post
         daily_delta = None if prev_equity is None else equity - prev_equity
         out.append({
             "date": d,
@@ -1240,7 +1213,7 @@ def get_daily_balance_since_baseline(
             "realized_pnl_usd": realized_post,
             "unrealized_pnl_usd": unrealized_post,
             "daily_delta": daily_delta,
-            "cumulative_delta": equity_attributable - anchor_attributable,
+            "cumulative_delta": cum_realized,
             "is_preliminary": False,
         })
         prev_equity = equity
@@ -1252,21 +1225,14 @@ def get_daily_balance_since_baseline(
         today_unrealized = get_open_positions_unrealized_pnl_usd(
             engine_conn, baseline_date=baseline_date,
         )
-        today_locked_pre = _compute_pre_baseline_locked_at_eod(
-            engine_conn, today, baseline_date,
-        )
 
         if rows:
             today_equity = float(rows[-1][1]) + today_realized
         else:
             today_equity = float("nan")
 
-        today_equity_attributable = today_equity - today_locked_pre
-        if anchor_attributable is None:
-            # Bootstrap: row is its own anchor (NaN-NaN=NaN propagates).
-            anchor_attributable = today_equity_attributable
+        cum_realized += today_realized
         daily_delta = None if prev_equity is None else today_equity - prev_equity
-        cumulative_delta = today_equity_attributable - anchor_attributable
 
         out.append({
             "date": today,
@@ -1274,8 +1240,348 @@ def get_daily_balance_since_baseline(
             "realized_pnl_usd": today_realized,
             "unrealized_pnl_usd": today_unrealized,
             "daily_delta": daily_delta,
-            "cumulative_delta": cumulative_delta,
+            "cumulative_delta": cum_realized,
             "is_preliminary": True,
         })
 
     return pd.DataFrame(out, columns=_DAILY_BALANCE_COLUMNS)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Paper Trading — today's opened cohort + per-position price charts
+# (paper-tab-overhaul). Read-only against the engine DuckDB (ADR-020).
+#
+# Cohort = positions whose entry_date is "today" (UTC) that reached the
+# market (entry_filled or beyond — i.e. any state EXCEPT failed/cancelled/
+# candidate). Open positions first, then closed ones newest-exit-first.
+# failed/cancelled stay out (they have no fills and no snapshots; the tab
+# lists them separately under "Rejected entries").
+# ──────────────────────────────────────────────────────────────────────
+
+# States in the cohort: reached entry_filled or beyond. entry_pending is the
+# brief pre-fill state; include it so a just-opened position isn't missed.
+_PAPER_COHORT_STATES = (
+    "entry_pending", "entry_filled", "trailing_active", "exit_pending", "exit_filled",
+)
+
+_COHORT_COLUMNS = [
+    "id", "symbol", "current_state", "is_open", "entry_ts", "exit_ts",
+    "entry_price", "qty", "peak_price", "exit_price",
+    "opened_usd", "pnl_usd", "pnl_pct",
+    "funding_usd", "commission_usd", "net_pnl_usd", "net_pnl_pct",
+    "net_pending",
+]
+
+
+def _latest_prices_for(engine_conn, position_ids: list) -> dict:
+    """Map position_id → most-recent snapshot price for the given ids.
+
+    Returns an empty dict for an empty id list. Positions without any
+    snapshot simply don't appear in the result.
+    """
+    if not position_ids:
+        return {}
+    placeholders = ",".join("?" for _ in position_ids)
+    rows = engine_conn.execute(
+        f"""
+        SELECT ps.position_id, ps.price
+        FROM price_snapshots ps
+        WHERE (ps.position_id, ps.timestamp) IN (
+            SELECT position_id, MAX(timestamp)
+            FROM price_snapshots
+            WHERE position_id IN ({placeholders})
+            GROUP BY position_id
+        )
+        """,
+        list(position_ids),
+    ).fetchall()
+    return {pid: price for pid, price in rows}
+
+
+def _last_reconcile_completed_at(engine_conn) -> datetime | None:
+    """Completion time of the most recent SUCCESSFUL reconcile run, or None.
+
+    The nightly reconcile (``engine_runs`` phase ``reconcile``) is what
+    backfills ``orders.commission_usd`` and pulls ``funding_log`` for the day's
+    fills (ADR-002). A position whose latest fill postdates this hasn't been
+    reconciled yet, so its funding/commission/net read "pending" instead of a
+    misleading 0.
+    """
+    row = engine_conn.execute(
+        "SELECT MAX(completed_at) FROM engine_runs "
+        "WHERE phase = 'reconcile' AND success"
+    ).fetchone()
+    return row[0] if row and row[0] is not None else None
+
+
+def _net_components_for(engine_conn, position_ids: list) -> dict:
+    """Map position_id → ``(commission_sum, funding_sum, latest_activity_ts)``.
+
+    * ``commission_sum``: ``SUM(orders.commission_usd)`` — None when every
+      contributing order has NULL commission (genuinely missing; the caller
+      never coerces this to 0).
+    * ``funding_sum``: signed ``SUM(funding_log.amount_usd)`` — None when the
+      position has no funding rows (the caller renders a real 0 once
+      reconciled; funding can legitimately be 0, +, or -).
+    * ``latest_activity_ts``: ``MAX(COALESCE(filled_at, placed_at))`` over the
+      position's orders — the fill-recency anchor for the reconcile gate,
+      mirroring the engine's own commission gap-fill anchor.
+    """
+    if not position_ids:
+        return {}
+    ph = ",".join("?" for _ in position_ids)
+    comm_rows = engine_conn.execute(
+        f"""
+        SELECT position_id, SUM(commission_usd),
+               MAX(COALESCE(filled_at, placed_at))
+        FROM orders
+        WHERE position_id IN ({ph})
+        GROUP BY position_id
+        """,
+        list(position_ids),
+    ).fetchall()
+    fund_rows = engine_conn.execute(
+        f"""
+        SELECT position_id, SUM(amount_usd)
+        FROM funding_log
+        WHERE position_id IN ({ph})
+        GROUP BY position_id
+        """,
+        list(position_ids),
+    ).fetchall()
+    funding_by_id = {pid: s for pid, s in fund_rows}
+    out: dict = {}
+    for pid, comm_sum, last_act in comm_rows:
+        out[pid] = (comm_sum, funding_by_id.get(pid), last_act)
+    # Funding present but no orders (not expected for a cohort member that
+    # reached the market, but keep funding visible if it ever happens).
+    for pid, s in funding_by_id.items():
+        out.setdefault(pid, (None, s, None))
+    return out
+
+
+def get_paper_today_cohort(
+    engine_conn: duckdb.DuckDBPyConnection, *, today: date | None = None
+) -> pd.DataFrame:
+    """Today's opened cohort for the Paper Trading positions table.
+
+    One row per position with ``entry_date == today`` that reached the market
+    (``failed`` / ``cancelled`` excluded). Ordering: open positions first,
+    then closed ones by exit time descending.
+
+    Dollar columns (all gross — FUNDING-001):
+      * ``opened_usd`` = ``entry_price * qty`` (per-position deployed dollars;
+        the engine has no stored notional column, and entry_price*qty matches
+        the engine's sizing — every cohort row deploys ~equity*0.8/N).
+      * Closed: ``pnl_usd`` = ``realized_pnl_usd``; ``exit_price`` from the
+        column; ``pnl_pct`` = ``pnl_usd / opened_usd * 100``.
+      * Open: ``pnl_usd`` = ``(latest_snapshot_price - entry_price) * qty``
+        (UNREALIZED, live mark); ``exit_price`` is NaN; ``pnl_pct`` likewise.
+        An open position with no snapshot yet gets NaN pnl (never a fake 0).
+
+    Net columns (``funding_usd``, ``commission_usd``, ``net_pnl_usd``,
+    ``net_pnl_pct``, ``net_pending``) follow ADR-002: net = gross + funding -
+    commission, with funding signed (FUNDING-002 best-effort attribution).
+    They are gated on ``net_pending`` — True until a successful reconcile has
+    completed at or after the position's latest fill, because commission/funding
+    are only backfilled by the nightly reconcile. While pending, all four
+    numeric net fields are NaN so the UI can render "pending" rather than a
+    misleading 0. Once reconciled, a missing funding row reads as a real 0 but a
+    NULL commission stays NaN (never shown as a free trade). Per-position net is
+    best-effort; the authoritative daily figure is ``daily_pnl.net_pnl_usd``.
+    """
+    today = today or _utcnow_naive().date()
+    placeholders = ",".join("?" for _ in _PAPER_COHORT_STATES)
+    rows = engine_conn.execute(
+        f"""
+        SELECT id, symbol, current_state, entry_price, qty, peak_price,
+               exit_price, realized_pnl_usd, created_at,
+               COALESCE(closed_at, updated_at) AS exit_ts
+        FROM positions
+        WHERE entry_date = ?
+          AND current_state IN ({placeholders})
+        """,
+        [today, *_PAPER_COHORT_STATES],
+    ).fetchall()
+
+    open_ids = [r[0] for r in rows if r[2] != "exit_filled"]
+    latest = _latest_prices_for(engine_conn, open_ids)
+
+    # Net P&L inputs (ADR-002: net = gross + funding - commission), gated on
+    # whether the nightly reconcile has run since each position's last fill.
+    last_recon = _last_reconcile_completed_at(engine_conn)
+    net_parts = _net_components_for(engine_conn, [r[0] for r in rows])
+
+    out = []
+    for (pid, symbol, state, entry_price, qty, peak_price, exit_price,
+         realized_pnl_usd, created_at, exit_ts) in rows:
+        is_open = state != "exit_filled"
+        opened_usd = (
+            entry_price * qty
+            if entry_price is not None and qty is not None
+            else float("nan")
+        )
+        if is_open:
+            mark = latest.get(pid)
+            if mark is not None and entry_price is not None and qty is not None:
+                pnl_usd = (mark - entry_price) * qty
+            else:
+                pnl_usd = float("nan")
+            exit_price_out = float("nan")
+        else:
+            pnl_usd = (
+                float(realized_pnl_usd) if realized_pnl_usd is not None else float("nan")
+            )
+            exit_price_out = (
+                float(exit_price) if exit_price is not None else float("nan")
+            )
+        pnl_pct = (
+            pnl_usd / opened_usd * 100.0
+            if opened_usd and not np.isnan(opened_usd) and not np.isnan(pnl_usd)
+            else float("nan")
+        )
+
+        # Net columns. Gate: reconciled iff a successful reconcile completed at
+        # or after this position's latest fill. Until then every component is
+        # "pending" (NaN + net_pending=True) — today's fresh fills land here.
+        comm_sum, funding_sum, last_act = net_parts.get(pid, (None, None, None))
+        reconciled = last_recon is not None and (
+            last_act is None or last_act <= last_recon
+        )
+        if not reconciled:
+            funding_usd = float("nan")
+            commission_usd = float("nan")
+            net_pnl_usd = float("nan")
+            net_pnl_pct = float("nan")
+        else:
+            # Funding: real 0 when no rows (legit per FUNDING-002); signed.
+            funding_usd = float(funding_sum) if funding_sum is not None else 0.0
+            # Commission: NULL stays NaN — never rendered as a free trade.
+            commission_usd = (
+                float(comm_sum) if comm_sum is not None else float("nan")
+            )
+            net_pnl_usd = (
+                pnl_usd + funding_usd - commission_usd
+                if not np.isnan(pnl_usd) and not np.isnan(commission_usd)
+                else float("nan")
+            )
+            net_pnl_pct = (
+                net_pnl_usd / opened_usd * 100.0
+                if opened_usd
+                and not np.isnan(opened_usd)
+                and not np.isnan(net_pnl_usd)
+                else float("nan")
+            )
+
+        out.append({
+            "id": pid,
+            "symbol": symbol,
+            "current_state": state,
+            "is_open": is_open,
+            "entry_ts": created_at,
+            "exit_ts": None if is_open else exit_ts,
+            "entry_price": entry_price if entry_price is not None else float("nan"),
+            "qty": qty if qty is not None else float("nan"),
+            "peak_price": peak_price if peak_price is not None else float("nan"),
+            "exit_price": exit_price_out,
+            "opened_usd": opened_usd,
+            "pnl_usd": pnl_usd,
+            "pnl_pct": pnl_pct,
+            "funding_usd": funding_usd,
+            "commission_usd": commission_usd,
+            "net_pnl_usd": net_pnl_usd,
+            "net_pnl_pct": net_pnl_pct,
+            "net_pending": not reconciled,
+        })
+
+    df = pd.DataFrame(out, columns=_COHORT_COLUMNS)
+    if df.empty:
+        return df
+    # Open first, then closed by exit time descending. Stable sort keeps a
+    # deterministic order within each group.
+    df = df.sort_values(
+        by=["is_open", "exit_ts"], ascending=[False, False], kind="stable",
+        na_position="last",
+    ).reset_index(drop=True)
+    return df
+
+
+def get_paper_position_snapshots(
+    engine_conn: duckdb.DuckDBPyConnection, position_id, *, max_points: int = 400
+) -> pd.DataFrame:
+    """Per-position price series (``timestamp``, ``price``), ordered ascending.
+
+    Downsampled to at most ``max_points`` rows for mobile rendering while
+    preserving the first/last points AND the global min and max prices, so the
+    peak / activation-touch geometry stays faithful (the largest live series is
+    ~14.8k points). Returns an empty 2-column frame when the position has no
+    snapshots (failed/cancelled positions never get any).
+    """
+    rows = engine_conn.execute(
+        "SELECT timestamp, price FROM price_snapshots "
+        "WHERE position_id = ? ORDER BY timestamp",
+        [position_id],
+    ).fetchall()
+    df = pd.DataFrame(rows, columns=["timestamp", "price"])
+    if df.empty or len(df) <= max_points:
+        return df
+
+    n = len(df)
+    # Evenly spaced indices over a budget of max_points-4, then force-include
+    # endpoints + global min/max so the rendered curve never clips the peak or
+    # the trough. Reserving the 4 slots keeps the result <= max_points.
+    budget = max(2, max_points - 4)
+    idx = set(np.linspace(0, n - 1, budget).round().astype(int).tolist())
+    idx.add(0)
+    idx.add(n - 1)
+    idx.add(int(df["price"].idxmin()))
+    idx.add(int(df["price"].idxmax()))
+    keep = sorted(idx)
+    return df.iloc[keep].reset_index(drop=True)
+
+
+def position_is_armed(*, entry_price, peak_price, activation_pct: float) -> bool:
+    """True once the trailing stop has armed: the running peak has cleared the
+    activation threshold ``entry_price * (1 + activation_pct)``. Matches the
+    engine SPEC §3.2 activation rule. False when prices are missing."""
+    if entry_price is None or peak_price is None:
+        return False
+    try:
+        if np.isnan(entry_price) or np.isnan(peak_price):
+            return False
+    except TypeError:
+        return False
+    return peak_price >= entry_price * (1.0 + activation_pct)
+
+
+def build_position_chart_frame(
+    snapshots: pd.DataFrame, *, entry_price, peak_price,
+    trail_pct: float, activation_pct: float,
+) -> pd.DataFrame:
+    """Per-position chart geometry: ``timestamp, price, entry, exit_ref``.
+
+    * ``entry`` — flat line at ``entry_price``.
+    * ``exit_ref`` — the red reference line, state-dependent:
+        - NOT yet armed (``peak_price < entry*(1+activation_pct)``):
+          the flat ACTIVATION line ``entry*(1+activation_pct)``.
+        - armed: the stepwise TRAIL-STOP line, per snapshot
+          ``running_peak(t) - (running_peak(t) - entry) * trail_pct`` where
+          ``running_peak(t) = cummax(price)`` over snapshots ordered by time.
+          (Engine SPEC §3.2.)
+
+    Returns an empty 4-column frame when ``snapshots`` is empty.
+    """
+    cols = ["timestamp", "price", "entry", "exit_ref"]
+    if snapshots is None or snapshots.empty:
+        return pd.DataFrame(columns=cols)
+
+    df = snapshots.copy().reset_index(drop=True)
+    df["entry"] = entry_price
+    if position_is_armed(
+        entry_price=entry_price, peak_price=peak_price, activation_pct=activation_pct
+    ):
+        running_peak = df["price"].cummax()
+        df["exit_ref"] = running_peak - (running_peak - entry_price) * trail_pct
+    else:
+        df["exit_ref"] = entry_price * (1.0 + activation_pct)
+    return df[cols]
