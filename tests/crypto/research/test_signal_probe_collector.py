@@ -142,6 +142,28 @@ def test_stale_symbol_is_skipped(tmp_path):
         conn.close()
 
 
+def test_concurrent_fetch_writes_all_symbols(tmp_path):
+    # Exercise the thread pool with more symbols than workers; every symbol
+    # must still land exactly once and the cross-sectional pass must populate.
+    conn, now, cc, hf = _setup(tmp_path)
+    syms = ["BTCUSDT"] + [f"S{i:02d}USDT" for i in range(15)]
+    client = _FakeClient(cycle_close=cc, hour_floor=hf, symbols=syms)
+    try:
+        summary = collector.run_cycle(client, conn, symbols=syms,
+                                      btc_symbol="BTCUSDT", max_workers=4, now=now)
+        assert summary["rows_written"] == len(syms)
+        assert summary["symbols_ok"] == len(syms)
+        distinct = conn.execute(
+            "SELECT COUNT(DISTINCT symbol) FROM signal_probe").fetchone()[0]
+        assert distinct == len(syms)
+        # percentile populated (>=2 peers with ROC)
+        nonnull_pct = conn.execute(
+            "SELECT COUNT(*) FROM signal_probe WHERE ret_pct_5m IS NOT NULL").fetchone()[0]
+        assert nonnull_pct == len(syms)
+    finally:
+        conn.close()
+
+
 def test_idempotent_rerun_same_minute(tmp_path):
     conn, now, cc, hf = _setup(tmp_path)
     syms = ["BTCUSDT", "AAAUSDT"]

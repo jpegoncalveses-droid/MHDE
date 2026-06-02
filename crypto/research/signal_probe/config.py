@@ -57,6 +57,14 @@ LOOKBACK_1H = 730
 OI_HIST_PERIOD = "5m"
 OI_HIST_LIMIT = 16
 
+# -- Concurrency --
+#: Per-symbol fetches run on a bounded thread pool so the full universe
+#: (~57 symbols × a few paced calls) completes well inside the 60s cadence;
+#: sequential fetching overran it. Weight stays far under Binance limits
+#: (~640 weight/cycle vs the 2400/min budget). The DB write stays single-
+#: threaded (DuckDB single-writer) after the gather.
+MAX_WORKERS = 8
+
 # -- Order-book depth (optional) --
 #: Capture depth-imbalance + spread. Set False to drop the per-symbol depth
 #: call entirely (one fewer request per symbol per cycle).
