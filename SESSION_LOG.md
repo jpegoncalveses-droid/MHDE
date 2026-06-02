@@ -6,6 +6,68 @@ are at the top.
 
 ---
 
+## 2026-06-02 — Signal-probe data collector (research-only, read-only)
+
+**Branch:** `feat/signal-probe-collector` (off `master`, draft PR;
+**awaiting operator — DO NOT merge / no auto-merge**). MHDE-only;
+read-only throughout; no engine/INTERFACE/hash change; no production-DB
+writes (the only DB written is the SEPARATE gitignored research DB
+`data/research/signal_probe.duckdb`).
+
+**Scope (built).** ONLY the data collector for the signal probe — a
+systemd `--user` timer pulling raw multi-window features per symbol into
+storage every 60s. Outcome resolution / forward returns / lift / accuracy
+analysis are deliberately **OUT OF SCOPE** (later workstream).
+
+**What it does.** One oneshot cycle (`crypto signal-probe-collect`):
+fixes the latest CLOSED 1-minute boundary (exchange time), drops the
+in-progress bar, and per symbol pulls the 1m (130) + 1h (730) kline
+lookback + funding (universe-wide `premiumIndex`, one call) + OI live +
+OI 5m-history + optional depth from Binance USDT-M **PUBLIC** endpoints
+(no auth, no engine client). Computes every raw feature CAUSALLY (ROC /
+accel / move-shape / VWAP / SMA / breakout / RVOL / taker-imbalance /
+trade-count+size / OI-change / vs-BTC / vs-universe percentile+median /
+trend-alignment / depth) and UPSERTs one row per symbol keyed on
+`(symbol, ts)`. Raw values only — no thresholds, no flags; NULL = not
+computable. Missed cycles are skipped, never backfilled.
+
+**Files (all new except `main.py`).**
+- `crypto/research/signal_probe/{config,store,features,client,collector}.py`
+  — universe snapshot (active `crypto_universe` @2026-06-02, 57 syms incl.
+  BTCUSDT benchmark), schema (62-col `signal_probe` table, NOT in
+  `crypto.schema.ALL_SCHEMAS`), pure causal feature math, thin public
+  client, one-cycle orchestration.
+- `main.py` — `crypto signal-probe-collect` (only edit to existing code;
+  additive command).
+- `systemd/mhde-signal-probe-collector.{service,timer}` — `--user`
+  oneshot + monotonic 60s timer (`OnUnitActiveSec=60`, no
+  Persistent/OnCalendar; `TimeoutStartSec=55`; venv pre-flight; never
+  references the production DB).
+- `tests/crypto/research/test_signal_probe_{features,store,collector,systemd}.py`
+  — 46 tests (math + null contracts, schema/idempotency, end-to-end cycle
+  with a fake client, unit-file invariants). All pass.
+
+**Verified live.** A 3-symbol cycle (BTC/ETH/SOL) wrote 3 rows; all 62
+columns populated with sane values (e.g. BTC spread 0.015 bps, funding
+0.0001, −5.7% vs 1d high). Only two columns are NULL **by design**:
+`predicted_funding_rate` (Binance exposes no public predicted/next
+funding field) and `oi_change_1m` (no public sub-5m OI source; derivable
+downstream from consecutive `open_interest` rows).
+
+**Decisions / open questions for the operator** (see PR body):
+1. `oi_change_1m` left NULL (raw `open_interest` stored each minute →
+   derivable downstream). 2. `predicted_funding_rate` NULL (no public
+   field; `interest_rate`/`mark`/`index` stored so it's derivable).
+   3. Session-VWAP anchored on 1h bars of the UTC day (no full day of 1m
+   bars in a 130-bar lookback). 4. Depth included (`INCLUDE_DEPTH=True`);
+   `--no-depth` drops one call/symbol/cycle.
+
+**Pending (not done this session, by scope).** Deploy (copy units to
+`~/.config/systemd/user/`, `daemon-reload`, `enable --now`; ensure linger);
+outcome-resolution + lift analysis (separate future workstream).
+
+---
+
 ## 2026-06-02 — Revert execution leverage 2x → 1x (ADR-034, supersedes ADR-033)
 
 **Branch:** `chore/spec-leverage-revert-1x` (off `master`, draft PR;
