@@ -1852,6 +1852,52 @@ def crypto_backfill_intraday(interval, start_str, end_str, symbols, research_db,
         click.echo(f"  skipped: {', '.join(summary['symbols_skipped'])}")
 
 
+@crypto.command("signal-probe-collect")
+@click.option("--research-db", default=None,
+              help="Probe research DB path. Default: "
+                   "crypto.research.signal_probe.config.RESEARCH_DB_PATH.")
+@click.option("--no-depth", is_flag=True, default=False,
+              help="Skip the per-symbol order-book depth call this cycle.")
+@click.option("--symbols", default=None,
+              help="Comma-separated symbol override. Default: the probe "
+                   "UNIVERSE snapshot in config.py.")
+def crypto_signal_probe_collect(research_db, no_depth, symbols):
+    """Run ONE signal-probe collection cycle (research-only).
+
+    Pulls raw multi-window features per symbol from Binance USDT-M PUBLIC
+    endpoints and UPSERTs one row per symbol for the current closed minute
+    into the SEPARATE research DB (never mhde.duckdb). Read-only against the
+    engine; no spec/interface change. Driven every 60s by the
+    mhde-signal-probe-collector.timer; safe to run manually too.
+    """
+    from crypto.research.signal_probe import config as probe_cfg
+    from crypto.research.signal_probe.client import ProbeBinanceClient
+    from crypto.research.signal_probe.collector import run_cycle
+    from crypto.research.signal_probe.store import connect_probe_db
+
+    sym_list = (
+        [s.strip() for s in symbols.split(",") if s.strip()]
+        if symbols else list(probe_cfg.UNIVERSE)
+    )
+    conn = connect_probe_db(research_db or probe_cfg.RESEARCH_DB_PATH)
+    try:
+        client = ProbeBinanceClient()
+        summary = run_cycle(
+            client, conn, symbols=sym_list,
+            btc_symbol=probe_cfg.BTC_SYMBOL, include_depth=not no_depth,
+        )
+    finally:
+        conn.close()
+
+    click.echo(
+        f"signal-probe-collect: ts={summary['ts']} "
+        f"{summary['rows_written']} rows, {summary['symbols_ok']} ok, "
+        f"{len(summary['symbols_skipped'])} skipped"
+    )
+    if summary["symbols_skipped"]:
+        click.echo(f"  skipped: {', '.join(summary['symbols_skipped'])}")
+
+
 @crypto.command("intraday-replay")
 @click.option("--start", "start_str", required=True,
               help="First prediction_date YYYY-MM-DD (inclusive).")
