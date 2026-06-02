@@ -1,0 +1,19 @@
+[Unit]
+Description=MHDE signal-probe collector — one research row per symbol per minute (read-only, Binance public)
+After=network.target
+
+[Service]
+# systemd --user unit (installed under ~/.config/systemd/user/): runs as the
+# logging-in user, so NO User=/Group= line. Pre-flight fails fast if the venv
+# is missing. The probe writes ONLY the separate research DB
+# (data/research/signal_probe.duckdb, created on demand) and never touches the
+# production database, so no production-DB pre-flight is needed. No Restart:
+# the 60s timer is the retry mechanism — a failed cycle is just skipped.
+Type=oneshot
+WorkingDirectory=/home/jpcg/MHDE
+ExecStartPre=/usr/bin/test -x /home/jpcg/MHDE/venv/bin/python
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto signal-probe-collect
+StandardOutput=journal
+StandardError=journal
+# Cap well under the 60s cadence so a hung cycle cannot pile up onto the next.
+TimeoutStartSec=55

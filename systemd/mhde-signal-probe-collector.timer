@@ -1,0 +1,13 @@
+[Unit]
+Description=MHDE signal-probe collector — every 60s (monotonic; missed cycles are skipped, never backfilled)
+
+[Timer]
+# Monotonic cadence: first run 60s after the timer starts, then every 60s
+# measured from each activation. A missed minute (process down / API hiccup)
+# is simply skipped — a live model acts on now, so no Persistent/OnCalendar.
+OnActiveSec=60
+OnUnitActiveSec=60
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target
