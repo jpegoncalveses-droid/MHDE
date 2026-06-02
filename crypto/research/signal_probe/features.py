@@ -371,6 +371,8 @@ def compute_base_features(
         _dist_to(price, _mean([float(b["close"]) for b in bars_1h[-50:]]))
         if price is not None and len(bars_1h) >= 50 else None
     )
+    # "30d high" = max high over the fetched 1h lookback (LOOKBACK_1H = 730
+    # bars ≈ 30.4d); reads fewer days early in a symbol's listing history.
     out["dist_30d_high"] = (
         _dist_to(price, max((float(b["high"]) for b in bars_1h), default=None))
         if price is not None and bars_1h else None

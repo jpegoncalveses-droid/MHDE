@@ -70,6 +70,10 @@ def _collect_symbol(
         return None
 
     bars_1h = _closed(client.fetch_klines(symbol, "1h", cfg.LOOKBACK_1H), hour_floor)
+    # openInterestHist returns completed-period snapshots — its last point is
+    # the most recent *closed* 5m period, never an in-progress one — so the OI
+    # series is causal as returned (no in-progress-bar trim needed, unlike the
+    # kline path above).
     oi_series = client.fetch_open_interest_hist(symbol, cfg.OI_HIST_PERIOD, cfg.OI_HIST_LIMIT)
     oi_live = client.fetch_open_interest(symbol)
     depth = client.fetch_depth(symbol, cfg.DEPTH_LIMIT) if include_depth else None
