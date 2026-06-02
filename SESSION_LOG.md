@@ -6,6 +6,49 @@ are at the top.
 
 ---
 
+## 2026-06-02 — Revert execution leverage 2x → 1x (ADR-034, supersedes ADR-033)
+
+**Branch:** `chore/spec-leverage-revert-1x` (off `master`, draft PR;
+**awaiting operator — DO NOT merge**). MHDE-only; no engine/INTERFACE/hash
+changes; no production-DB writes; live `active_spec.json` not written
+(gitignored, regenerated on host at deploy).
+
+**Why.** ADR-033 had raised `sizing.leverage` 1.0 → 2.0 as a workaround
+for `-2019 "Margin is insufficient"` rejections, premised on per-position
+margin pressure. A read-only host investigation refuted that premise:
+`-2019` occurred **exactly twice ever, both DOGSUSDT** (05-31 rank 4,
+06-01 rank 3), and in **both** cycles a mid-rank DOGSUSDT placement was
+rejected while **later same-cycle placements (needing more cumulative
+margin) succeeded** — inconsistent with aggregate-wallet exhaustion,
+consistent with transient symbol-specific testnet venue noise. End-of-day
+equity (~5000) sat well above the ~4000 six 1x positions require, and the
+deciding venue `availableBalance` at the 00:45 instants is not persisted
+anywhere. So 2x was buying headroom against a non-existent (as-diagnosed)
+problem while amplifying drawdown — reverted to 1x.
+
+**Change.**
+- `crypto/exports/spec_config.py` — `SIZING["leverage"] 2.0 → 1.0`
+  (single source of truth; only that value).
+- `DECISIONS.md` — added **ADR-034** (supersedes ADR-033) recording the
+  rediagnosis; flipped ADR-033 status to "Superseded by ADR-034".
+- `SESSION_LOG.md` — this entry.
+
+**ADR-032 compliance.** Trivial: reversion to the previously validated,
+lower-DD value. Dual-leverage backtest
+(`data/processed/backtest_regime_filter_dual_leverage_20260602.md`) shows
+1x portfolio max DD materially below 2x (baseline −34.61% vs −58.42%;
+regime-filtered −20.20% vs −36.94%). No fresh dominance study needed.
+
+**Verify (no live-spec write).** `crypto export-spec --dry-run` confirmed
+the regenerated spec carries `sizing.leverage = 1.0`; spec/sizing tests
+green; `py_compile spec_config.py` clean.
+
+**Out of scope / pending.** The engine's missing `availableBalance`-aware
+sizing check (sizes off `balance.total`, never consults
+`balance.available` at placement) remains a separate **pre-live hygiene
+item**, not a blocker. Post-merge deploy step: run `crypto export-spec` on
+host to regenerate `active_spec.json` at leverage 1.0.
+
 ## 2026-06-01 — Intraday faithful replay of Phase 1B predictions (pipeline + first pass)
 
 **Branch:** `feat-intraday-replay-eval`, **based off `exp/trailstop-sweep`**

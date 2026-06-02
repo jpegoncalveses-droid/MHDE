@@ -2055,10 +2055,13 @@ spec repoint, not follow it.
 
 ## ADR-033 — Execution leverage 1x → 2x
 
-**Status:** accepted 2026-06-01. MHDE-only change (single line in
+**Status:** Superseded by ADR-034 (2026-06-02). Originally accepted
+2026-06-01. MHDE-only change (single line in
 `crypto/exports/spec_config.py`, regenerated `active_spec.json`); no
 engine change required. Branch `chore/spec-leverage-2x`, draft PR
-awaiting operator.
+awaiting operator. The margin-pressure premise behind this ADR was
+refuted by host evidence; see ADR-034 for the rediagnosis and the
+reversion to 1x.
 
 **Context.** With `sizing.leverage = 1.0`, each position's initial
 margin equals its full notional. Live entries observed Binance
@@ -2122,3 +2125,85 @@ headroom the 2x utilisation figure shows is not needed.
   `leverage ∈ {1.0, 2.0}` decision.
 - `crypto-trading-engine/engine/execution/executor.py` — sizing /
   placement path lacking the available-margin check.
+
+
+## ADR-034 — Revert execution leverage 2x → 1x (supersedes ADR-033)
+
+**Status:** accepted 2026-06-02. **Supersedes ADR-033.** MHDE-only
+change (single line in `crypto/exports/spec_config.py`, regenerated
+`active_spec.json`); no engine change required.
+
+**Context.** ADR-033 raised `sizing.leverage` 1.0 → 2.0 as a workaround
+for Binance `-2019 "Margin is insufficient"` entry rejections, on the
+premise that at 1x each position's initial margin equals its full
+notional and that prior open positions were exhausting the wallet so the
+next sized notional could not be margined 1:1. A read-only host
+investigation (engine `events`/`orders`/`positions` tables + `entry.log`)
+**refutes the margin-pressure premise**:
+
+- **`-2019` occurred exactly twice, ever — both DOGSUSDT:** 2026-05-31
+  (rank 4, `position_size_usd` 666.67) and 2026-06-01 (rank 3,
+  `position_size_usd` 672.03). It never touched any other symbol or any
+  other date. (It is one of a rotating set of testnet rejection codes
+  DOGSUSDT has drawn: `-1102` 05-18/19/20/22, `-1109` 05-28, `-2019`
+  05-31/06-01.)
+- **Per-rank evidence is inconsistent with aggregate-margin
+  exhaustion.** In both cycles a *mid-rank* DOGSUSDT placement was
+  rejected while **later same-cycle placements — which require more
+  cumulative margin — succeeded**. On 05-31 placements were sequential
+  (~3–4 s apart) in rank order: ranks 1–3 (SWARMSUSDT, BUSDT, FHEUSDT)
+  FILLED, **rank 4 (DOGSUSDT) REJECTED `-2019`**, then **rank 5
+  (RAVEUSDT) and rank 6 (FIDAUSDT) FILLED** ~6 s and ~10 s later. Under
+  genuine wallet exhaustion the *last* placements would fail, not a
+  middle one while later ones go through. 06-01 shows the same shape
+  (rank 3 DOGSUSDT rejected; the later-placed UBUSDT filled).
+- **Equity sat well above requirement.** End-of-day `daily_pnl.
+  account_equity_usd` was ~5000 (05-30 reset 5000.00, 05-31 5038.26,
+  06-01 4945.39) — comfortably above the ~4000 that six ~667-USDT 1x
+  notionals require. The deciding venue `availableBalance` at the exact
+  00:45 instants is not persisted anywhere, so the rejection cannot be
+  pinned to a real margin shortfall; the evidence points to a transient,
+  symbol-specific testnet venue condition (consistent with the engine's
+  VENUE-001 disposition).
+
+**Decision.** Revert execution leverage to **1.0** in the single source
+of truth, `crypto/exports/spec_config.py:SIZING["leverage"]`, and
+regenerate `active_spec.json` via `crypto export-spec` on the host at
+deploy (the JSON is gitignored; hash recomputed by `compute_spec_hash`).
+2x bought margin headroom against a problem that does not exist as
+diagnosed, while amplifying portfolio drawdown for no offsetting need
+(notional is unchanged by leverage, but 2x roughly doubles the
+margin-relative drawdown the kill-switch sees and moves isolated
+liquidation to ~−50%). Reverting to 1x removes that unnecessary
+amplification.
+
+**ADR-032 compliance (trivial).** ADR-032's validation gate is
+satisfied without new work: this is a reversion to the **previously
+validated, lower-drawdown** value. The dual-leverage backtest
+(`data/processed/backtest_regime_filter_dual_leverage_20260602.md`)
+shows 1x portfolio max DD materially below 2x for the same trade set
+(e.g. baseline −34.61% at 1x vs −58.42% at 2x; regime-filtered −20.20%
+vs −36.94%). Moving to the lower-DD setting needs no fresh dominance
+study.
+
+**Out of scope.** The engine's missing `availableBalance`-aware sizing
+check (it sizes off `balance.total` via `wallet_usd * deploy_pct /
+max_concurrent` and never consults `balance.available` at placement)
+remains a separate **pre-live hygiene item**, not a blocker for this
+revert. It was the nominal "true root cause" cited by ADR-033; with
+`-2019` rediagnosed as transient testnet noise it is no longer urgent,
+but it should be closed before live trading.
+
+**References.**
+
+- `crypto/exports/spec_config.py` — `SIZING["leverage"]` 2.0 → 1.0.
+- ADR-033 — superseded by this ADR.
+- ADR-032 — drawdown-affecting-parameter validation methodology
+  (satisfied trivially here).
+- `data/processed/backtest_regime_filter_dual_leverage_20260602.md` —
+  1x vs 2x portfolio drawdown comparison.
+- Engine `events`/`orders`/`positions` + `entry.log` — the two `-2019`
+  events and the per-rank placement evidence.
+- `crypto-trading-engine/engine/{selection/selector.py,cli/handlers/
+  entry.py}` — the total-wallet sizing path lacking the
+  `availableBalance` check (separate pre-live item).
