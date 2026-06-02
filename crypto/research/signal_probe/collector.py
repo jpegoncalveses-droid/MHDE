@@ -25,6 +25,7 @@ read-only against ``mhde.duckdb`` and update ``UNIVERSE`` in ``config.py``.
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Sequence
 
@@ -91,10 +92,14 @@ def run_cycle(
     symbols: Sequence[str] = tuple(cfg.UNIVERSE),
     btc_symbol: str = cfg.BTC_SYMBOL,
     include_depth: bool = cfg.INCLUDE_DEPTH,
+    max_workers: int = cfg.MAX_WORKERS,
     now: Optional[datetime] = None,
 ) -> dict[str, Any]:
     """Run one collection cycle and UPSERT the resulting rows.
 
+    Per-symbol fetches run concurrently on a bounded thread pool (the full
+    universe overran the 60s cadence when fetched sequentially); the compute
+    is CPU-light and the DB write stays single-threaded after the gather.
     Returns a summary: ``ts``, ``rows_written``, ``symbols_ok``,
     ``symbols_skipped`` (list).
     """
@@ -110,23 +115,28 @@ def run_cycle(
                        type(exc).__name__, exc)
         funding_all = {}
 
-    base_by_symbol: dict[str, dict[str, Any]] = {}
-    skipped: list[str] = []
-    for symbol in symbols:
+    def _one(symbol: str) -> tuple[str, Optional[dict[str, Any]]]:
+        """Fetch+compute one symbol; never raises (per-symbol isolation)."""
         try:
             feats = _collect_symbol(
                 client, symbol, cycle_close=cycle_close, hour_floor=hour_floor,
                 funding=funding_all.get(symbol), include_depth=include_depth,
             )
-        except Exception as exc:  # noqa: BLE001 - per-symbol isolation
+        except Exception as exc:  # noqa: BLE001 - isolate per symbol
             logger.warning("signal-probe: skipping %s (%s: %s)",
                            symbol, type(exc).__name__, exc)
-            skipped.append(symbol)
-            continue
-        if feats is None:
-            skipped.append(symbol)
-            continue
-        base_by_symbol[symbol] = feats
+            return symbol, None
+        return symbol, feats
+
+    base_by_symbol: dict[str, dict[str, Any]] = {}
+    skipped: list[str] = []
+    workers = max(1, min(max_workers, len(symbols))) if symbols else 1
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for symbol, feats in pool.map(_one, symbols):
+            if feats is None:
+                skipped.append(symbol)
+            else:
+                base_by_symbol[symbol] = feats
 
     apply_cross_sectional(base_by_symbol, btc_symbol)
 
