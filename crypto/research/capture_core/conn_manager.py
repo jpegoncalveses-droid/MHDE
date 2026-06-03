@@ -200,7 +200,9 @@ class ConnectionManager:
             return
         stream = msg.get("stream")
         data = msg.get("data")
-        if not stream or not isinstance(data, dict):
+        # `data` is a dict for per-symbol streams and a list for array streams
+        # (!markPrice@arr); both are valid — only a missing stream/data is malformed.
+        if not stream or not isinstance(data, (dict, list)):
             self.dropped += 1
             return
         self.dispatched += 1

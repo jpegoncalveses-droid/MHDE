@@ -43,6 +43,77 @@ AGGTRADE_SCHEMA = pa.schema([
     ("m", pa.bool_()),        # is buyer the market maker
 ])
 
+_PRICE_LEVELS = pa.list_(pa.list_(pa.string()))  # [[price, qty], ...] venue strings
+
+#: depthUpdate diff event (raw; zero-qty levels kept verbatim).
+DEPTH_SCHEMA = pa.schema([
+    ("recv_ts_ns", pa.int64()),
+    ("e", pa.string()),
+    ("E", pa.int64()),        # event time (ms)
+    ("T", pa.int64()),        # transaction time (ms)
+    ("s", pa.string()),
+    ("U", pa.int64()),        # first update id in event
+    ("u", pa.int64()),        # final update id in event
+    ("pu", pa.int64()),       # previous final update id (continuity field)
+    ("b", _PRICE_LEVELS),     # bid deltas
+    ("a", _PRICE_LEVELS),     # ask deltas
+])
+
+#: bookTicker best bid/ask event.
+BOOKTICKER_SCHEMA = pa.schema([
+    ("recv_ts_ns", pa.int64()),
+    ("e", pa.string()),
+    ("u", pa.int64()),        # order book updateId
+    ("s", pa.string()),
+    ("b", pa.string()),       # best bid price
+    ("B", pa.string()),       # best bid qty
+    ("a", pa.string()),       # best ask price
+    ("A", pa.string()),       # best ask qty
+    ("T", pa.int64()),        # transaction time
+    ("E", pa.int64()),        # event time
+])
+
+#: forceOrder (liquidation) — the inner ``o`` object flattened + event time.
+FORCEORDER_SCHEMA = pa.schema([
+    ("recv_ts_ns", pa.int64()),
+    ("E", pa.int64()),
+    ("s", pa.string()),
+    ("S", pa.string()),       # side
+    ("o", pa.string()),       # order type
+    ("f", pa.string()),       # time in force
+    ("q", pa.string()),       # original quantity
+    ("p", pa.string()),       # price
+    ("ap", pa.string()),      # average price
+    ("X", pa.string()),       # order status
+    ("l", pa.string()),       # last filled qty
+    ("z", pa.string()),       # cumulative filled qty
+    ("T", pa.int64()),        # trade time
+])
+
+#: markPriceUpdate array element (one row per symbol per push).
+MARKPRICE_SCHEMA = pa.schema([
+    ("recv_ts_ns", pa.int64()),
+    ("e", pa.string()),
+    ("E", pa.int64()),
+    ("s", pa.string()),
+    ("p", pa.string()),       # mark price
+    ("i", pa.string()),       # index price
+    ("P", pa.string()),       # estimated settle price
+    ("r", pa.string()),       # funding rate
+    ("T", pa.int64()),        # next funding time
+])
+
+#: REST order-book snapshot used to seed/resync the diff stream (own dataset).
+DEPTH_SNAPSHOT_SCHEMA = pa.schema([
+    ("recv_ts_ns", pa.int64()),
+    ("s", pa.string()),       # symbol (from the request; REST omits it)
+    ("lastUpdateId", pa.int64()),
+    ("E", pa.int64()),
+    ("T", pa.int64()),
+    ("b", _PRICE_LEVELS),
+    ("a", _PRICE_LEVELS),
+])
+
 #: Gap manifest: records a hole in capture; never backfilled.
 GAP_SCHEMA = pa.schema([
     ("symbol", pa.string()),
@@ -59,6 +130,11 @@ def _date_str(ms: int) -> str:
 
 
 def _aggtrade_partition(row: Mapping[str, Any]) -> str:
+    return f"symbol={row['s']}/date={_date_str(row['E'])}"
+
+
+def _symbol_event_partition(row: Mapping[str, Any]) -> str:
+    """``symbol=<s>/date=<event-day>`` keyed on the event-time field ``E``."""
     return f"symbol={row['s']}/date={_date_str(row['E'])}"
 
 
@@ -149,6 +225,35 @@ class RawDatasetWriter:
 def aggtrade_writer(root: str, **kwargs: Any) -> RawDatasetWriter:
     """Writer for the ``aggTrade`` dataset (partitioned by symbol + event date)."""
     return RawDatasetWriter(root, "aggTrade", AGGTRADE_SCHEMA, _aggtrade_partition, **kwargs)
+
+
+def depth_writer(root: str, **kwargs: Any) -> RawDatasetWriter:
+    """Writer for the raw ``depth`` diff dataset (symbol + event date)."""
+    return RawDatasetWriter(root, "depth", DEPTH_SCHEMA, _symbol_event_partition, **kwargs)
+
+
+def bookticker_writer(root: str, **kwargs: Any) -> RawDatasetWriter:
+    """Writer for the ``bookTicker`` dataset (symbol + event date)."""
+    return RawDatasetWriter(root, "bookTicker", BOOKTICKER_SCHEMA,
+                            _symbol_event_partition, **kwargs)
+
+
+def forceorder_writer(root: str, **kwargs: Any) -> RawDatasetWriter:
+    """Writer for the ``forceOrder`` (liquidation) dataset (symbol + event date)."""
+    return RawDatasetWriter(root, "forceOrder", FORCEORDER_SCHEMA,
+                            _symbol_event_partition, **kwargs)
+
+
+def markprice_writer(root: str, **kwargs: Any) -> RawDatasetWriter:
+    """Writer for the ``markPrice`` dataset (one row per symbol per push)."""
+    return RawDatasetWriter(root, "markPrice", MARKPRICE_SCHEMA,
+                            _symbol_event_partition, **kwargs)
+
+
+def depth_snapshot_writer(root: str, **kwargs: Any) -> RawDatasetWriter:
+    """Writer for the REST ``depth_snapshot`` seeding dataset (symbol + event date)."""
+    return RawDatasetWriter(root, "depth_snapshot", DEPTH_SNAPSHOT_SCHEMA,
+                            _symbol_event_partition, **kwargs)
 
 
 def gap_writer(root: str, **kwargs: Any) -> RawDatasetWriter:
