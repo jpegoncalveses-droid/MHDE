@@ -133,6 +133,91 @@ def test_flush_loop_size_flushes_between_age_intervals(tmp_path):
     assert s._agg.files_written >= 1
 
 
+# -- PR-2: multi-stream routing, depth maintenance, seeding --
+
+class _RecSched:
+    def __init__(self):
+        self.requested = []
+
+    def request(self, symbol):
+        self.requested.append(symbol)
+        return True
+
+
+def _depth_data(U, u, pu, E, s="BTCUSDT"):
+    return {"e": "depthUpdate", "E": E, "T": E, "s": s, "U": U, "u": u, "pu": pu,
+            "b": [], "a": []}
+
+
+def _read(root, dataset):
+    rows = []
+    for fp in sorted(pathlib.Path(root, dataset).rglob("*.parquet")):
+        rows.extend(pq.read_table(str(fp)).to_pylist())
+    return rows
+
+
+def test_service_routes_each_stream_to_its_dataset(tmp_path):
+    s = svc.CaptureService(root=str(tmp_path), client=None, snap_scheduler=_RecSched())
+    s._on_message("btcusdt@depth@100ms", _depth_data(11, 20, 10, 2), 100)
+    s._on_message("btcusdt@bookTicker",
+                  {"e": "bookTicker", "u": 5, "s": "BTCUSDT", "b": "1", "B": "2",
+                   "a": "3", "A": "4", "T": 2, "E": 2}, 101)
+    s._on_message("!forceOrder@arr",
+                  {"e": "forceOrder", "E": 2, "o": {
+                      "s": "SOLUSDT", "S": "SELL", "o": "LIMIT", "f": "IOC",
+                      "q": "1", "p": "1", "ap": "1", "X": "FILLED", "l": "1",
+                      "z": "1", "T": 2}}, 102)
+    s._on_message("!markPrice@arr@1s",
+                  [{"e": "markPriceUpdate", "E": 2, "s": "BTCUSDT", "p": "1",
+                    "i": "1", "P": "1", "r": "0", "T": 3},
+                   {"e": "markPriceUpdate", "E": 2, "s": "ETHUSDT", "p": "2",
+                    "i": "2", "P": "2", "r": "0", "T": 3}], 103)
+    s.flush_all()
+    assert len(_read(str(tmp_path), "depth")) == 1
+    assert len(_read(str(tmp_path), "bookTicker")) == 1
+    fo = _read(str(tmp_path), "forceOrder")
+    assert [r["s"] for r in fo] == ["SOLUSDT"]
+    mp = _read(str(tmp_path), "markPrice")
+    assert sorted(r["s"] for r in mp) == ["BTCUSDT", "ETHUSDT"]
+
+
+def test_seed_universe_requests_one_snapshot_per_symbol(tmp_path):
+    rec = _RecSched()
+    s = svc.CaptureService(root=str(tmp_path), client=None, snap_scheduler=rec)
+    s.seed_universe(["BTCUSDT", "ETHUSDT"])
+    assert rec.requested == ["BTCUSDT", "ETHUSDT"]
+
+
+def test_depth_break_records_gap_and_requests_resync(tmp_path):
+    rec = _RecSched()
+    s = svc.CaptureService(root=str(tmp_path), client=None, snap_scheduler=rec)
+
+    # seed + sync (snapshot lastUpdateId bridged by the buffered diff)
+    s._on_message("btcusdt@depth@100ms", _depth_data(11, 20, 10, E=2), 100)
+    s._on_snapshot_arrived("BTCUSDT",
+                           {"lastUpdateId": 15, "E": 4, "bids": [], "asks": []}, 110)
+    assert s._maintainers["BTCUSDT"].synced is True
+
+    # continuity break -> resync requested, gap pending
+    s._on_message("btcusdt@depth@100ms", _depth_data(51, 60, 50, E=10), 120)
+    assert "BTCUSDT" in rec.requested
+
+    # fresh snapshot + bridging diff -> gap written (start=last-good E, end=resume E)
+    s._on_snapshot_arrived("BTCUSDT",
+                           {"lastUpdateId": 60, "E": 11, "bids": [], "asks": []}, 130)
+    s._on_message("btcusdt@depth@100ms", _depth_data(61, 70, 60, E=13), 140)
+    s.flush_all()
+
+    gaps = _read(str(tmp_path), "_gaps")
+    depth_gaps = [g for g in gaps if g["stream"] == "depth"]
+    assert len(depth_gaps) == 1
+    assert depth_gaps[0]["reason"] == "sequence_gap"
+    assert depth_gaps[0]["gap_start_ms"] == 2 and depth_gaps[0]["gap_end_ms"] == 13
+    # the raw diffs were all stored regardless of maintenance state
+    assert len(_read(str(tmp_path), "depth")) == 3
+    assert len(_read(str(tmp_path), "depth_snapshot")) == 2
+
+
 # -- universe re-resolve supervisor rebuilds on change --
 
 class _FakeMgr:
@@ -172,6 +257,7 @@ def test_run_rebuilds_manager_when_universe_changes(tmp_path):
     s = svc.CaptureService(
         root=str(tmp_path), client=client, mgr_factory=factory,
         reresolve_interval_s=0.0, flush_interval_s=10**6, install_signals=False,
+        enable_snapshots=False,
     )
 
     async def scenario():
@@ -185,6 +271,7 @@ def test_run_rebuilds_manager_when_universe_changes(tmp_path):
 
     asyncio.run(scenario())
 
-    assert created[0].streams == ["btcusdt@aggTrade"]
-    assert created[1].streams == ["btcusdt@aggTrade", "ethusdt@aggTrade"]
+    # PR-2: the service subscribes the full capture set, not just aggTrade.
+    assert created[0].streams == svc.capture_streams(["BTCUSDT"])
+    assert created[1].streams == svc.capture_streams(["BTCUSDT", "ETHUSDT"])
     assert created[0].stopped is True            # first manager was torn down on change

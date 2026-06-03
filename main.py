@@ -1931,22 +1931,38 @@ def crypto_capture_core_run(root):
 @click.option("--write-root", default=None,
               help="If set, also write a parquet sample here for a real "
                    "compression ratio in the report.")
-def crypto_capture_core_loadtest(seconds, write_root):
-    """Size the 529-symbol aggTrade firehose over a bounded window.
+@click.option("--streams", "stream_set",
+              type=click.Choice(["aggtrade", "depth-bookticker", "all"]),
+              default="aggtrade",
+              help="Which stream set to size. 'depth-bookticker' = the PARTIAL "
+                   "sizing of the streams that deliver from this host.")
+def crypto_capture_core_loadtest(seconds, write_root, stream_set):
+    """Size a stream-set firehose over a bounded window.
 
-    Drives the real connection manager against every TRADING USDT-M perp's
-    aggTrade stream, then prints messages/sec, raw bytes/sec, and projected
-    daily volume (raw, plus parquet-compressed when --write-root is given).
+    Drives the real connection manager against the chosen stream set across
+    every TRADING USDT-M perp, then prints messages/sec, raw bytes/sec, MiB/min,
+    and projected daily volume (raw, plus parquet-compressed when --write-root
+    is given). 'depth-bookticker' is the PARTIAL sizing (aggTrade/markPrice/
+    forceOrder are unmeasured here and ADD to the total).
     """
     import asyncio
     import json
     import logging
 
+    from crypto.research.capture_core import service as cc_svc
     from crypto.research.capture_core.loadtest import run_loadtest
+
+    factory = {
+        "aggtrade": cc_svc.aggtrade_streams,
+        "depth-bookticker": cc_svc.depth_bookticker_streams,
+        "all": cc_svc.capture_streams,
+    }[stream_set]
 
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    result = asyncio.run(run_loadtest(duration_s=seconds, write_root=write_root))
+    result = asyncio.run(run_loadtest(duration_s=seconds, write_root=write_root,
+                                      stream_factory=factory))
+    result["stream_set"] = stream_set
     click.echo(json.dumps(result, indent=2, default=str))
 
 

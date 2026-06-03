@@ -240,6 +240,29 @@ def test_tracks_raw_bytes_in_for_load_sizing():
     assert mgr.bytes_in == len(f)
 
 
+def test_array_data_frame_is_dispatched_not_dropped():
+    # !markPrice@arr / !forceOrder@arr deliver array (or wrapped) payloads; the
+    # envelope's `data` may be a list, which must NOT be treated as malformed.
+    received = []
+
+    def on_message(stream, data, recv_ns):
+        received.append((stream, data))
+        mgr.stop()
+
+    frame = json.dumps({"stream": "!markPrice@arr@1s",
+                        "data": [{"e": "markPriceUpdate", "s": "BTCUSDT"}]})
+    conn = _FakeConn([frame])
+    mgr = cm.ConnectionManager(
+        streams=["!markPrice@arr@1s"], on_message=on_message,
+        connect_fn=_make_connect_fn([conn]),
+        proactive_reconnect_s=10**9, sleep_fn=lambda s: asyncio.sleep(0),
+        time_fn=lambda: 0.0,
+    )
+    asyncio.run(mgr.run())
+    assert received and isinstance(received[0][1], list)
+    assert mgr.dropped == 0
+
+
 def test_malformed_frames_are_dropped_not_dispatched():
     received = []
 

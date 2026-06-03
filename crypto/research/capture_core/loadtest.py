@@ -1,12 +1,13 @@
-"""Capture-core load test: size the 529-symbol aggTrade firehose.
+"""Capture-core load test: size the per-stream firehose over a bounded window.
 
-Runs the real connection manager against every TRADING USDT-M perp's
-``@aggTrade`` stream for a bounded window, counts messages + raw wire bytes, and
-projects daily volume (raw, and parquet-compressed if a sample is written).
+Runs the real connection manager against a chosen stream set across every
+TRADING USDT-M perp, counts messages + raw wire bytes, and projects daily
+volume (raw, and parquet-compressed if a sample is written).
 
-This is the PR-1 instrument for the operator's GO condition: if all-529 proves
-infeasible, we report the measured throughput/disk numbers and HALT rather than
-pre-committing a trim rule.
+PR-2 use: a PARTIAL sizing of ``@depth@100ms`` + ``@bookTicker`` (the streams
+that deliver from this host). aggTrade / markPrice / forceOrder are unmeasured
+here (delivery-blocked or sparse) and ADD to the firehose — so the all-529
+feasibility call stays OPEN until the full set is sized once delivery returns.
 """
 from __future__ import annotations
 
@@ -17,10 +18,9 @@ import time
 from typing import Any, Callable, Optional
 
 from crypto.research.capture_core import config as cfg
-from crypto.research.capture_core import store
 from crypto.research.capture_core.client import CaptureRestClient
 from crypto.research.capture_core.conn_manager import ConnectionManager
-from crypto.research.capture_core.service import aggtrade_row, aggtrade_streams
+from crypto.research.capture_core.service import CaptureService, aggtrade_streams
 
 logger = logging.getLogger("mhde.crypto.capture_core.loadtest")
 
@@ -40,6 +40,7 @@ def summarize(*, messages: int, bytes_in: int, duration_s: float, n_symbols: int
         "n_symbols": n_symbols,
         "msgs_per_s": mps,
         "raw_bytes_per_s": bps,
+        "raw_mib_per_min": bps * 60 / (1024 * 1024),
         "raw_gb_per_day": raw_gb_day,
     }
     if parquet_bytes is not None:
@@ -56,29 +57,28 @@ async def run_loadtest(
     client: Any = None,
     connect_fn: Optional[Callable[[str], Any]] = None,
     write_root: Optional[str] = None,
+    stream_factory: Callable[[list[str]], list[str]] = aggtrade_streams,
 ) -> dict:
-    """Drive aggTrade capture for the full universe for ``duration_s`` seconds.
+    """Drive ``stream_factory(universe)`` capture for ``duration_s`` seconds.
 
-    If ``write_root`` is given, frames are also written to a parquet sample so
-    the report can include a real compression ratio.
+    If ``write_root`` is set, frames are routed through a (snapshot-disabled)
+    CaptureService so the report includes a real parquet compression ratio.
     """
     client = client or CaptureRestClient()
     universe = await asyncio.to_thread(client.fetch_usdtm_perp_universe)
-    streams = aggtrade_streams(universe)
+    streams = stream_factory(universe)
 
-    writer = store.aggtrade_writer(write_root) if write_root else None
-    count = {"n": 0}
+    service = None
+    if write_root:
+        service = CaptureService(root=write_root, client=None,
+                                 enable_snapshots=False, install_signals=False)
 
-    def on_message(stream: str, data: dict, recv_ns: int) -> None:
-        count["n"] += 1
-        if writer is not None and stream.endswith("@aggTrade"):
-            writer.append(aggtrade_row(data, recv_ns))
+    def on_message(stream: str, data: Any, recv_ns: int) -> None:
+        if service is not None:
+            service._on_message(stream, data, recv_ns)
 
-    mgr = ConnectionManager(
-        streams=streams, on_message=on_message, connect_fn=connect_fn,
-    )
-
-    started = time.monotonic()
+    mgr = ConnectionManager(streams=streams, on_message=on_message,
+                            connect_fn=connect_fn)
     done = asyncio.Event()
 
     async def _stopper() -> None:
@@ -87,23 +87,22 @@ async def run_loadtest(
         done.set()
 
     async def _flusher() -> None:
-        # Bound writer memory on long windows: drain due partitions as we go
-        # instead of buffering the whole sample until the end.
-        if writer is None:
+        if service is None:
             return
         while not done.is_set():
             with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(done.wait(), timeout=cfg.FLUSH_POLL_S)
-            writer.flush_due()
+            service.flush_due()
 
     logger.info("capture-core loadtest: %d symbols, %d streams, %.0fs window",
                 len(universe), len(streams), duration_s)
+    started = time.monotonic()
     await asyncio.gather(mgr.run(), _stopper(), _flusher())
     elapsed = time.monotonic() - started
 
     parquet_bytes = None
-    if writer is not None:
-        writer.flush_all()
+    if service is not None:
+        service.flush_all()
         parquet_bytes = _dir_bytes(write_root)
 
     return summarize(messages=mgr.dispatched, bytes_in=mgr.bytes_in,

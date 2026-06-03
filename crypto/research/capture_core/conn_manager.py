@@ -50,6 +50,33 @@ def combined_url(base: str, streams: Sequence[str]) -> str:
     return base + "/".join(streams)
 
 
+def plan_shards(
+    streams: Sequence[str],
+    per_conn: int,
+    *,
+    classify: Callable[[str], str],
+    public_base: str,
+    market_base: str,
+) -> list[tuple[int, str, list[str]]]:
+    """Group streams by endpoint, shard within each group, assign GLOBALLY-unique
+    shard indices across both groups.
+
+    Returns ``[(shard_index, base_url, streams), ...]``. The single running index
+    keeps the staggered-reconnect offset and gap-manifest keys unique across the
+    public+market groups (they share one ConnectionManager).
+    """
+    groups: dict[str, list[str]] = {"public": [], "market": []}
+    for s in streams:
+        groups[classify(s)].append(s)
+    plan: list[tuple[int, str, list[str]]] = []
+    idx = 0
+    for endpoint, base in (("public", public_base), ("market", market_base)):
+        for shard in shard_streams(groups[endpoint], per_conn):
+            plan.append((idx, base, shard))
+            idx += 1
+    return plan
+
+
 def compute_backoff(attempt: int, *, base: float, cap: float, jitter: float,
                     rand: Callable[[], float]) -> float:
     """Exponential backoff (capped) with centered ±jitter. ``attempt`` >= 1."""
@@ -89,7 +116,9 @@ class ConnectionManager:
         on_message: OnMessage,
         on_gap: Optional[OnGap] = None,
         streams_per_conn: int = cfg.STREAMS_PER_CONN,
-        ws_base: str = cfg.WS_COMBINED_BASE,
+        public_base: str = cfg.WS_PUBLIC_BASE,
+        market_base: str = cfg.WS_MARKET_BASE,
+        classify: Callable[[str], str] = cfg.classify_endpoint,
         connect_fn: Optional[Callable[[str], Any]] = None,
         backoff_base: float = cfg.RECONNECT_BACKOFF_BASE_S,
         backoff_max: float = cfg.RECONNECT_BACKOFF_MAX_S,
@@ -107,7 +136,9 @@ class ConnectionManager:
         self._on_message = on_message
         self._on_gap = on_gap
         self._per_conn = streams_per_conn
-        self._ws_base = ws_base
+        self._public_base = public_base
+        self._market_base = market_base
+        self._classify = classify
         self._connect_fn = connect_fn or _default_connect_fn
         self._backoff_base = backoff_base
         self._backoff_max = backoff_max
@@ -132,14 +163,18 @@ class ConnectionManager:
         self._stop.set()
 
     async def run(self) -> None:
-        """Connect every shard and run until :meth:`stop`."""
-        shards = shard_streams(self._streams, self._per_conn)
-        logger.info("capture-core conn_manager: %d streams across %d shards",
-                    len(self._streams), len(shards))
+        """Connect every shard (routed by endpoint) and run until :meth:`stop`."""
+        plan = plan_shards(self._streams, self._per_conn,
+                           classify=self._classify,
+                           public_base=self._public_base,
+                           market_base=self._market_base)
+        logger.info("capture-core conn_manager: %d streams across %d shards "
+                    "(public+market routed)", len(self._streams), len(plan))
         await asyncio.gather(
-            *(self._run_shard(s, i) for i, s in enumerate(shards)))
+            *(self._run_shard(streams, idx, base) for idx, base, streams in plan))
 
-    async def _run_shard(self, streams: list[str], shard_index: int = 0) -> None:
+    async def _run_shard(self, streams: list[str], shard_index: int,
+                         base: str) -> None:
         proactive_s = proactive_threshold(self._proactive_s, shard_index,
                                           self._proactive_stagger)
         attempt = 0
@@ -149,7 +184,7 @@ class ConnectionManager:
         pending: Optional[tuple[str, int]] = None
         while not self._stop.is_set():
             try:
-                async with self._connect_fn(combined_url(self._ws_base, streams)) as conn:
+                async with self._connect_fn(combined_url(base, streams)) as conn:
                     if pending is not None and self._on_gap is not None:
                         reason, start_ms = pending
                         self._on_gap(streams, reason, start_ms, self._wall_ms())
@@ -200,7 +235,9 @@ class ConnectionManager:
             return
         stream = msg.get("stream")
         data = msg.get("data")
-        if not stream or not isinstance(data, dict):
+        # `data` is a dict for per-symbol streams and a list for array streams
+        # (!markPrice@arr); both are valid — only a missing stream/data is malformed.
+        if not stream or not isinstance(data, (dict, list)):
             self.dropped += 1
             return
         self.dispatched += 1

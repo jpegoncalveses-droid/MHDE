@@ -13,8 +13,25 @@ from crypto.config import BINANCE_FUTURES_BASE, REQUEST_DELAY_S  # noqa: F401 (r
 RAW_DIR = "data/research/capture_core"
 
 # -- WebSocket endpoints (USDT-M futures, PUBLIC) --
-#: Combined-stream base; subscribe by appending ``a/b/c`` stream names.
-WS_COMBINED_BASE = "wss://fstream.binance.com/stream?streams="
+# Binance migrated to ROUTED combined-stream paths on 2026-04-23: the legacy
+# unrouted /stream (and /ws) were decommissioned and now serve the /public group
+# only, so a single base cannot carry the full capture set. Streams MUST be split
+# by group (this is global Binance behavior, not a host/proxy artifact):
+#   /public -> bookTicker (+ !bookTicker) and depth (any level/interval)
+#   /market -> aggTrade, markPrice (per-symbol + array), forceOrder (+ array)
+WS_PUBLIC_BASE = "wss://fstream.binance.com/public/stream?streams="
+WS_MARKET_BASE = "wss://fstream.binance.com/market/stream?streams="
+
+
+def classify_endpoint(stream: str) -> str:
+    """Route a stream name to its endpoint group: ``"public"`` or ``"market"``.
+
+    Public = bookTicker / !bookTicker / any depth stream; everything else
+    (aggTrade, markPrice, forceOrder, and their array forms) is market.
+    """
+    if stream.endswith("@bookTicker") or stream == "!bookTicker" or "@depth" in stream:
+        return "public"
+    return "market"
 
 # -- Universe --
 #: Re-resolve the TRADING USDT-M perp universe from ``exchangeInfo`` this often
@@ -54,6 +71,45 @@ PROACTIVE_RECONNECT_S = 23.0 * 3600.0
 #: the same instant (~daily near-total blackout). shard N waits N*frac longer.
 PROACTIVE_STAGGER_FRAC = 0.02
 
-# -- REST (order-book snapshot seeding, PR-2; 429/418 aware) --
+# -- REST (order-book snapshot seeding; 429/418 aware) --
+#: Snapshot depth. Maintenance itself only needs ``lastUpdateId`` to bridge the
+#: diff stream, but the snapshot is ALSO stored for OFFLINE book reconstruction,
+#: which needs the full book — so we seed deep (1000 -> request weight 20) and
+#: pay for it with heavy pacing below, rather than seed shallow and lose the
+#: ability to reconstruct the book offline.
 DEPTH_SNAPSHOT_LIMIT = 1000
+DEPTH_SNAPSHOT_WEIGHT = 20  # Binance futures /fapi/v1/depth weight at limit=1000
 REST_MAX_RETRIES = 5
+
+#: Capture's REST weight ceiling, kept WELL under the ~2400/min futures IP budget
+#: because that budget is SHARED with the engine and the per-minute signal-probe
+#: collector on the same IP — a capture-triggered 429/ban would starve them too.
+#: 529 full re-seeds = 529*20 = 10,580 weight, so the initial seed is paced, not
+#: bursted.
+CAPTURE_REST_WEIGHT_PER_MIN = 1200
+#: Minimum spacing between snapshot requests derived from the weight ceiling
+#: (1200/min budget / 20 weight = 60 req/min => 1.0s apart). ~529 initial seeds
+#: therefore stagger over ~9 minutes.
+SNAPSHOT_MIN_INTERVAL_S = DEPTH_SNAPSHOT_WEIGHT * 60.0 / CAPTURE_REST_WEIGHT_PER_MIN
+
+# -- Stream cadences --
+DEPTH_UPDATE_SPEED = "100ms"   # rawest diff cadence (operator GO: no pre-coarsen)
+MARKPRICE_SPEED = "1s"
+
+# -- Streams intentionally NOT captured (recorded decisions, not omissions) --
+#: Losslessly derivable from a captured raw stream, or inapplicable to single-asset
+#: USDT-M perps. Kept here so the exclusion is an auditable decision.
+EXCLUDED_STREAMS = {
+    "kline_*": "OHLCV is an aggregation of the captured @aggTrade tape (lossless).",
+    "continuousKline_*": "Same as kline; derivable from @aggTrade.",
+    "ticker / miniTicker / !ticker@arr / !miniTicker@arr":
+        "24h rolling stats derivable from the captured tape.",
+    "depth5/10/20 (partial book)":
+        "Strict subset of the full @depth diff + snapshot already captured.",
+    "!assetIndex@arr":
+        "Multi-Assets-Mode collateral index prices — account-margin data, not "
+        "single-asset USDT-M perp price discovery. Inapplicable.",
+    "<symbol>@compositeIndex":
+        "Only emits for composite-index symbols, not regular perps. Inapplicable "
+        "to the perp universe.",
+}

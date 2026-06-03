@@ -6,6 +6,107 @@ are at the top.
 
 ---
 
+## 2026-06-03 — Capture-core: split-endpoint routing fix (folded into PR #21)
+
+**Branch:** `feat/capture-core-pr2` (same OPEN PR #21; **awaiting operator — DO
+NOT merge**). Read-only-safe; no production-DB access; built-not-deployed.
+
+**Root cause.** The PR-1/PR-2 "delivery anomaly" (futures `@aggTrade` +
+`@markPrice` delivering ZERO from this host while `@bookTicker`/`@depth` flowed)
+was **not** egress/region — it was Binance's **2026-04-23 routed-path
+migration**. The legacy unrouted combined base (`/stream`, and `/ws`) was
+decommissioned and now serves the **/public** group only; the **/market** group
+moved to a separate routed base. This is GLOBAL Binance behavior. Confirmed
+empirically: `/public/stream` serves depth+bookTicker; `/market/stream` serves
+aggTrade+markPrice; neither carries the other.
+
+**Fix (split routing).** `config.py`: replaced the single `WS_COMBINED_BASE`
+with `WS_PUBLIC_BASE` (`/public/stream`) + `WS_MARKET_BASE` (`/market/stream`)
+and a tested `classify_endpoint(stream)` (public = `@bookTicker`/`!bookTicker`/
+`@depth*`; market = aggTrade/markPrice/**forceOrder** + array forms — forceOrder
+placed by the authoritative mapping, no probe). `conn_manager.py`: new pure
+`plan_shards()` groups streams by endpoint, shards within each group, and assigns
+GLOBALLY-unique shard indices across both groups (keeps reconnect-stagger offsets
+and gap keys unique); `_run_shard` takes its group's base. Reconnect/backoff/
+jitter/heartbeat/23h-proactive/gap-end-on-resume/sink-isolation/stats — ALL
+unchanged; one manager, one stats+gap surface. Writers in `service.py`/`store.py`
+UNTOUCHED.
+
+**Validation.** 78 capture-core tests green (14 new routing tests: classify per
+stream type, plan_shards grouping + base assignment + global-unique indices,
+end-to-end base-per-shard). Live smoke `capture-core-loadtest --streams all`:
+1589 streams across 9 routed shards, aggTrade+markPrice now flowing alongside
+depth+bookTicker. The legacy unrouted base never lands.
+
+**Unblocked.** Full-set firehose sizing + markPrice all-529 completeness check can
+now run on this host (operator runs the authoritative `--streams all` sizing
+post-merge).
+
+---
+
+## 2026-06-03 — Capture-core PR-2: depth/bookTicker/forceOrder/markPrice + depth maintenance
+
+**Branch:** `feat/capture-core-pr2` (off `master` @ `9dad4f8`, draft PR;
+**awaiting operator — DO NOT merge**). MHDE-only; read-only against Binance
+USDT-M **PUBLIC** WS/REST; NEVER opens `mhde.duckdb`/engine DB; writes only
+under `data/research/capture_core/`; **built-not-deployed** (nothing installed
+/enabled). Builds on PR-1 (#20, merged as `9dad4f8`).
+
+**Backfill:** PR-1 (capture-core substrate + conn manager + aggTrade) **merged
+2026-06-03 as `9dad4f8`** (PR #20).
+
+**Scope (built).** Capture-side correctness for the remaining streams + depth
+book-MAINTENANCE (cursor-only sequence tracking; NOT a live in-memory book and
+NOT the offline replay tool). New streams stored raw, array streams fanned out
+to per-symbol rows:
+- `<sym>@depth@100ms` (raw diff), `<sym>@bookTicker`, `!forceOrder@arr`
+  (liquidations), `!markPrice@arr@1s` (ARRAY → per-symbol rows).
+- Exclusions recorded in `config.EXCLUDED_STREAMS` (klines/ticker derivable from
+  aggTrade; partial-depth a subset; `!assetIndex@arr`/`compositeIndex`
+  inapplicable to single-asset USDT-M perps).
+
+**Depth maintenance (`book.py` `DepthMaintainer`, cursor only).** Per Binance
+USDT-M procedure: buffer diffs until snapshot, drop `u < lastUpdateId`, first
+applied event `U <= lastUpdateId+1 <= u`, then `pu == prev u` continuity. On
+break/boundary-failure → request a fresh REST snapshot; the gap-manifest row
+(`stream=depth`, `start=last-good ts`, `end=resume ts`, `reason=sequence_gap`)
+is emitted on resume so it bounds the true outage. **All raw diffs are stored
+regardless** (zero-qty levels kept); maintenance only marks gaps / triggers
+snapshots / seeds the cursor.
+
+**Snapshot seeding (`snapshot.py` `SnapshotScheduler`).** REST
+`/fapi/v1/depth?limit=1000` (weight 20) per symbol, stored as its own
+`depth_snapshot` dataset (lastUpdateId + recv ts + full book for OFFLINE
+reconstruction). **Paced + deduped**: weight ceiling `CAPTURE_REST_WEIGHT_PER_MIN
+=1200` (well under the ~2400/min IP budget SHARED with engine + per-minute
+collector) → ≥1.0s between requests → 529 initial seeds stagger over ~9 min.
+Fetch runs in a thread; 429/418 backoff in the client.
+
+**Files.** New: `crypto/research/capture_core/{book,snapshot}.py`; extended
+`{config,store,service,loadtest}.py` + `conn_manager.py` (array-data dispatch);
+`main.py` (`capture-core-loadtest --streams aggtrade|depth-bookticker|all`).
+Tests: `tests/crypto/research/test_capture_core_{book,snapshot,streams,store_pr2}.py`
++ extended service/conn-manager tests. **62 capture-core tests green.**
+
+**PARTIAL firehose sizing (depth+bookTicker only, all 529, live from host).**
+60s window: 838,949 msgs, **11,984 msgs/s · 164 MiB/min · ~248 GB/day raw**;
+zstd parquet compresses **~5.7×** → **~40 GB/day parquet**. **PARTIAL** —
+aggTrade/markPrice/forceOrder are unmeasured (markPrice delivers ZERO from this
+host = the open anomaly; aggTrade likewise; forceOrder sparse) and ADD to the
+firehose. **All-529 feasibility stays OPEN** until the full set is sized once
+delivery returns.
+
+**Delivery reality (this host).** depth + bookTicker live-validated (deliver).
+markPrice/forceOrder built stream-agnostic but **un-live-validated** (markPrice
+zero — anomaly carried from PR-1). When delivery returns: verify `!markPrice@arr`
+carries all 529, else fall back to per-symbol `markPrice@1s` for omissions.
+
+**Pending.** Operator review/merge of the draft PR. PR-3 = safety (MemoryMax,
+disk guard) + R2 offload (bucket `signal-probe-raw`, prefix `capture_core/`) +
+the only PR that enables the service.
+
+---
+
 ## 2026-06-02 — Signal-probe data collector (research-only, read-only)
 
 **Branch:** `feat/signal-probe-collector` (off `master`, draft PR;
