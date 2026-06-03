@@ -6,6 +6,44 @@ are at the top.
 
 ---
 
+## 2026-06-03 — Capture-core: split-endpoint routing fix (folded into PR #21)
+
+**Branch:** `feat/capture-core-pr2` (same OPEN PR #21; **awaiting operator — DO
+NOT merge**). Read-only-safe; no production-DB access; built-not-deployed.
+
+**Root cause.** The PR-1/PR-2 "delivery anomaly" (futures `@aggTrade` +
+`@markPrice` delivering ZERO from this host while `@bookTicker`/`@depth` flowed)
+was **not** egress/region — it was Binance's **2026-04-23 routed-path
+migration**. The legacy unrouted combined base (`/stream`, and `/ws`) was
+decommissioned and now serves the **/public** group only; the **/market** group
+moved to a separate routed base. This is GLOBAL Binance behavior. Confirmed
+empirically: `/public/stream` serves depth+bookTicker; `/market/stream` serves
+aggTrade+markPrice; neither carries the other.
+
+**Fix (split routing).** `config.py`: replaced the single `WS_COMBINED_BASE`
+with `WS_PUBLIC_BASE` (`/public/stream`) + `WS_MARKET_BASE` (`/market/stream`)
+and a tested `classify_endpoint(stream)` (public = `@bookTicker`/`!bookTicker`/
+`@depth*`; market = aggTrade/markPrice/**forceOrder** + array forms — forceOrder
+placed by the authoritative mapping, no probe). `conn_manager.py`: new pure
+`plan_shards()` groups streams by endpoint, shards within each group, and assigns
+GLOBALLY-unique shard indices across both groups (keeps reconnect-stagger offsets
+and gap keys unique); `_run_shard` takes its group's base. Reconnect/backoff/
+jitter/heartbeat/23h-proactive/gap-end-on-resume/sink-isolation/stats — ALL
+unchanged; one manager, one stats+gap surface. Writers in `service.py`/`store.py`
+UNTOUCHED.
+
+**Validation.** 78 capture-core tests green (14 new routing tests: classify per
+stream type, plan_shards grouping + base assignment + global-unique indices,
+end-to-end base-per-shard). Live smoke `capture-core-loadtest --streams all`:
+1589 streams across 9 routed shards, aggTrade+markPrice now flowing alongside
+depth+bookTicker. The legacy unrouted base never lands.
+
+**Unblocked.** Full-set firehose sizing + markPrice all-529 completeness check can
+now run on this host (operator runs the authoritative `--streams all` sizing
+post-merge).
+
+---
+
 ## 2026-06-03 — Capture-core PR-2: depth/bookTicker/forceOrder/markPrice + depth maintenance
 
 **Branch:** `feat/capture-core-pr2` (off `master` @ `9dad4f8`, draft PR;

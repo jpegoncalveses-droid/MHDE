@@ -13,8 +13,25 @@ from crypto.config import BINANCE_FUTURES_BASE, REQUEST_DELAY_S  # noqa: F401 (r
 RAW_DIR = "data/research/capture_core"
 
 # -- WebSocket endpoints (USDT-M futures, PUBLIC) --
-#: Combined-stream base; subscribe by appending ``a/b/c`` stream names.
-WS_COMBINED_BASE = "wss://fstream.binance.com/stream?streams="
+# Binance migrated to ROUTED combined-stream paths on 2026-04-23: the legacy
+# unrouted /stream (and /ws) were decommissioned and now serve the /public group
+# only, so a single base cannot carry the full capture set. Streams MUST be split
+# by group (this is global Binance behavior, not a host/proxy artifact):
+#   /public -> bookTicker (+ !bookTicker) and depth (any level/interval)
+#   /market -> aggTrade, markPrice (per-symbol + array), forceOrder (+ array)
+WS_PUBLIC_BASE = "wss://fstream.binance.com/public/stream?streams="
+WS_MARKET_BASE = "wss://fstream.binance.com/market/stream?streams="
+
+
+def classify_endpoint(stream: str) -> str:
+    """Route a stream name to its endpoint group: ``"public"`` or ``"market"``.
+
+    Public = bookTicker / !bookTicker / any depth stream; everything else
+    (aggTrade, markPrice, forceOrder, and their array forms) is market.
+    """
+    if stream.endswith("@bookTicker") or stream == "!bookTicker" or "@depth" in stream:
+        return "public"
+    return "market"
 
 # -- Universe --
 #: Re-resolve the TRADING USDT-M perp universe from ``exchangeInfo`` this often
