@@ -72,6 +72,7 @@ class CaptureService:
         reresolve_interval_s: float = cfg.UNIVERSE_RERESOLVE_INTERVAL_S,
         flush_interval_s: float = cfg.FLUSH_INTERVAL_S,
         flush_max_bytes: int = cfg.FLUSH_MAX_BYTES,
+        flush_poll_s: float = cfg.FLUSH_POLL_S,
         install_signals: bool = True,
     ) -> None:
         self._root = root
@@ -80,7 +81,7 @@ class CaptureService:
         self._mgr_factory = mgr_factory or self._default_mgr_factory
         self._per_conn = streams_per_conn
         self._reresolve_interval_s = reresolve_interval_s
-        self._flush_interval_s = flush_interval_s
+        self._flush_poll_s = flush_poll_s
         self._install_signals = install_signals
 
         self._agg = store.aggtrade_writer(
@@ -139,8 +140,11 @@ class CaptureService:
             await asyncio.wait_for(self._stop.wait(), timeout=timeout)
 
     async def _flush_loop(self) -> None:
+        # Poll on a short cadence so the per-partition 64 MiB size cap is a real
+        # ceiling (a hot partition can exceed it well within the 30s age window);
+        # flush_due() itself still honors the 30s age threshold per partition.
         while not self._stop.is_set():
-            await self._wait_stop_or_timeout(self._flush_interval_s)
+            await self._wait_stop_or_timeout(self._flush_poll_s)
             if self._stop.is_set():
                 break
             self._agg.flush_due()

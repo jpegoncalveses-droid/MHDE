@@ -39,14 +39,23 @@ def test_compute_backoff_jitter_bounds():
     assert hi == pytest.approx(4.0 * 1.1)
 
 
+def test_proactive_threshold_staggers_by_shard():
+    assert cm.proactive_threshold(100.0, 0, 0.02) == pytest.approx(100.0)
+    assert cm.proactive_threshold(100.0, 1, 0.02) == pytest.approx(102.0)
+    assert cm.proactive_threshold(100.0, 2, 0.02) == pytest.approx(104.0)
+
+
 # -- async shard loop fakes --
 
 class _FakeConn:
-    def __init__(self, messages, *, exc=None):
+    def __init__(self, messages, *, exc=None, on_enter=None):
         self._messages = list(messages)
         self._exc = exc or ConnectionError("closed")
+        self._on_enter = on_enter
 
     async def __aenter__(self):
+        if self._on_enter is not None:
+            self._on_enter()
         return self
 
     async def __aexit__(self, *a):
@@ -115,6 +124,69 @@ def test_dispatches_frames_then_reconnects_and_records_gap():
     assert reason == "reconnect"
     assert streams == ("btcusdt@aggTrade",)
     assert slept == [1.0]                             # one backoff at base
+
+
+def test_gap_end_stamped_after_backoff_at_resume():
+    # The recorded gap must bound the TRUE outage: end is stamped when the new
+    # socket re-establishes, not the instant the backoff sleep finishes.
+    gaps = []
+    slept = []
+    received = []
+    wall = [10]   # drop happens at t=10ms
+
+    def on_message(stream, data, recv_ns):
+        received.append(1)
+        if len(received) == 2:
+            mgr.stop()
+
+    async def fake_sleep(s):
+        slept.append(s)
+
+    conn1 = _FakeConn([_frame(price="1")])   # then raises -> reconnect
+    # The reconnect handshake "takes" 40ms: only an end stamped AT RESUME
+    # (inside the new connection) captures it; one stamped right after backoff
+    # would record end=10 and claim a zero-width gap.
+    conn2 = _FakeConn([_frame(price="2")], on_enter=lambda: wall.__setitem__(0, 50))
+
+    mgr = cm.ConnectionManager(
+        streams=["btcusdt@aggTrade"], on_message=on_message,
+        on_gap=lambda *a: gaps.append(a),
+        connect_fn=_make_connect_fn([conn1, conn2]),
+        proactive_reconnect_s=10**9, sleep_fn=fake_sleep, time_fn=lambda: 0.0,
+        rand_fn=lambda: 0.5, recv_clock=lambda: 1, wall_ms_fn=lambda: wall[0],
+    )
+    asyncio.run(mgr.run())
+
+    assert len(gaps) == 1
+    _, reason, start_ms, end_ms = gaps[0]
+    assert reason == "reconnect"
+    assert start_ms == 10 and end_ms == 50   # end captures the reconnect handshake
+    assert slept == [1.0]                     # backoff happened before resume
+
+
+def test_sink_error_does_not_tear_down_shard():
+    calls = []
+    gaps = []
+
+    def on_message(stream, data, recv_ns):
+        calls.append(1)
+        if len(calls) == 1:
+            raise ValueError("boom")          # bad row should not kill the shard
+        mgr.stop()
+
+    conn = _FakeConn([_frame(price="1"), _frame(price="2")])
+    mgr = cm.ConnectionManager(
+        streams=["btcusdt@aggTrade"], on_message=on_message,
+        on_gap=lambda *a: gaps.append(a),
+        connect_fn=_make_connect_fn([conn]),
+        proactive_reconnect_s=10**9, sleep_fn=lambda s: asyncio.sleep(0),
+        time_fn=lambda: 0.0,
+    )
+    asyncio.run(mgr.run())
+
+    assert len(calls) == 2          # second frame processed despite first raising
+    assert mgr.sink_errors == 1
+    assert gaps == []               # no reconnect/gap triggered by the bad row
 
 
 def test_proactive_reconnect_breaks_without_backoff():

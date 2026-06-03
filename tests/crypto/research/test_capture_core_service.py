@@ -106,6 +106,33 @@ def test_service_captures_aggtrade_to_parquet_end_to_end(tmp_path):
     assert by["ETHUSDT"]["p"] == "42.0"
 
 
+def test_flush_loop_size_flushes_between_age_intervals(tmp_path):
+    # With the age interval effectively infinite, a partition that exceeds the
+    # size cap must still be flushed promptly via the short poll cadence.
+    s = svc.CaptureService(
+        root=str(tmp_path), client=None,
+        flush_interval_s=10**6,   # age never triggers in this test
+        flush_max_bytes=1,        # any buffered row exceeds the size cap
+        flush_poll_s=0.0, install_signals=False,
+    )
+    s._agg.append(svc.aggtrade_row(
+        {"e": "aggTrade", "E": 1_748_563_200_000, "a": 1, "s": "BTCUSDT",
+         "p": "1.0", "q": "1.0", "f": 1, "l": 1, "T": 1_748_563_200_000, "m": False},
+        recv_ns=1))
+
+    async def scenario():
+        task = asyncio.create_task(s._flush_loop())
+        for _ in range(2000):
+            if s._agg.files_written >= 1:
+                break
+            await asyncio.sleep(0)
+        s.stop()
+        await asyncio.wait_for(task, timeout=2.0)
+
+    asyncio.run(scenario())
+    assert s._agg.files_written >= 1
+
+
 # -- universe re-resolve supervisor rebuilds on change --
 
 class _FakeMgr:

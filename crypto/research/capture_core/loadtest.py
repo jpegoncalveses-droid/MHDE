@@ -11,6 +11,7 @@ pre-committing a trim rule.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from typing import Any, Callable, Optional
@@ -78,14 +79,26 @@ async def run_loadtest(
     )
 
     started = time.monotonic()
+    done = asyncio.Event()
 
     async def _stopper() -> None:
         await asyncio.sleep(duration_s)
         mgr.stop()
+        done.set()
+
+    async def _flusher() -> None:
+        # Bound writer memory on long windows: drain due partitions as we go
+        # instead of buffering the whole sample until the end.
+        if writer is None:
+            return
+        while not done.is_set():
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(done.wait(), timeout=cfg.FLUSH_POLL_S)
+            writer.flush_due()
 
     logger.info("capture-core loadtest: %d symbols, %d streams, %.0fs window",
                 len(universe), len(streams), duration_s)
-    await asyncio.gather(mgr.run(), _stopper())
+    await asyncio.gather(mgr.run(), _stopper(), _flusher())
     elapsed = time.monotonic() - started
 
     parquet_bytes = None

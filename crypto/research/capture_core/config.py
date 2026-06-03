@@ -32,6 +32,10 @@ STREAMS_PER_CONN = 200
 FLUSH_INTERVAL_S = 30.0
 FLUSH_MAX_BYTES = 64 * 1024 * 1024  # 64 MiB
 PARQUET_COMPRESSION = "zstd"
+#: How often the service evaluates flush triggers. Must be << FLUSH_INTERVAL_S so
+#: the 64 MiB size cap is a real ceiling, not a 30s-granularity check (a hot
+#: partition can blow past 64 MiB well within one age interval at firehose rates).
+FLUSH_POLL_S = 1.0
 
 # -- Reconnect (mirrors the engine ws_consumer discipline) --
 RECONNECT_BACKOFF_BASE_S = 1.0
@@ -46,6 +50,9 @@ WS_PING_TIMEOUT_S = 30.0
 SOCKET_SILENCE_TIMEOUT_S = 60.0
 #: Binance force-closes a connection at 24h; reconnect each shard before then.
 PROACTIVE_RECONNECT_S = 23.0 * 3600.0
+#: Per-shard stagger on the proactive threshold so all shards don't reconnect at
+#: the same instant (~daily near-total blackout). shard N waits N*frac longer.
+PROACTIVE_STAGGER_FRAC = 0.02
 
 # -- REST (order-book snapshot seeding, PR-2; 429/418 aware) --
 DEPTH_SNAPSHOT_LIMIT = 1000

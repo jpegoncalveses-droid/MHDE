@@ -58,6 +58,15 @@ def compute_backoff(attempt: int, *, base: float, cap: float, jitter: float,
     return max(0.0, raw * factor)
 
 
+def proactive_threshold(base: float, shard_index: int, stagger: float) -> float:
+    """Per-shard proactive-reconnect threshold so shards don't all trip at once.
+
+    Shard ``N`` waits ``N * stagger`` longer than the base, spreading the daily
+    reconnects instead of a near-total blackout when every shard cycles together.
+    """
+    return base * (1.0 + shard_index * stagger)
+
+
 def _default_connect_fn(url: str):
     """Real ``websockets`` connection (lazy import; large frames allowed)."""
     import websockets
@@ -87,6 +96,7 @@ class ConnectionManager:
         jitter: float = cfg.RECONNECT_JITTER,
         silence_timeout_s: float = cfg.SOCKET_SILENCE_TIMEOUT_S,
         proactive_reconnect_s: float = cfg.PROACTIVE_RECONNECT_S,
+        proactive_stagger: float = cfg.PROACTIVE_STAGGER_FRAC,
         sleep_fn: Callable[[float], Any] = asyncio.sleep,
         time_fn: Callable[[], float] = time.monotonic,
         rand_fn: Callable[[], float] = random.random,
@@ -104,6 +114,7 @@ class ConnectionManager:
         self._jitter = jitter
         self._silence_s = silence_timeout_s
         self._proactive_s = proactive_reconnect_s
+        self._proactive_stagger = proactive_stagger
         self._sleep = sleep_fn
         self._time = time_fn
         self._rand = rand_fn
@@ -112,7 +123,8 @@ class ConnectionManager:
 
         self._stop = asyncio.Event()
         self.dispatched = 0
-        self.dropped = 0
+        self.dropped = 0          # frames that failed envelope validation
+        self.sink_errors = 0      # valid frames whose on_message handler raised
         self.bytes_in = 0  # raw wire bytes seen (uncompressed proxy for load sizing)
 
     def stop(self) -> None:
@@ -124,37 +136,46 @@ class ConnectionManager:
         shards = shard_streams(self._streams, self._per_conn)
         logger.info("capture-core conn_manager: %d streams across %d shards",
                     len(self._streams), len(shards))
-        await asyncio.gather(*(self._run_shard(s) for s in shards))
+        await asyncio.gather(
+            *(self._run_shard(s, i) for i, s in enumerate(shards)))
 
-    async def _run_shard(self, streams: list[str]) -> None:
+    async def _run_shard(self, streams: list[str], shard_index: int = 0) -> None:
+        proactive_s = proactive_threshold(self._proactive_s, shard_index,
+                                          self._proactive_stagger)
         attempt = 0
+        # A break leaves a pending gap (reason, start_ms); it is CLOSED on the
+        # next successful connect, so gap_end bounds the true outage (backoff +
+        # handshake), not just "backoff finished".
+        pending: Optional[tuple[str, int]] = None
         while not self._stop.is_set():
-            reason: Optional[str] = None
-            drop_ms: Optional[int] = None
             try:
                 async with self._connect_fn(combined_url(self._ws_base, streams)) as conn:
+                    if pending is not None and self._on_gap is not None:
+                        reason, start_ms = pending
+                        self._on_gap(streams, reason, start_ms, self._wall_ms())
+                    pending = None
                     attempt = 0
                     connected_at = self._time()
                     while not self._stop.is_set():
-                        if self._time() - connected_at >= self._proactive_s:
-                            reason, drop_ms = "proactive_reconnect", self._wall_ms()
+                        if self._time() - connected_at >= proactive_s:
+                            pending = ("proactive_reconnect", self._wall_ms())
                             break
                         try:
                             raw = await asyncio.wait_for(conn.recv(), self._silence_s)
                         except asyncio.TimeoutError:
-                            reason, drop_ms = "socket_silence", self._wall_ms()
+                            pending = ("socket_silence", self._wall_ms())
                             break
                         self._dispatch(raw, self._recv_clock())
             except Exception as exc:  # noqa: BLE001 - any socket error -> reconnect
-                reason, drop_ms = "reconnect", self._wall_ms()
+                pending = ("reconnect", self._wall_ms())
                 logger.warning("capture-core shard disconnected (%s: %s); reconnecting",
                                type(exc).__name__, exc)
 
             if self._stop.is_set():
                 return
 
-            if reason == "proactive_reconnect":
-                backoff = 0.0
+            if pending is not None and pending[0] == "proactive_reconnect":
+                backoff = 0.0  # voluntary cycle; reconnect immediately
             else:
                 attempt += 1
                 backoff = compute_backoff(attempt, base=self._backoff_base,
@@ -162,8 +183,6 @@ class ConnectionManager:
                                           rand=self._rand)
             if backoff:
                 await self._sleep(backoff)
-            if self._on_gap and reason and drop_ms is not None:
-                self._on_gap(streams, reason, drop_ms, self._wall_ms())
 
     def _dispatch(self, raw: Any, recv_ns: int) -> None:
         """Parse a combined-stream envelope and forward its ``data`` payload."""
@@ -185,4 +204,11 @@ class ConnectionManager:
             self.dropped += 1
             return
         self.dispatched += 1
-        self._on_message(stream, data, recv_ns)
+        # A malformed payload must not tear down the whole shard (which would
+        # trigger a reconnect + gap for one bad row); isolate the handler.
+        try:
+            self._on_message(stream, data, recv_ns)
+        except Exception as exc:  # noqa: BLE001 - isolate a single bad frame
+            self.sink_errors += 1
+            logger.warning("capture-core sink error on %s (%s: %s)",
+                           stream, type(exc).__name__, exc)
