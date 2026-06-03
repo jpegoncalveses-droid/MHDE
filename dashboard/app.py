@@ -39,8 +39,10 @@ from dashboard.services.queries import (
     get_paper_failed_entries,
     get_paper_position_snapshots,
     get_paper_today_cohort,
+    load_signal_probe_snapshot,
     paper_baseline_date,
     position_is_armed,
+    signal_probe_db_path,
 )
 
 st.set_page_config(
@@ -94,8 +96,8 @@ with st.expander(
 conn.close()
 
 # Paper Trading first so it is the default tab on open (paper-tab-overhaul).
-tab_paper, tab_equities, tab_crypto, tab_fx = st.tabs(
-    ["Paper Trading", "Equities", "Crypto", "FX"]
+tab_paper, tab_equities, tab_crypto, tab_fx, tab_probe = st.tabs(
+    ["Paper Trading", "Equities", "Crypto", "FX", "Signal Probe"]
 )
 
 # ===============================================================================
@@ -1302,3 +1304,100 @@ with tab_paper:
                     st.dataframe(_failed_df, use_container_width=True, hide_index=True)
         finally:
             _engine_conn.close()
+
+# ===============================================================================
+# SIGNAL PROBE TAB (research, read-only)
+# ===============================================================================
+with tab_probe:
+    st.title("Signal Probe")
+    st.caption(
+        f"Raw multi-window research features per symbol, read-only — "
+        f"`{signal_probe_db_path()}`. Collected every ~60 s by the signal-probe "
+        f"timer; raw values only (NULL = not computable this cycle). Read via an "
+        f"in-memory read-only snapshot so it never contends with the collector's "
+        f"writes."
+    )
+
+    try:
+        _probe_df = load_signal_probe_snapshot(signal_probe_db_path())
+    except Exception as _e:
+        st.warning(
+            f"Signal-probe research database not available at "
+            f"`{signal_probe_db_path()}` — is the collector deployed / has it "
+            f"written a cycle yet? ({type(_e).__name__}: {_e})"
+        )
+    else:
+        if _probe_df.empty:
+            st.info(
+                "No signal-probe rows yet — the collector has not written any "
+                "cycles to the research DB."
+            )
+        else:
+            _minutes = (
+                _probe_df["ts"].drop_duplicates().sort_values(ascending=False)
+            )
+            _latest_ts = _minutes.iloc[0]
+
+            # --- Accumulation counters (visible at a glance) ---
+            _m1, _m2, _m3, _m4 = st.columns(4)
+            _m1.metric("Rows", f"{len(_probe_df):,}")
+            _m2.metric("Columns", _probe_df.shape[1])
+            _m3.metric("Distinct minutes", f"{len(_minutes):,}")
+            _m4.metric("Symbols", f"{_probe_df['symbol'].nunique():,}")
+            st.caption(f"Latest minute: `{_latest_ts}` (exchange close-time).")
+
+            # --- Controls ---
+            _c1, _c2 = st.columns([1, 2])
+            with _c1:
+                _minute_choice = st.selectbox(
+                    "Minute",
+                    options=["Latest", "All minutes"]
+                    + [str(m) for m in _minutes],
+                    index=0,
+                    key="probe_minute",
+                    help="Default shows the latest closed minute (all symbols).",
+                )
+            with _c2:
+                _all_symbols = sorted(_probe_df["symbol"].unique())
+                _symbol_choice = st.multiselect(
+                    "Symbols (empty = all)",
+                    options=_all_symbols,
+                    default=[],
+                    key="probe_symbols",
+                )
+
+            _s1, _s2 = st.columns([2, 1])
+            with _s1:
+                _cols = list(_probe_df.columns)
+                _sort_col = st.selectbox(
+                    "Sort by",
+                    options=_cols,
+                    index=_cols.index("symbol"),
+                    key="probe_sort_col",
+                )
+            with _s2:
+                _sort_dir = st.radio(
+                    "Order",
+                    options=["Asc", "Desc"],
+                    index=0,
+                    horizontal=True,
+                    key="probe_sort_dir",
+                )
+
+            # --- Apply filters/sort (pure pandas on the in-memory snapshot) ---
+            _view = _probe_df
+            if _minute_choice == "Latest":
+                _view = _view[_view["ts"] == _latest_ts]
+            elif _minute_choice != "All minutes":
+                _view = _view[_view["ts"].astype(str) == _minute_choice]
+            if _symbol_choice:
+                _view = _view[_view["symbol"].isin(_symbol_choice)]
+            _view = _view.sort_values(
+                _sort_col, ascending=(_sort_dir == "Asc"), kind="stable"
+            )
+
+            st.caption(
+                f"Showing {len(_view):,} rows × {_view.shape[1]} columns "
+                f"(horizontal scroll for the full width)."
+            )
+            st.dataframe(_view, use_container_width=True, hide_index=True)
