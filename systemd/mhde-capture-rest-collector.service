@@ -1,0 +1,29 @@
+# /home/jpcg/.config/systemd/user/mhde-capture-rest-collector.service
+[Unit]
+Description=MHDE capture-core REST present-state collector (read-only, Binance public)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# systemd --user unit (installed under ~/.config/systemd/user/): runs as the
+# logging-in user, so NO User=/Group= line. Persistence relies on linger.
+# Pre-flight fails fast if the venv is missing. The collector captures ONLY raw
+# parquet under data/research/capture_core/ and never opens the production
+# database. It self-paces under the live REST weight, coexisting with the WS
+# capture service's depth SnapshotScheduler on the shared IP.
+#
+# BUILT-NOT-DEPLOYED: this file is tracked but not installed/enabled. Resource
+# caps + R2 offload arrive in the safety PR before this is ever turned on.
+Type=simple
+WorkingDirectory=/home/jpcg/MHDE
+ExecStartPre=/usr/bin/test -x /home/jpcg/MHDE/venv/bin/python
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto capture-rest-run
+Restart=on-failure
+RestartSec=5
+# Give writers time to flush open parquet buffers on SIGTERM before SIGKILL.
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

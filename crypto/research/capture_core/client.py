@@ -24,6 +24,16 @@ logger = logging.getLogger("mhde.crypto.capture_core.client")
 _RATE_LIMIT_CODES = (429, 418)
 
 
+class RateLimited(Exception):
+    """Raised by :meth:`CaptureRestClient.get_with_weight` on 429/418 so the
+    caller (the present-state collector) can DEGRADE rather than block-retry."""
+
+    def __init__(self, status: int, retry_after: float):
+        super().__init__(f"rate-limited HTTP {status}")
+        self.status = status
+        self.retry_after = retry_after
+
+
 class CaptureRestClient:
     """Public-endpoint client with request pacing and 429/418 backoff."""
 
@@ -59,6 +69,27 @@ class CaptureRestClient:
             resp.raise_for_status()
             return resp.json()
         raise last_exc or RuntimeError(f"GET {path} exhausted retries")
+
+    def get_with_weight(self, path: str,
+                        params: Optional[dict] = None) -> tuple[Any, Optional[int]]:
+        """GET returning ``(json, used_weight)``.
+
+        ``used_weight`` is the live ``X-MBX-USED-WEIGHT-1M`` for /fapi calls, or
+        ``None`` for /futures/data (a separate pool that exposes no weight
+        header). On 429/418 this raises :class:`RateLimited` immediately (no
+        internal retry) so the present-state collector can degrade by priority
+        instead of blocking.
+        """
+        if self._delay:
+            self._sleep(self._delay)
+        resp = self._session.get(f"{BINANCE_FUTURES_BASE}{path}",
+                                 params=params, timeout=30)
+        if resp.status_code in _RATE_LIMIT_CODES:
+            wait = float(resp.headers.get("Retry-After", 1.0))
+            raise RateLimited(resp.status_code, wait)
+        resp.raise_for_status()
+        used = resp.headers.get("X-MBX-USED-WEIGHT-1M")
+        return resp.json(), (int(used) if used is not None else None)
 
     def fetch_usdtm_perp_universe(self) -> list[str]:
         """Sorted symbols for every TRADING USDT-M PERPETUAL contract."""

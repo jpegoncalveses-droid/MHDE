@@ -71,6 +71,21 @@ PROACTIVE_RECONNECT_S = 23.0 * 3600.0
 #: the same instant (~daily near-total blackout). shard N waits N*frac longer.
 PROACTIVE_STAGGER_FRAC = 0.02
 
+# -- REST present-state collector (capture-completion piece) --
+#: /fapi REQUEST_WEIGHT limit per minute (from exchangeInfo rateLimits, live-confirmed).
+FAPI_WEIGHT_LIMIT = 2400
+#: Stay under this fraction of a pool's limit (leaves headroom for the depth
+#: SnapshotScheduler + engine + signal-probe collector sharing the IP).
+REST_BUDGET_FRACTION = 0.70
+#: /futures/data is a SEPARATE pool with NO used-weight header (live-confirmed),
+#: so it is paced by a fixed conservative request interval and reacts to 429s.
+FUTURES_DATA_MIN_INTERVAL_S = 0.2
+#: When the live /fapi used-weight is over the budget fraction, wait this long
+#: before re-checking (lets the 1-minute weight window roll off).
+REST_BUDGET_BACKOFF_S = 2.0
+#: On a /futures/data 429, suppress that priority tier for this long (degrade).
+REST_DEGRADE_COOLDOWN_S = 60.0
+
 # -- REST (order-book snapshot seeding; 429/418 aware) --
 #: Snapshot depth. Maintenance itself only needs ``lastUpdateId`` to bridge the
 #: diff stream, but the snapshot is ALSO stored for OFFLINE book reconstruction,

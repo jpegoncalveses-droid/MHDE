@@ -1966,6 +1966,38 @@ def crypto_capture_core_loadtest(seconds, write_root, stream_set):
     click.echo(json.dumps(result, indent=2, default=str))
 
 
+@crypto.command("capture-rest-run")
+@click.option("--root", default=None,
+              help="Raw capture dir. Default: capture_core.config.RAW_DIR.")
+def crypto_capture_rest_run(root):
+    """Run the capture-core REST present-state collector (BLOCKS).
+
+    Polls public USDT-M REST present-state series (open interest, premium index /
+    funding, long-short ratios, taker ratio, basis) on a budget-aware self-pacing
+    schedule and writes raw zstd parquet per series under the capture dir.
+    Read-only against Binance PUBLIC REST; NEVER opens mhde.duckdb or the engine
+    DB. Coexists with the depth SnapshotScheduler on the shared IP weight.
+    Long-running (Type=simple service); stops cleanly on SIGTERM/SIGINT.
+    """
+    import asyncio
+    import logging
+
+    from crypto.research.capture_core import config as cc_cfg
+    from crypto.research.capture_core.client import CaptureRestClient
+    from crypto.research.capture_core.rest_collector import RestPresentStateCollector
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    client = CaptureRestClient()
+    collector = RestPresentStateCollector(
+        root=root or cc_cfg.RAW_DIR, client=client,
+        universe_fn=client.fetch_usdtm_perp_universe,
+    )
+    asyncio.run(collector.run())
+
+
 @crypto.command("intraday-replay")
 @click.option("--start", "start_str", required=True,
               help="First prediction_date YYYY-MM-DD (inclusive).")
