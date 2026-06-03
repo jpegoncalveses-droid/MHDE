@@ -70,3 +70,12 @@ def test_snapshot_row_attaches_symbol_and_coerces_id():
     row = svc.snapshot_row("BTCUSDT", snap, recv_ns=9)
     assert row["s"] == "BTCUSDT" and row["lastUpdateId"] == 123
     assert row["b"] == [["1", "2"]] and row["a"] == [["3", "4"]]  # bids/asks -> b/a
+
+
+def test_snapshot_row_missing_event_time_falls_back_to_recv_ms():
+    # Defensive: if a snapshot ever lacks E, partition on recv-derived ms, never 0
+    # (which would land the row in date=1970-01-01).
+    snap = {"lastUpdateId": 1, "bids": [], "asks": []}
+    recv_ns = 1_748_563_200_000 * 1_000_000   # ms -> ns
+    row = svc.snapshot_row("BTCUSDT", snap, recv_ns=recv_ns)
+    assert row["E"] == 1_748_563_200_000

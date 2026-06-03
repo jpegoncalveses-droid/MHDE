@@ -69,6 +69,20 @@ def test_first_event_boundary_hole_requests_new_snapshot():
     assert m.synced is False
 
 
+def test_rest_application_break_reenters_resync_and_reports_not_synced():
+    # The snapshot syncs at the first applicable event, but a later buffered
+    # event breaks continuity -> we re-enter resync. synced_now must reflect the
+    # FINAL state (not synced), and a fresh snapshot is needed.
+    m = DepthMaintainer("BTCUSDT")
+    m.on_diff(11, 20, 10, ts=2)
+    m.on_diff(21, 30, 20, ts=3)
+    m.on_diff(41, 50, 40, ts=4)              # pu=40 breaks after sync (last_u=30)
+    res = m.on_snapshot(last_update_id=15, ts=5)
+    assert res.needs_snapshot is True
+    assert res.synced_now is False           # ended awaiting resync, not synced
+    assert m.synced is False
+
+
 def test_snapshot_then_later_diffs_sync_without_gap():
     # Snapshot arrives before any diff (normal seed order): wait, then sync.
     m = DepthMaintainer("ETHUSDT")

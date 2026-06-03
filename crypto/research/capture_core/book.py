@@ -32,8 +32,14 @@ class _Diff(NamedTuple):
 
 @dataclass
 class SyncResult:
-    """Outcome of feeding one event/snapshot to a :class:`DepthMaintainer`."""
-    synced_now: bool = False                       # transitioned (re)synced
+    """Outcome of feeding one event/snapshot to a :class:`DepthMaintainer`.
+
+    ``synced_now`` reflects the maintainer's state AFTER this call (i.e. it is
+    now synced) — not merely that a sync momentarily occurred. If a buffered
+    event broke continuity again right after syncing, the maintainer re-enters
+    resync and ``synced_now`` is False.
+    """
+    synced_now: bool = False                       # synced after this call
     needs_snapshot: bool = False                   # caller should request a REST snapshot
     gap: Optional[tuple[int, int, str]] = None     # (start_ts, end_ts, reason)
 
@@ -107,7 +113,9 @@ class DepthMaintainer:
         for d in rest:
             if d.pu != self.last_u:
                 follow = self._enter_resync(d.U, d.u, d.pu, d.ts)
-                return SyncResult(synced_now=True, gap=gap,
+                # We synced then immediately broke again -> NOT synced now. The
+                # first gap (if any) is still reported; a new resync is pending.
+                return SyncResult(synced_now=False, gap=gap,
                                   needs_snapshot=follow.needs_snapshot)
             self.last_u = d.u
             self._last_good_ts = d.ts

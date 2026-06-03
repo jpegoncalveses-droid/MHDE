@@ -108,7 +108,9 @@ def snapshot_row(symbol: str, snap: dict, recv_ns: int) -> dict:
     return {
         "recv_ts_ns": recv_ns, "s": symbol,
         "lastUpdateId": int(snap["lastUpdateId"]),
-        "E": int(snap.get("E", 0)), "T": int(snap.get("T", 0)),
+        # Partition on event time E; if a snapshot ever lacks it, fall back to the
+        # recv-derived ms so the row never lands in date=1970-01-01.
+        "E": int(snap.get("E") or recv_ns // 1_000_000), "T": int(snap.get("T", 0)),
         "b": snap.get("bids", []), "a": snap.get("asks", []),
     }
 
