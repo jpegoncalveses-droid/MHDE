@@ -1585,3 +1585,51 @@ def build_position_chart_frame(
     else:
         df["exit_ref"] = entry_price * (1.0 + activation_pct)
     return df[cols]
+
+
+# ---------------------------------------------------------------------------
+# Signal-probe research tab (read-only snapshot)
+# ---------------------------------------------------------------------------
+
+#: Env override for the signal-probe research DB path.
+SIGNAL_PROBE_DB_ENV = "MHDE_SIGNAL_PROBE_DB_PATH"
+_DEFAULT_SIGNAL_PROBE_DB = "data/research/signal_probe.duckdb"
+
+
+def signal_probe_db_path() -> str:
+    """Path to the signal-probe research DuckDB (env-overridable).
+
+    This is the gitignored research DB written by the signal-probe collector
+    (``data/research/signal_probe.duckdb``) — NEVER the production
+    ``mhde.duckdb``. The dashboard only ever reads it via a read-only snapshot
+    (see :func:`load_signal_probe_snapshot`).
+    """
+    return os.environ.get(SIGNAL_PROBE_DB_ENV, _DEFAULT_SIGNAL_PROBE_DB)
+
+
+def load_signal_probe_snapshot(path: str) -> pd.DataFrame:
+    """Read the whole ``signal_probe`` table via a read-only in-memory snapshot.
+
+    The collector is the single writer of ``path`` and holds a write lock
+    during each ~60s cycle. To never contend with it, this ATTACHes the file
+    ``READ_ONLY`` into a throwaway in-memory database, ``COPY``s the entire
+    database into memory, ``DETACH``es (releasing the file handle), then reads
+    the in-memory copy. No handle on the file is held during rendering and the
+    file is never opened read-write.
+
+    Returns every row/column ordered by ``ts`` DESC, ``symbol`` ASC (latest
+    minute first). Raises whatever duckdb raises if the file is missing /
+    locked / corrupt; the caller (the Streamlit tab) catches and degrades
+    gracefully without breaking the rest of the page.
+    """
+    safe_path = path.replace("'", "''")
+    con = duckdb.connect(":memory:")
+    try:
+        con.execute(f"ATTACH '{safe_path}' AS probe (READ_ONLY)")
+        con.execute("COPY FROM DATABASE probe TO memory")
+        con.execute("DETACH probe")
+        return con.execute(
+            "SELECT * FROM signal_probe ORDER BY ts DESC, symbol ASC"
+        ).df()
+    finally:
+        con.close()
