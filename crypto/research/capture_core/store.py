@@ -146,8 +146,12 @@ def symbol_time_partition(symbol_key: str, time_key: str
                           ) -> Callable[[Mapping[str, Any]], str]:
     """Build a ``symbol=<row[symbol_key]>/date=<row[time_key] day>`` partition fn.
 
-    ``symbol_key`` is ``"s"`` for per-symbol series and ``"pair"`` for basis;
-    ``time_key`` is the row's event-time field (``time`` / ``timestamp``).
+    The partition label is **uniformly** ``symbol=`` across every dataset (WS and
+    REST) so one partition predicate prunes them all in cross-dataset queries.
+    ``symbol_key`` picks which row field supplies the value: ``"s"`` for
+    per-symbol series, ``"pair"`` for basis — whose pair equals the symbol for
+    single-asset USDT-M perps, so it sits under the same uniform label without
+    loss. ``time_key`` is the row's event-time field (``time`` / ``timestamp``).
     """
     def _fn(row: Mapping[str, Any]) -> str:
         return f"symbol={row[symbol_key]}/date={_date_str(row[time_key])}"

@@ -144,5 +144,5 @@ SERIES: list[SeriesSpec] = [
                "s", "timestamp", _parse_taker_ls, dict(_FIVE_MIN)),
     SeriesSpec("basis", "/futures/data/basis", "per_pair", "futures_data", 0,
                300.0, "LOW", BASIS_SCHEMA, "pair", "timestamp", _parse_basis,
-               {"contractType": "PERPETUAL", "period": "5m", "limit": 1}),
+               {**_FIVE_MIN, "contractType": "PERPETUAL"}),
 ]

@@ -108,6 +108,8 @@ class RestPresentStateCollector:
 
     def _degrade(self, spec: SeriesSpec, now: float) -> None:
         # futures_data 429 -> suppress the lowest active tier first (LOW then MED).
+        # Deliberately decoupled from which series hit the limit: a 429 anywhere in
+        # the shared /futures/data pool sheds the cheapest-to-lose tier first.
         if spec.pool != "futures_data":
             return
         if now >= self._degraded_until.get("LOW", 0.0):
