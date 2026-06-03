@@ -1898,6 +1898,58 @@ def crypto_signal_probe_collect(research_db, no_depth, symbols):
         click.echo(f"  skipped: {', '.join(summary['symbols_skipped'])}")
 
 
+@crypto.command("capture-core-run")
+@click.option("--root", default=None,
+              help="Raw capture dir. Default: capture_core.config.RAW_DIR.")
+def crypto_capture_core_run(root):
+    """Run the capture-core raw market-data capture service (BLOCKS).
+
+    Resolves the full TRADING USDT-M perp universe live (re-resolved on a
+    cadence), captures every ``@aggTrade`` event across it, and writes raw
+    zstd parquet under the capture dir. Read-only against Binance USDT-M PUBLIC
+    WS/REST endpoints; NEVER opens mhde.duckdb or the engine DB. Long-running
+    (Type=simple service); stops cleanly on SIGTERM/SIGINT, flushing buffers.
+    """
+    import asyncio
+    import logging
+
+    from crypto.research.capture_core import config as cc_cfg
+    from crypto.research.capture_core.client import CaptureRestClient
+    from crypto.research.capture_core.service import CaptureService
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    svc = CaptureService(root=root or cc_cfg.RAW_DIR, client=CaptureRestClient())
+    asyncio.run(svc.run())
+
+
+@crypto.command("capture-core-loadtest")
+@click.option("--seconds", default=60.0, type=float,
+              help="Measurement window length in seconds.")
+@click.option("--write-root", default=None,
+              help="If set, also write a parquet sample here for a real "
+                   "compression ratio in the report.")
+def crypto_capture_core_loadtest(seconds, write_root):
+    """Size the 529-symbol aggTrade firehose over a bounded window.
+
+    Drives the real connection manager against every TRADING USDT-M perp's
+    aggTrade stream, then prints messages/sec, raw bytes/sec, and projected
+    daily volume (raw, plus parquet-compressed when --write-root is given).
+    """
+    import asyncio
+    import json
+    import logging
+
+    from crypto.research.capture_core.loadtest import run_loadtest
+
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    result = asyncio.run(run_loadtest(duration_s=seconds, write_root=write_root))
+    click.echo(json.dumps(result, indent=2, default=str))
+
+
 @crypto.command("intraday-replay")
 @click.option("--start", "start_str", required=True,
               help="First prediction_date YYYY-MM-DD (inclusive).")

@@ -1,0 +1,29 @@
+# /home/jpcg/.config/systemd/user/mhde-capture-core.service
+[Unit]
+Description=MHDE capture-core — raw Binance USDT-M market-data capture (read-only, public)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# systemd --user unit (installed under ~/.config/systemd/user/): runs as the
+# logging-in user, so NO User=/Group= line. Persistence relies on linger
+# (`loginctl enable-linger jpcg`). Pre-flight fails fast if the venv is missing.
+# The service captures ONLY raw parquet under data/research/capture_core/ and
+# never opens the production database, so no production-DB pre-flight is needed.
+#
+# BUILT-NOT-DEPLOYED (PR-1): this file is tracked but not installed/enabled.
+# Resource caps (MemoryMax), a disk-usage guard, and R2 offload arrive in the
+# safety PR (PR-3) before this service is ever turned on.
+Type=simple
+WorkingDirectory=/home/jpcg/MHDE
+ExecStartPre=/usr/bin/test -x /home/jpcg/MHDE/venv/bin/python
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto capture-core-run
+Restart=on-failure
+RestartSec=5
+# Give the writer time to flush open parquet buffers on SIGTERM before SIGKILL.
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
