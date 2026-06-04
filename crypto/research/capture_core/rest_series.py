@@ -16,6 +16,8 @@ from typing import Any, Callable, Optional
 
 import pyarrow as pa
 
+from crypto.research.capture_core import config as cfg
+
 # -- per-series parquet schemas (venue numeric fields kept as strings, lossless) --
 
 OPEN_INTEREST_SCHEMA = pa.schema([
@@ -123,26 +125,30 @@ _FIVE_MIN = {"period": "5m", "limit": 1}
 
 #: Default-to-inclusion present-state set. Cadence rule (anti-bias): open_interest
 #: is real-time so its cadence is budget-driven (60s here, a safe default well
-#: under budget — finer is a one-line change); the 5m on the ratio/basis series is
-#: Binance's NATIVE minimum, not our choice.
+#: under budget — finer is a one-line change). The /futures/data ratio/basis series
+#: are 5m-native, but their *sampling* cadence is COARSENED to FUTURES_DATA_CADENCE_S
+#: (20 min): a full 529-symbol sweep of the 4 ratio series + basis ≈ 2,645 requests
+#: cannot fit under the verified /futures/data IP ceiling (~700 req/5min) any faster
+#: (see config.FUTURES_DATA_* and the rest_collector raw-count pacer).
+_FD = cfg.FUTURES_DATA_CADENCE_S
 SERIES: list[SeriesSpec] = [
     SeriesSpec("open_interest", "/fapi/v1/openInterest", "per_symbol", "fapi", 1,
                60.0, "HIGH", OPEN_INTEREST_SCHEMA, "s", "time", _parse_open_interest),
     SeriesSpec("premium_index", "/fapi/v1/premiumIndex", "all", "fapi", 10,
                60.0, "HIGH", PREMIUM_INDEX_SCHEMA, "s", "time", _parse_premium_index),
     SeriesSpec("global_ls_account", "/futures/data/globalLongShortAccountRatio",
-               "per_symbol", "futures_data", 0, 300.0, "MED", LS_RATIO_SCHEMA,
+               "per_symbol", "futures_data", 0, _FD, "MED", LS_RATIO_SCHEMA,
                "s", "timestamp", _parse_ls_ratio, dict(_FIVE_MIN)),
     SeriesSpec("top_ls_account", "/futures/data/topLongShortAccountRatio",
-               "per_symbol", "futures_data", 0, 300.0, "MED", LS_RATIO_SCHEMA,
+               "per_symbol", "futures_data", 0, _FD, "MED", LS_RATIO_SCHEMA,
                "s", "timestamp", _parse_ls_ratio, dict(_FIVE_MIN)),
     SeriesSpec("top_ls_position", "/futures/data/topLongShortPositionRatio",
-               "per_symbol", "futures_data", 0, 300.0, "MED", LS_RATIO_SCHEMA,
+               "per_symbol", "futures_data", 0, _FD, "MED", LS_RATIO_SCHEMA,
                "s", "timestamp", _parse_ls_ratio, dict(_FIVE_MIN)),
     SeriesSpec("taker_ls_ratio", "/futures/data/takerlongshortRatio",
-               "per_symbol", "futures_data", 0, 300.0, "MED", TAKER_LS_SCHEMA,
+               "per_symbol", "futures_data", 0, _FD, "MED", TAKER_LS_SCHEMA,
                "s", "timestamp", _parse_taker_ls, dict(_FIVE_MIN)),
     SeriesSpec("basis", "/futures/data/basis", "per_pair", "futures_data", 0,
-               300.0, "LOW", BASIS_SCHEMA, "pair", "timestamp", _parse_basis,
+               _FD, "LOW", BASIS_SCHEMA, "pair", "timestamp", _parse_basis,
                {**_FIVE_MIN, "contractType": "PERPETUAL"}),
 ]

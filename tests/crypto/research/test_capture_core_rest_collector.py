@@ -74,9 +74,31 @@ def test_due_series_respects_cadence():
     specs = rs.SERIES
     assert len(rc.due_series(specs, now=0.0, last_run={})) == len(specs)  # all due first
     last = {s.name: 0.0 for s in specs}
-    # at t=120s, only the 60s-cadence (HIGH) series are due, not the 300s ones
+    # at t=120s, only the 60s-cadence (HIGH) series are due, not the coarsened
+    # /futures/data ones.
     due = rc.due_series(specs, now=120.0, last_run=last)
     assert {s.name for s in due} == {"open_interest", "premium_index"}
+
+
+def test_futures_data_series_cadence_is_coarsened():
+    from crypto.research.capture_core import config as cfg
+    fd = [s for s in rs.SERIES if s.pool == "futures_data"]
+    assert fd, "expected /futures/data series in the registry"
+    # All /futures/data series sample on the coarsened cadence (well above the old
+    # 5m), so a full sweep fits under the verified IP ceiling.
+    assert all(s.target_cadence_s == cfg.FUTURES_DATA_CADENCE_S for s in fd)
+    assert cfg.FUTURES_DATA_CADENCE_S >= 600.0
+
+
+def test_fd_pace_wait_caps_raw_request_rate():
+    # headroom -> no wait
+    assert rc.fd_pace_wait(0.0, 5, now=10.0, budget=10, window_s=300.0) == 0.0
+    # at budget -> wait until the oldest in-window request ages out
+    assert rc.fd_pace_wait(0.0, 10, now=100.0, budget=10, window_s=300.0) == 200.0
+    # oldest already aged past the window -> non-negative guard
+    assert rc.fd_pace_wait(0.0, 10, now=400.0, budget=10, window_s=300.0) == 0.0
+    # empty window -> no wait
+    assert rc.fd_pace_wait(None, 0, now=5.0, budget=10, window_s=300.0) == 0.0
 
 
 def test_select_under_pressure_drops_fapi_non_high_only():
@@ -121,6 +143,33 @@ def test_fapi_paces_when_over_budget(tmp_path):
     # first symbol: used starts 0 -> no pre-sleep; after it returns 2000 (>0.7*2400)
     # the second symbol pre-sleeps the budget backoff.
     assert slept  # at least one budget backoff occurred
+
+
+# -- /futures/data raw-count pacing: rolling-window request budget --
+
+def test_futures_data_raw_count_pacing_blocks_over_budget(tmp_path):
+    t = {"now": 0.0}
+    slept = []
+
+    async def sleep_fn(s):
+        slept.append(s)
+        t["now"] += s
+
+    # budget=2 per 300s window, no floor spacing -> the 3rd per-symbol request must
+    # wait ~one window for the oldest to age out.
+    col = rc.RestPresentStateCollector(
+        root=str(tmp_path), client=_FakeClient(),
+        universe=["A", "B", "C"],
+        specs=[next(s for s in rs.SERIES if s.name == "global_ls_account")],
+        sleep_fn=sleep_fn, now_fn=lambda: t["now"], install_signals=False,
+        clock_ns=lambda: _TS * 1_000_000,
+        futures_data_req_budget=2, futures_data_window_s=300.0,
+        futures_data_min_interval_s=0.0)
+    asyncio.run(col.collect_once(now=0.0))
+    col.flush_all()
+    assert any(abs(s - 300.0) < 1e-6 for s in slept), slept
+    # all three still got written after the pacing wait
+    assert len(_read(tmp_path, "global_ls_account")) == 3
 
 
 # -- /futures/data 429 degrades LOW first, never HIGH --

@@ -77,9 +77,26 @@ FAPI_WEIGHT_LIMIT = 2400
 #: Stay under this fraction of a pool's limit (leaves headroom for the depth
 #: SnapshotScheduler + engine + signal-probe collector sharing the IP).
 REST_BUDGET_FRACTION = 0.70
-#: /futures/data is a SEPARATE pool with NO used-weight header (live-confirmed),
-#: so it is paced by a fixed conservative request interval and reacts to 429s.
-FUTURES_DATA_MIN_INTERVAL_S = 0.2
+#: /futures/data is a SEPARATE pool with NO used-weight header AND absent from
+#: exchangeInfo.rateLimits (both live-confirmed 2026-06-04), so it cannot be
+#: self-paced from any response signal. Binance documents a fixed IP ceiling of
+#: 1000 requests / 5 min for /futures/data/* — the only ground truth available —
+#: so this pool is paced by RAW REQUEST COUNT over a rolling window.
+FUTURES_DATA_REQ_LIMIT = 1000           # Binance-documented /futures/data IP ceiling
+FUTURES_DATA_REQ_WINDOW_S = 300.0       # ...measured over 5 minutes
+#: Stay under this fraction of the documented ceiling so capture coexists with any
+#: other /futures/data user on the IP (e.g. the signal-probe collector).
+FUTURES_DATA_REQ_BUDGET = int(REST_BUDGET_FRACTION * FUTURES_DATA_REQ_LIMIT)  # 700
+#: Even-pacing floor between /futures/data requests, DERIVED from the verified
+#: budget (window / budget ≈ 0.43s) rather than guessed. Smooths the request
+#: stream so the rolling-window raw-count cap is a backstop, not the primary brake.
+FUTURES_DATA_MIN_INTERVAL_S = FUTURES_DATA_REQ_WINDOW_S / FUTURES_DATA_REQ_BUDGET
+#: Coarsened cadence for the 5m-native /futures/data series. A full 529-symbol
+#: sweep of the 4 per-symbol ratio series + per-pair basis ≈ 2,645 requests, which
+#: at FUTURES_DATA_REQ_BUDGET (~700/5min) takes ~19 min — so the series are sampled
+#: every 20 min, the honest rate under the IP ceiling. Finer than this would breach
+#: the ceiling and draw 429s / an IP ban that would also starve the /fapi HIGH series.
+FUTURES_DATA_CADENCE_S = 1200.0
 #: When the live /fapi used-weight is over the budget fraction, wait this long
 #: before re-checking (lets the 1-minute weight window roll off).
 REST_BUDGET_BACKOFF_S = 2.0

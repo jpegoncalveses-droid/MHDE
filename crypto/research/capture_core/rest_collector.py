@@ -6,9 +6,12 @@ Drives the :mod:`rest_series` registry on a self-pacing schedule:
     live ``X-MBX-USED-WEIGHT-1M`` header, staying under a fraction of the limit so
     it COEXISTS with the depth ``SnapshotScheduler`` (which reads the same signal
     via its own calls). open_interest's cadence is budget-driven, not pre-coarsened.
-  * **/futures/data pool** (ratios, basis) — a SEPARATE pool with NO weight header;
-    paced by a fixed conservative interval and, on 429, DEGRADED by tier (LOW
-    then MED). HIGH is never starved.
+  * **/futures/data pool** (ratios, basis) — a SEPARATE pool with NO weight header
+    and no exchangeInfo entry, so it is paced by RAW REQUEST COUNT against the
+    Binance-documented 1000 req/5min IP ceiling (kept under a budget fraction),
+    with an even-pacing floor derived from that budget. On 429 it DEGRADES by tier
+    (LOW then MED). The 5m-native series are sampled on a coarsened cadence so a
+    full universe sweep fits under the ceiling. HIGH is never starved.
 
 Each series writes its own parquet dataset (raw rows only — changes/zscores are
 derived downstream). NEVER opens mhde.duckdb or the engine DB; public REST only.
@@ -20,6 +23,7 @@ import contextlib
 import logging
 import signal
 import time
+from collections import deque
 from typing import Any, Callable, Optional, Sequence
 
 from crypto.research.capture_core import config as cfg
@@ -50,6 +54,22 @@ def select_under_pressure(due: Sequence[SeriesSpec], *, used_weight: Optional[in
     return [s for s in due if s.pool != "fapi" or s.priority == "HIGH"]
 
 
+def fd_pace_wait(oldest_ts: Optional[float], count: int, now: float, *,
+                 budget: int, window_s: float) -> float:
+    """Seconds to wait before another /futures/data request to keep the raw request
+    count <= ``budget`` per rolling ``window_s``.
+
+    The /futures/data pool exposes no used-weight header (and is absent from
+    exchangeInfo.rateLimits), so it is paced purely by counting requests. The
+    caller passes the in-window request count and the oldest in-window timestamp
+    (stale entries already evicted); when the window is full we wait until the
+    oldest request ages out. Returns 0.0 when there is headroom.
+    """
+    if count < budget or oldest_ts is None:
+        return 0.0
+    return max(0.0, window_s - (now - oldest_ts))
+
+
 class RestPresentStateCollector:
     def __init__(
         self,
@@ -62,6 +82,8 @@ class RestPresentStateCollector:
         budget_fraction: float = cfg.REST_BUDGET_FRACTION,
         weight_limit: int = cfg.FAPI_WEIGHT_LIMIT,
         futures_data_min_interval_s: float = cfg.FUTURES_DATA_MIN_INTERVAL_S,
+        futures_data_req_budget: int = cfg.FUTURES_DATA_REQ_BUDGET,
+        futures_data_window_s: float = cfg.FUTURES_DATA_REQ_WINDOW_S,
         budget_backoff_s: float = cfg.REST_BUDGET_BACKOFF_S,
         degrade_cooldown_s: float = cfg.REST_DEGRADE_COOLDOWN_S,
         reresolve_interval_s: float = cfg.UNIVERSE_RERESOLVE_INTERVAL_S,
@@ -80,6 +102,8 @@ class RestPresentStateCollector:
         self._fraction = budget_fraction
         self._limit = weight_limit
         self._fd_interval = futures_data_min_interval_s
+        self._fd_req_budget = futures_data_req_budget
+        self._fd_window_s = futures_data_window_s
         self._backoff_s = budget_backoff_s
         self._degrade_cooldown = degrade_cooldown_s
         self._reresolve_s = reresolve_interval_s
@@ -99,6 +123,7 @@ class RestPresentStateCollector:
         self._last_run: dict[str, float] = {}
         self._used_weight = 0
         self._degraded_until: dict[str, float] = {}
+        self._fd_req_times: deque[float] = deque()  # /futures/data request timestamps in-window
         self._stop = asyncio.Event()
 
     # -- pacing / degradation --
@@ -118,12 +143,35 @@ class RestPresentStateCollector:
             self._degraded_until["MED"] = now + self._degrade_cooldown
         logger.warning("capture-core REST degraded (%s 429); suppressing a tier", spec.name)
 
+    def _evict_fd(self, now: float) -> None:
+        """Drop /futures/data request timestamps older than the rolling window."""
+        cutoff = now - self._fd_window_s
+        while self._fd_req_times and self._fd_req_times[0] <= cutoff:
+            self._fd_req_times.popleft()
+
+    async def _fd_acquire(self) -> None:
+        """Raw-count pace the /futures/data pool: wait if the rolling-window request
+        budget is spent, then record this request. (No used-weight header exists for
+        this pool — see config.FUTURES_DATA_REQ_LIMIT.)"""
+        now = self._now()
+        self._evict_fd(now)
+        wait = fd_pace_wait(self._fd_req_times[0] if self._fd_req_times else None,
+                            len(self._fd_req_times), now,
+                            budget=self._fd_req_budget, window_s=self._fd_window_s)
+        if wait > 0:
+            await self._sleep(wait)
+            now = self._now()
+            self._evict_fd(now)
+        # even-pacing floor (derived from the verified budget), then mark the request.
+        await self._sleep(self._fd_interval)
+        self._fd_req_times.append(self._now())
+
     async def _pace(self, spec: SeriesSpec) -> None:
         if spec.pool == "fapi":
             if self._used_weight >= self._fraction * self._limit:
                 await self._sleep(self._backoff_s)
         else:
-            await self._sleep(self._fd_interval)
+            await self._fd_acquire()
 
     async def _get(self, path: str, params: dict) -> Any:
         data, used = await asyncio.to_thread(self._client.get_with_weight, path, params)
