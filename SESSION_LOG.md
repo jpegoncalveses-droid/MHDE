@@ -6,6 +6,61 @@ are at the top.
 
 ---
 
+## 2026-06-04 — Capture-core: long-horizon 1h klines store (capture-completion piece 2)
+
+**Branch:** `feat/capture-klines-store` (off `master`, draft PR; **awaiting
+operator — DO NOT merge**). Research substrate; public /fapi REST only; NEVER
+opens mhde.duckdb/engine DB; writes only under the capture-core store;
+built-not-deployed.
+
+**What.** The cheap rolling **long-context reference frame** ADR-035 provided for
+— distinct from the 24h firehose buffer. A present-context store (NOT a backtest):
+90d of **closed** 1h bars, seeded once then maintained forward hourly. Downstream
+derives 30d-high / SMA50 / breakout-distance etc.; nothing here computes them.
+
+**Design choice (reuse, not duplicate).** Maintenance **reuses
+`RestPresentStateCollector` wholesale** via a klines-only `KLINES_1H_SPEC` — the
+shared /fapi weight self-pacer, the `dedup_new_buckets` cursor (#24),
+`store.dataset_writer`, the universe resolver, and the run loop. Run as a
+**continuous Type=simple service** (klines cadence 3600s) rather than a
+timer-oneshot **specifically so the in-memory openTime dedup cursor persists across
+hourly polls** — a oneshot resets it each hour and re-writes overlapping bars.
+Seed + retention don't fit the per-cadence collector, so they live in the new
+`klines_store.py` and reuse the lower-level primitives (+ an extracted
+`fapi_over_budget` pacer helper, now shared by the collector and the seed).
+
+**Closed-bars-only (critical).** `parse_klines` drops any bar whose `closeTime` is
+in the future (uses the collector's `recv_ns` as "now"), so the in-progress bar is
+**never** persisted — it is re-fetched once closed.
+
+**Pieces.**
+- `klines_store.py`: `KLINES_1H_SCHEMA` (full row, default-to-inclusion; venue
+  numerics kept as strings), `parse_klines` (closed-bars filter), `KLINES_1H_SPEC`
+  (/fapi per-symbol windowed, dedup on openTime), `build_maintenance_collector`,
+  `seed` (paginated ~90d, limit 1500 ⇒ ~2 calls/symbol, /fapi-weight paced),
+  `expire_klines_partitions` (rolling 90d retention, filesystem-only).
+- `rest_collector.py`: extracted pure `fapi_over_budget(used, limit, fraction)`;
+  `_pace` now calls it (behaviour unchanged).
+- `config.py`: KLINES_* constants. `main.py`: `crypto capture-klines-{run,seed,expire}`.
+- systemd (built-not-deployed): `mhde-capture-klines.service` (continuous maint)
+  + `mhde-capture-klines-expire.{service,timer}` (daily retention).
+
+**Weight (confirmed from Binance docs, not assumed).** /fapi/v1/klines weight by
+limit: [1,100)→1, [100,500)→2, [500,1000]→5, >1000→10; max limit 1500. Maintenance
+(limit 6) ≈ 529 weight/hour (trivial); seed (limit 1500) ≈ 10/call, ~1k calls,
+paced under 70% of 2400/min.
+
+**Tests + smoke.** 168 research tests green (153 + 15 new: closed-bars filter,
+overlapping-poll zero-dup/no-gap, missed-poll backfill, seed pagination ~90d,
+retention boundary, shared /fapi pacing, universe reuse, systemd). Live read-only
+smoke confirmed the real 12-field kline array parses, the in-progress bar is
+dropped (3→2), field order matches the schema, and the partition round-trips.
+
+**Pending.** Operator review/merge of the draft PR; run `capture-klines-seed`
+once before enabling the maintenance service (deploy in the safety PR with caps).
+
+---
+
 ## 2026-06-04 — Capture-core: close the /futures/data 5m undersampling gap
 
 **Branch:** `feat/capture-rest-series-resolution` (off `master`, draft PR;

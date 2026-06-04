@@ -1,0 +1,31 @@
+# /home/jpcg/.config/systemd/user/mhde-capture-klines.service
+[Unit]
+Description=MHDE capture-core 1h klines forward maintenance (read-only, Binance public)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# systemd --user unit (installed under ~/.config/systemd/user/): runs as the
+# logging-in user, so NO User=/Group= line. Persistence relies on linger.
+# Pre-flight fails fast if the venv is missing. Maintains the long-horizon 1h
+# klines store (the ADR-035 long-context reference frame, distinct from the 24h
+# firehose buffer): hourly it fetches the latest CLOSED bars per USDT-M perp and
+# dedup-appends them under data/research/capture_core/klines_1h/. It reuses the
+# present-state collector's shared /fapi weight self-pacer and never opens the
+# production database. Run `crypto capture-klines-seed` ONCE before enabling this.
+#
+# BUILT-NOT-DEPLOYED: tracked but not installed/enabled. Resource caps arrive in
+# the safety PR before this is ever turned on.
+Type=simple
+WorkingDirectory=/home/jpcg/MHDE
+ExecStartPre=/usr/bin/test -x /home/jpcg/MHDE/venv/bin/python
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto capture-klines-run
+Restart=on-failure
+RestartSec=5
+# Give the parquet writer time to flush open buffers on SIGTERM before SIGKILL.
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

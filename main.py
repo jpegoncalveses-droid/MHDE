@@ -1998,6 +1998,82 @@ def crypto_capture_rest_run(root):
     asyncio.run(collector.run())
 
 
+@crypto.command("capture-klines-run")
+@click.option("--root", default=None,
+              help="Raw capture dir. Default: capture_core.config.RAW_DIR.")
+def crypto_capture_klines_run(root):
+    """Run the long-horizon 1h klines forward maintenance (BLOCKS).
+
+    Hourly, fetches the latest few CLOSED 1h bars per USDT-M perp and dedup-appends
+    them (the in-progress bar is never persisted). This is the ADR-035 long-context
+    reference frame — NOT a backtest. Reuses the present-state collector wholesale
+    (shared /fapi weight pacer + in-memory openTime dedup cursor + universe). Run
+    `capture-klines-seed` once first for the ~90d backfill. Read-only public REST;
+    NEVER opens mhde.duckdb. Long-running (Type=simple); clean stop on SIGTERM.
+    """
+    import asyncio
+    import logging
+
+    from crypto.research.capture_core import config as cc_cfg
+    from crypto.research.capture_core import klines_store as ks
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    collector = ks.build_maintenance_collector(root or cc_cfg.RAW_DIR)
+    asyncio.run(collector.run())
+
+
+@crypto.command("capture-klines-seed")
+@click.option("--root", default=None,
+              help="Raw capture dir. Default: capture_core.config.RAW_DIR.")
+@click.option("--days", default=None, type=int,
+              help="Backfill horizon in days. Default: config.KLINES_SEED_DAYS (90).")
+def crypto_capture_klines_seed(root, days):
+    """One-time paginated ~90d backfill of closed 1h bars (run once at deploy).
+
+    Paces under the shared /fapi weight budget (~2 calls/symbol at 90d). Idempotent
+    enough to re-run (read-side dedup on (symbol, openTime) absorbs overlap).
+    """
+    import logging
+
+    from crypto.research.capture_core import config as cc_cfg
+    from crypto.research.capture_core import klines_store as ks
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    written = ks.seed(root or cc_cfg.RAW_DIR,
+                      days=days or cc_cfg.KLINES_SEED_DAYS)
+    click.echo(f"klines seed: {written} closed bars written")
+
+
+@crypto.command("capture-klines-expire")
+@click.option("--root", default=None,
+              help="Raw capture dir. Default: capture_core.config.RAW_DIR.")
+@click.option("--days", default=None, type=int,
+              help="Retention window in days. Default: config.KLINES_RETENTION_DAYS (90).")
+def crypto_capture_klines_expire(root, days):
+    """Expire klines_1h date partitions older than the retention window (rolling).
+
+    Filesystem-only under the capture store; intended for a daily timer.
+    """
+    import logging
+
+    from crypto.research.capture_core import config as cc_cfg
+    from crypto.research.capture_core import klines_store as ks
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    removed = ks.expire_klines_partitions(root or cc_cfg.RAW_DIR,
+                                          days=days or cc_cfg.KLINES_RETENTION_DAYS)
+    click.echo(f"klines retention: {len(removed)} partitions expired")
+
+
 @crypto.command("intraday-replay")
 @click.option("--start", "start_str", required=True,
               help="First prediction_date YYYY-MM-DD (inclusive).")

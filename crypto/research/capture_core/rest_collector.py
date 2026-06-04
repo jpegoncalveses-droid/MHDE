@@ -54,6 +54,14 @@ def select_under_pressure(due: Sequence[SeriesSpec], *, used_weight: Optional[in
     return [s for s in due if s.pool != "fapi" or s.priority == "HIGH"]
 
 
+def fapi_over_budget(used_weight: int, *, limit: int, fraction: float) -> bool:
+    """True when the live /fapi used-weight has reached the budget fraction of the
+    per-minute limit. The shared /fapi self-pacer: callers sleep a backoff before
+    the next request so capture coexists with the engine + other collectors on the
+    same IP. Reused by both the present-state collector and the klines seed."""
+    return used_weight >= fraction * limit
+
+
 def fd_pace_wait(oldest_ts: Optional[float], count: int, now: float, *,
                  budget: int, window_s: float) -> float:
     """Seconds to wait before another /futures/data request to keep the raw request
@@ -191,7 +199,8 @@ class RestPresentStateCollector:
 
     async def _pace(self, spec: SeriesSpec) -> None:
         if spec.pool == "fapi":
-            if self._used_weight >= self._fraction * self._limit:
+            if fapi_over_budget(self._used_weight, limit=self._limit,
+                                fraction=self._fraction):
                 await self._sleep(self._backoff_s)
         else:
             await self._fd_acquire()

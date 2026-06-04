@@ -103,6 +103,13 @@ def test_dedup_new_buckets_keeps_distinct_and_advances_last():
     assert kept3 == [] and last3 == 400
 
 
+def test_fapi_over_budget_threshold():
+    # 0.70 * 2400 = 1680 is the trigger; at/over -> True, under -> False
+    assert rc.fapi_over_budget(1680, limit=2400, fraction=0.70) is True
+    assert rc.fapi_over_budget(1679, limit=2400, fraction=0.70) is False
+    assert rc.fapi_over_budget(0, limit=2400, fraction=0.70) is False
+
+
 def test_fd_pace_wait_caps_raw_request_rate():
     # headroom -> no wait
     assert rc.fd_pace_wait(0.0, 5, now=10.0, budget=10, window_s=300.0) == 0.0
