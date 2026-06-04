@@ -1,0 +1,17 @@
+# /home/jpcg/.config/systemd/user/mhde-capture-klines-expire.service
+[Unit]
+Description=MHDE capture-core klines retention — expire partitions past the window
+After=network-online.target
+
+[Service]
+# Oneshot rolling-retention sweep for the 1h klines store: deletes klines_1h date
+# partitions older than the retention window. Filesystem-only under the capture
+# store; never opens the production database. Paired with the .timer (daily).
+#
+# BUILT-NOT-DEPLOYED: tracked but not installed/enabled.
+Type=oneshot
+WorkingDirectory=/home/jpcg/MHDE
+ExecStartPre=/usr/bin/test -x /home/jpcg/MHDE/venv/bin/python
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto capture-klines-expire
+StandardOutput=journal
+StandardError=journal

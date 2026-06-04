@@ -124,6 +124,28 @@ CAPTURE_REST_WEIGHT_PER_MIN = 1200
 #: therefore stagger over ~9 minutes.
 SNAPSHOT_MIN_INTERVAL_S = DEPTH_SNAPSHOT_WEIGHT * 60.0 / CAPTURE_REST_WEIGHT_PER_MIN
 
+# -- Long-horizon 1h klines store (capture-completion piece 2; ADR-035 long-context
+#    reference frame — distinct from the 24h firehose buffer). Seeded once, then
+#    maintained forward hourly. Closed bars only. All on the weight-counted /fapi pool.
+KLINES_INTERVAL = "1h"
+KLINES_DATASET = "klines_1h"
+HOUR_MS = 3_600_000
+#: Maintenance fetch covers a few trailing bars so a single missed/late hourly poll
+#: self-heals on the next run; the in-memory dedup cursor drops already-seen bars.
+#: limit < 100 => /fapi/v1/klines weight 1 (live-confirmed weight-by-limit table).
+KLINES_MAINT_LIMIT = 6
+KLINES_MAINT_CADENCE_S = 3600.0
+#: The maintenance loop is mostly idle (one sweep/hour), so it polls the due-check
+#: coarsely rather than every second.
+KLINES_MAINT_TICK_S = 60.0
+#: One-time backfill horizon and page size. limit 1500 is the Binance max (weight 10);
+#: 90d of 1h bars = 2160 => ~2 pages/symbol.
+KLINES_SEED_DAYS = 90
+KLINES_SEED_LIMIT = 1500
+#: Rolling on-host retention for the klines store (piece-2-specific; separate from
+#: PR-3's firehose buffer cap). Partitions older than this are expired.
+KLINES_RETENTION_DAYS = 90
+
 # -- Stream cadences --
 DEPTH_UPDATE_SPEED = "100ms"   # rawest diff cadence (operator GO: no pre-coarsen)
 MARKPRICE_SPEED = "1s"

@@ -1,0 +1,12 @@
+# /home/jpcg/.config/systemd/user/mhde-capture-klines-expire.timer
+[Unit]
+Description=MHDE capture-core klines retention — daily expiry of old partitions
+
+[Timer]
+# Daily, shortly after midnight UTC; Persistent catches up a missed run after the
+# host was off. Retention is cheap and idempotent, so exact timing is not critical.
+OnCalendar=*-*-* 00:10:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
