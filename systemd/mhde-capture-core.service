@@ -30,10 +30,12 @@ Restart=on-failure
 RestartSec=5
 # Give the writer time to flush open parquet buffers on SIGTERM before SIGKILL.
 TimeoutStopSec=30
-# Resource caps (PR-3): MemoryMax is the firehose ceiling (dominant writer);
-# CPUWeight/IOWeight < the system.slice default (100) so the engine wins under
-# contention; OOMScoreAdjust makes capture the first OOM victim, never the engine.
-MemoryMax=4G
+# Resource caps (PR-3): MemoryMax is the firehose ceiling (dominant writer). It
+# starts GENEROUS (8G) so the first sustained run measures true peak RSS without
+# being clipped; the runbook then sets MemoryMax = peak x1.8. CPUWeight/IOWeight <
+# the system.slice default (100) so the engine wins under contention;
+# OOMScoreAdjust makes capture the first OOM victim, never the engine.
+MemoryMax=8G
 CPUWeight=20
 IOWeight=20
 OOMScoreAdjust=800

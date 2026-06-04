@@ -43,9 +43,11 @@ def test_cpu_io_weights_below_system_slice_default():
 
 
 def test_firehose_has_the_largest_memory_ceiling():
+    # Firehose starts at a GENEROUS 8G so the first run measures true peak RSS
+    # unclipped; the runbook then tightens to ~peak x1.8.
     fire = _parse(SYSTEMD / "mhde-capture-core.service").get("Service", "MemoryMax")
     rest = _parse(SYSTEMD / "mhde-capture-rest-collector.service").get("Service", "MemoryMax")
-    assert fire == "4G" and rest == "1G"
+    assert fire == "8G" and rest == "1G"
 
 
 def test_slice_dropin_present_and_deprioritizes_user_slice():

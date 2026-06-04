@@ -157,8 +157,12 @@ FIREHOSE_PRUNABLE_DATASETS = (
     "aggTrade", "depth", "bookTicker", "forceOrder", "markPrice", "depth_snapshot",
 )
 #: SOFT floor: below this free space, prune the OLDEST firehose date-partitions
-#: (across the firehose datasets) until back above the floor.
-CAPTURE_DISK_SOFT_FLOOR_BYTES = 30 * 1024 ** 3   # 30 GiB
+#: (across the firehose datasets) until back above the floor. 50 GiB on the host's
+#: ~107 GB free keeps ~50 GB free (~31h of firehose buffer ≥ the brain's ~24h need)
+#: while leaving the engine more headroom. "Keep N GB free" — if free differs
+#: materially at deploy, retune per the OPERATIONS.md runbook (target ~30h buffer,
+#: never below ~20 GB free).
+CAPTURE_DISK_SOFT_FLOOR_BYTES = 50 * 1024 ** 3   # 50 GiB
 #: CRITICAL floor: below this, HALT firehose writes (forward-only — dropped, never
 #: backfilled) and emit a CRITICAL log; resume once free recovers above the SOFT
 #: floor (hysteresis, so it does not flap at the boundary).

@@ -558,13 +558,18 @@ systemctl --user daemon-reload
 systemctl --user enable --now mhde-capture-core.service
 ```
 
-4. **Measure + tighten.** After the firehose has run a sustained window,
-   read its peak RSS and tighten `MemoryMax` to ~peak ×1.8, then
-   `daemon-reload` + `restart`:
+4. **Measure + tighten.** The firehose ships with a deliberately generous
+   `MemoryMax=8G` so this first sustained run measures TRUE peak RSS without
+   being clipped. After a sustained window, read the cgroup peak and set
+   `MemoryMax = peak ×1.8`. **If the reported peak equals the cap (8G), the
+   measurement was clipped — raise the cap and re-measure** before trusting
+   the number.
 
 ```bash
+# Either the unit property or the cgroup file (both report the cgroup peak):
 systemctl --user show mhde-capture-core.service -p MemoryPeak --value
-# Edit MemoryMax in ~/.config/systemd/user/mhde-capture-core.service, then:
+cat /sys/fs/cgroup/user.slice/.../mhde-capture-core.service/memory.peak  # path varies
+# Set MemoryMax = peak x1.8 in ~/.config/systemd/user/mhde-capture-core.service, then:
 systemctl --user daemon-reload && systemctl --user restart mhde-capture-core.service
 ```
 
@@ -573,7 +578,7 @@ systemctl --user daemon-reload && systemctl --user restart mhde-capture-core.ser
    - capture keeps up (no growing WS disconnects / message drops in
      `journalctl --user -u mhde-capture-core -f`);
    - disk guard quiet (no `CRITICAL ... HALTING` / repeated prune WARNINGs);
-   - free space stable above the 30 GiB soft floor (`df -h /home/jpcg`).
+   - free space stable above the 50 GiB soft floor (`df -h /home/jpcg`).
 
 6. **Trust only if** the engine cycle stays within budget with no new engine
    alerts. Otherwise tune caps (lower `MemoryMax`/weights) or trim the capture
@@ -585,10 +590,13 @@ systemctl --user disable --now mhde-capture-core.service   # firehose first — 
 systemctl --user disable --now mhde-capture-klines.service mhde-capture-rest-collector.service
 ```
 
-> Disk guard recap (ADR-036): under the 30 GiB **soft** floor the firehose
-> prunes its OLDEST partitions; under the 10 GiB **critical** floor it HALTS
-> writes (forward-only — dropped, never backfilled) and resumes above soft.
-> `klines_1h` / REST series / `_gaps` are never pruned.
+> Disk guard recap (ADR-036): under the 50 GiB **soft** floor (≈ "keep 50 GB
+> free", ~31h firehose buffer on ~107 GB free) the firehose prunes its OLDEST
+> partitions; under the 10 GiB **critical** floor it HALTS writes (forward-only
+> — dropped, never backfilled) and resumes above soft. `klines_1h` / REST series
+> / `_gaps` are never pruned. If free space differs materially at deploy, set the
+> soft floor to keep ~30h of buffer (≈ free minus 60 GB) and never below ~20 GB
+> free.
 
 ---
 

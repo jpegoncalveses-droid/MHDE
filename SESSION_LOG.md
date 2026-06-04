@@ -41,10 +41,17 @@ sudo-install the slice drop-in → enable user units lightest-first (firehose LA
 engine's 1s cycle + capture keep-up → trust only if the engine stays within
 budget; rollback = `systemctl --user disable --now` the firehose unit.
 
-**Tests.** 184 research tests green (168 + 16 new: threshold tiers, halt
+**Pre-deploy fixes folded in (2026-06-04).** (A) SOFT floor 30 GiB → **50 GiB**
+(keeps ~50 GB free / ~31h firehose buffer on ~107 GB free; CRITICAL stays 10 GiB).
+(B) firehose initial `MemoryMax` 4G → **8G** (generous so the first sustained run
+measures true peak RSS unclipped; runbook then sets `MemoryMax = peak ×1.8`, and
+re-measures if peak == cap). ADR-036 + OPERATIONS.md figures updated to match.
+
+**Tests.** 185 research tests green (168 + 17 new: threshold tiers, halt
 hysteresis, oldest-first selection, enforce prune/halt/resume, non-firehose never
 pruned, firehose drop-on-halt in the service, four-cap presence on every unit +
-slice drop-in). systemd-analyze verify passes the new cap directives.
+slice drop-in, shipped floor constants). systemd-analyze verify passes the cap
+directives.
 
 **Pending.** Operator review/merge; then the deploy runbook (this is the only PR
 that makes the services deployable — it does not enable them).

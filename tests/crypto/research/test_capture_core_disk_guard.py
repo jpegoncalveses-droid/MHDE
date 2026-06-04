@@ -14,6 +14,16 @@ def _p(date, size, path=None):
     return dg.Partition(path=path or f"/d/date={date}", date=date, size=size)
 
 
+# -- shipped floor constants --
+
+def test_shipped_floor_constants():
+    # SOFT 50 GiB / CRITICAL 10 GiB: on ~107 GB free keeps ~50 GB free (~31h
+    # firehose buffer >= the brain's ~24h need). SOFT must stay above CRITICAL.
+    assert cfg.CAPTURE_DISK_SOFT_FLOOR_BYTES == 50 * GIB
+    assert cfg.CAPTURE_DISK_CRITICAL_FLOOR_BYTES == 10 * GIB
+    assert cfg.CAPTURE_DISK_SOFT_FLOOR_BYTES > cfg.CAPTURE_DISK_CRITICAL_FLOOR_BYTES
+
+
 # -- pure threshold helpers --
 
 def test_disk_state_tiers():

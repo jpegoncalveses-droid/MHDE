@@ -2313,9 +2313,11 @@ controllers available (verified), so per-unit resource control is real.
 
 1. **Two-tier disk guard, firehose-only** (`disk_guard.py`, enforced
    inside the capture process from the flush loop):
-   - **SOFT floor (30 GiB free):** prune the OLDEST firehose
+   - **SOFT floor (50 GiB free):** prune the OLDEST firehose
      date-partitions first, across the firehose datasets, until back
-     above the floor.
+     above the floor. On the host's ~107 GB free this keeps ~50 GB free
+     (~31h of firehose buffer ≥ the brain's ~24h need); it is a "keep N
+     GB free" knob, retuned at deploy if free space differs.
    - **CRITICAL floor (10 GiB free):** HALT firehose writes and emit a
      CRITICAL log; **resume only once free recovers above the SOFT
      floor** (hysteresis, so it cannot flap). Data dropped during a halt
@@ -2329,8 +2331,10 @@ controllers available (verified), so per-unit resource control is real.
      tunable config constants.
 
 2. **Resource caps express PRIORITY, not starvation.** Every capture
-   unit carries `MemoryMax` (firehose 4G; rest/klines 1G; expire 256M),
-   `CPUWeight=20`, `IOWeight=20`, `OOMScoreAdjust=800`. Weights below the
+   unit carries `MemoryMax` (firehose 8G — deliberately generous so the
+   first sustained run measures true peak RSS unclipped, then tightened
+   to ~peak ×1.8; rest/klines 1G; expire 256M), `CPUWeight=20`,
+   `IOWeight=20`, `OOMScoreAdjust=800`. Weights below the
    `system.slice` default (100) only bite **under contention** — when the
    engine is idle, capture runs unthrottled; when both saturate, the
    engine wins CPU+IO. `OOMScoreAdjust=800` makes capture the kernel's
