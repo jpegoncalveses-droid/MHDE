@@ -37,6 +37,63 @@ to point at ADR-035 (not part of this PR).
 
 ---
 
+## 2026-06-03 — Capture-core: REST present-state collector (capture-completion, piece 1/2)
+
+**Branch:** `feat/capture-rest-presentstate` (PR #22; **awaiting operator**).
+Public REST only; NEVER opens mhde.duckdb/engine DB; writes ONLY under the
+capture-core parquet store; **built-not-deployed**.
+
+**Scope.** Capture available public REST **present-state**, default-to-inclusion
+— NOT "fill the old 62-col table gaps." A declarative series registry + a
+budget-aware self-pacing scheduler; adding a series later = one registry entry.
+
+**Series (raw stored; changes/zscores derived downstream).**
+- HIGH `open_interest` (`/fapi/v1/openInterest`, per-symbol, target 60s,
+  budget-driven not pre-coarsened) · HIGH `premium_index`
+  (`/fapi/v1/premiumIndex`, all-in-one; genuinely-new vs markPrice WS =
+  `interestRate` + `indexPrice`, full payload kept).
+- MED `global_ls_account` / `top_ls_account` / `top_ls_position` /
+  `taker_ls_ratio` (`/futures/data/*`, per-symbol) · LOW `basis`
+  (`/futures/data/basis`, per-pair). All 5m-native.
+- Each series = its own parquet dataset, separate from the WS service => no
+  writer contention.
+
+**Budget self-pacing (live ground-truth).** `/fapi` REQUEST_WEIGHT = 2400/min
+(header `X-MBX-USED-WEIGHT-1M`); openInterest weight 1, premiumIndex 10.
+`/fapi` series pace off the live used-weight under 70% (coexisting with the depth
+SnapshotScheduler on the same signal). HIGH never starved; HALT-point check
+passed: HIGH ≈ 539 weight/min ≪ 1680.
+
+**`/futures/data` raw-count pacing (issue-2 fix, folded in 2026-06-04).** A
+read-only verification this session confirmed `/futures/data` returns **no**
+`X-MBX-USED-WEIGHT` header and is **absent from `exchangeInfo.rateLimits`** — it
+cannot be header-paced. Binance documents a fixed IP ceiling of **1000 req /
+5 min** for `/futures/data/*` (the only ground truth). So the pool is now paced by
+**raw request count** over a rolling 5-min window, capped at 70% of the verified
+ceiling (`FUTURES_DATA_REQ_BUDGET ≈ 700`), with an even-pacing floor DERIVED from
+the budget (window/budget ≈ 0.43s) replacing the previous 0.2s guess. On 429 it
+still DEGRADES by tier (LOW then MED). The 5m-native ratio/basis cadence is
+**coarsened to 20 min** (`FUTURES_DATA_CADENCE_S`) because a full 529-symbol sweep
+(4 ratio series + basis ≈ 2,645 req) takes ~19 min under the 700/5min budget —
+finer would breach the ceiling and risk an IP ban that would also starve /fapi
+HIGH.
+
+**Files.** New `crypto/research/capture_core/{rest_series,rest_collector}.py`;
+`client.py` (+ `get_with_weight` + `RateLimited`); `store.py` (+ generic
+`dataset_writer`/`symbol_time_partition`); `config.py` (budget + raw-count
+constants); `main.py` (`crypto capture-rest-run`);
+`systemd/mhde-capture-rest-collector.service` (Type=simple, built-not-deployed).
+Tests: rest_series, rest_collector (incl. raw-count pacing), systemd.
+
+**Known characteristic (flagged, not a blocker).** Per-symbol REST is sequential
++ self-paced, so a full 529-symbol OI sweep is latency-bound (~minutes); the 60s
+OI target is aspirational under load. Bounded concurrency (mirroring the
+signal-probe collector's worker pool) is the natural follow-up to tighten it.
+
+**Pending.** Operator review/merge of PR #22.
+
+---
+
 ## 2026-06-03 — Capture-core: split-endpoint routing fix (folded into PR #21)
 
 **Branch:** `feat/capture-core-pr2` (same OPEN PR #21; **awaiting operator — DO

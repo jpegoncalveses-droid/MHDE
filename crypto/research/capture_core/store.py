@@ -142,6 +142,22 @@ def _gap_partition(row: Mapping[str, Any]) -> str:
     return f"date={_date_str(row['gap_start_ms'])}"
 
 
+def symbol_time_partition(symbol_key: str, time_key: str
+                          ) -> Callable[[Mapping[str, Any]], str]:
+    """Build a ``symbol=<row[symbol_key]>/date=<row[time_key] day>`` partition fn.
+
+    The partition label is **uniformly** ``symbol=`` across every dataset (WS and
+    REST) so one partition predicate prunes them all in cross-dataset queries.
+    ``symbol_key`` picks which row field supplies the value: ``"s"`` for
+    per-symbol series, ``"pair"`` for basis — whose pair equals the symbol for
+    single-asset USDT-M perps, so it sits under the same uniform label without
+    loss. ``time_key`` is the row's event-time field (``time`` / ``timestamp``).
+    """
+    def _fn(row: Mapping[str, Any]) -> str:
+        return f"symbol={row[symbol_key]}/date={_date_str(row[time_key])}"
+    return _fn
+
+
 def _estimate_row_bytes(row: Mapping[str, Any]) -> int:
     """Cheap uncompressed-size proxy used only to trigger size-based flushes."""
     return sum(len(str(v)) for v in row.values()) + 8 * len(row)
@@ -254,6 +270,13 @@ def depth_snapshot_writer(root: str, **kwargs: Any) -> RawDatasetWriter:
     """Writer for the REST ``depth_snapshot`` seeding dataset (symbol + event date)."""
     return RawDatasetWriter(root, "depth_snapshot", DEPTH_SNAPSHOT_SCHEMA,
                             _symbol_event_partition, **kwargs)
+
+
+def dataset_writer(root: str, name: str, schema: "pa.Schema", *,
+                   symbol_key: str, time_key: str, **kwargs: Any) -> RawDatasetWriter:
+    """Generic writer for a present-state series dataset (symbol/pair + date)."""
+    return RawDatasetWriter(root, name, schema,
+                            symbol_time_partition(symbol_key, time_key), **kwargs)
 
 
 def gap_writer(root: str, **kwargs: Any) -> RawDatasetWriter:
