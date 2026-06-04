@@ -6,12 +6,42 @@ are at the top.
 
 ---
 
+## 2026-06-04 — Capture-core persistence: forward-only rolling buffer (ADR-035)
+
+**Branch:** `docs/forward-only-persistence-supersede-r2` (off `master` @
+`e6f2273`, draft PR). Docs-only; no code, no production-DB access; history not
+rewritten.
+
+**What changed.** Recorded **ADR-035** in `DECISIONS.md` (Status: active):
+capture-core persistence is a **forward-only rolling buffer** — a short rolling
+raw buffer (~24h, capped ~24–36h) on local disk + derived metrics + forward
+prediction/outcome records + cheap rolling coarse summaries. The original
+**3-day-local + keep-forever R2 archival** model (and PR-3's "safety + offload +
+deploy" with rclone to bucket `signal-probe-raw` prefix `capture_core/`) is
+**DROPPED**: no R2, no rclone, no offload, no archival; the substrate writes only
+under `data/research/capture_core/`. Sizing basis: ~250 GB/day raw → ~44 GB/day
+parquet (zstd ~5.7×), so a ~24h buffer (~44 GB) fits the host's ~102 GB free.
+
+**PR-3 re-scoped** by ADR-035 to "safety + deploy": rolling buffer + retention
+cap (~24–36h) + disk guard + resource caps (`MemoryMax`/`CPUWeight`/`IOWeight`/
+`OOMScoreAdjust`) + **enable** the capture services — offload removed.
+
+**History preserved.** All prior SESSION_LOG entries and ADRs left verbatim. The
+earlier entry's "Next: PR-3 = … R2 offload" line (below, 2026-06-03 routing-fix /
+2026-06-03 PR-2 entries) is the historical record and was **not** edited.
+Untracked host plan `~/.claude/plans/capture-core-iridescent-nest.md` annotated
+to point at ADR-035 (not part of this PR).
+
+**Pending.** Operator approval of the draft PR (DO NOT MERGE pending review). PR
+#22 (REST present-state collector) remains separately READY/awaiting approval.
+
+---
+
 ## 2026-06-03 — Capture-core: REST present-state collector (capture-completion, piece 1/2)
 
-**Branch:** `feat/capture-rest-presentstate` (off master @ `e6f2273`, draft PR;
-**awaiting operator — DO NOT merge**). Public REST only; NEVER opens
-mhde.duckdb/engine DB; writes ONLY under the capture-core parquet store;
-**built-not-deployed**.
+**Branch:** `feat/capture-rest-presentstate` (PR #22; **awaiting operator**).
+Public REST only; NEVER opens mhde.duckdb/engine DB; writes ONLY under the
+capture-core parquet store; **built-not-deployed**.
 
 **Scope.** Capture available public REST **present-state**, default-to-inclusion
 — NOT "fill the old 62-col table gaps." A declarative series registry + a
@@ -23,32 +53,44 @@ budget-aware self-pacing scheduler; adding a series later = one registry entry.
   (`/fapi/v1/premiumIndex`, all-in-one; genuinely-new vs markPrice WS =
   `interestRate` + `indexPrice`, full payload kept).
 - MED `global_ls_account` / `top_ls_account` / `top_ls_position` /
-  `taker_ls_ratio` (`/futures/data/*`, per-symbol, 5m native) · LOW `basis`
-  (`/futures/data/basis`, per-pair, 5m native).
+  `taker_ls_ratio` (`/futures/data/*`, per-symbol) · LOW `basis`
+  (`/futures/data/basis`, per-pair). All 5m-native.
 - Each series = its own parquet dataset, separate from the WS service => no
   writer contention.
 
 **Budget self-pacing (live ground-truth).** `/fapi` REQUEST_WEIGHT = 2400/min
 (header `X-MBX-USED-WEIGHT-1M`); openInterest weight 1, premiumIndex 10.
-**`/futures/data` is a SEPARATE pool with NO weight header.** `/fapi` series pace
-off the live used-weight under 70% (coexisting with the depth SnapshotScheduler
-on the same signal); `/futures/data` series pace by a fixed interval and, on 429,
-DEGRADE by tier (LOW then MED). HIGH never starved. HALT-point check passed:
-HIGH ≈ 539 weight/min ≪ 1680.
+`/fapi` series pace off the live used-weight under 70% (coexisting with the depth
+SnapshotScheduler on the same signal). HIGH never starved; HALT-point check
+passed: HIGH ≈ 539 weight/min ≪ 1680.
+
+**`/futures/data` raw-count pacing (issue-2 fix, folded in 2026-06-04).** A
+read-only verification this session confirmed `/futures/data` returns **no**
+`X-MBX-USED-WEIGHT` header and is **absent from `exchangeInfo.rateLimits`** — it
+cannot be header-paced. Binance documents a fixed IP ceiling of **1000 req /
+5 min** for `/futures/data/*` (the only ground truth). So the pool is now paced by
+**raw request count** over a rolling 5-min window, capped at 70% of the verified
+ceiling (`FUTURES_DATA_REQ_BUDGET ≈ 700`), with an even-pacing floor DERIVED from
+the budget (window/budget ≈ 0.43s) replacing the previous 0.2s guess. On 429 it
+still DEGRADES by tier (LOW then MED). The 5m-native ratio/basis cadence is
+**coarsened to 20 min** (`FUTURES_DATA_CADENCE_S`) because a full 529-symbol sweep
+(4 ratio series + basis ≈ 2,645 req) takes ~19 min under the 700/5min budget —
+finer would breach the ceiling and risk an IP ban that would also starve /fapi
+HIGH.
 
 **Files.** New `crypto/research/capture_core/{rest_series,rest_collector}.py`;
 `client.py` (+ `get_with_weight` + `RateLimited`); `store.py` (+ generic
-`dataset_writer`/`symbol_time_partition`); `config.py` (budget constants);
-`main.py` (`crypto capture-rest-run`); `systemd/mhde-capture-rest-collector.service`
-(Type=simple, built-not-deployed). Tests: rest_series, rest_collector, systemd.
-**145 research tests green.** Live smoke wrote real `open_interest` parquet.
+`dataset_writer`/`symbol_time_partition`); `config.py` (budget + raw-count
+constants); `main.py` (`crypto capture-rest-run`);
+`systemd/mhde-capture-rest-collector.service` (Type=simple, built-not-deployed).
+Tests: rest_series, rest_collector (incl. raw-count pacing), systemd.
 
 **Known characteristic (flagged, not a blocker).** Per-symbol REST is sequential
 + self-paced, so a full 529-symbol OI sweep is latency-bound (~minutes); the 60s
 OI target is aspirational under load. Bounded concurrency (mirroring the
 signal-probe collector's worker pool) is the natural follow-up to tighten it.
 
-**Pending.** Operator review/merge of the draft PR.
+**Pending.** Operator review/merge of PR #22.
 
 ---
 
