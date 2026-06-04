@@ -111,6 +111,10 @@ class SeriesSpec:
     time_key: str             # partition time field ("time" or "timestamp")
     parse: Callable[[Any, Optional[str], int], list[dict]] = field(repr=False)
     params: dict = field(default_factory=dict)
+    #: For *windowed* series (a poll returns a span of buckets), the bucket-time
+    #: field to dedup on so re-fetched buckets aren't written twice. None for
+    #: point-in-time /fapi series (each poll is a fresh single observation).
+    dedup_ts_field: Optional[str] = None
 
     def request(self, key: Optional[str]) -> tuple[str, dict]:
         """(path, params) for a per-symbol/per-pair ``key`` (or all-in-one)."""
@@ -121,7 +125,13 @@ class SeriesSpec:
         return self.endpoint, dict(self.params)
 
 
-_FIVE_MIN = {"period": "5m", "limit": 1}
+#: /futures/data 5m response window. ``limit`` covers ~2 poll intervals so a single
+#: missed/late poll self-heals on the next poll — the collector dedups overlapping
+#: buckets on their timestamp, so a wider window is free of duplicate rows. 1200s
+#: cadence / 300s native = 4 buckets/poll, ×2 = 8. (Binance's limit cap is 500;
+#: raising it costs no request budget — the pacer counts requests, not response rows.)
+_FD_LIMIT = max(8, int(2 * (cfg.FUTURES_DATA_CADENCE_S // 300)))
+_FIVE_MIN = {"period": "5m", "limit": _FD_LIMIT}
 
 #: Default-to-inclusion present-state set. Cadence rule (anti-bias): open_interest
 #: is real-time so its cadence is budget-driven (60s here, a safe default well
@@ -129,7 +139,9 @@ _FIVE_MIN = {"period": "5m", "limit": 1}
 #: are 5m-native, but their *sampling* cadence is COARSENED to FUTURES_DATA_CADENCE_S
 #: (20 min): a full 529-symbol sweep of the 4 ratio series + basis ≈ 2,645 requests
 #: cannot fit under the verified /futures/data IP ceiling (~700 req/5min) any faster
-#: (see config.FUTURES_DATA_* and the rest_collector raw-count pacer).
+#: (see config.FUTURES_DATA_* and the rest_collector raw-count pacer). To avoid a
+#: 75% hole in the 5m series at that cadence, each poll fetches a window of
+#: ``_FD_LIMIT`` buckets and the collector dedups on ``timestamp``.
 _FD = cfg.FUTURES_DATA_CADENCE_S
 SERIES: list[SeriesSpec] = [
     SeriesSpec("open_interest", "/fapi/v1/openInterest", "per_symbol", "fapi", 1,
@@ -138,17 +150,21 @@ SERIES: list[SeriesSpec] = [
                60.0, "HIGH", PREMIUM_INDEX_SCHEMA, "s", "time", _parse_premium_index),
     SeriesSpec("global_ls_account", "/futures/data/globalLongShortAccountRatio",
                "per_symbol", "futures_data", 0, _FD, "MED", LS_RATIO_SCHEMA,
-               "s", "timestamp", _parse_ls_ratio, dict(_FIVE_MIN)),
+               "s", "timestamp", _parse_ls_ratio, dict(_FIVE_MIN),
+               dedup_ts_field="timestamp"),
     SeriesSpec("top_ls_account", "/futures/data/topLongShortAccountRatio",
                "per_symbol", "futures_data", 0, _FD, "MED", LS_RATIO_SCHEMA,
-               "s", "timestamp", _parse_ls_ratio, dict(_FIVE_MIN)),
+               "s", "timestamp", _parse_ls_ratio, dict(_FIVE_MIN),
+               dedup_ts_field="timestamp"),
     SeriesSpec("top_ls_position", "/futures/data/topLongShortPositionRatio",
                "per_symbol", "futures_data", 0, _FD, "MED", LS_RATIO_SCHEMA,
-               "s", "timestamp", _parse_ls_ratio, dict(_FIVE_MIN)),
+               "s", "timestamp", _parse_ls_ratio, dict(_FIVE_MIN),
+               dedup_ts_field="timestamp"),
     SeriesSpec("taker_ls_ratio", "/futures/data/takerlongshortRatio",
                "per_symbol", "futures_data", 0, _FD, "MED", TAKER_LS_SCHEMA,
-               "s", "timestamp", _parse_taker_ls, dict(_FIVE_MIN)),
+               "s", "timestamp", _parse_taker_ls, dict(_FIVE_MIN),
+               dedup_ts_field="timestamp"),
     SeriesSpec("basis", "/futures/data/basis", "per_pair", "futures_data", 0,
                _FD, "LOW", BASIS_SCHEMA, "pair", "timestamp", _parse_basis,
-               {**_FIVE_MIN, "contractType": "PERPETUAL"}),
+               {**_FIVE_MIN, "contractType": "PERPETUAL"}, dedup_ts_field="timestamp"),
 ]

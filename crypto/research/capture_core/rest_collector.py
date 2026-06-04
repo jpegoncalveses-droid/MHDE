@@ -70,6 +70,25 @@ def fd_pace_wait(oldest_ts: Optional[float], count: int, now: float, *,
     return max(0.0, window_s - (now - oldest_ts))
 
 
+def dedup_new_buckets(rows: Sequence[dict], ts_field: str,
+                      last_ts: Optional[int]) -> tuple[list[dict], Optional[int]]:
+    """Keep only rows whose ``ts_field`` is newer than ``last_ts``; return
+    ``(kept, new_last)`` where ``new_last`` is the max bucket timestamp seen.
+
+    Used for *windowed* /futures/data series whose polls overlap (each poll fetches
+    a span of 5m buckets). Order-independent. ``last_ts is None`` keeps everything
+    (first poll). Consumers should still treat (series, symbol/pair, bucket ts) as
+    the unique key, since this in-memory cursor resets on restart.
+    """
+    kept = [r for r in rows if last_ts is None or r[ts_field] > last_ts]
+    new_last = last_ts
+    for r in kept:
+        ts = r[ts_field]
+        if new_last is None or ts > new_last:
+            new_last = ts
+    return kept, new_last
+
+
 class RestPresentStateCollector:
     def __init__(
         self,
@@ -124,6 +143,9 @@ class RestPresentStateCollector:
         self._used_weight = 0
         self._degraded_until: dict[str, float] = {}
         self._fd_req_times: deque[float] = deque()  # /futures/data request timestamps in-window
+        #: last persisted bucket ts per (series_name, key) for windowed-series dedup.
+        #: In-memory only — resets on restart (consumers dedup read-side on bucket ts).
+        self._last_bucket_ts: dict[tuple[str, Optional[str]], int] = {}
         self._stop = asyncio.Event()
 
     # -- pacing / degradation --
@@ -152,7 +174,8 @@ class RestPresentStateCollector:
     async def _fd_acquire(self) -> None:
         """Raw-count pace the /futures/data pool: wait if the rolling-window request
         budget is spent, then record this request. (No used-weight header exists for
-        this pool — see config.FUTURES_DATA_REQ_LIMIT.)"""
+        this pool — the cap is config.FUTURES_DATA_REQ_BUDGET, the derived runtime
+        value.)"""
         now = self._now()
         self._evict_fd(now)
         wait = fd_pace_wait(self._fd_req_times[0] if self._fd_req_times else None,
@@ -191,15 +214,26 @@ class RestPresentStateCollector:
                 break
             await self._run_series(spec, now)
 
-    async def _run_series(self, spec: SeriesSpec, now: float) -> None:
+    def _persist(self, spec: SeriesSpec, key: Optional[str], rows: list[dict]) -> None:
+        """Append parsed rows; for windowed series, drop already-seen buckets first."""
         writer = self._writers[spec.name]
+        if spec.dedup_ts_field:
+            dkey = (spec.name, key)
+            kept, new_last = dedup_new_buckets(rows, spec.dedup_ts_field,
+                                               self._last_bucket_ts.get(dkey))
+            if new_last is not None:
+                self._last_bucket_ts[dkey] = new_last
+            rows = kept
+        for row in rows:
+            writer.append(row)
+
+    async def _run_series(self, spec: SeriesSpec, now: float) -> None:
         try:
             if spec.scope == "all":
                 path, params = spec.request(None)
                 await self._pace(spec)
                 data = await self._get(path, params)
-                for row in spec.parse(data, None, self._clock_ns()):
-                    writer.append(row)
+                self._persist(spec, None, spec.parse(data, None, self._clock_ns()))
             else:
                 for key in self._universe:
                     if self._stop.is_set():
@@ -207,8 +241,7 @@ class RestPresentStateCollector:
                     await self._pace(spec)
                     path, params = spec.request(key)
                     data = await self._get(path, params)
-                    for row in spec.parse(data, key, self._clock_ns()):
-                        writer.append(row)
+                    self._persist(spec, key, spec.parse(data, key, self._clock_ns()))
         except RateLimited:
             self._degrade(spec, now)
         except Exception as exc:  # noqa: BLE001 - isolate a series; try again next cadence
