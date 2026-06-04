@@ -14,8 +14,8 @@ Wants=network-online.target
 # present-state collector's shared /fapi weight self-pacer and never opens the
 # production database. Run `crypto capture-klines-seed` ONCE before enabling this.
 #
-# BUILT-NOT-DEPLOYED: tracked but not installed/enabled. Resource caps arrive in
-# the safety PR before this is ever turned on.
+# BUILT-NOT-DEPLOYED: tracked but not installed/enabled. Resource caps (PR-3)
+# express PRIORITY, not starvation: the engine wins contention.
 Type=simple
 WorkingDirectory=/home/jpcg/MHDE
 ExecStartPre=/usr/bin/test -x /home/jpcg/MHDE/venv/bin/python
@@ -24,6 +24,12 @@ Restart=on-failure
 RestartSec=5
 # Give the parquet writer time to flush open buffers on SIGTERM before SIGKILL.
 TimeoutStopSec=30
+# Resource caps (PR-3): mostly-idle hourly maintainer, 1G ceiling is ample;
+# CPUWeight/IOWeight < the system.slice default (100); OOM-first like the firehose.
+MemoryMax=1G
+CPUWeight=20
+IOWeight=20
+OOMScoreAdjust=800
 StandardOutput=journal
 StandardError=journal
 

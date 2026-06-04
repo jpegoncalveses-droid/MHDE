@@ -11,9 +11,17 @@ Wants=network-online.target
 # The service captures ONLY raw parquet under data/research/capture_core/ and
 # never opens the production database, so no production-DB pre-flight is needed.
 #
-# BUILT-NOT-DEPLOYED (PR-1): this file is tracked but not installed/enabled.
-# Resource caps (MemoryMax), a disk-usage guard, and R2 offload arrive in the
-# safety PR (PR-3) before this service is ever turned on.
+# BUILT-NOT-DEPLOYED: this file is tracked but not installed/enabled. The disk
+# guard (free-space prune@soft / halt@critical, firehose-only) is enforced inside
+# the capture process (ADR-036). R2 offload is DROPPED (ADR-035: forward-only).
+# Resource caps below express PRIORITY, not starvation: under contention the engine
+# (system.slice) wins CPU+IO, but capture is never throttled to zero.
+#
+# Caps are tightened at deploy per the OPERATIONS.md runbook (MemoryMax -> ~peak
+# RSS x1.8 after measurement). The cross-slice arbitration that lets the engine
+# win requires the SUDO-installed drop-in systemd/system/user.slice.d/
+# 10-capture-deprioritize.conf; per-unit weights alone only arbitrate WITHIN
+# user.slice.
 Type=simple
 WorkingDirectory=/home/jpcg/MHDE
 ExecStartPre=/usr/bin/test -x /home/jpcg/MHDE/venv/bin/python
@@ -22,6 +30,13 @@ Restart=on-failure
 RestartSec=5
 # Give the writer time to flush open parquet buffers on SIGTERM before SIGKILL.
 TimeoutStopSec=30
+# Resource caps (PR-3): MemoryMax is the firehose ceiling (dominant writer);
+# CPUWeight/IOWeight < the system.slice default (100) so the engine wins under
+# contention; OOMScoreAdjust makes capture the first OOM victim, never the engine.
+MemoryMax=4G
+CPUWeight=20
+IOWeight=20
+OOMScoreAdjust=800
 StandardOutput=journal
 StandardError=journal
 

@@ -6,6 +6,51 @@ are at the top.
 
 ---
 
+## 2026-06-04 — Capture-core PR-3: safety + deploy-readiness (disk guard + resource caps)
+
+**Branch:** `feat/capture-pr3-safety-deploy` (off `master`, draft PR; **awaiting
+operator — DO NOT merge**). Research substrate; isolated; **built-not-deployed**
+(nothing enabled). Recorded as **ADR-036**.
+
+**Gate check (read-only).** Host is cgroup v2 with `cpu io memory` controllers
+present (verified) → per-unit CPU/IO/memory control is real. ext-family FS, ~107
+GB free. The klines `expire` routine + `symbol=/date=` partition layout are
+reusable for firehose pruning.
+
+**Disk guard (`disk_guard.py`, firehose-only, two-tier).** Enforced inside the
+capture process from the flush loop on a 10s cadence:
+- **SOFT floor (30 GiB):** prune the OLDEST firehose date-partitions first, across
+  the 6 big WS datasets, until back above the floor.
+- **CRITICAL floor (10 GiB):** HALT firehose writes (`_on_message` drops incoming
+  — forward-only, never backfill) + CRITICAL log; **resume only above SOFT**
+  (hysteresis). `klines_1h`, the REST series, and `_gaps` are NEVER pruned (absent
+  from `FIREHOSE_PRUNABLE_DATASETS`). Pure helpers (`disk_state`, `next_halt_state`,
+  `select_oldest_to_reclaim`) are unit-tested.
+
+**Resource caps = engine PRIORITY, not starvation.** All four capture units carry
+`MemoryMax` (firehose 4G; rest/klines 1G; expire 256M), `CPUWeight=20`,
+`IOWeight=20`, `OOMScoreAdjust=800`. Weights < the system.slice default (100) only
+bite under contention; OOM-first so capture dies before the engine. Cross-slice
+arbitration needs the **SUDO** drop-in `systemd/system/user.slice.d/
+10-capture-deprioritize.conf` (`CPUWeight=50 IOWeight=50`) — shipped, **not**
+auto-installed (per-unit weights only arbitrate within user.slice).
+
+**Deploy-then-verify runbook** added to `OPERATIONS.md`: seed klines once →
+sudo-install the slice drop-in → enable user units lightest-first (firehose LAST)
+→ measure firehose peak RSS, tighten `MemoryMax` to ~peak ×1.8 → watch the
+engine's 1s cycle + capture keep-up → trust only if the engine stays within
+budget; rollback = `systemctl --user disable --now` the firehose unit.
+
+**Tests.** 184 research tests green (168 + 16 new: threshold tiers, halt
+hysteresis, oldest-first selection, enforce prune/halt/resume, non-firehose never
+pruned, firehose drop-on-halt in the service, four-cap presence on every unit +
+slice drop-in). systemd-analyze verify passes the new cap directives.
+
+**Pending.** Operator review/merge; then the deploy runbook (this is the only PR
+that makes the services deployable — it does not enable them).
+
+---
+
 ## 2026-06-04 — Capture-core: long-horizon 1h klines store (capture-completion piece 2)
 
 **Branch:** `feat/capture-klines-store` (off `master`, draft PR; **awaiting

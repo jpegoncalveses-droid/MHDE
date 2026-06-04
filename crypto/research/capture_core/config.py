@@ -146,6 +146,27 @@ KLINES_SEED_LIMIT = 1500
 #: PR-3's firehose buffer cap). Partitions older than this are expired.
 KLINES_RETENTION_DAYS = 90
 
+# -- Capture disk guard (PR-3 safety) -----------------------------------------
+# Free-space-aware protection for the FIREHOSE datasets only. The caps express
+# PRIORITY (the engine wins contention), not starvation; the guard protects the
+# volume without ever pruning the small, long-lived stores.
+#: Datasets the guard may prune (the big WS firehose writers), pruned oldest-first.
+#: klines_1h, the REST present-state series, and the _gaps manifest (tiny / audit /
+#: longer-lived) are NEVER pruned — they are simply absent from this list.
+FIREHOSE_PRUNABLE_DATASETS = (
+    "aggTrade", "depth", "bookTicker", "forceOrder", "markPrice", "depth_snapshot",
+)
+#: SOFT floor: below this free space, prune the OLDEST firehose date-partitions
+#: (across the firehose datasets) until back above the floor.
+CAPTURE_DISK_SOFT_FLOOR_BYTES = 30 * 1024 ** 3   # 30 GiB
+#: CRITICAL floor: below this, HALT firehose writes (forward-only — dropped, never
+#: backfilled) and emit a CRITICAL log; resume once free recovers above the SOFT
+#: floor (hysteresis, so it does not flap at the boundary).
+CAPTURE_DISK_CRITICAL_FLOOR_BYTES = 10 * 1024 ** 3   # 10 GiB
+#: How often the firehose flush loop runs the guard. statvfs is cheap; the prune
+#: scan only runs when under the soft floor.
+CAPTURE_DISK_CHECK_INTERVAL_S = 10.0
+
 # -- Stream cadences --
 DEPTH_UPDATE_SPEED = "100ms"   # rawest diff cadence (operator GO: no pre-coarsen)
 MARKPRICE_SPEED = "1s"

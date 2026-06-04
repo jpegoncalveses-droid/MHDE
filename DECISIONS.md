@@ -2291,3 +2291,90 @@ rolling buffer, no archival), not the numbers.
   is historical and left as written.
 - Firehose sizing: ~250 GB/day raw → ~44 GB/day parquet (zstd ~5.7×),
   529 TRADING USDT-M perps; host ~102 GB free.
+
+## ADR-036 — capture-core PR-3 safety: two-tier disk guard + resource caps as engine-priority, not starvation
+
+**Status:** active 2026-06-04. Builds on ADR-035 (forward-only rolling
+buffer). MHDE research-substrate only; no engine change, no live-path
+change. Built-not-deployed: nothing here is enabled until the operator
+runs the deploy runbook.
+
+**Context.** ADR-035 dropped R2/offload and re-scoped PR-3 to "safety +
+deploy": a bounded local buffer plus the guardrails that make it safe to
+turn the capture services on alongside the live engine on the same host.
+The capture firehose is large (~44 GB/day parquet, depth-dominated) and
+shares CPU, IO, RAM, and the disk volume with the engine. Two failure
+modes must be impossible: (1) capture filling the volume and taking the
+engine down with it; (2) capture starving the engine's 1s decision cycle
+under resource contention. The host is cgroup v2 with the cpu/io/memory
+controllers available (verified), so per-unit resource control is real.
+
+**Decision.**
+
+1. **Two-tier disk guard, firehose-only** (`disk_guard.py`, enforced
+   inside the capture process from the flush loop):
+   - **SOFT floor (30 GiB free):** prune the OLDEST firehose
+     date-partitions first, across the firehose datasets, until back
+     above the floor.
+   - **CRITICAL floor (10 GiB free):** HALT firehose writes and emit a
+     CRITICAL log; **resume only once free recovers above the SOFT
+     floor** (hysteresis, so it cannot flap). Data dropped during a halt
+     is acceptable and intended — the substrate is forward-only (skip,
+     never backfill).
+   - Only the six big WS writers (`aggTrade`, `depth`, `bookTicker`,
+     `forceOrder`, `markPrice`, `depth_snapshot`) are ever scanned or
+     pruned. `klines_1h`, the REST present-state series, and the `_gaps`
+     manifest (tiny / longer-lived / audit) are **never** pruned — they
+     are simply not in `FIREHOSE_PRUNABLE_DATASETS`. Thresholds are
+     tunable config constants.
+
+2. **Resource caps express PRIORITY, not starvation.** Every capture
+   unit carries `MemoryMax` (firehose 4G; rest/klines 1G; expire 256M),
+   `CPUWeight=20`, `IOWeight=20`, `OOMScoreAdjust=800`. Weights below the
+   `system.slice` default (100) only bite **under contention** — when the
+   engine is idle, capture runs unthrottled; when both saturate, the
+   engine wins CPU+IO. `OOMScoreAdjust=800` makes capture the kernel's
+   first OOM victim, never the engine.
+
+3. **Cross-slice arbitration needs a system drop-in.** Capture runs under
+   `user.slice`; the engine under `system.slice`. CPU/IO weights only
+   arbitrate among siblings of one parent, so per-unit weights alone make
+   capture units rank against *each other*, not against the engine. A
+   SUDO-installed drop-in
+   `/etc/systemd/system/user.slice.d/10-capture-deprioritize.conf`
+   (`CPUWeight=50 IOWeight=50`) deprioritizes the whole `user.slice`
+   below `system.slice` (100) so the engine actually wins. It is shipped
+   in-repo but **not auto-installed** (system-level, sudo).
+
+4. **Deploy-then-verify, lightest-first.** The OPERATIONS.md runbook is
+   the enable path: seed klines once → sudo-install the slice drop-in →
+   enable user units lightest-first (rest, klines, then the firehose
+   LAST) → measure firehose peak RSS and tighten `MemoryMax` to ~peak
+   ×1.8 → watch the engine's 1s cycle timing + capture keep-up for a
+   sustained window → trust only if the engine stays within budget with
+   no new alerts; else tune caps or trim footprint. Rollback is instant:
+   `systemctl --user disable --now` the firehose unit.
+
+**Consequence.** It is safe to enable capture on the live host: the
+volume cannot fill (prune, then halt), and the engine cannot be starved
+(weights + slice drop-in) or OOM-killed (score adjust). The cost is
+explicit and bounded — under disk pressure the firehose loses its oldest
+data then pauses; under resource pressure it runs slower. Both are
+acceptable for a forward-only discovery substrate. Caps are initial
+values; the runbook tightens `MemoryMax` after on-host measurement. This
+is the only PR that makes the services deployable; it does not enable
+them.
+
+**References.**
+- `crypto/research/capture_core/disk_guard.py` — the two-tier guard
+  (`disk_state`, `next_halt_state`, `select_oldest_to_reclaim`,
+  `DiskGuard`).
+- `crypto/research/capture_core/service.py` — flush-loop enforcement +
+  drop-on-halt on the write path.
+- `crypto/research/capture_core/config.py` — `FIREHOSE_PRUNABLE_DATASETS`,
+  `CAPTURE_DISK_{SOFT,CRITICAL}_FLOOR_BYTES`, `CAPTURE_DISK_CHECK_INTERVAL_S`.
+- `systemd/mhde-capture-*.service` — resource caps;
+  `systemd/system/user.slice.d/10-capture-deprioritize.conf` — the
+  cross-slice drop-in.
+- `OPERATIONS.md` — the deploy-then-verify runbook.
+- ADR-035 — forward-only rolling buffer (the model this secures).
