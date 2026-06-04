@@ -6,6 +6,41 @@ are at the top.
 
 ---
 
+## 2026-06-04 — Capture-core: close the /futures/data 5m undersampling gap
+
+**Branch:** `feat/capture-rest-series-resolution` (off `master`, draft PR;
+**awaiting operator — DO NOT merge**). Research substrate; public REST only;
+NEVER opens mhde.duckdb/engine DB; writes only under the capture-core store.
+
+**Problem.** After the issue-2 fix coarsened the /futures/data poll cadence to
+20 min (`FUTURES_DATA_CADENCE_S`), the series params still requested `limit=1`
+(latest 5m bucket only). With a 5m-native series polled every 20 min, that drops
+**3 of every 4 native buckets** — a 75% hole. The parsers/collector already
+appended every returned row with **no dedup**, so naively raising `limit` would
+have written duplicate buckets on each overlapping poll.
+
+**Fix (zero request-budget impact — the pacer counts requests, not response
+rows).**
+- `rest_series.py`: `_FD_LIMIT = max(8, int(2 * (FUTURES_DATA_CADENCE_S // 300)))`
+  = 8 at the 1200s cadence (covers ~2 poll intervals so a single missed/late poll
+  self-heals). Applied to all five /futures/data series. New `SeriesSpec.dedup_ts_field`
+  = `"timestamp"` for those five; `None` for the /fapi point-in-time series.
+- `rest_collector.py`: pure `dedup_new_buckets(rows, ts_field, last_ts)` +
+  per-`(series, key)` in-memory last-bucket cursor; windowed series append only
+  buckets newer than the cursor. /fapi series unchanged (always append). In-memory
+  state resets on restart, so consumers treat `(series, symbol/pair, bucket ts)`
+  as the unique key (read-side dedup) to absorb restart overlap. Also fixed the
+  `_fd_acquire` doc nit (`FUTURES_DATA_REQ_LIMIT` → `FUTURES_DATA_REQ_BUDGET`).
+
+**Tests (TDD).** `_FD_LIMIT` derivation + dedup flags; `dedup_new_buckets` boundary
+cases; overlapping polls retain every distinct bucket with zero duplicates; a
+skipped poll is backfilled by the wider window; /fapi series behaviour unchanged.
+**153 research tests green** (148 + 5).
+
+**Pending.** Operator review/merge of the draft PR.
+
+---
+
 ## 2026-06-04 — Capture-core persistence: forward-only rolling buffer (ADR-035)
 
 **Branch:** `docs/forward-only-persistence-supersede-r2` (off `master` @

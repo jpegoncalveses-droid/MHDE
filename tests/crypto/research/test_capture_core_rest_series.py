@@ -58,6 +58,21 @@ def test_parse_basis_uses_request_pair():
     assert rows[0]["pair"] == "BTCUSDT" and rows[0]["basisRate"] == "-0.0003"
 
 
+def test_fd_limit_covers_two_poll_intervals_and_marks_dedup():
+    from crypto.research.capture_core import config as cfg
+    buckets_per_poll = cfg.FUTURES_DATA_CADENCE_S // 300
+    # limit covers ~2 poll intervals so a single missed/late poll self-heals
+    assert rs._FD_LIMIT >= 2 * buckets_per_poll
+    assert rs._FD_LIMIT >= 8
+    assert rs._FD_LIMIT <= 500  # Binance /futures/data limit cap
+    for s in rs.SERIES:
+        if s.pool == "futures_data":
+            assert s.params["limit"] == rs._FD_LIMIT
+            assert s.dedup_ts_field == "timestamp"   # windowed -> needs bucket dedup
+        else:
+            assert s.dedup_ts_field is None          # /fapi point-in-time -> no dedup
+
+
 def test_request_builds_per_symbol_per_pair_and_all():
     assert _spec("open_interest").request("BTCUSDT") == (
         "/fapi/v1/openInterest", {"symbol": "BTCUSDT"})

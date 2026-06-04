@@ -90,6 +90,19 @@ def test_futures_data_series_cadence_is_coarsened():
     assert cfg.FUTURES_DATA_CADENCE_S >= 600.0
 
 
+def test_dedup_new_buckets_keeps_distinct_and_advances_last():
+    rows = [{"timestamp": 100}, {"timestamp": 200}, {"timestamp": 300}]
+    kept, last = rc.dedup_new_buckets(rows, "timestamp", None)
+    assert [r["timestamp"] for r in kept] == [100, 200, 300] and last == 300
+    # overlapping next poll: only buckets newer than last survive
+    kept2, last2 = rc.dedup_new_buckets(
+        [{"timestamp": 200}, {"timestamp": 300}, {"timestamp": 400}], "timestamp", last)
+    assert [r["timestamp"] for r in kept2] == [400] and last2 == 400
+    # fully-overlapping poll: nothing new, last unchanged
+    kept3, last3 = rc.dedup_new_buckets([{"timestamp": 400}], "timestamp", last2)
+    assert kept3 == [] and last3 == 400
+
+
 def test_fd_pace_wait_caps_raw_request_rate():
     # headroom -> no wait
     assert rc.fd_pace_wait(0.0, 5, now=10.0, budget=10, window_s=300.0) == 0.0
@@ -170,6 +183,69 @@ def test_futures_data_raw_count_pacing_blocks_over_budget(tmp_path):
     assert any(abs(s - 300.0) < 1e-6 for s in slept), slept
     # all three still got written after the pacing wait
     assert len(_read(tmp_path, "global_ls_account")) == 3
+
+
+# -- /futures/data windowed dedup: overlapping polls keep every distinct bucket --
+
+class _WindowClient:
+    """Returns the trailing ``limit`` 5m buckets ending at state['latest'] (in
+    bucket units; ts = unit*300_000 ms). Advancing state['latest'] between polls
+    simulates time passing."""
+
+    def __init__(self, state):
+        self.state = state
+        self.calls = []
+
+    def get_with_weight(self, path, params=None):
+        self.calls.append(path)
+        n = params["limit"]
+        latest = self.state["latest"]
+        rows = [{"symbol": params.get("symbol"), "longAccount": "0.6",
+                 "shortAccount": "0.4", "longShortRatio": "1.5",
+                 "timestamp": (latest - (n - 1) + i) * 300_000} for i in range(n)]
+        return rows, None
+
+
+def _ls_collector(tmp_path, client):
+    spec = next(s for s in rs.SERIES if s.name == "global_ls_account")
+    return rc.RestPresentStateCollector(
+        root=str(tmp_path), client=client, universe=["BTCUSDT"], specs=[spec],
+        sleep_fn=_noop_sleep, install_signals=False, clock_ns=lambda: _TS * 1_000_000)
+
+
+def test_overlapping_polls_retain_every_bucket_zero_duplicates(tmp_path):
+    state = {"latest": 8}
+    col = _ls_collector(tmp_path, _WindowClient(state))
+    asyncio.run(col.collect_once(now=0.0))       # buckets 1..8
+    state["latest"] = 12                          # +4 buckets (one 20-min poll later)
+    asyncio.run(col.collect_once(now=1200.0))     # window 5..12; only 9..12 are new
+    col.flush_all()
+    ts = sorted(r["timestamp"] for r in _read(tmp_path, "global_ls_account"))
+    assert ts == [u * 300_000 for u in range(1, 13)]   # 1..12 continuous
+    assert len(ts) == len(set(ts))                     # zero duplicate buckets
+
+
+def test_skipped_poll_is_backfilled_by_the_limit(tmp_path):
+    state = {"latest": 8}
+    col = _ls_collector(tmp_path, _WindowClient(state))
+    asyncio.run(col.collect_once(now=0.0))       # buckets 1..8
+    state["latest"] = 16                          # +8 buckets: a whole poll was skipped
+    asyncio.run(col.collect_once(now=2400.0))     # window 9..16 (limit 8) backfills the gap
+    col.flush_all()
+    ts = sorted(r["timestamp"] for r in _read(tmp_path, "global_ls_account"))
+    assert ts == [u * 300_000 for u in range(1, 17)]   # no permanent hole
+    assert len(ts) == len(set(ts))
+
+
+def test_fapi_series_not_deduped(tmp_path):
+    # /fapi point-in-time series have dedup_ts_field=None -> always append, even when
+    # the venue 'time' field repeats across polls.
+    col = _collector(tmp_path, universe=["BTCUSDT"],
+                     specs=[next(s for s in rs.SERIES if s.name == "open_interest")])
+    asyncio.run(col.collect_once(now=0.0))
+    asyncio.run(col.collect_once(now=60.0))
+    col.flush_all()
+    assert len(_read(tmp_path, "open_interest")) == 2   # both kept (no dedup)
 
 
 # -- /futures/data 429 degrades LOW first, never HIGH --
