@@ -519,6 +519,85 @@ systemctl --user daemon-reload
 systemctl --user restart mhde-streamlit
 ```
 
+### Enabling capture-core (PR-3 — deploy-then-verify)
+
+The capture services (firehose WS, REST present-state, 1h klines maintenance
++ retention) are **built-not-deployed**. Enable them on the live host in this
+exact order — lightest-first, **firehose LAST** — and verify the engine stays
+healthy before trusting it. Safety model is ADR-036 (disk guard + caps as
+priority, not starvation). Rollback is instant (step 6).
+
+```bash
+cd /home/jpcg/MHDE
+
+# 1. One-time klines backfill (~90d closed bars). Paced; takes a few minutes.
+venv/bin/python main.py crypto capture-klines-seed
+
+# 2. SUDO-install the cross-slice drop-in so the engine (system.slice) wins
+#    CPU+IO contention. REQUIRED — per-unit weights alone do not arbitrate
+#    user.slice vs system.slice.
+sudo install -D -m 0644 \
+  systemd/system/user.slice.d/10-capture-deprioritize.conf \
+  /etc/systemd/system/user.slice.d/10-capture-deprioritize.conf
+sudo systemctl daemon-reload
+
+# 3. Install + enable the USER units lightest-first; FIREHOSE LAST.
+#    (No User=/Group= lines — user units; linger must be on: loginctl enable-linger jpcg)
+for u in mhde-capture-rest-collector.service \
+         mhde-capture-klines.service \
+         mhde-capture-klines-expire.service mhde-capture-klines-expire.timer; do
+  cp systemd/$u ~/.config/systemd/user/
+done
+systemctl --user daemon-reload
+systemctl --user enable --now mhde-capture-rest-collector.service
+systemctl --user enable --now mhde-capture-klines.service
+systemctl --user enable --now mhde-capture-klines-expire.timer
+# Firehose LAST, only after the above look healthy:
+cp systemd/mhde-capture-core.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now mhde-capture-core.service
+```
+
+4. **Measure + tighten.** The firehose ships with a deliberately generous
+   `MemoryMax=8G` so this first sustained run measures TRUE peak RSS without
+   being clipped. After a sustained window, read the cgroup peak and set
+   `MemoryMax = peak ×1.8`. **If the reported peak equals the cap (8G), the
+   measurement was clipped — raise the cap and re-measure** before trusting
+   the number.
+
+```bash
+# Either the unit property or the cgroup file (both report the cgroup peak):
+systemctl --user show mhde-capture-core.service -p MemoryPeak --value
+cat /sys/fs/cgroup/user.slice/.../mhde-capture-core.service/memory.peak  # path varies
+# Set MemoryMax = peak x1.8 in ~/.config/systemd/user/mhde-capture-core.service, then:
+systemctl --user daemon-reload && systemctl --user restart mhde-capture-core.service
+```
+
+5. **Verify the engine, not just capture.** Watch a sustained window:
+   - engine 1s decision cycle stays within budget (no new timing alerts);
+   - capture keeps up (no growing WS disconnects / message drops in
+     `journalctl --user -u mhde-capture-core -f`);
+   - disk guard quiet (no `CRITICAL ... HALTING` / repeated prune WARNINGs);
+   - free space stable above the 50 GiB soft floor (`df -h /home/jpcg`).
+
+6. **Trust only if** the engine cycle stays within budget with no new engine
+   alerts. Otherwise tune caps (lower `MemoryMax`/weights) or trim the capture
+   footprint. **Rollback (load gone instantly):**
+
+```bash
+systemctl --user disable --now mhde-capture-core.service   # firehose first — the load driver
+# if needed, the rest:
+systemctl --user disable --now mhde-capture-klines.service mhde-capture-rest-collector.service
+```
+
+> Disk guard recap (ADR-036): under the 50 GiB **soft** floor (≈ "keep 50 GB
+> free", ~31h firehose buffer on ~107 GB free) the firehose prunes its OLDEST
+> partitions; under the 10 GiB **critical** floor it HALTS writes (forward-only
+> — dropped, never backfilled) and resumes above soft. `klines_1h` / REST series
+> / `_gaps` are never pruned. If free space differs materially at deploy, set the
+> soft floor to keep ~30h of buffer (≈ free minus 60 GB) and never below ~20 GB
+> free.
+
 ---
 
 ## Cross-scope systemd traps

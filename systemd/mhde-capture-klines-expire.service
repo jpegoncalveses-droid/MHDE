@@ -13,5 +13,11 @@ Type=oneshot
 WorkingDirectory=/home/jpcg/MHDE
 ExecStartPre=/usr/bin/test -x /home/jpcg/MHDE/venv/bin/python
 ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto capture-klines-expire
+# Resource caps (PR-3): modest — a short oneshot rmtree sweep. Still OOM-first and
+# below the system.slice CPU/IO default so it never disturbs the engine.
+MemoryMax=256M
+CPUWeight=20
+IOWeight=20
+OOMScoreAdjust=800
 StandardOutput=journal
 StandardError=journal

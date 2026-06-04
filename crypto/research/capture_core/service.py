@@ -26,6 +26,7 @@ from crypto.research.capture_core import config as cfg
 from crypto.research.capture_core import conn_manager as cm
 from crypto.research.capture_core import store
 from crypto.research.capture_core.book import DepthMaintainer
+from crypto.research.capture_core.disk_guard import DiskGuard
 from crypto.research.capture_core.snapshot import SnapshotScheduler
 
 logger = logging.getLogger("mhde.crypto.capture_core.service")
@@ -155,6 +156,9 @@ class CaptureService:
         install_signals: bool = True,
         enable_snapshots: bool = True,
         snap_scheduler: Optional[Any] = None,
+        disk_guard: Optional[Any] = None,
+        disk_guard_enabled: bool = True,
+        disk_check_interval_s: float = cfg.CAPTURE_DISK_CHECK_INTERVAL_S,
     ) -> None:
         self._root = root
         self._client = client
@@ -164,6 +168,18 @@ class CaptureService:
         self._reresolve_interval_s = reresolve_interval_s
         self._flush_poll_s = flush_poll_s
         self._install_signals = install_signals
+
+        # PR-3 disk guard: protects the volume by pruning the OLDEST firehose
+        # partitions under the soft floor and halting firehose writes under the
+        # critical floor (forward-only: dropped, never backfilled).
+        if disk_guard is not None:
+            self._disk_guard: Any = disk_guard
+        elif disk_guard_enabled:
+            self._disk_guard = DiskGuard(root)
+        else:
+            self._disk_guard = None
+        self._disk_check_interval_s = disk_check_interval_s
+        self._last_disk_check = 0.0
 
         _wkw = dict(flush_interval_s=flush_interval_s, flush_max_bytes=flush_max_bytes)
         self._agg = store.aggtrade_writer(root, **_wkw)
@@ -197,6 +213,10 @@ class CaptureService:
     # -- routing --
 
     def _on_message(self, stream: str, data: Any, recv_ns: int) -> None:
+        # Disk guard CRITICAL: drop incoming firehose data (forward-only — a hole is
+        # recorded by absence; we never backfill). Resumes when free recovers.
+        if self._disk_guard is not None and self._disk_guard.halted:
+            return
         if stream.endswith("@aggTrade"):
             self._agg.append(aggtrade_row(data, recv_ns))
         elif "@depth@" in stream:
@@ -314,6 +334,17 @@ class CaptureService:
                 break
             for w in self._writers:
                 w.flush_due()
+            self._maybe_enforce_disk_guard()
+
+    def _maybe_enforce_disk_guard(self) -> None:
+        """Run the disk guard on its own (coarser) cadence from the flush loop."""
+        if self._disk_guard is None:
+            return
+        now = time.monotonic()
+        if now - self._last_disk_check < self._disk_check_interval_s:
+            return
+        self._last_disk_check = now
+        self._disk_guard.enforce()
 
     def _install_signal_handlers(self) -> None:
         loop = asyncio.get_running_loop()

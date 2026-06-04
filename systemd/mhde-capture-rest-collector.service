@@ -12,8 +12,9 @@ Wants=network-online.target
 # database. It self-paces under the live REST weight, coexisting with the WS
 # capture service's depth SnapshotScheduler on the shared IP.
 #
-# BUILT-NOT-DEPLOYED: this file is tracked but not installed/enabled. Resource
-# caps + R2 offload arrive in the safety PR before this is ever turned on.
+# BUILT-NOT-DEPLOYED: this file is tracked but not installed/enabled. R2 offload
+# is DROPPED (ADR-035: forward-only). Resource caps (PR-3) express PRIORITY, not
+# starvation: the engine wins contention; this collector is small and bounded.
 Type=simple
 WorkingDirectory=/home/jpcg/MHDE
 ExecStartPre=/usr/bin/test -x /home/jpcg/MHDE/venv/bin/python
@@ -22,6 +23,12 @@ Restart=on-failure
 RestartSec=5
 # Give writers time to flush open parquet buffers on SIGTERM before SIGKILL.
 TimeoutStopSec=30
+# Resource caps (PR-3): a small REST poller, so a 1G ceiling is ample;
+# CPUWeight/IOWeight < the system.slice default (100); OOM-first like the firehose.
+MemoryMax=1G
+CPUWeight=20
+IOWeight=20
+OOMScoreAdjust=800
 StandardOutput=journal
 StandardError=journal
 
