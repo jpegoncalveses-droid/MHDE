@@ -6,6 +6,37 @@ are at the top.
 
 ---
 
+## 2026-06-04 — Capture-core persistence: forward-only rolling buffer (ADR-035)
+
+**Branch:** `docs/forward-only-persistence-supersede-r2` (off `master` @
+`e6f2273`, draft PR). Docs-only; no code, no production-DB access; history not
+rewritten.
+
+**What changed.** Recorded **ADR-035** in `DECISIONS.md` (Status: active):
+capture-core persistence is a **forward-only rolling buffer** — a short rolling
+raw buffer (~24h, capped ~24–36h) on local disk + derived metrics + forward
+prediction/outcome records + cheap rolling coarse summaries. The original
+**3-day-local + keep-forever R2 archival** model (and PR-3's "safety + offload +
+deploy" with rclone to bucket `signal-probe-raw` prefix `capture_core/`) is
+**DROPPED**: no R2, no rclone, no offload, no archival; the substrate writes only
+under `data/research/capture_core/`. Sizing basis: ~250 GB/day raw → ~44 GB/day
+parquet (zstd ~5.7×), so a ~24h buffer (~44 GB) fits the host's ~102 GB free.
+
+**PR-3 re-scoped** by ADR-035 to "safety + deploy": rolling buffer + retention
+cap (~24–36h) + disk guard + resource caps (`MemoryMax`/`CPUWeight`/`IOWeight`/
+`OOMScoreAdjust`) + **enable** the capture services — offload removed.
+
+**History preserved.** All prior SESSION_LOG entries and ADRs left verbatim. The
+earlier entry's "Next: PR-3 = … R2 offload" line (below, 2026-06-03 routing-fix /
+2026-06-03 PR-2 entries) is the historical record and was **not** edited.
+Untracked host plan `~/.claude/plans/capture-core-iridescent-nest.md` annotated
+to point at ADR-035 (not part of this PR).
+
+**Pending.** Operator approval of the draft PR (DO NOT MERGE pending review). PR
+#22 (REST present-state collector) remains separately READY/awaiting approval.
+
+---
+
 ## 2026-06-03 — Capture-core: split-endpoint routing fix (folded into PR #21)
 
 **Branch:** `feat/capture-core-pr2` (same OPEN PR #21; **awaiting operator — DO

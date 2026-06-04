@@ -2207,3 +2207,87 @@ but it should be closed before live trading.
 - `crypto-trading-engine/engine/{selection/selector.py,cli/handlers/
   entry.py}` — the total-wallet sizing path lacking the
   `availableBalance` check (separate pre-live item).
+
+## ADR-035 — capture-core persistence is a forward-only rolling buffer; R2/offload model superseded
+
+**Status:** active 2026-06-04. Supersedes the persistence/offload
+sections of the original capture-core plan (3-day-local + keep-forever
+R2 archival). MHDE research-substrate only; no engine change, no live
+path change.
+
+**Context.** Capture-core (`crypto/research/capture_core/`) was first
+scoped around an *archival* model: keep a short window of raw parquet on
+the host, then offload **every** raw part to Cloudflare R2 (bucket
+`signal-probe-raw`, prefix `capture_core/`) and keep it forever, so the
+full firehose could be replayed offline at any future date. The PR split
+reflected this — PR-3 was "safety + **offload** + deploy" (rclone, R2
+layout/retention, hourly batch), and the in-flight plan/dispatch text and
+the PR-2 `SESSION_LOG` "Next" line both name R2 offload as the next step.
+
+The discovery methodology has since moved off archival entirely. The
+substrate's job is **forward-only discovery**: raw events are consumed
+*live* into derived metrics and forward prediction→outcome records as
+they arrive; the raw firehose itself is a transient working set, not a
+corpus to be hoarded. Sizing makes the archival model both unnecessary
+and a liability: the full 529-symbol firehose is ~250 GB/day raw →
+~44 GB/day parquet (~5.7× zstd), dominated by `@depth@100ms`. Keeping
+that forever in R2 accrues unbounded storage + egress cost for data the
+forward-only method never re-reads, and the offload machinery (rclone
+auth, retry, reconciliation, a rotating bucket token) is standing
+operational surface with no consumer.
+
+**Decision.** Persist only what the forward-only method actually uses:
+
+1. A **short rolling raw buffer** (~24 h, capped ~24–36 h) on local
+   disk — enough to seed/resync books and recompute a derived metric a
+   little after the fact, no more. At ~44 GB/day a ~24 h buffer is
+   ~44 GB, which fits the host's ~102 GB free with headroom; the
+   retention cap + disk guard keep it bounded.
+2. **Derived metrics** computed live from the raw stream.
+3. **Forward prediction → outcome records** (the discovery output).
+4. **Cheap rolling coarse summaries** for longer-horizon context.
+
+**R2 / rclone / hourly offload / keep-forever archival are DROPPED.**
+The substrate writes only under `data/research/capture_core/` and never
+ships raw parts off-host.
+
+PR-3 is **re-scoped** accordingly — "safety + deploy", not "safety +
+offload + deploy":
+- rolling buffer + **retention cap** (~24–36 h, oldest partitions
+  pruned);
+- **disk guard** (stop/alert before the volume fills);
+- **resource caps** on the systemd units (`MemoryMax`, `CPUWeight`,
+  `IOWeight`, `OOMScoreAdjust`);
+- **enable** the capture services (`mhde-capture-core.service`,
+  `mhde-capture-rest-collector.service`) — the PR that turns the
+  service on.
+- **No offload.** No rclone, no R2 writes, no archival step.
+
+**Consequence.** Any earlier doc, plan, dispatch, or `SESSION_LOG`/ADR
+"Next" line that prescribes R2 offload, rclone, an hourly archival
+batch, a `capture_core/` R2 prefix, or keep-forever raw retention for
+capture-core is **superseded by this ADR**. Historical references
+(SESSION_LOG entries, the original plan, prior PR descriptions) are left
+verbatim as the record of what was decided at the time; they are not
+rewritten. Forward-looking docs are corrected to the rolling-buffer
+model. The host plan `~/.claude/plans/capture-core-iridescent-nest.md`
+(untracked, not part of any repo PR) is annotated to point here.
+
+**Out of scope.** The exact retention hours, disk-guard threshold, and
+resource-cap values are tuning decisions made when PR-3 is built and
+load-measured on the host; this ADR fixes the *model* (forward-only
+rolling buffer, no archival), not the numbers.
+
+**References.**
+
+- `crypto/research/capture_core/` — the capture substrate (PR-1 #20,
+  PR-2 #21, REST present-state collector #22).
+- `crypto/research/capture_core/config.py` — `RAW_DIR =
+  data/research/capture_core`; flush/retention constants live here.
+- Original capture-core plan (host `~/.claude/plans/
+  capture-core-iridescent-nest.md`) — §8/§10/§11 archival + R2 offload
+  model, superseded by this ADR.
+- `SESSION_LOG.md` — the PR-2 entry's "Next: PR-3 = … R2 offload" line
+  is historical and left as written.
+- Firehose sizing: ~250 GB/day raw → ~44 GB/day parquet (zstd ~5.7×),
+  529 TRADING USDT-M perps; host ~102 GB free.
