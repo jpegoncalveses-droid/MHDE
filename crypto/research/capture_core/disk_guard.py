@@ -200,3 +200,124 @@ class DiskGuard:
                 "capture disk guard: free below soft %.1fGiB — pruned %d oldest "
                 "firehose partitions, free now %.1fGiB",
                 self._soft / _GIB, len(pruned), free / _GIB)
+
+
+# -- inode guard (Phase 0) ----------------------------------------------------
+# The byte guard above cannot see the failure mode that took the box down on
+# 2026-06-09: millions of tiny files exhaust the root-filesystem INODE table while
+# bytes-free stays healthy. This guard tracks inode usage and makes capture fail
+# itself first — WARN (Telegram) at the warn fraction, CRITICAL + HALT writes at
+# the critical fraction, hysteresis so it does not flap. Pure helpers are unit
+# tested; the class wires them to ``statvfs`` + an injected notifier. Like the byte
+# guard, this NEVER opens DuckDB; the default notifier reaches Telegram through the
+# DB-free :func:`monitoring.alert.send_text` text path only.
+
+
+def inode_used(total: int, avail: int) -> float:
+    """Inode usage fraction from statvfs counts. ``avail`` mirrors the byte guard's
+    use of the non-root-available count. Empty/!inode filesystems (total <= 0) are
+    reported as 0.0 (not "full") so the guard never false-halts on them."""
+    if total <= 0:
+        return 0.0
+    return (total - avail) / total
+
+
+def inode_used_fraction(path: str) -> float:
+    """Fraction of the inode table USED on ``path``'s filesystem (the root fs for the
+    capture store). ``statvfs`` is cheap; called on the guard cadence."""
+    st = os.statvfs(path)
+    return inode_used(st.f_files, st.f_favail)
+
+
+def inode_state(used: float, *, warn: float, critical: float) -> str:
+    """Classify inode usage: ``"critical"`` >= critical > ``"warn"`` >= warn > ``"ok"``."""
+    if used >= critical:
+        return "critical"
+    if used >= warn:
+        return "warn"
+    return "ok"
+
+
+def next_inode_halt_state(used: float, *, warn: float, critical: float,
+                          halted: bool) -> bool:
+    """Hysteresis for the inode write-halt: halt at/above CRITICAL, resume below WARN,
+    hold the prior state in the band between (so it does not flap)."""
+    if used >= critical:
+        return True
+    if used < warn:
+        return False
+    return halted
+
+
+def _default_inode_notify(text: str) -> None:
+    """Best-effort Telegram via the DB-free monitoring text path. Lazily imported so
+    constructing the guard never pulls in the alerting/fx stack (or DuckDB), and any
+    failure degrades to a log line — an alert must never crash the capture loop."""
+    try:
+        from monitoring.alert import send_text
+        send_text(text)
+    except Exception as exc:  # pragma: no cover - notifier must never raise
+        logger.error("capture inode guard: Telegram notify failed: %s", exc)
+
+
+@dataclass
+class InodeGuardResult:
+    state: str
+    used: float
+    halted: bool
+
+
+class InodeGuard:
+    """Stateful root-inode guard. :meth:`enforce` runs on the firehose flush-loop
+    cadence; :attr:`halted` is read on the write path to drop incoming data during a
+    CRITICAL halt (forward-only). Alerts fire only on threshold TRANSITIONS."""
+
+    def __init__(
+        self,
+        root: str,
+        *,
+        warn_fraction: float = cfg.CAPTURE_INODE_WARN_FRACTION,
+        critical_fraction: float = cfg.CAPTURE_INODE_CRITICAL_FRACTION,
+        used_fn: Callable[[str], float] = inode_used_fraction,
+        notify_fn: Callable[[str], None] = _default_inode_notify,
+        log: logging.Logger = logger,
+    ) -> None:
+        self._root = root
+        self._warn = warn_fraction
+        self._critical = critical_fraction
+        self._used_fn = used_fn
+        self._notify_fn = notify_fn
+        self._log = log
+        self.halted = False
+        self._state = "ok"
+
+    def enforce(self) -> InodeGuardResult:
+        used = self._used_fn(self._root)
+        state = inode_state(used, warn=self._warn, critical=self._critical)
+        self.halted = next_inode_halt_state(
+            used, warn=self._warn, critical=self._critical, halted=self.halted)
+        prev = self._state
+        if state != prev:
+            self._on_transition(prev, state, used)
+        self._state = state
+        return InodeGuardResult(state=state, used=used, halted=self.halted)
+
+    def _on_transition(self, prev: str, state: str, used: float) -> None:
+        pct = used * 100.0
+        if state == "critical":
+            msg = (f"🛑 capture inode guard: root inodes {pct:.1f}% used "
+                   f"(>= {self._critical * 100:.0f}%) — HALTING firehose writes "
+                   f"(forward-only).")
+            self._log.critical(msg)
+            self._notify_fn(msg)
+        elif state == "warn":
+            msg = (f"⚠️ capture inode guard: root inodes {pct:.1f}% used "
+                   f"(>= {self._warn * 100:.0f}%) — approaching the cap; "
+                   f"retention/compaction should reclaim.")
+            self._log.warning(msg)
+            self._notify_fn(msg)
+        elif state == "ok" and prev != "ok":
+            msg = (f"✅ capture inode guard: root inodes recovered to {pct:.1f}% used "
+                   f"(< {self._warn * 100:.0f}%) — RESUMING firehose writes.")
+            self._log.warning(msg)
+            self._notify_fn(msg)

@@ -2074,6 +2074,72 @@ def crypto_capture_klines_expire(root, days):
     click.echo(f"klines retention: {len(removed)} partitions expired")
 
 
+@crypto.command("capture-firehose-expire")
+@click.option("--root", default=None,
+              help="Raw capture dir. Default: capture_core.config.RAW_DIR.")
+@click.option("--days", default=None, type=int,
+              help="Retention window in days. Default: config.CAPTURE_RAW_RETENTION_DAYS (14).")
+def crypto_capture_firehose_expire(root, days):
+    """Expire raw FIREHOSE date partitions older than the rolling window.
+
+    Whole date= partitions, oldest-first, never today's, firehose datasets only
+    (klines_1h / REST series / _gaps untouched). Filesystem-only under the capture
+    store; never opens the production DB. Intended for a daily timer; complements
+    PR-3's in-loop free-space byte guard (this is the TIME bound).
+    """
+    import logging
+
+    from crypto.research.capture_core import config as cc_cfg
+    from crypto.research.capture_core import maintenance as mt
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    removed = mt.expire_firehose_partitions(
+        root or cc_cfg.RAW_DIR, days=days or cc_cfg.CAPTURE_RAW_RETENTION_DAYS)
+    click.echo(f"firehose retention: {len(removed)} partitions expired")
+
+
+@crypto.command("capture-firehose-compact")
+@click.option("--root", default=None,
+              help="Raw capture dir. Default: capture_core.config.RAW_DIR.")
+@click.option("--dates", default=None,
+              help="Comma-separated YYYY-MM-DD to restrict the sweep (e.g. surviving days).")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Measure only — report files/rows without writing or deleting.")
+def crypto_capture_firehose_compact(root, dates, dry_run):
+    """One-shot compaction of raw FIREHOSE partitions into the bounded-file layout.
+
+    Merges the many small part-*.parquet of each symbol=/date= partition into one
+    verified file (rows kept in recv_ts_ns order; originals removed only after a
+    pre/post row-count parity check). Use after deploying the compact-on-write fix
+    to fold the surviving tiny-file days into the new layout. Filesystem-only; never
+    opens the production DB.
+    """
+    import logging
+
+    from crypto.research.capture_core import config as cc_cfg
+    from crypto.research.capture_core import maintenance as mt
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    date_list = [d.strip() for d in dates.split(",")] if dates else None
+    report = mt.migrate_compact(root or cc_cfg.RAW_DIR, dates=date_list,
+                                dry_run=dry_run)
+    click.echo(
+        f"firehose compaction{' (DRY RUN)' if dry_run else ''}: "
+        f"scanned {report.partitions_scanned}, compacted {report.partitions_compacted}, "
+        f"files {report.files_before}->{report.files_after}, "
+        f"rows {report.rows_before}->{report.rows_after}, "
+        f"mismatches {len(report.mismatches)}")
+    if report.mismatches:
+        for m in report.mismatches:
+            click.echo(f"  MISMATCH: {m}")
+
+
 @crypto.command("intraday-replay")
 @click.option("--start", "start_str", required=True,
               help="First prediction_date YYYY-MM-DD (inclusive).")

@@ -1,0 +1,26 @@
+# /home/jpcg/.config/systemd/user/mhde-capture-firehose-expire.service
+[Unit]
+Description=MHDE capture-core firehose retention — expire raw date partitions past the window
+After=network-online.target
+
+[Service]
+# Oneshot rolling-retention sweep for the raw FIREHOSE datasets: deletes whole
+# date= partitions older than CAPTURE_RAW_RETENTION_DAYS (default 14), oldest-first,
+# never today's, firehose datasets only (klines_1h / REST series / _gaps untouched).
+# Filesystem-only under the capture store; never opens the production database.
+# Complements PR-3's in-loop free-BYTES guard (this is the TIME bound). Paired with
+# the .timer (daily).
+#
+# BUILT-NOT-DEPLOYED: tracked but not installed/enabled.
+Type=oneshot
+WorkingDirectory=/home/jpcg/MHDE
+ExecStartPre=/usr/bin/test -x /home/jpcg/MHDE/venv/bin/python
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto capture-firehose-expire
+# Resource caps (PR-3): modest — a short oneshot rmtree sweep. Still OOM-first and
+# below the system.slice CPU/IO default so it never disturbs the engine.
+MemoryMax=256M
+CPUWeight=20
+IOWeight=20
+OOMScoreAdjust=800
+StandardOutput=journal
+StandardError=journal
