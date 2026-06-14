@@ -1,10 +1,10 @@
-"""Phase 0 — writer compaction tests.
+"""Capture-core compaction primitive round-trip tests.
 
-(a) The firehose writer must produce a BOUNDED file count under a sustained
-    multi-symbol burst (hourly roll-up), not one part-file per flush.
-(b) The compaction primitive must round-trip every row with fields intact and a
-    still-monotonic ``recv_ts_ns`` cursor (the read contract the brain Phase 1
-    reader is built against).
+The ``compact_partition`` primitive (used by the one-shot migration and reused by
+ADR-038 closed-hour compaction) must round-trip every row with fields intact, a
+still-monotonic ``recv_ts_ns`` cursor, and NO baked-in partition columns — the read
+contract the brain Phase 1 reader is built against. (Writer flush cadence + bounded
+files are covered in ``test_capture_core_write_then_compact.py``.)
 """
 from __future__ import annotations
 
@@ -14,9 +14,7 @@ from datetime import datetime, timezone
 import pyarrow.dataset as pads
 import pyarrow.parquet as pq
 
-from crypto.research.capture_core import config as cfg
 from crypto.research.capture_core import maintenance
-from crypto.research.capture_core import service as svc
 from crypto.research.capture_core import store
 
 _DAY = datetime(2026, 5, 29, 12, 0, 0, tzinfo=timezone.utc)
@@ -40,41 +38,7 @@ def _read_all(root, dataset):
     return files, rows
 
 
-# -- (a) bounded file count ----------------------------------------------------
-
-def test_firehose_writers_use_hourly_rollup_interval(tmp_path):
-    # The service must construct EVERY firehose writer with the hourly roll-up
-    # window, not the old 30s age cadence that exploded the inode table.
-    s = svc.CaptureService(root=str(tmp_path), client=None, enable_snapshots=False,
-                           install_signals=False, disk_guard_enabled=False)
-    assert cfg.CAPTURE_FIREHOSE_ROLLUP_S >= 3600.0
-    for w in (s._agg, s._depth, s._bookticker, s._forceorder, s._markprice,
-              s._snapshot):
-        assert w._flush_interval_s == cfg.CAPTURE_FIREHOSE_ROLLUP_S
-
-
-def test_writer_bounded_files_over_multi_symbol_burst(tmp_path):
-    # 50 symbols trickle steadily for 3 simulated hours, polled every 30s (the old
-    # cadence). Under the hourly roll-up each symbol's partition must emit only a
-    # few files (~one per elapsed hour), not one-per-poll (~360).
-    clock = [0.0]
-    w = store.aggtrade_writer(str(tmp_path),
-                              flush_interval_s=cfg.CAPTURE_FIREHOSE_ROLLUP_S,
-                              flush_max_bytes=10 ** 12, now_fn=lambda: clock[0])
-    symbols = [f"SYM{i}USDT" for i in range(50)]
-    for _ in range(360):                       # 3h at a 30s poll
-        for sym in symbols:
-            w.append(_aggtrade_row(sym))
-        clock[0] += 30.0
-        w.flush_due()
-    w.flush_all()
-
-    files, _ = _read_all(str(tmp_path), "aggTrade")
-    files_per_symbol = len(files) / len(symbols)
-    assert files_per_symbol <= 5               # ~3-4 under hourly; ~360 under 30s
-
-
-# -- (b) compaction round-trip preserves the read contract ---------------------
+# -- compaction round-trip preserves the read contract ------------------------
 
 def test_compact_partition_preserves_rows_fields_and_recv_cursor(tmp_path):
     # 20 tiny size-capped parts in one symbol=/date= partition.

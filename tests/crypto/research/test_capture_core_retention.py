@@ -47,7 +47,7 @@ def _touch_partition(root, dataset, symbol, date):
 # -- shipped retention constant ------------------------------------------------
 
 def test_shipped_retention_window():
-    assert cfg.CAPTURE_RAW_RETENTION_DAYS == 14
+    assert cfg.CAPTURE_RAW_RETENTION_DAYS == 7  # ADR-038: 14 -> 7d
 
 
 # -- (c) retention prunes only beyond the window, never today ------------------

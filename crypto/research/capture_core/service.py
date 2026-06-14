@@ -150,8 +150,8 @@ class CaptureService:
         mgr_factory: Optional[Callable[[list[str]], Any]] = None,
         streams_per_conn: int = cfg.STREAMS_PER_CONN,
         reresolve_interval_s: float = cfg.UNIVERSE_RERESOLVE_INTERVAL_S,
-        flush_interval_s: float = cfg.CAPTURE_FIREHOSE_ROLLUP_S,
-        flush_max_bytes: int = cfg.FLUSH_MAX_BYTES,
+        flush_interval_s: float = cfg.CAPTURE_FIREHOSE_FLUSH_S,
+        flush_max_bytes: int = cfg.CAPTURE_FIREHOSE_FLUSH_MAX_BYTES,
         flush_poll_s: float = cfg.FLUSH_POLL_S,
         install_signals: bool = True,
         enable_snapshots: bool = True,
@@ -343,9 +343,10 @@ class CaptureService:
             await asyncio.wait_for(self._stop.wait(), timeout=timeout)
 
     async def _flush_loop(self) -> None:
-        # Poll on a short cadence so the per-partition 64 MiB size cap is a real
-        # ceiling (a hot partition can exceed it well within the hourly roll-up age
-        # window); flush_due() itself honors the roll-up age threshold per partition.
+        # ADR-038 write-then-compact: flush every partition on the short
+        # CAPTURE_FIREHOSE_FLUSH_S age (or the byte cap), so resident RAM only ever
+        # holds ~one flush interval. Closed hours are merged later by the separate
+        # compaction timer; the writer itself never buffers an hour (that OOM'd).
         while not self._stop.is_set():
             await self._wait_stop_or_timeout(self._flush_poll_s)
             if self._stop.is_set():

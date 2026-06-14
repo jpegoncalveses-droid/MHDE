@@ -1,0 +1,28 @@
+# /home/jpcg/.config/systemd/user/mhde-capture-firehose-compact.service
+[Unit]
+Description=MHDE capture-core firehose closed-hour compaction (ADR-038 write-then-compact)
+After=network-online.target
+
+[Service]
+# Hourly oneshot: merge the writer's small part-*.parquet of each CLOSED clock-hour
+# into one compact-h<hour>-*.parquet per symbol=/date= partition (row-count verified
+# before delete), skipping the open hour + grace margin so it never races an in-flight
+# file. This is the compaction half of write-then-compact: the writer flushes small
+# files often to keep RAM low; this keeps the file/inode count low. Filesystem-only
+# under the capture store; never opens the production database. Paired with the .timer.
+#
+# BUILT-NOT-DEPLOYED: tracked but not installed/enabled.
+Type=oneshot
+WorkingDirectory=/home/jpcg/MHDE
+ExecStartPre=/usr/bin/test -x /home/jpcg/MHDE/venv/bin/python
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto capture-firehose-compact-recent
+# Shared-host invariant (ADR-036/038): idle CPU+IO and OOM-first, so compaction never
+# disturbs the engine's 1s cycle even though it reads+rewrites while capture is live.
+Nice=19
+IOSchedulingClass=idle
+MemoryMax=1G
+CPUWeight=20
+IOWeight=20
+OOMScoreAdjust=800
+StandardOutput=journal
+StandardError=journal

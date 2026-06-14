@@ -1,0 +1,13 @@
+# /home/jpcg/.config/systemd/user/mhde-capture-firehose-compact.timer
+[Unit]
+Description=MHDE capture-core firehose closed-hour compaction — hourly
+
+[Timer]
+# A few minutes past each hour so the just-closed hour is safely past its grace margin
+# (the compactor also enforces the grace in code, so exact timing is not critical).
+# Persistent catches up a missed run after the host was off.
+OnCalendar=*-*-* *:06:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
