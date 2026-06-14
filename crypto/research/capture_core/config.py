@@ -49,10 +49,20 @@ STREAMS_PER_CONN = 200
 FLUSH_INTERVAL_S = 30.0
 FLUSH_MAX_BYTES = 64 * 1024 * 1024  # 64 MiB
 PARQUET_COMPRESSION = "zstd"
-#: How often the service evaluates flush triggers. Must be << FLUSH_INTERVAL_S so
-#: the 64 MiB size cap is a real ceiling, not a 30s-granularity check (a hot
+#: How often the service evaluates flush triggers. Must be << the age interval so
+#: the 64 MiB size cap is a real ceiling, not a poll-granularity check (a hot
 #: partition can blow past 64 MiB well within one age interval at firehose rates).
 FLUSH_POLL_S = 1.0
+#: FIREHOSE roll-up window (Phase 0 compact-on-write). The firehose writers flush a
+#: partition on the EARLIER of this age OR ``FLUSH_MAX_BYTES``. A 1-hour roll-up
+#: collapses a low/idle partition to ~24 files/day (vs ~2,880/day under the old 30s
+#: age cadence that exhausted the root inode table on 2026-06-09); a hot partition
+#: still seals on the 64 MiB size cap (a handful of larger files), so the size cap
+#: remains the per-partition MEMORY ceiling. Projected total: ~tens of thousands of
+#: files/day across the firehose, not millions. The size cap means lengthening the
+#: age window does NOT raise the per-partition memory ceiling. Tune toward DAILY
+#: roll-ups only if the deploy-runbook RSS measurement (PR-3) leaves headroom.
+CAPTURE_FIREHOSE_ROLLUP_S = 3600.0
 
 # -- Reconnect (mirrors the engine ws_consumer discipline) --
 RECONNECT_BACKOFF_BASE_S = 1.0
@@ -170,6 +180,28 @@ CAPTURE_DISK_CRITICAL_FLOOR_BYTES = 10 * 1024 ** 3   # 10 GiB
 #: How often the firehose flush loop runs the guard. statvfs is cheap; the prune
 #: scan only runs when under the soft floor.
 CAPTURE_DISK_CHECK_INTERVAL_S = 10.0
+
+# -- Capture inode guard (Phase 0 safety) -------------------------------------
+# The free-BYTES guard above cannot see the failure mode that took the box down on
+# 2026-06-09: millions of tiny files exhausting the ROOT-FILESYSTEM inode table
+# while bytes free stayed healthy. This guard tracks inode usage on the capture
+# root's filesystem (the root fs) and makes capture fail ITSELF before it can
+# starve the OS/engine again — WARN (Telegram) at 80% used, CRITICAL + HALT writes
+# at 90% used, with hysteresis (resume below the WARN fraction so it does not flap).
+#: Inode usage fraction at which to WARN via Telegram (edge-triggered).
+CAPTURE_INODE_WARN_FRACTION = 0.80
+#: Inode usage fraction at which to go CRITICAL: HALT firehose writes (forward-only,
+#: dropped never backfilled) + Telegram. Resume once usage falls below the WARN
+#: fraction (hysteresis). Recovery of inodes is by retention/compaction, not the halt.
+CAPTURE_INODE_CRITICAL_FRACTION = 0.90
+
+# -- Capture firehose retention (Phase 0) -------------------------------------
+#: Rolling on-host raw window for the FIREHOSE datasets. Whole ``date=`` partitions
+#: older than this are pruned oldest-first (never today's). Distinct from PR-3's
+#: free-space byte guard (kept) and from the klines store's 90d window: this is a
+#: TIME bound on the raw firehose tape (the brain Phase 1 reader needs ~24h; 14d is
+#: a generous research buffer). Filesystem-only; never opens the production DB.
+CAPTURE_RAW_RETENTION_DAYS = 14
 
 # -- Stream cadences --
 DEPTH_UPDATE_SPEED = "100ms"   # rawest diff cadence (operator GO: no pre-coarsen)

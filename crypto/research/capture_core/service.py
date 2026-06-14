@@ -26,7 +26,7 @@ from crypto.research.capture_core import config as cfg
 from crypto.research.capture_core import conn_manager as cm
 from crypto.research.capture_core import store
 from crypto.research.capture_core.book import DepthMaintainer
-from crypto.research.capture_core.disk_guard import DiskGuard
+from crypto.research.capture_core.disk_guard import DiskGuard, InodeGuard
 from crypto.research.capture_core.snapshot import SnapshotScheduler
 
 logger = logging.getLogger("mhde.crypto.capture_core.service")
@@ -150,7 +150,7 @@ class CaptureService:
         mgr_factory: Optional[Callable[[list[str]], Any]] = None,
         streams_per_conn: int = cfg.STREAMS_PER_CONN,
         reresolve_interval_s: float = cfg.UNIVERSE_RERESOLVE_INTERVAL_S,
-        flush_interval_s: float = cfg.FLUSH_INTERVAL_S,
+        flush_interval_s: float = cfg.CAPTURE_FIREHOSE_ROLLUP_S,
         flush_max_bytes: int = cfg.FLUSH_MAX_BYTES,
         flush_poll_s: float = cfg.FLUSH_POLL_S,
         install_signals: bool = True,
@@ -158,6 +158,8 @@ class CaptureService:
         snap_scheduler: Optional[Any] = None,
         disk_guard: Optional[Any] = None,
         disk_guard_enabled: bool = True,
+        inode_guard: Optional[Any] = None,
+        inode_guard_enabled: bool = True,
         disk_check_interval_s: float = cfg.CAPTURE_DISK_CHECK_INTERVAL_S,
     ) -> None:
         self._root = root
@@ -178,6 +180,17 @@ class CaptureService:
             self._disk_guard = DiskGuard(root)
         else:
             self._disk_guard = None
+
+        # Phase 0 inode guard: protects the ROOT FILESYSTEM's inode table — the
+        # failure mode the byte guard cannot see (millions of tiny files while bytes
+        # stay healthy). WARN at 80% used, HALT firehose writes at 90% (forward-only).
+        if inode_guard is not None:
+            self._inode_guard: Any = inode_guard
+        elif inode_guard_enabled:
+            self._inode_guard = InodeGuard(root)
+        else:
+            self._inode_guard = None
+
         self._disk_check_interval_s = disk_check_interval_s
         self._last_disk_check = 0.0
 
@@ -212,10 +225,15 @@ class CaptureService:
 
     # -- routing --
 
+    def _writes_halted(self) -> bool:
+        """True iff EITHER guard is in a CRITICAL halt (free space OR inodes)."""
+        return ((self._disk_guard is not None and self._disk_guard.halted)
+                or (self._inode_guard is not None and self._inode_guard.halted))
+
     def _on_message(self, stream: str, data: Any, recv_ns: int) -> None:
-        # Disk guard CRITICAL: drop incoming firehose data (forward-only — a hole is
-        # recorded by absence; we never backfill). Resumes when free recovers.
-        if self._disk_guard is not None and self._disk_guard.halted:
+        # Guard CRITICAL (byte OR inode): drop incoming firehose data (forward-only —
+        # a hole is recorded by absence; we never backfill). Resumes on recovery.
+        if self._writes_halted():
             return
         if stream.endswith("@aggTrade"):
             self._agg.append(aggtrade_row(data, recv_ns))
@@ -326,25 +344,28 @@ class CaptureService:
 
     async def _flush_loop(self) -> None:
         # Poll on a short cadence so the per-partition 64 MiB size cap is a real
-        # ceiling (a hot partition can exceed it well within the 30s age window);
-        # flush_due() itself still honors the 30s age threshold per partition.
+        # ceiling (a hot partition can exceed it well within the hourly roll-up age
+        # window); flush_due() itself honors the roll-up age threshold per partition.
         while not self._stop.is_set():
             await self._wait_stop_or_timeout(self._flush_poll_s)
             if self._stop.is_set():
                 break
             for w in self._writers:
                 w.flush_due()
-            self._maybe_enforce_disk_guard()
+            self._maybe_enforce_guards()
 
-    def _maybe_enforce_disk_guard(self) -> None:
-        """Run the disk guard on its own (coarser) cadence from the flush loop."""
-        if self._disk_guard is None:
+    def _maybe_enforce_guards(self) -> None:
+        """Run the disk + inode guards on their (coarser) shared cadence."""
+        if self._disk_guard is None and self._inode_guard is None:
             return
         now = time.monotonic()
         if now - self._last_disk_check < self._disk_check_interval_s:
             return
         self._last_disk_check = now
-        self._disk_guard.enforce()
+        if self._disk_guard is not None:
+            self._disk_guard.enforce()
+        if self._inode_guard is not None:
+            self._inode_guard.enforce()
 
     def _install_signal_handlers(self) -> None:
         loop = asyncio.get_running_loop()

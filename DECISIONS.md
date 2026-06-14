@@ -2382,3 +2382,90 @@ them.
   cross-slice drop-in.
 - `OPERATIONS.md` — the deploy-then-verify runbook.
 - ADR-035 — forward-only rolling buffer (the model this secures).
+
+## ADR-037 — capture-core Phase 0 feed foundation: compact-on-write + bounded retention + inode guard
+
+**Status:** active 2026-06-14. Builds on ADR-035 (forward-only rolling
+buffer) and ADR-036 (disk guard + caps). MHDE research-substrate only; no
+engine change, no live-path change. Built-not-deployed: nothing here is
+enabled, and the one-shot migration is an operator step run after merge.
+
+**Context.** On 2026-06-09 the capture writer's one-file-per-symbol-per-flush
+behaviour produced ~8.8M tiny parquet files (~2.2M/day at ~6 KB) and
+exhausted the **root-filesystem inode table** — taking the whole box down
+(engine + Claude Code), while *bytes-free stayed healthy*, so the ADR-036
+byte guard could not have seen it coming. The driver was the 30s **age**
+flush (`FLUSH_INTERVAL_S`): a low/idle `symbol=/date=` partition emitted a
+fresh file every 30s (~2,880/day) regardless of how little data it held;
+hot partitions were already fine (sealed on the 64 MiB size cap into a few
+large files). Goal: capture can never starve the OS this way again, and the
+read contract the brain Phase 1 reader is built against is preserved
+verbatim.
+
+**Decision.**
+
+1. **Compact-on-write — hourly roll-up** (`CAPTURE_FIREHOSE_ROLLUP_S =
+   3600`). The firehose writers flush a partition on the EARLIER of this age
+   OR `FLUSH_MAX_BYTES` (64 MiB). A 1-hour roll-up collapses a low/idle
+   partition to ~24 files/day (vs ~2,880); a hot partition still seals on
+   the size cap (a handful of larger files). Because the size cap is
+   unchanged, lengthening the age window does **not** raise the per-partition
+   memory CEILING — only the resident footprint of low-volume partitions,
+   which is small and measured by the ADR-036 deploy runbook. Projected total
+   under the new writer: **~tens of thousands of files/day** across the
+   firehose, not millions (~25–30× fewer). The read contract is untouched:
+   `symbol=/date=` partitioning keyed on EVENT time, `recv_ts_ns` present and
+   monotonic as an incremental cursor, per-stream field names/types
+   unchanged. Tune toward daily roll-ups only if the runbook RSS measurement
+   leaves headroom.
+
+2. **Bounded retention — 14-day rolling raw window**
+   (`CAPTURE_RAW_RETENTION_DAYS = 14`, `expire_firehose_partitions`). Prune
+   whole `date=` partitions older than the window, oldest-first, **never
+   today's**, firehose datasets only (`klines_1h` / REST series / `_gaps`
+   never touched). A TIME bound that complements — does not replace — the
+   ADR-036 free-BYTES guard (both kept). Daily oneshot timer
+   (`mhde-capture-firehose-expire`), mirroring the klines-expire pattern.
+
+3. **Inode guard** (`InodeGuard` in `disk_guard.py`). Tracks root-fs inode
+   usage on the guard cadence: **WARN (Telegram) at 80% used**, **CRITICAL +
+   HALT firehose writes at 90%** (forward-only — dropped, never backfilled),
+   hysteresis (resume below 80% so it cannot flap), alerts edge-triggered
+   (transition only, no spam). The guard is purely additive — the ADR-036
+   byte `DiskGuard` is unchanged — and the service halts writes on EITHER
+   guard. Telegram reaches the host through the **DB-free**
+   `monitoring.alert.send_text` text path (lazily imported, best-effort, a
+   failed alert never crashes the loop), preserving capture-core's "never
+   opens DuckDB" invariant. Recovery of inodes is by retention/compaction,
+   not the halt; the halt is the safety stop that prevents re-exhaustion.
+
+4. **One-shot migration** (`migrate_compact`, `capture-firehose-compact`
+   CLI). Folds the surviving raw days into the new layout by compacting each
+   `symbol=/date=` partition's many small parts into one verified file
+   (`compact_partition`): rows concatenated, **sorted by `recv_ts_ns`** to
+   keep the cursor monotonic, written to a `.tmp` sibling, **row-count
+   verified equal to the sum of inputs**, and only THEN are the originals
+   removed and the tmp promoted. A mismatch is reported, not acted on
+   (originals left intact). A crash mid-compaction loses nothing (worst case:
+   originals plus an ignored orphan `.tmp`). `--dry-run` measures only.
+
+**Consequence.** The 2026-06-09 failure mode is structurally closed: the
+writer no longer manufactures millions of tiny files, the inode guard makes
+capture fail itself before it can starve the OS again, and a 14-day window
+bounds the raw tape. The read contract is preserved verbatim, so the brain
+Phase 1 reader is unaffected. Built-not-deployed; the migration is run once
+by the operator after merge (it is NOT part of enabling capture).
+
+**References.**
+- `crypto/research/capture_core/maintenance.py` — `compact_partition`,
+  `expire_firehose_partitions`, `migrate_compact`.
+- `crypto/research/capture_core/disk_guard.py` — `InodeGuard` +
+  `inode_used` / `inode_state` / `next_inode_halt_state`.
+- `crypto/research/capture_core/service.py` — hourly roll-up default;
+  dual-guard enforcement + drop-on-halt on the write path.
+- `crypto/research/capture_core/config.py` — `CAPTURE_FIREHOSE_ROLLUP_S`,
+  `CAPTURE_RAW_RETENTION_DAYS`, `CAPTURE_INODE_{WARN,CRITICAL}_FRACTION`.
+- `systemd/mhde-capture-firehose-expire.{service,timer}` — daily retention.
+- `OPERATIONS.md` — the post-merge migration + retention runbook.
+- ADR-035 (forward-only buffer), ADR-036 (byte guard + caps) — the model
+  this completes.

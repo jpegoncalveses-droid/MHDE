@@ -545,13 +545,16 @@ sudo systemctl daemon-reload
 #    (No User=/Group= lines — user units; linger must be on: loginctl enable-linger jpcg)
 for u in mhde-capture-rest-collector.service \
          mhde-capture-klines.service \
-         mhde-capture-klines-expire.service mhde-capture-klines-expire.timer; do
+         mhde-capture-klines-expire.service mhde-capture-klines-expire.timer \
+         mhde-capture-firehose-expire.service mhde-capture-firehose-expire.timer; do
   cp systemd/$u ~/.config/systemd/user/
 done
 systemctl --user daemon-reload
 systemctl --user enable --now mhde-capture-rest-collector.service
 systemctl --user enable --now mhde-capture-klines.service
 systemctl --user enable --now mhde-capture-klines-expire.timer
+# Firehose age-retention timer (ADR-037; the in-loop byte guard is separate):
+systemctl --user enable --now mhde-capture-firehose-expire.timer
 # Firehose LAST, only after the above look healthy:
 cp systemd/mhde-capture-core.service ~/.config/systemd/user/
 systemctl --user daemon-reload
@@ -597,6 +600,36 @@ systemctl --user disable --now mhde-capture-klines.service mhde-capture-rest-col
 > / `_gaps` are never pruned. If free space differs materially at deploy, set the
 > soft floor to keep ~30h of buffer (≈ free minus 60 GB) and never below ~20 GB
 > free.
+
+### One-shot raw migration (ADR-037 — run once, after merge)
+
+The compact-on-write fix (hourly roll-up) only changes **new** writes. Any
+surviving tiny-file days from before the fix (e.g. 2026-06-07..06-09) must be
+folded into the new layout **once**, by hand, after the PR is merged. This is
+**not** part of enabling capture — it is a separate operator step and is safe to
+run while capture is stopped (preferred) or running (it only touches sealed past
+partitions). It never opens the production DB.
+
+```bash
+cd /home/jpcg/MHDE
+
+# 1. DRY RUN first — measures files/rows per partition, writes/deletes nothing.
+venv/bin/python main.py crypto capture-firehose-compact --dry-run
+#    Optionally scope to the surviving days:
+venv/bin/python main.py crypto capture-firehose-compact --dry-run \
+  --dates 2026-06-07,2026-06-08,2026-06-09
+
+# 2. Real run. Each partition's small parts are merged into ONE verified file;
+#    originals are removed only after a pre/post row-count parity check (a
+#    mismatch is reported and the originals left intact). recv_ts_ns order — and
+#    thus the incremental cursor — is preserved.
+venv/bin/python main.py crypto capture-firehose-compact \
+  --dates 2026-06-07,2026-06-08,2026-06-09
+```
+
+Expect `rows X->X` (parity) and `mismatches 0`; investigate before re-running if
+either is off. After migration, the 14-day rolling retention timer
+(`mhde-capture-firehose-expire`) keeps the raw window bounded going forward.
 
 ---
 

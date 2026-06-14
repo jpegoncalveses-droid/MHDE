@@ -1,0 +1,13 @@
+# /home/jpcg/.config/systemd/user/mhde-capture-firehose-expire.timer
+[Unit]
+Description=MHDE capture-core firehose retention — daily expiry of old raw partitions
+
+[Timer]
+# Daily, shortly after midnight UTC; Persistent catches up a missed run after the
+# host was off. Retention is cheap and idempotent, so exact timing is not critical.
+# Offset a few minutes from the klines expiry so the two sweeps do not overlap.
+OnCalendar=*-*-* 00:15:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

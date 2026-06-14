@@ -6,6 +6,54 @@ are at the top.
 
 ---
 
+## 2026-06-14 — Capture-core Phase 0: feed foundation (compaction + retention + inode guard + migration)
+
+**Branch:** `feat/phase0-capture-compaction` (off `master`, draft PR; **awaiting
+operator — DO NOT merge; DO NOT run the migration; DO NOT re-enable capture**).
+Research substrate; isolated; built-not-deployed. Recorded as **ADR-037**.
+
+**Why.** On 2026-06-09 the capture writer's one-file-per-symbol-per-flush
+behaviour produced ~8.8M tiny files (~2.2M/day at ~6 KB) and exhausted the
+**root-fs inode table**, taking the whole box down (engine + CC) while bytes-free
+stayed healthy (so the ADR-036 byte guard could not see it). Driver: the 30s
+**age** flush emitted a fresh file every 30s per low/idle partition.
+
+**Spec delivered (TDD; tests a–e written + confirmed failing first):**
+- **(1) Compact-on-write — hourly roll-up.** `CAPTURE_FIREHOSE_ROLLUP_S = 3600`;
+  firehose writers flush on the EARLIER of that age OR the 64 MiB size cap.
+  Low/idle partitions → ~24 files/day (was ~2,880); hot partitions still seal on
+  size. Size cap unchanged ⇒ no rise in the per-partition memory CEILING.
+  **Projected ~tens of thousands of files/day** firehose-wide (was millions;
+  ~25–30×↓). Read contract preserved verbatim (symbol=/date= event-time,
+  recv_ts_ns monotonic cursor, per-stream fields/types).
+- **(2) Bounded retention.** `CAPTURE_RAW_RETENTION_DAYS = 14`;
+  `expire_firehose_partitions` prunes whole date= partitions oldest-first, never
+  today's, firehose-only (klines/REST/_gaps untouched). Daily timer
+  `mhde-capture-firehose-expire`. Byte guard kept.
+- **(3) Inode guard.** `InodeGuard` (additive; byte `DiskGuard` untouched): WARN
+  (Telegram) at 80% root-fs inodes, CRITICAL + HALT writes at 90%, hysteresis,
+  edge-triggered. Telegram via the **DB-free** `monitoring.alert.send_text`
+  (lazy, best-effort) so capture-core's "never opens DuckDB" invariant holds.
+  Service halts writes on EITHER guard.
+- **(4) Migration.** `migrate_compact` + `capture-firehose-compact` CLI:
+  `compact_partition` merges a partition's small parts → one file, sorted by
+  recv_ts_ns, written to .tmp, **row-count-verified == sum of inputs**, originals
+  removed only after; mismatch reported not acted on; `--dry-run`. Crash-safe.
+
+**Tests.** 210 capture-core tests green (185 prior + 25 new across
+`test_capture_core_{writer_compaction,retention,inode_guard}.py` +
+`test_capture_firehose_systemd.py`). No regressions to the existing byte
+guard / service / store suites.
+
+**Docs.** ADR-037 (DECISIONS.md); OPERATIONS.md post-merge migration runbook +
+firehose-expire timer in the enable list.
+
+**Pending.** Operator review/merge of the draft PR; THEN the one-shot migration
+of surviving days (06-07..06-09) per the OPERATIONS runbook; capture re-enable is
+a later, separate step. Migration + re-enable intentionally NOT done here.
+
+---
+
 ## 2026-06-04 — Capture-core PR-3: safety + deploy-readiness (disk guard + resource caps)
 
 **Branch:** `feat/capture-pr3-safety-deploy` (off `master`, draft PR; **awaiting
