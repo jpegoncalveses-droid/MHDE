@@ -109,6 +109,24 @@ def test_migrate_compact_preserves_row_counts_and_reduces_files(tmp_path):
     assert counts == {"BTCUSDT": 8, "ETHUSDT": 8}         # every row preserved
 
 
+def test_migrate_compact_skips_todays_partition(tmp_path):
+    # Mirror retention's never-today rule: the one-shot migration must not compact
+    # today's actively-written partition (avoids racing the live writer).
+    now_ms = _ms(datetime(2026, 5, 29, 12, 0, tzinfo=timezone.utc))  # "today" == 05-29
+    w = store.aggtrade_writer(str(tmp_path), flush_max_bytes=1, flush_interval_s=10 ** 9)
+    for i in range(4):
+        w.append(_aggtrade_row("BTCUSDT", recv_ns=1 + i, a=i))  # lands in date=2026-05-29
+        w.flush_due()
+    files_before, _ = _read_all(str(tmp_path), "aggTrade")
+
+    report = maintenance.migrate_compact(str(tmp_path), datasets=["aggTrade"],
+                                         now_ms=now_ms)
+
+    files_after, _ = _read_all(str(tmp_path), "aggTrade")
+    assert report.partitions_compacted == 0          # today's partition skipped
+    assert len(files_after) == len(files_before)     # untouched on disk
+
+
 def test_migrate_compact_dry_run_changes_nothing(tmp_path):
     w = store.aggtrade_writer(str(tmp_path), flush_max_bytes=1, flush_interval_s=10 ** 9)
     for i in range(5):

@@ -82,7 +82,12 @@ def compact_partition(part_dir: str) -> CompactionResult:
                                 files_before=len(parts), files_after=len(parts),
                                 out_path=parts[0] if parts else None)
 
-    tables = [pq.read_table(p) for p in parts]
+    # Read each part by its PHYSICAL schema only. pq.read_table() on a path under
+    # symbol=/date=/ would infer hive partitioning and MATERIALIZE symbol/date as
+    # physical columns — baking them into the merged file and colliding with the
+    # path-derived partition columns on a hive-dataset read. ParquetFile.read() reads
+    # the file's own columns with no partition inference, preserving the contract.
+    tables = [pq.ParquetFile(p).read() for p in parts]
     merged = pa.concat_tables(tables)
     rows_before = merged.num_rows
     if _CURSOR_FIELD in merged.schema.names:
@@ -155,6 +160,7 @@ def migrate_compact(
     *,
     datasets: Sequence[str] = cfg.FIREHOSE_PRUNABLE_DATASETS,
     dates: Optional[Sequence[str]] = None,
+    now_ms: Optional[int] = None,
     dry_run: bool = False,
 ) -> MigrationReport:
     """One-shot compaction of surviving firehose days into the bounded-file layout.
@@ -163,12 +169,17 @@ def migrate_compact(
     file, verifying per-partition pre/post row-count parity; a mismatch is recorded
     (and the partition's originals left intact by :func:`compact_partition`) rather
     than silently dropping rows. ``dates`` (a set of ``YYYY-MM-DD``) restricts the
-    sweep — e.g. the surviving raw days. ``dry_run`` only measures (no writes).
+    sweep — e.g. the surviving raw days. TODAY's partition is always skipped (mirrors
+    retention's never-today rule; never race the live writer). ``dry_run`` measures
+    only (no writes).
     """
     date_filter = set(dates) if dates is not None else None
+    today = _date_str(now_ms if now_ms is not None else int(time.time() * 1000))
     parts = dg.list_firehose_partitions(root, tuple(datasets))
     report = MigrationReport()
     for p in sorted(parts, key=lambda x: (x.date, x.path)):
+        if p.date == today:                              # never touch the live day
+            continue
         if date_filter is not None and p.date not in date_filter:
             continue
         files = _part_files(p.path)
