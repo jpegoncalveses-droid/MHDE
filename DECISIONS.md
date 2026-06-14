@@ -2530,7 +2530,8 @@ Stage B re-enable.
 - `crypto/research/capture_core/maintenance.py` — `_merge_files`,
   `compact_partition_closed_hours`, `compact_firehose_closed_hours`.
 - `crypto/research/capture_core/config.py` — `CAPTURE_FIREHOSE_FLUSH_S`,
-  `CAPTURE_FIREHOSE_FLUSH_MAX_BYTES`, `CAPTURE_COMPACTION_{CADENCE,GRACE}_S`,
+  `CAPTURE_FIREHOSE_FLUSH_MAX_BYTES`, `CAPTURE_COMPACTION_GRACE_S` (the hourly
+  cadence is the compaction timer's `OnCalendar`, not a constant),
   `CAPTURE_RAW_RETENTION_DAYS` (7).
 - `crypto/research/capture_core/service.py` — firehose writers default to the short
   flush.

@@ -269,7 +269,8 @@ acceptable and `ionice`-absorbed.
 **Implementation outline (LATER — not in this PR):**
 - `config.py` — add `CAPTURE_FIREHOSE_FLUSH_S` (~30 s) for the firehose; lower
   `FLUSH_MAX_BYTES` (~16 MiB); `CAPTURE_RAW_RETENTION_DAYS` 14→7; add
-  `CAPTURE_COMPACTION_CADENCE_S` (3600) + `CAPTURE_COMPACTION_CLOSED_MARGIN_S`.
+  `CAPTURE_COMPACTION_GRACE_S` (300 s). The hourly cadence is the compaction timer's
+  `OnCalendar`, not a constant.
 - `service.py` — firehose writers use `CAPTURE_FIREHOSE_FLUSH_S` (already threaded
   through `flush_interval_s`; effectively a default change).
 - `maintenance.py` — add `compact_firehose_closed_hours(root, now_ts)` that selects

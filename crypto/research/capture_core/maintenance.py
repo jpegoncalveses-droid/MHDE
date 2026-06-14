@@ -106,9 +106,11 @@ def _merge_files(part_dir: str, files: Sequence[str], *, out_base: str
 def compact_partition(part_dir: str) -> CompactionResult:
     """Merge ALL ``*.parquet`` in one ``symbol=/date=`` partition into one file.
 
-    The one-shot migration primitive (whole-partition merge). A 0/1-file partition is
-    a no-op. ADR-038 closed-hour compaction uses :func:`compact_partition_closed_hours`
-    instead, which merges only a closed hour's subset.
+    The OFFLINE one-shot migration primitive (whole-partition merge). Emits a
+    ``compact-migrated-*`` file — a namespace distinct from the writer's ``part-*`` so
+    its output is never re-bucketed by live closed-hour compaction. Run offline only;
+    NEVER concurrently with the live :func:`compact_partition_closed_hours` (which
+    merges per-closed-hour subsets). A 0/1-file partition is a no-op.
     """
     parts = _part_files(part_dir)
     if len(parts) <= 1:
@@ -116,7 +118,7 @@ def compact_partition(part_dir: str) -> CompactionResult:
         return CompactionResult(rows_before=rows, rows_after=rows,
                                 files_before=len(parts), files_after=len(parts),
                                 out_path=parts[0] if parts else None)
-    return _merge_files(part_dir, parts, out_base="part")
+    return _merge_files(part_dir, parts, out_base="compact-migrated")
 
 
 # -- ADR-038 closed-hour compaction (the write-then-compact merge step) --------

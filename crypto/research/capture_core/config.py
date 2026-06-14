@@ -68,8 +68,7 @@ CAPTURE_FIREHOSE_FLUSH_S = 30.0
 #: mid-interval too). Lower than the generic 64 MiB so RAM is doubly bounded; at a 30s
 #: interval most partitions flush on age before reaching it, so it is a backstop.
 CAPTURE_FIREHOSE_FLUSH_MAX_BYTES = 16 * 1024 * 1024  # 16 MiB
-#: How often the closed-hour compaction timer runs (hourly).
-CAPTURE_COMPACTION_CADENCE_S = 3600.0
+# (The hourly compaction cadence is the timer's OnCalendar — not a constant here.)
 #: Grace margin past an hour's end before its small files may be compacted. Must be
 #: >> the flush interval so the writer is provably done with that hour (no in-flight
 #: file). The open hour and any hour still within this margin are NEVER touched.
