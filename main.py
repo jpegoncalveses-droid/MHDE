@@ -2140,6 +2140,39 @@ def crypto_capture_firehose_compact(root, dates, dry_run):
             click.echo(f"  MISMATCH: {m}")
 
 
+@crypto.command("capture-firehose-compact-recent")
+@click.option("--root", default=None,
+              help="Raw capture dir. Default: capture_core.config.RAW_DIR.")
+def crypto_capture_firehose_compact_recent(root):
+    """Hourly closed-hour compaction of the live firehose (ADR-038 write-then-compact).
+
+    Merges the writer's small part-*.parquet of each CLOSED clock-hour into one
+    compact-h<hour>-*.parquet per partition-hour (row-count verified before delete),
+    skipping the open hour and any hour within the grace margin so it never races an
+    in-flight file. Intended for an hourly timer under nice/ionice on the shared host.
+    Filesystem-only; never opens the production DB.
+    """
+    import logging
+
+    from crypto.research.capture_core import config as cc_cfg
+    from crypto.research.capture_core import maintenance as mt
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    report = mt.compact_firehose_closed_hours(root or cc_cfg.RAW_DIR)
+    click.echo(
+        f"firehose closed-hour compaction: scanned {report.partitions_scanned}, "
+        f"compacted {report.hours_compacted} hours, "
+        f"files {report.files_before}->{report.files_after}, "
+        f"rows {report.rows_before}->{report.rows_after}, "
+        f"mismatches {len(report.mismatches)}")
+    if report.mismatches:
+        for m in report.mismatches:
+            click.echo(f"  MISMATCH: {m}")
+
+
 @crypto.command("intraday-replay")
 @click.option("--start", "start_str", required=True,
               help="First prediction_date YYYY-MM-DD (inclusive).")

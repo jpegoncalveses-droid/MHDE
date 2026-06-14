@@ -65,35 +65,27 @@ class CompactionResult:
     out_path: Optional[str] = None
 
 
-def compact_partition(part_dir: str) -> CompactionResult:
-    """Merge all ``part-*.parquet`` in one ``symbol=/date=`` partition into one file.
+def _merge_files(part_dir: str, files: Sequence[str], *, out_base: str
+                 ) -> CompactionResult:
+    """Crash-safe merge of ``files`` into one ``<out_base>-<uuid>.parquet`` in-place.
 
-    Rows are concatenated and sorted by ``recv_ts_ns`` so the merged file reads back
-    as a monotonic cursor. The merged file is written to a ``.tmp`` sibling, its row
-    count is verified to equal the sum of the inputs, and only THEN are the original
-    parts removed and the tmp promoted — so a crash mid-compaction never loses data
-    (worst case: the originals plus an orphan ``.tmp`` the next run ignores).
-    A 0/1-file partition is a no-op (nothing to compact).
+    Concatenate → sort by ``recv_ts_ns`` (monotonic cursor preserved) → write a
+    ``.tmp`` sibling → verify the row count equals the sum of inputs → delete the
+    originals → promote the tmp. A crash mid-merge never loses data (worst case: the
+    originals plus an ignored orphan ``.tmp``).
+
+    Reads each file by its PHYSICAL schema (``ParquetFile.read()``); ``pq.read_table``
+    on a path under ``symbol=/date=/`` would infer hive partitioning and bake
+    ``symbol``/``date`` into the output, colliding with the path-derived partition
+    columns on a hive-dataset read.
     """
-    parts = _part_files(part_dir)
-    if len(parts) <= 1:
-        rows = sum(pq.read_metadata(p).num_rows for p in parts)
-        return CompactionResult(rows_before=rows, rows_after=rows,
-                                files_before=len(parts), files_after=len(parts),
-                                out_path=parts[0] if parts else None)
-
-    # Read each part by its PHYSICAL schema only. pq.read_table() on a path under
-    # symbol=/date=/ would infer hive partitioning and MATERIALIZE symbol/date as
-    # physical columns — baking them into the merged file and colliding with the
-    # path-derived partition columns on a hive-dataset read. ParquetFile.read() reads
-    # the file's own columns with no partition inference, preserving the contract.
-    tables = [pq.ParquetFile(p).read() for p in parts]
+    tables = [pq.ParquetFile(p).read() for p in files]
     merged = pa.concat_tables(tables)
     rows_before = merged.num_rows
     if _CURSOR_FIELD in merged.schema.names:
         merged = merged.sort_by(_CURSOR_FIELD)
 
-    tmp_path = os.path.join(part_dir, f"part-{uuid4().hex}.parquet.tmp")
+    tmp_path = os.path.join(part_dir, f"{out_base}-{uuid4().hex}.parquet.tmp")
     pq.write_table(merged, tmp_path, compression=cfg.PARQUET_COMPRESSION)
 
     rows_after = pq.read_metadata(tmp_path).num_rows
@@ -103,12 +95,127 @@ def compact_partition(part_dir: str) -> CompactionResult:
             f"compaction row-count mismatch in {part_dir}: "
             f"{rows_before} in != {rows_after} out — originals left intact")
 
-    for p in parts:                       # verified -> safe to drop the small parts
+    for p in files:                       # verified -> safe to drop the originals
         os.remove(p)
     out_path = tmp_path[:-len(".tmp")]
     os.replace(tmp_path, out_path)
     return CompactionResult(rows_before=rows_before, rows_after=rows_after,
-                            files_before=len(parts), files_after=1, out_path=out_path)
+                            files_before=len(files), files_after=1, out_path=out_path)
+
+
+def compact_partition(part_dir: str) -> CompactionResult:
+    """Merge ALL ``*.parquet`` in one ``symbol=/date=`` partition into one file.
+
+    The one-shot migration primitive (whole-partition merge). A 0/1-file partition is
+    a no-op. ADR-038 closed-hour compaction uses :func:`compact_partition_closed_hours`
+    instead, which merges only a closed hour's subset.
+    """
+    parts = _part_files(part_dir)
+    if len(parts) <= 1:
+        rows = sum(pq.read_metadata(p).num_rows for p in parts)
+        return CompactionResult(rows_before=rows, rows_after=rows,
+                                files_before=len(parts), files_after=len(parts),
+                                out_path=parts[0] if parts else None)
+    return _merge_files(part_dir, parts, out_base="part")
+
+
+# -- ADR-038 closed-hour compaction (the write-then-compact merge step) --------
+
+def _writer_parts_with_mtime(part_dir: str) -> list[tuple[str, float]]:
+    """``(path, mtime)`` for the writer's small ``part-*.parquet`` only — excludes
+    already-compacted ``compact-*`` files and any in-progress ``.tmp``."""
+    out: list[tuple[str, float]] = []
+    if not os.path.isdir(part_dir):
+        return out
+    for n in os.listdir(part_dir):
+        if n.startswith("part-") and n.endswith(".parquet"):
+            p = os.path.join(part_dir, n)
+            out.append((p, os.stat(p).st_mtime))
+    return out
+
+
+def compact_partition_closed_hours(
+    part_dir: str,
+    *,
+    now_ts: float,
+    grace_s: float = cfg.CAPTURE_COMPACTION_GRACE_S,
+) -> list[CompactionResult]:
+    """Merge the writer's small ``part-*`` files of each CLOSED clock-hour into one
+    ``compact-h<hour>-<uuid>.parquet``, SKIPPING the open hour and any hour still
+    within ``grace_s`` of its end.
+
+    Files are bucketed by their **flush (mtime) hour**, which is > the flush interval
+    after the data was received. Because ``grace_s >> flush_interval``, a closed hour's
+    files are provably all on disk (the writer has moved on) before it is compacted, so
+    the compactor never races an in-flight file. A row that arrives LATE (event time in
+    an already-sealed hour) is flushed in the *current* hour and compacted with *that*
+    hour — never folded into the sealed hour and never lost (it stays under the correct
+    ``symbol=/date=`` event-date partition). Already-compacted ``compact-*`` files are
+    not re-processed. Reuses the crash-safe :func:`_merge_files`.
+    """
+    buckets: dict[int, list[str]] = {}
+    for path, mtime in _writer_parts_with_mtime(part_dir):
+        buckets.setdefault(int(mtime // 3600), []).append(path)
+    results: list[CompactionResult] = []
+    for hour in sorted(buckets):
+        hour_end = (hour + 1) * 3600
+        if hour_end + grace_s > now_ts:       # open hour or still within grace -> leave
+            continue
+        files = sorted(buckets[hour])
+        if len(files) < 2:                     # 0/1 file -> nothing to merge
+            continue
+        results.append(_merge_files(part_dir, files, out_base=f"compact-h{hour}"))
+    return results
+
+
+@dataclass
+class FirehoseCompactionReport:
+    partitions_scanned: int = 0
+    hours_compacted: int = 0
+    files_before: int = 0
+    files_after: int = 0
+    rows_before: int = 0
+    rows_after: int = 0
+    mismatches: list[str] = field(default_factory=list)
+
+
+def compact_firehose_closed_hours(
+    root: str,
+    *,
+    datasets: Sequence[str] = cfg.FIREHOSE_PRUNABLE_DATASETS,
+    now_ts: Optional[float] = None,
+    grace_s: float = cfg.CAPTURE_COMPACTION_GRACE_S,
+) -> FirehoseCompactionReport:
+    """Run closed-hour compaction across every firehose ``symbol=/date=`` partition.
+
+    The hourly-timer entry point. Filesystem-only; never opens the DB. A per-hour
+    row-count mismatch is recorded (and its originals left intact by
+    :func:`_merge_files`) rather than dropping rows.
+    """
+    now_ts = now_ts if now_ts is not None else time.time()
+    parts = dg.list_firehose_partitions(root, tuple(datasets))
+    report = FirehoseCompactionReport()
+    for p in parts:
+        report.partitions_scanned += 1
+        try:
+            results = compact_partition_closed_hours(
+                p.path, now_ts=now_ts, grace_s=grace_s)
+        except ValueError as exc:
+            report.mismatches.append(str(exc))
+            continue
+        for r in results:
+            report.hours_compacted += 1
+            report.files_before += r.files_before
+            report.files_after += r.files_after
+            report.rows_before += r.rows_before
+            report.rows_after += r.rows_after
+    logger.info(
+        "firehose closed-hour compaction: scanned %d partitions, compacted %d hours, "
+        "files %d -> %d, rows %d -> %d, mismatches %d",
+        report.partitions_scanned, report.hours_compacted, report.files_before,
+        report.files_after, report.rows_before, report.rows_after,
+        len(report.mismatches))
+    return report
 
 
 # -- rolling retention --------------------------------------------------------

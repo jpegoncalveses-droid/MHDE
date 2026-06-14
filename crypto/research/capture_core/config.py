@@ -53,16 +53,27 @@ PARQUET_COMPRESSION = "zstd"
 #: the 64 MiB size cap is a real ceiling, not a poll-granularity check (a hot
 #: partition can blow past 64 MiB well within one age interval at firehose rates).
 FLUSH_POLL_S = 1.0
-#: FIREHOSE roll-up window (Phase 0 compact-on-write). The firehose writers flush a
-#: partition on the EARLIER of this age OR ``FLUSH_MAX_BYTES``. A 1-hour roll-up
-#: collapses a low/idle partition to ~24 files/day (vs ~2,880/day under the old 30s
-#: age cadence that exhausted the root inode table on 2026-06-09); a hot partition
-#: still seals on the 64 MiB size cap (a handful of larger files), so the size cap
-#: remains the per-partition MEMORY ceiling. Projected total: ~tens of thousands of
-#: files/day across the firehose, not millions. The size cap means lengthening the
-#: age window does NOT raise the per-partition memory ceiling. Tune toward DAILY
-#: roll-ups only if the deploy-runbook RSS measurement (PR-3) leaves headroom.
-CAPTURE_FIREHOSE_ROLLUP_S = 3600.0
+# -- FIREHOSE write-then-compact (ADR-038, supersedes the Phase-0 in-RAM roll-up) --
+# The Phase-0 1-hour in-RAM roll-up buffered every partition in memory until 64 MiB
+# / 60 min and OOM-looped the 8 GiB-capped firehose on the 15 GiB box (Stage B,
+# 2026-06-14). ADR-038 decouples RAM from file count: flush small files on a SHORT
+# interval (RAM only ever holds ~one interval) and merge the closed hours later via a
+# separate hourly compaction timer (see ``maintenance.compact_firehose_closed_hours``).
+#: Short firehose flush interval — the writer flushes each partition on the EARLIER of
+#: this age OR ``CAPTURE_FIREHOSE_FLUSH_MAX_BYTES``. Keeps resident RAM to roughly
+#: (inflow_rate × this), i.e. ~1 GiB at the measured ~0.8 GB/min — vs >8 GiB under the
+#: retired roll-up. (The CAPTURE_FIREHOSE_ROLLUP_S constant is intentionally removed.)
+CAPTURE_FIREHOSE_FLUSH_S = 30.0
+#: Per-partition byte ceiling for the firehose writer (a hot partition flushes
+#: mid-interval too). Lower than the generic 64 MiB so RAM is doubly bounded; at a 30s
+#: interval most partitions flush on age before reaching it, so it is a backstop.
+CAPTURE_FIREHOSE_FLUSH_MAX_BYTES = 16 * 1024 * 1024  # 16 MiB
+#: How often the closed-hour compaction timer runs (hourly).
+CAPTURE_COMPACTION_CADENCE_S = 3600.0
+#: Grace margin past an hour's end before its small files may be compacted. Must be
+#: >> the flush interval so the writer is provably done with that hour (no in-flight
+#: file). The open hour and any hour still within this margin are NEVER touched.
+CAPTURE_COMPACTION_GRACE_S = 300.0  # 5 min (10× the 30s flush)
 
 # -- Reconnect (mirrors the engine ws_consumer discipline) --
 RECONNECT_BACKOFF_BASE_S = 1.0
@@ -199,9 +210,10 @@ CAPTURE_INODE_CRITICAL_FRACTION = 0.90
 #: Rolling on-host raw window for the FIREHOSE datasets. Whole ``date=`` partitions
 #: older than this are pruned oldest-first (never today's). Distinct from PR-3's
 #: free-space byte guard (kept) and from the klines store's 90d window: this is a
-#: TIME bound on the raw firehose tape (the brain Phase 1 reader needs ~24h; 14d is
-#: a generous research buffer). Filesystem-only; never opens the production DB.
-CAPTURE_RAW_RETENTION_DAYS = 14
+#: TIME bound on the raw firehose tape (the brain Phase 1 reader needs ~24h). 7d is a
+#: comfortable research buffer that keeps total file/inode count low under the
+#: write-then-compact layout (ADR-038). Filesystem-only; never opens the production DB.
+CAPTURE_RAW_RETENTION_DAYS = 7
 
 # -- Stream cadences --
 DEPTH_UPDATE_SPEED = "100ms"   # rawest diff cadence (operator GO: no pre-coarsen)

@@ -6,6 +6,43 @@ are at the top.
 
 ---
 
+## 2026-06-14 — Capture-core write-then-compact (ADR-038; supersedes the Phase-0 roll-up writer)
+
+**Branch:** `feat/capture-write-then-compact` (off `master`, draft PR; **awaiting
+operator — DO NOT merge; DO NOT run a trial; DO NOT re-enable the firehose**).
+Research substrate; built-not-deployed. Recorded as **ADR-038**.
+
+**Why.** Phase-0 (ADR-037) fixed inodes but its in-RAM hourly roll-up **OOM-looped**
+on the Stage-B live start (buffers every partition until 64 MiB/60 min → >8 GiB on the
+15 GiB box, OOM-killed 3×). Inodes stayed flat — so the inode fix is solid; the
+problem is RAM. Analysis → draft PR #28 (`docs/capture_write_then_compact_analysis.md`,
+now ACCEPTED as ADR-038 and **carried into this PR**, superseding #28).
+
+**Delivered (TDD; tests a–e written + confirmed failing first):**
+- **Writer short-flush:** `CAPTURE_FIREHOSE_FLUSH_S = 30s` (+ 16 MiB cap); RAM holds
+  only ~one interval (~1 GiB vs >8 GiB). `CAPTURE_FIREHOSE_ROLLUP_S` **removed**.
+- **Closed-hour compaction:** `compact_firehose_closed_hours` /
+  `compact_partition_closed_hours` merge the writer's small `part-*` of each CLOSED
+  clock-hour → one `compact-h<hour>-*` per partition-hour, reusing the migration-proven
+  crash-safe `_merge_files` (verify-rows→delete). Hourly timer
+  `mhde-capture-firehose-compact` (Nice=19, IOSchedulingClass=idle, OOM-first).
+- **Boundary safety:** bucket by flush(mtime) hour; compact only once
+  `now ≥ hour_end + GRACE` (300s ≫ 30s flush) → open/grace hours never touched, no race
+  with in-flight files. Late data (event time in a sealed hour) is flushed+compacted in
+  the hour it ARRIVED — never folded into the sealed hour, never lost.
+- **Retention 14 → 7d.** Read contract preserved (`part-*` + `compact-h*` both hive-read
+  with `recv_ts_ns` cursor — verified). Guards unchanged.
+
+**Tests.** 224 capture-core tests green (was 212; +14 new across write-then-compact +
+compact-systemd, −2 retired hourly-roll-up tests). Boundary-safety + late-data +
+hive-mix-read are the hardest cases. No regressions.
+
+**Pending.** Operator review/merge; THEN one controlled 60–90 min measured trial
+(peak RSS <~2.5 GiB, bounded files/inodes, compaction keep-up) before any Stage-B
+firehose re-enable. Firehose stays PARKED; Stage-A light collectors still run.
+
+---
+
 ## 2026-06-14 — Capture-core Phase 0: feed foundation (compaction + retention + inode guard + migration)
 
 **Branch:** `feat/phase0-capture-compaction` (off `master`, draft PR; **awaiting

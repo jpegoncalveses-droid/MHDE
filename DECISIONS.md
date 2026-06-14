@@ -2469,3 +2469,70 @@ by the operator after merge (it is NOT part of enabling capture).
 - `OPERATIONS.md` — the post-merge migration + retention runbook.
 - ADR-035 (forward-only buffer), ADR-036 (byte guard + caps) — the model
   this completes.
+
+## ADR-038 — capture firehose writer: write-then-compact (supersedes the ADR-037 in-RAM roll-up)
+
+**Status:** accepted 2026-06-14. Supersedes the **writer mechanism** of ADR-037
+only; ADR-037's bounded retention, inode guard, and one-shot migration stand.
+MHDE research-substrate; no engine/live-path change. Built-not-deployed; the
+firehose stays parked until a measured trial confirms the numbers.
+
+**Context.** ADR-037's in-RAM **hourly roll-up** fixed inode exhaustion (verified
+under live load: inodes flat at 26%, no tiny-file regression) but, on the Stage B
+live start (2026-06-14), **OOM-looped**: it buffers every partition in RAM until
+64 MiB / 60 min, and across ~1,581 partitions the aggregate climbs ~0.8 GB/min and
+blows the 8 GiB `MemoryMax` in ~10 min on the 15 GiB / 0-swap box (OOM-killed 3×).
+The caps contained it (it OOM'd itself, not the engine), but it captured nothing
+useful. The roll-up couples flush-frequency (RAM) to file-count (inodes); shortening
+the window to fix RAM multiplies files toward the inode ceiling. Full analysis +
+numbers: `docs/capture_write_then_compact_analysis.md`.
+
+**Decision — decouple RAM from file count.**
+
+1. **Writer: frequent small flush.** `CAPTURE_FIREHOSE_FLUSH_S = 30 s` (+ a 16 MiB
+   `CAPTURE_FIREHOSE_FLUSH_MAX_BYTES` backstop) — the firehose writer flushes each
+   partition every ~30 s, so resident RAM only ever holds ~one interval (~1 GiB at
+   the measured inflow, vs >8 GiB). `CAPTURE_FIREHOSE_ROLLUP_S` is **removed**.
+2. **Compaction: hourly, closed hours only.** A separate hourly timer
+   (`mhde-capture-firehose-compact`, `compact_firehose_closed_hours`) merges the
+   writer's small `part-*` files of each **closed** clock-hour into one
+   `compact-h<hour>-*.parquet` per partition-hour — reusing the migration-proven
+   crash-safe `_merge_files` (concat → `recv_ts_ns` sort → write `.tmp` → verify
+   row count → delete originals → rename). Steady state ~24 files/partition/day —
+   the same low count as the roll-up, without the RAM. Runs `Nice=19`
+   `IOSchedulingClass=idle`, OOM-first (shared-host invariant).
+3. **Boundary safety.** Files are bucketed by **flush (mtime) hour**; an hour is
+   compacted only once `now ≥ hour_end + CAPTURE_COMPACTION_GRACE_S` (300 s, ≫ the
+   30 s flush). So the open hour and any hour within grace are never touched — the
+   compactor provably never races an in-flight file. A **late-arriving** row (event
+   time in a sealed hour) is flushed in the *current* hour and compacted with *that*
+   hour — never folded into the sealed hour, never lost, always under the correct
+   `symbol=/date=` event-date partition. Already-compacted `compact-*` files are not
+   re-processed.
+4. **Retention `CAPTURE_RAW_RETENTION_DAYS` 14 → 7** — keeps total files/inodes low
+   under the new layout; the free-space byte guard remains the hard floor.
+5. **Read contract preserved.** Small `part-*` and compacted `compact-h*` files are
+   both valid parquet under `symbol=/date=` with identical schema + `recv_ts_ns`; a
+   hive-dataset read unions them (verified on real and synthetic layouts). No layout
+   change; depth stays @100 ms. Inode + byte guards unchanged and still backstop.
+
+**Consequence.** RAM (~1 GiB), files (~72 k/day), and inodes (~34% at 7 d) are all
+low *simultaneously* — the only option that escapes the RAM↔files bind (a tuned
+shorter window is cornered between the two ceilings; see the analysis §8). Costs:
+~2× write amplification and a compaction timer. The 2026-06-09 box-down failure mode
+stays closed regardless (the inode guard HALTs writes at 90%; the byte guard prunes).
+A controlled 60–90 min measured trial (peak RSS, bounded files/inodes) precedes any
+Stage B re-enable.
+
+**References.**
+- `docs/capture_write_then_compact_analysis.md` — the grounded analysis (this ADR's
+  basis).
+- `crypto/research/capture_core/maintenance.py` — `_merge_files`,
+  `compact_partition_closed_hours`, `compact_firehose_closed_hours`.
+- `crypto/research/capture_core/config.py` — `CAPTURE_FIREHOSE_FLUSH_S`,
+  `CAPTURE_FIREHOSE_FLUSH_MAX_BYTES`, `CAPTURE_COMPACTION_{CADENCE,GRACE}_S`,
+  `CAPTURE_RAW_RETENTION_DAYS` (7).
+- `crypto/research/capture_core/service.py` — firehose writers default to the short
+  flush.
+- `systemd/mhde-capture-firehose-compact.{service,timer}` — the hourly compactor.
+- ADR-037 (the roll-up this supersedes), ADR-036/035 (the guards/buffer it keeps).
