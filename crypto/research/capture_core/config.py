@@ -85,6 +85,20 @@ CAPTURE_COMPACTION_GRACE_S = 300.0  # 5 min (10× the 30s flush)
 # core map in Stage 2 (systemd template + process launch — NOT in this stage).
 CAPTURE_N_SHARDS = 3
 
+# -- FIREHOSE sharding stage 2: snapshot-owner REST budget (ADR-039) -----------
+# In the multi-process firehose the snapshot-owner is the SOLE caller of
+# /fapi/v1/depth across all shards, so the global REQUEST_WEIGHT cap is respected
+# STRUCTURALLY (one throttle, any N). The throttle's budget reserves this much
+# headroom UNDER the cap (read live from exchangeInfo, fallback FAPI_WEIGHT_LIMIT)
+# so capture can never weight-starve the engine's entry path or the light collectors
+# on the shared IP. budget = cap - headroom; default 1000 leaves a clear margin of a
+# 2400 cap for everyone else and still seeds 527 symbols (527*20 = 10,540 weight) in
+# ~7.5 min.
+CAPTURE_SNAPSHOT_RESERVED_HEADROOM_PER_MIN = 1000
+#: Unix socket the owner serves on / shards dial (under the capture root). The .ipc
+#: dir is NOT a symbol=/date= dataset and must be excluded from retention/compaction.
+CAPTURE_SNAPSHOT_SOCKET_PATH = f"{RAW_DIR}/.ipc/snapshot-owner.sock"
+
 # -- Reconnect (mirrors the engine ws_consumer discipline) --
 RECONNECT_BACKOFF_BASE_S = 1.0
 RECONNECT_BACKOFF_MAX_S = 60.0
