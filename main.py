@@ -1944,6 +1944,39 @@ def crypto_capture_core_run(root, shard, n_shards, snapshot_socket):
     asyncio.run(svc.run())
 
 
+@crypto.command("capture-owner-run")
+@click.option("--socket", "socket_path", default=None,
+              help="Unix socket the owner listens on. Default: "
+                   "capture_core.config.CAPTURE_SNAPSHOT_SOCKET_PATH.")
+def crypto_capture_owner_run(socket_path):
+    """Run the snapshot-owner as a standalone process (BLOCKS).
+
+    The sole ``/fapi/v1/depth`` broker for an ADR-039 sharded run: shards seed their
+    books by asking this owner over ``--socket`` (see ``capture-core-run
+    --snapshot-socket``). Wraps ``build_owner`` (reads the live REQUEST_WEIGHT cap ->
+    throttle budget + the all-traffic header-gate) and serves until SIGTERM/SIGINT,
+    releasing the socket cleanly. Read-only against Binance USDT-M PUBLIC REST; NEVER
+    opens any DB. This is the manual Trial-1 owner runner: NO systemd/sd_notify, NO
+    cpuset, NO shard launch, NO live capture.
+    """
+    import asyncio
+    import logging
+
+    from crypto.research.capture_core import config as cc_cfg
+    from crypto.research.capture_core.client import CaptureRestClient
+    from crypto.research.capture_core import snapshot_owner as so
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    owner = so.build_owner(
+        CaptureRestClient(),
+        socket_path=socket_path or cc_cfg.CAPTURE_SNAPSHOT_SOCKET_PATH,
+    )
+    asyncio.run(so.run_owner(owner))
+
+
 @crypto.command("capture-core-loadtest")
 @click.option("--seconds", default=60.0, type=float,
               help="Measurement window length in seconds.")

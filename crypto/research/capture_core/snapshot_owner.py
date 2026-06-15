@@ -16,6 +16,7 @@ import asyncio
 import json
 import logging
 import os
+import signal
 import time
 from typing import Any, Awaitable, Callable, Optional
 
@@ -316,3 +317,59 @@ def build_owner(
 
     return SnapshotOwner(fetch_fn=_weight_fetch, throttle=throttle, gate=gate,
                          socket_path=socket_path, limit=limit)
+
+
+async def run_owner(
+    owner: SnapshotOwner,
+    *,
+    stop_event: Optional[asyncio.Event] = None,
+    install_signal_handlers: bool = True,
+    ready_event: Optional[asyncio.Event] = None,
+) -> None:
+    """Run the owner as a standalone process (the ``crypto capture-owner-run`` body).
+
+    Binds the unix socket, serves until SIGTERM/SIGINT (or ``stop_event`` is set), then
+    releases the socket. This is the manual Trial-1 owner runner (ADR-039 §G): NO
+    sd_notify / watchdog wiring yet (that is the systemd piece). Single-box testable —
+    pass ``stop_event`` to drive shutdown deterministically and ``ready_event`` to await
+    the moment the socket is listening. The socket is ALWAYS unlinked on exit (no stale
+    socket, no orphaned server), even if serving raises.
+    """
+    loop = asyncio.get_running_loop()
+    stop = stop_event if stop_event is not None else asyncio.Event()
+    installed: "list[signal.Signals]" = []
+    if install_signal_handlers:
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                loop.add_signal_handler(sig, stop.set)
+                installed.append(sig)
+            except (NotImplementedError, RuntimeError):
+                # No signal support (non-main thread / unsupported platform): rely on
+                # stop_event. The runner still serves and shuts down cleanly.
+                pass
+
+    await owner.start()                       # bind the socket up-front (listening now)
+    if ready_event is not None:
+        ready_event.set()
+
+    serve_task = asyncio.ensure_future(owner.serve())
+    stop_task = asyncio.ensure_future(stop.wait())
+    try:
+        await asyncio.wait({serve_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
+        if serve_task.done() and not serve_task.cancelled():
+            serve_task.result()               # surface a serve-time failure (e.g. bind)
+    finally:
+        for sig in installed:
+            try:
+                loop.remove_signal_handler(sig)
+            except (NotImplementedError, RuntimeError):
+                pass
+        for t in (serve_task, stop_task):
+            if not t.done():
+                t.cancel()
+        await owner.stop()                    # close server + unlink socket (idempotent)
+        for t in (serve_task, stop_task):     # drain the cancelled tasks
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
