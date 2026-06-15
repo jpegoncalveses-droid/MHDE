@@ -24,10 +24,13 @@ from typing import Any, Callable, Optional, Sequence
 
 from crypto.research.capture_core import config as cfg
 from crypto.research.capture_core import conn_manager as cm
+from crypto.research.capture_core import sharding
 from crypto.research.capture_core import store
 from crypto.research.capture_core.book import DepthMaintainer
 from crypto.research.capture_core.disk_guard import DiskGuard, InodeGuard
 from crypto.research.capture_core.snapshot import SnapshotScheduler
+from crypto.research.capture_core.snapshot_owner import (
+    SnapshotClient, SnapshotClientScheduler)
 
 logger = logging.getLogger("mhde.crypto.capture_core.service")
 
@@ -56,6 +59,20 @@ def per_symbol_streams(universe: Sequence[str]) -> list[str]:
 def capture_streams(universe: Sequence[str]) -> list[str]:
     """Full PR-2 capture set: per-symbol streams + market-wide array streams."""
     return per_symbol_streams(universe) + MARKET_STREAMS
+
+
+def capture_streams_for_shard(universe: Sequence[str], *,
+                              owns_array_streams: bool) -> list[str]:
+    """Capture streams for ONE shard: its subset's per-symbol streams, plus the
+    market-wide array streams ONLY if this shard owns them (ADR-039 §2 — the
+    ``!markPrice@arr`` / ``!forceOrder@arr`` connections deliver every symbol and
+    cannot be split, so exactly one process subscribes to them, else markPrice /
+    forceOrder would be captured N times). ``owns_array_streams=True`` reproduces
+    :func:`capture_streams` (the single-process default)."""
+    streams = per_symbol_streams(universe)
+    if owns_array_streams:
+        streams += MARKET_STREAMS
+    return streams
 
 
 def depth_bookticker_streams(universe: Sequence[str]) -> list[str]:
@@ -146,6 +163,10 @@ class CaptureService:
         *,
         root: str,
         client: Any,
+        shard: Optional[int] = None,
+        n_shards: int = cfg.CAPTURE_N_SHARDS,
+        snapshot_socket_path: Optional[str] = None,
+        snapshot_client_factory: Optional[Callable[[str], Any]] = None,
         connect_fn: Optional[Callable[[str], Any]] = None,
         mgr_factory: Optional[Callable[[list[str]], Any]] = None,
         streams_per_conn: int = cfg.STREAMS_PER_CONN,
@@ -164,6 +185,13 @@ class CaptureService:
     ) -> None:
         self._root = root
         self._client = client
+        self._shard = shard
+        self._n_shards = n_shards
+        # The market-wide array streams (!markPrice@arr / !forceOrder@arr) deliver
+        # EVERY symbol on one connection and cannot be split, so exactly ONE process
+        # subscribes to them (ADR-039 §2): the single-process default (shard is None)
+        # or shard 0. Every other shard captures only its per-symbol subset.
+        self._owns_array = shard is None or shard == 0
         self._connect_fn = connect_fn
         self._mgr_factory = mgr_factory or self._default_mgr_factory
         self._per_conn = streams_per_conn
@@ -212,6 +240,14 @@ class CaptureService:
         # the client otherwise. None disables depth seeding/resync.
         if snap_scheduler is not None:
             self._snap_sched: Any = snap_scheduler
+        elif snapshot_socket_path is not None:
+            # SHARD process (ADR-039 2b): seed via the snapshot-owner over the socket,
+            # so the owner is the SOLE REST caller and the global weight budget holds
+            # regardless of N. The owner does the throttling/dedup.
+            _make = snapshot_client_factory or SnapshotClient
+            self._snap_sched = SnapshotClientScheduler(
+                client=_make(snapshot_socket_path),
+                on_snapshot=self._on_snapshot_arrived)
         elif enable_snapshots and client is not None:
             self._snap_sched = SnapshotScheduler(
                 client=client, on_snapshot=self._on_snapshot_arrived,
@@ -336,7 +372,10 @@ class CaptureService:
         }
 
     async def _resolve_universe(self) -> list[str]:
-        return await asyncio.to_thread(self._client.fetch_usdtm_perp_universe)
+        full = await asyncio.to_thread(self._client.fetch_usdtm_perp_universe)
+        if self._shard is None:                       # single full-universe process
+            return full
+        return sharding.symbols_for_shard(full, self._shard, self._n_shards)
 
     async def _wait_stop_or_timeout(self, timeout: float) -> None:
         with contextlib.suppress(asyncio.TimeoutError):
@@ -384,7 +423,7 @@ class CaptureService:
                      if self._snap_sched is not None else None)
         universe = await self._resolve_universe()
         self.seed_universe(universe)
-        mgr = self._mgr_factory(capture_streams(universe))
+        mgr = self._mgr_factory(capture_streams_for_shard(universe, owns_array_streams=self._owns_array))
         self._current_mgr = mgr
         mgr_task = asyncio.create_task(mgr.run())
         logger.info("capture-core service started: %d symbols", len(universe))
@@ -403,12 +442,12 @@ class CaptureService:
                     # Seed any newly-listed symbols (deduped by the scheduler).
                     self.seed_universe(sorted(set(new_universe) - set(universe)))
                     universe = new_universe
-                    mgr = self._mgr_factory(capture_streams(universe))
+                    mgr = self._mgr_factory(capture_streams_for_shard(universe, owns_array_streams=self._owns_array))
                     self._current_mgr = mgr
                     mgr_task = asyncio.create_task(mgr.run())
                 elif mgr_task.done():  # all shards exited unexpectedly -> restart
                     logger.warning("capture-core: manager ended; restarting")
-                    mgr = self._mgr_factory(capture_streams(universe))
+                    mgr = self._mgr_factory(capture_streams_for_shard(universe, owns_array_streams=self._owns_array))
                     self._current_mgr = mgr
                     mgr_task = asyncio.create_task(mgr.run())
         finally:
