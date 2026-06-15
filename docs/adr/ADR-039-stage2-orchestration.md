@@ -28,7 +28,7 @@ capture unit is a silent no-op on this host** — was confirmed directly against
 | ADR-036 drop-in | **installed**: `/etc/systemd/system/user.slice.d/10-capture-deprioritize.conf` → `[Slice] CPUWeight=50 IOWeight=50` | `cat` |
 | **cpuset on engine side** | `system.slice/cgroup.controllers` **includes `cpuset`**; root `subtree_control` includes `cpuset` → **engine `AllowedCPUs` WILL enforce** | `/sys/fs/cgroup/system.slice/cgroup.controllers` |
 | **cpuset on capture side** | `user@$(id -u).service` **`DelegateControllers=cpu memory pids`** (NO cpuset); `user.slice` + `app.slice` `cgroup.controllers = cpu memory pids` → **`AllowedCPUs` on a `--user` capture unit is a SILENT NO-OP** | `systemctl show user@.service -p DelegateControllers`; `/sys/fs/cgroup/.../app.slice/cgroup.controllers` |
-| REST budget | `FAPI_WEIGHT_LIMIT=2400` weight/min (shared IP, engine + rest-collector + capture); capture self-cap `CAPTURE_REST_WEIGHT_PER_MIN=1200`; depth snapshot = `/fapi/v1/depth` weight **20** @ limit 1000; `SNAPSHOT_MIN_INTERVAL_S=20·60/1200=1.0s` → ≤60 snap/min = 1200 weight/min | `config.py:107,144,152,156` |
+| REST budget | `FAPI_WEIGHT_LIMIT=2400` **REQUEST_WEIGHT**/min (shared IP, engine + rest-collector + capture; the 1200 is the *separate* ORDERS bucket, **not** this cap); depth snapshot = `/fapi/v1/depth` weight **20** @ limit 1000; owner budget = cap − reserved headroom (Stage 2a default **~1400/min**); 527-symbol cold start = 527×20 = **10,540 weight ≈ 7.5 min** | `config.py:107`, stage-2a `CAPTURE_SNAPSHOT_RESERVED_HEADROOM_PER_MIN` |
 | Raw-diff durability | `service.py` stores **every** raw depth diff unconditionally, independent of maintenance state | `service.py:255` |
 | Snapshot seam | shard scheduler construction already gates on `enable_snapshots`/`snap_scheduler is not None`; the two `request()` call sites are resync `service.py:278-279` + seed `service.py:281-286` | `service.py:213-221` |
 
@@ -82,11 +82,13 @@ call REST.
    the row to its own partition, seeds its `DepthMaintainer`. **The owner never writes parquet.**
 
 ### REST budget — the global cap is STRUCTURAL, independent of N
-Every shard's snapshot funnels through the owner's one scheduler → aggregate REST is exactly
-**60 req/min = 1200 weight/min by construction, for any N**. With N in-process schedulers (no owner)
-the host would emit up to **N×1200 = 3600 weight/min**, blowing the shared 2400/min limit
-(`config.py:107`) into a 429/ban that would starve the **live engine** — the single biggest risk
-in the accepted ADR-039 §F. A full 527-symbol cold re-seed is **~8.8 min regardless of N**: sharding
+Every shard's snapshot funnels through the owner's one throttle → aggregate REST stays within the
+owner's **budget = cap − reserved headroom (~1400 weight/min under the 2400 REQUEST_WEIGHT cap)** by
+construction, for any N. With N in-process schedulers (no owner) the host would emit up to **N× that
+budget**, blowing the shared **2400/min REQUEST_WEIGHT** cap (`config.py:107`) into a 429/ban that
+would starve the **live engine** — the single biggest risk in the accepted ADR-039 §F. A full
+527-symbol cold re-seed (527×20 = **10,540 weight**) is **~7.5 min regardless of N** at the ~1400
+budget: sharding
 parallelizes the CPU-bound firehose, **not** REST seeding (the floor is the shared IP budget). This
 unchanged seed tail must be documented so it is not mistaken for a regression.
 
@@ -240,7 +242,7 @@ degenerate fallback (cleanly degrades to today's single-process behavior).
   `SnapshotScheduler` + `CaptureRestClient`, plus the shard-side IPC client stub presenting
   `.request()/.run()/.stop()` (so `service.py:278-279,281-286` redirect with no logic change). TDD
   with a fake clock + fake REST client: (a) aggregate request rate across **M** simulated shard
-  connections ≤ 60/min = 1200 weight/min **regardless of M** (the core safety property — a budget bug
+  connections ≤ the owner budget (cap − headroom, ~1400 weight/min) **regardless of M** (the core safety property — a budget bug
   = a 429/ban that starves the live engine, the highest blast radius and zero prior art); (b) two
   connections requesting the same symbol → **one** REST call (global dedup); (c) payload round-trips
   back and drives `_on_snapshot_arrived`; (d) owner-down → shard backoff/retry, no crash, raw diffs
@@ -271,7 +273,7 @@ degenerate fallback (cleanly degrades to today's single-process behavior).
 1. **Per-core CPU < ~60%** on each shard core (5–7) at full 527-symbol load (the optimized hot path
    from PR #31 is already on master).
 2. **Handshake-timeout reconnects ≈ 0** (the single-loop saturation storm gone) and **gap rate ≈ 0**.
-3. **Global REST ≤ 1200 weight/min** across all shards (one owner) — no 429/418.
+3. **Global REST ≤ the owner budget** (cap − headroom, ~1400/min, well under the 2400 REQUEST_WEIGHT cap) across all shards (one owner) — no 429/418.
 4. **Engine's 1s cycle on cores 0–4 undisturbed** under nightly-pipeline burst (cpuset enforcing on
    both sides; if the pipeline contends, fall back to N=2 and give the pipeline a core — N is the
    operator knob).
