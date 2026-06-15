@@ -125,8 +125,24 @@ GAP_SCHEMA = pa.schema([
 ])
 
 
+_MS_PER_DAY = 86_400_000
+
+# Cache the partition date-string by UTC epoch-day. The calendar date is a pure
+# function of ``ms // _MS_PER_DAY`` (UTC has no DST/offset), so a row's date needs
+# formatting only the first time its day is seen — not once per row (this was ~7%
+# of one core under firehose load). Bounded by design: one entry per UTC day the
+# process observes (forward-only capture -> a handful of live entries). Capture is
+# single-threaded asyncio, so the plain dict needs no lock.
+_DATE_STR_CACHE: dict[int, str] = {}
+
+
 def _date_str(ms: int) -> str:
-    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+    day = ms // _MS_PER_DAY
+    s = _DATE_STR_CACHE.get(day)
+    if s is None:
+        s = datetime.fromtimestamp(day * 86_400, tz=timezone.utc).strftime("%Y-%m-%d")
+        _DATE_STR_CACHE[day] = s
+    return s
 
 
 def _aggtrade_partition(row: Mapping[str, Any]) -> str:
@@ -159,8 +175,29 @@ def symbol_time_partition(symbol_key: str, time_key: str
 
 
 def _estimate_row_bytes(row: Mapping[str, Any]) -> int:
-    """Cheap uncompressed-size proxy used only to trigger size-based flushes."""
-    return sum(len(str(v)) for v in row.values()) + 8 * len(row)
+    """Cheap, approximate uncompressed-size proxy used only to trigger size-based
+    flushes. Sizes values by type WITHOUT building ``str()`` reprs of the nested
+    price-level lists — constructing that repr on every append was the hot path
+    (~6% of one core under firehose load). Strings count their length, numerics a
+    fixed width, and nested ``[[price, qty], ...]`` levels their element string
+    lengths plus a small per-element punctuation allowance. The magnitude tracks
+    the row's real serialized size closely enough that ``flush_max_bytes`` fires at
+    ~the same buffered volume (see test_capture_core_store_hotpath)."""
+    total = 0
+    for v in row.values():
+        t = v.__class__
+        if t is str:
+            total += len(v)
+        elif t is list:                    # nested [[price, qty], ...] venue strings
+            for level in v:
+                if level.__class__ is list:
+                    for s in level:
+                        total += (len(s) if s.__class__ is str else 8) + 4
+                else:
+                    total += (len(level) if level.__class__ is str else 8) + 4
+        else:                              # int / float / bool / other numerics
+            total += 8
+    return total + 8 * len(row)
 
 
 @dataclass
