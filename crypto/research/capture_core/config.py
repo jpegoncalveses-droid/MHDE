@@ -74,6 +74,17 @@ CAPTURE_FIREHOSE_FLUSH_MAX_BYTES = 16 * 1024 * 1024  # 16 MiB
 #: file). The open hour and any hour still within this margin are NEVER touched.
 CAPTURE_COMPACTION_GRACE_S = 300.0  # 5 min (10× the 30s flush)
 
+# -- FIREHOSE sharding (ADR-039) -----------------------------------------------
+# The single-process firehose saturates ONE core (profile 2026-06-15: ~72% of the
+# core is GIL-bound on the event-loop thread), starving reconnect handshakes. ADR-039
+# splits the universe across N processes/cores. STAGE 1 (writer-level) uses this only
+# to drive the symbol->shard splitter (``sharding.shard_for_symbol``) and the
+# ``part-<shard>-*`` writer naming, so multiple shards can write the same
+# ``symbol=/date=`` partition without filename collision and the closed-hour compactor
+# still merges them. Default 3 (Option B); the operator sets the final N and the cpuset
+# core map in Stage 2 (systemd template + process launch — NOT in this stage).
+CAPTURE_N_SHARDS = 3
+
 # -- Reconnect (mirrors the engine ws_consumer discipline) --
 RECONNECT_BACKOFF_BASE_S = 1.0
 RECONNECT_BACKOFF_MAX_S = 60.0
