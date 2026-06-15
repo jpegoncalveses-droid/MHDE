@@ -248,6 +248,14 @@ class SnapshotClientScheduler:
             except SnapshotOwnerUnavailable:
                 self.errors += 1
                 await self._sleep(self._error_backoff_s)   # owner down; resync re-requests
+            except Exception as exc:  # noqa: BLE001 - isolate ONE symbol's seed (parity
+                # with SnapshotScheduler): a malformed/raising owner response or an
+                # on_snapshot error must not kill the loop and silently stale the whole
+                # shard's books. NOT BaseException — CancelledError/KeyboardInterrupt/
+                # SystemExit still propagate for clean async shutdown.
+                self.errors += 1
+                logger.warning("snapshot-client seed failed for %s (%s: %s)",
+                               symbol, type(exc).__name__, exc)
             finally:
                 self._pending.discard(symbol)
 

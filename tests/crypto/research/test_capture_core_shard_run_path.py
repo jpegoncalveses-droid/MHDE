@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 from click.testing import CliRunner
 
 from crypto.research.capture_core import service as svc
@@ -138,3 +139,54 @@ def test_of_1_equals_single_process_full_universe():
     s = _svc(shard=0, n_shards=1)
     assert asyncio.run(s._resolve_universe()) == _UNIV         # --of 1 --shard 0 == full
     assert s._owns_array is True
+
+
+# -- seed-loop isolation (parity with the SnapshotScheduler this replaced) -----
+
+def test_seed_loop_survives_a_malformed_or_raising_owner_response():
+    # A single symbol whose owner response raises (e.g. a malformed/non-JSON reply
+    # surfacing as a decode error) must NOT kill the seeding loop and silently stale
+    # the whole shard's books — the other symbols still seed, the loop stays alive.
+    seeded = []
+
+    class FlakyClient:
+        async def request(self, symbol):
+            if symbol == "BADUSDT":
+                raise ValueError("malformed owner response")
+            return {"symbol": symbol, "snapshot": {"lastUpdateId": 1}}
+
+    sched = so.SnapshotClientScheduler(
+        client=FlakyClient(), on_snapshot=lambda sym, snap, ns: seeded.append(sym))
+    sched.request("OKUSDT")
+    sched.request("BADUSDT")
+    sched.request("OK2USDT")
+
+    async def drive():
+        task = asyncio.ensure_future(sched.run())
+        for _ in range(500):
+            await asyncio.sleep(0)
+            if len(seeded) >= 2 and sched.errors >= 1:
+                break
+        sched.stop()
+        await task                                  # raises if the loop died
+
+    asyncio.run(drive())
+    assert set(seeded) == {"OKUSDT", "OK2USDT"}     # good symbols seeded despite the bad one
+    assert sched.errors >= 1                         # bad symbol counted, loop survived
+
+
+def test_seed_loop_does_not_swallow_cancellation():
+    # `except Exception` (not BaseException): CancelledError must propagate so async
+    # shutdown stays clean (same for KeyboardInterrupt/SystemExit).
+    class CancellingClient:
+        async def request(self, symbol):
+            raise asyncio.CancelledError()
+
+    sched = so.SnapshotClientScheduler(client=CancellingClient(), on_snapshot=lambda *a: None)
+    sched.request("X")
+
+    async def drive():
+        await sched.run()
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(drive())
