@@ -15,7 +15,8 @@ from typing import Any, Callable, Optional
 import requests
 
 from crypto.research.capture_core.config import (
-    BINANCE_FUTURES_BASE, DEPTH_SNAPSHOT_LIMIT, REQUEST_DELAY_S, REST_MAX_RETRIES,
+    BINANCE_FUTURES_BASE, DEPTH_SNAPSHOT_LIMIT, FAPI_WEIGHT_LIMIT, REQUEST_DELAY_S,
+    REST_MAX_RETRIES,
 )
 
 logger = logging.getLogger("mhde.crypto.capture_core.client")
@@ -105,3 +106,22 @@ class CaptureRestClient:
                              limit: int = DEPTH_SNAPSHOT_LIMIT) -> dict:
         """Order-book snapshot (``lastUpdateId`` + bids/asks) for seeding (PR-2)."""
         return self._get("/fapi/v1/depth", {"symbol": symbol, "limit": limit})
+
+    def fetch_request_weight_limit(self, *, fallback: int = FAPI_WEIGHT_LIMIT) -> int:
+        """The live REQUEST_WEIGHT per-minute cap from ``exchangeInfo.rateLimits``.
+
+        Used by the snapshot-owner (ADR-039) to size its weight budget. Returns
+        ``fallback`` if the limit cannot be read (network error or unexpected shape),
+        so the owner always has a safe cap to reserve headroom under.
+        """
+        try:
+            data = self._get("/fapi/v1/exchangeInfo")
+            for rl in data.get("rateLimits", []):
+                if (rl.get("rateLimitType") == "REQUEST_WEIGHT"
+                        and rl.get("interval") == "MINUTE"
+                        and int(rl.get("intervalNum", 1)) == 1):
+                    return int(rl["limit"])
+        except Exception as exc:  # noqa: BLE001 - fall back to the documented cap
+            logger.warning("capture-core could not read REQUEST_WEIGHT cap (%s: %s); "
+                           "using fallback %d", type(exc).__name__, exc, fallback)
+        return fallback
