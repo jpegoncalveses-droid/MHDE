@@ -17,10 +17,12 @@ import json
 import logging
 import os
 import time
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Optional
 
 from crypto.research.capture_core import config as cfg
 from crypto.research.capture_core import rest_throttle as rt
+from crypto.research.capture_core.client import RateLimited
+from crypto.research.capture_core.rest_header_gate import HeaderGate
 
 logger = logging.getLogger("mhde.crypto.capture_core.snapshot_owner")
 
@@ -40,10 +42,16 @@ class SnapshotOwner:
         throttle: "rt.WeightThrottle",
         socket_path: str,
         limit: int = cfg.DEPTH_SNAPSHOT_LIMIT,
+        gate: Optional[HeaderGate] = None,
         to_thread: Callable[..., Awaitable[Any]] = asyncio.to_thread,
     ) -> None:
         self._fetch = fetch_fn
         self._throttle = throttle
+        # All-traffic header-gate (ADR-039 2b). When set, ``fetch_fn`` returns
+        # ``(snapshot, used_weight)`` and the gate backs off on the live per-IP
+        # X-MBX-USED-WEIGHT-1M; when None, ``fetch_fn`` returns the snapshot dict and only
+        # the throttle paces (the single-process / stage-2a behavior, unchanged).
+        self._gate = gate
         self._path = socket_path
         self._limit = limit
         self._to_thread = to_thread
@@ -126,8 +134,20 @@ class SnapshotOwner:
 
     async def _do_fetch(self, symbol: str, fut: "asyncio.Future[dict]") -> None:
         try:
-            await self._throttle.acquire(cfg.DEPTH_SNAPSHOT_WEIGHT)
-            snap = await self._to_thread(self._fetch, symbol, self._limit)
+            if self._gate is not None:
+                await self._gate.acquire()        # all-traffic header backstop (wall-clock)
+            await self._throttle.acquire(cfg.DEPTH_SNAPSHOT_WEIGHT)  # steady pacer (monotonic)
+            try:
+                result = await self._to_thread(self._fetch, symbol, self._limit)
+            except RateLimited as rl:             # hard backstop: respect Retry-After
+                if self._gate is not None:
+                    self._gate.handle_429(rl.retry_after)
+                raise
+            if self._gate is not None:
+                snap, used = result               # weight-aware fetch -> (snapshot, used)
+                self._gate.observe(used)          # None header -> graceful throttle-only
+            else:
+                snap = result                     # plain fetch -> snapshot dict (stage-2a)
             self.fetched += 1
             if not fut.done():
                 fut.set_result(snap)
@@ -276,13 +296,23 @@ def build_owner(
     *,
     socket_path: str = cfg.CAPTURE_SNAPSHOT_SOCKET_PATH,
     reserved: int = cfg.CAPTURE_SNAPSHOT_RESERVED_HEADROOM_PER_MIN,
+    margin: int = cfg.CAPTURE_HEADER_GATE_MARGIN,
     limit: int = cfg.DEPTH_SNAPSHOT_LIMIT,
     clock: Callable[[], float] = time.monotonic,
     sleep_fn: Callable[[float], Any] = asyncio.sleep,
+    wall_clock: Callable[[], float] = time.time,
 ) -> SnapshotOwner:
-    """Wire an owner: read the live REQUEST_WEIGHT cap, reserve headroom, throttle."""
+    """Wire an owner: read the live REQUEST_WEIGHT cap, set the throttle budget (reserve
+    headroom) AND the all-traffic header-gate (back off on live used-weight). The owner
+    fetches via ``get_with_weight`` so each depth response surfaces X-MBX-USED-WEIGHT-1M
+    (and raises ``RateLimited`` on 429 for the gate's Retry-After backstop)."""
     cap = client.fetch_request_weight_limit(fallback=cfg.FAPI_WEIGHT_LIMIT)
     budget = rt.snapshot_weight_budget(cap, reserved)
     throttle = rt.WeightThrottle(budget, clock=clock, sleep_fn=sleep_fn)
-    return SnapshotOwner(fetch_fn=client.fetch_depth_snapshot, throttle=throttle,
+    gate = HeaderGate(cap=cap, margin=margin, wall_clock=wall_clock, sleep_fn=sleep_fn)
+
+    def _weight_fetch(symbol: str, lim: int):
+        return client.get_with_weight("/fapi/v1/depth", {"symbol": symbol, "limit": lim})
+
+    return SnapshotOwner(fetch_fn=_weight_fetch, throttle=throttle, gate=gate,
                          socket_path=socket_path, limit=limit)

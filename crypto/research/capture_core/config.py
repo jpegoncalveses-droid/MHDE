@@ -98,6 +98,14 @@ CAPTURE_SNAPSHOT_RESERVED_HEADROOM_PER_MIN = 1000
 #: Unix socket the owner serves on / shards dial (under the capture root). The .ipc
 #: dir is NOT a symbol=/date= dataset and must be excluded from retention/compaction.
 CAPTURE_SNAPSHOT_SOCKET_PATH = f"{RAW_DIR}/.ipc/snapshot-owner.sock"
+#: All-traffic header-gate margin (ADR-039 2b). The owner ALSO watches the live per-IP
+#: X-MBX-USED-WEIGHT-1M (which reflects engine + collectors + owner) and backs off new
+#: depth fetches once observed used-weight exceeds (cap - this margin), as a backstop ON
+#: TOP OF the throttle — so it adapts to actual combined usage instead of assuming the
+#: static reserved-headroom split holds. The margin must cover the owner's observation
+#: lag (weight others can add between its own fetches) plus its in-flight/next request;
+#: conservative default 400 (~17% of a 2400 cap, ~20 owner depth requests of headroom).
+CAPTURE_HEADER_GATE_MARGIN = 400
 
 # -- Reconnect (mirrors the engine ws_consumer discipline) --
 RECONNECT_BACKOFF_BASE_S = 1.0
