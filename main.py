@@ -1901,7 +1901,15 @@ def crypto_signal_probe_collect(research_db, no_depth, symbols):
 @crypto.command("capture-core-run")
 @click.option("--root", default=None,
               help="Raw capture dir. Default: capture_core.config.RAW_DIR.")
-def crypto_capture_core_run(root):
+@click.option("--shard", default=None, type=int,
+              help="This shard's index in [0, --of). Omit for a single "
+                   "full-universe process (ADR-039 sharding).")
+@click.option("--of", "n_shards", default=1, type=int,
+              help="Total shard count N (ADR-039). Default 1 = single process.")
+@click.option("--snapshot-socket", "snapshot_socket", default=None,
+              help="Snapshot-owner unix socket. When set, seed books via the owner "
+                   "(ADR-039 2b) over the socket instead of direct REST.")
+def crypto_capture_core_run(root, shard, n_shards, snapshot_socket):
     """Run the capture-core raw market-data capture service (BLOCKS).
 
     Resolves the full TRADING USDT-M perp universe live (re-resolved on a
@@ -1917,11 +1925,22 @@ def crypto_capture_core_run(root):
     from crypto.research.capture_core.client import CaptureRestClient
     from crypto.research.capture_core.service import CaptureService
 
+    # ADR-039 N>=1 guard + shard-range validation at the CLI boundary, so a
+    # degenerate n_shards<=0 / out-of-range shard can never reach the run path.
+    if n_shards < 1:
+        raise click.BadParameter("--of must be >= 1")
+    if shard is None and n_shards > 1:
+        raise click.BadParameter("--shard is required when --of > 1")
+    if shard is not None and not (0 <= shard < n_shards):
+        raise click.BadParameter(f"--shard must be in [0, {n_shards})")
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    svc = CaptureService(root=root or cc_cfg.RAW_DIR, client=CaptureRestClient())
+    svc = CaptureService(root=root or cc_cfg.RAW_DIR, client=CaptureRestClient(),
+                         shard=shard, n_shards=n_shards,
+                         snapshot_socket_path=snapshot_socket)
     asyncio.run(svc.run())
 
 

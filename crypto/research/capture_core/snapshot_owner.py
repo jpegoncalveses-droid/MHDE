@@ -189,6 +189,88 @@ class SnapshotClient:
         raise SnapshotOwnerUnavailable(f"owner dropped request after retry: {last}")
 
 
+class SnapshotClientScheduler:
+    """Scheduler-shaped seeding adapter for a SHARD process (ADR-039 stage 2b).
+
+    Drop-in for :class:`~crypto.research.capture_core.snapshot.SnapshotScheduler`
+    (same ``request``/``run``/``stop`` interface), but instead of calling REST
+    directly it requests each snapshot from the snapshot-owner over the socket
+    (:class:`SnapshotClient`). The OWNER does the global REST throttling + per-symbol
+    dedup; this just queues symbols, dials the owner, and forwards the returned
+    payload to ``on_snapshot``. Owner-down is non-fatal: the symbol's seed is skipped
+    (counted), and the book re-requests it on its next resync.
+    """
+
+    def __init__(
+        self,
+        *,
+        client: "SnapshotClient",
+        on_snapshot: Callable[[str, dict, int], None],
+        clock_ns: Callable[[], int] = time.time_ns,
+        sleep_fn: Callable[[float], Awaitable[Any]] = asyncio.sleep,
+        error_backoff_s: float = 1.0,
+    ) -> None:
+        self._client = client
+        self._on_snapshot = on_snapshot
+        self._clock_ns = clock_ns
+        self._sleep = sleep_fn
+        self._error_backoff_s = error_backoff_s
+        self._queue: "asyncio.Queue[str]" = asyncio.Queue()
+        self._pending: "set[str]" = set()
+        self._stop = asyncio.Event()
+        self.fetched = 0
+        self.errors = 0
+
+    def request(self, symbol: str) -> bool:
+        """Queue a snapshot for ``symbol``. Returns False if already pending."""
+        if symbol in self._pending:
+            return False
+        self._pending.add(symbol)
+        self._queue.put_nowait(symbol)
+        return True
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    async def run(self) -> None:
+        while not self._stop.is_set():
+            symbol = await self._next()
+            if symbol is None:
+                return
+            try:
+                resp = await self._client.request(symbol)
+                snap = resp.get("snapshot") if isinstance(resp, dict) else None
+                if snap is not None:
+                    self._on_snapshot(symbol, snap, self._clock_ns())
+                    self.fetched += 1
+                else:                                  # typed error from the owner
+                    self.errors += 1
+            except SnapshotOwnerUnavailable:
+                self.errors += 1
+                await self._sleep(self._error_backoff_s)   # owner down; resync re-requests
+            except Exception as exc:  # noqa: BLE001 - isolate ONE symbol's seed (parity
+                # with SnapshotScheduler): a malformed/raising owner response or an
+                # on_snapshot error must not kill the loop and silently stale the whole
+                # shard's books. NOT BaseException — CancelledError/KeyboardInterrupt/
+                # SystemExit still propagate for clean async shutdown.
+                self.errors += 1
+                logger.warning("snapshot-client seed failed for %s (%s: %s)",
+                               symbol, type(exc).__name__, exc)
+            finally:
+                self._pending.discard(symbol)
+
+    async def _next(self):
+        get_task = asyncio.ensure_future(self._queue.get())
+        stop_task = asyncio.ensure_future(self._stop.wait())
+        done, pending = await asyncio.wait(
+            {get_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
+        for p in pending:
+            p.cancel()
+        if get_task in done:
+            return get_task.result()
+        return None
+
+
 def build_owner(
     client: Any,
     *,
