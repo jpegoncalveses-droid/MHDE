@@ -18,7 +18,7 @@ import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from time import monotonic
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Optional
 from uuid import uuid4
 
 import pyarrow as pa
@@ -221,6 +221,7 @@ class RawDatasetWriter:
         flush_max_bytes: int = cfg.FLUSH_MAX_BYTES,
         compression: str = cfg.PARQUET_COMPRESSION,
         now_fn: Callable[[], float] = monotonic,
+        shard_id: Optional[int] = None,
     ) -> None:
         self._root = root
         self._dataset = dataset
@@ -230,6 +231,11 @@ class RawDatasetWriter:
         self._flush_max_bytes = flush_max_bytes
         self._compression = compression
         self._now = now_fn
+        # ADR-039: when this writer belongs to a shard, name parts ``part-<shard>-*``
+        # so multiple shards writing the same ``symbol=/date=`` partition never clobber
+        # one file. Still matches the compactor's ``part-*`` selection. ``None`` keeps
+        # the unsharded ``part-<uuid>`` name (single-process default, unchanged).
+        self._shard_id = shard_id
         self._buffers: dict[str, _PartitionBuffer] = {}
         self.rows_written = 0
         self.files_written = 0
@@ -269,7 +275,8 @@ class RawDatasetWriter:
         table = pa.Table.from_pylist(buf.rows, schema=self._schema)
         out_dir = os.path.join(self._root, self._dataset, subdir)
         os.makedirs(out_dir, exist_ok=True)
-        path = os.path.join(out_dir, f"part-{uuid4().hex}.parquet")
+        prefix = "part-" if self._shard_id is None else f"part-{self._shard_id}-"
+        path = os.path.join(out_dir, f"{prefix}{uuid4().hex}.parquet")
         pq.write_table(table, path, compression=self._compression)
         self.files_written += 1
         self.rows_written += len(buf.rows)
