@@ -1,12 +1,16 @@
 # Multi-process capture sharding — design analysis
 
-**Status:** analysis / proposal for operator review. **No implementation.** If
-accepted this becomes **ADR-039**. The firehose stays **parked** until this is
-decided and a measured trial passes.
+**Status:** **ACCEPTED — ADR-039** (2026-06-15). The multi-process approach is
+accepted; the shard/core count **N is a configuration parameter** (`CAPTURE_N_SHARDS`,
+default **3** — Option B below), set by the operator against the live engine's reserved
+cores. **No implementation yet.** The firehose stays **parked** until the
+implementation lands and the measured trial (§G) passes.
 
-**Date:** 2026-06-14. **Author:** capture-core workstream. Builds on ADR-038
+**Date:** 2026-06-14 (analysis); **accepted 2026-06-15** after the parse-vs-write CPU
+profile (§0.1) confirmed multi-process is necessary and the thread-offload interim is
+insufficient. **Author:** capture-core workstream. Builds on ADR-038
 (write-then-compact, merged) — which fixed the file/inode and writer-RAM problems
-but exposed the CPU-scaling limit analysed here.
+but exposed the CPU-scaling limit resolved here.
 
 ---
 
@@ -36,6 +40,41 @@ snapshot** → *more* load → self-sustaining storm → continuous data gaps. T
 on its own core. This document designs that — and, per operator direction, presents
 the **CPU core split as a choice**, because the live trading engine must keep
 guaranteed cores.
+
+### 0.1 Parse-vs-write CPU profile (2026-06-15) — resolves "what saturates the core?"
+
+A py-spy self-time profile (**30,083 on-CPU samples, 150 s steady-state**; firehose run
+as a py-spy child in a memory-capped transient unit, since `ptrace_scope=1` blocks
+attach to the systemd-managed service + no passwordless sudo) breaks the saturated core
+down:
+
+| Category | Self-time | Nature |
+|---|---:|---|
+| ws recv / TLS / frame parse | 25.0% | event-loop thread, GIL-bound |
+| write/buffer — `store.py` bookkeeping | 23.3% | pure-Python, GIL-bound |
+| json parse (`raw_decode`) | 13.4% | GIL-bound |
+| ws inbound decompress (permessage-deflate) | 10.3% | GIL-bound |
+| pyarrow/zstd write | 11.1% | **releases the GIL** |
+| asyncio loop | 10.2% | GIL-bound |
+| depth-book / other | 6.8% | GIL-bound |
+
+The process burned **~1.19 cores** (the >1.0 is the zstd/pyarrow GIL-release spilling
+onto a second core). Grouped: **inbound receive (recv + decompress + json) ≈ 49%**, all
+on the single event-loop thread; **write/serialize ≈ 34%**, of which **only ~11%
+releases the GIL**.
+
+**Verdict — this decides §F's open alternative:** **multi-process sharding is
+necessary; a write-offload thread is NOT sufficient.** A thread can only relieve the
+~11% that releases the GIL; the other **~72%** (≈49% inbound + ≈23% pure-Python
+`store.py`) holds the GIL on one thread, and threads cannot parallelize GIL-bound
+Python. Only separate processes (separate GILs) split the inbound recv/decompress/parse
+across cores.
+
+The profile also surfaced two near-free pure-Python wins on the writer hot path
+(~13% of one core), **shipped pre-sharding in PR #31 (merged, `0354fe8`)**: `_date_str`
+cached by epoch-day (17.9×) and `_estimate_row_bytes` repr-free typed sizing (1.6× on
+depth rows). So the per-core sizing measured in the §G trial reflects the optimized hot
+path.
 
 ---
 
@@ -73,8 +112,9 @@ saturation; removing it removes the resync-snapshot + handshake-retry overhead).
 > The estimates assume the message-processing cost scales ~linearly with symbol
 > count and that ≥2 non-saturated loops eliminate the storm. **The measured trial
 > (§G) confirms the real per-core load and the minimum core count** before any
-> re-enable. The recommendation is **Option B (3 cores)** as the default, but the
-> final N is the operator's call against the engine's core needs.
+> re-enable. **N is a configuration parameter** (`CAPTURE_N_SHARDS`), default **3**
+> (Option B); the operator sets the final value and the matching cpuset core map
+> against the engine's core needs. This table is the guidance for choosing it.
 
 ---
 
@@ -182,24 +222,26 @@ No change to the compactor is required beyond accepting `part-<shard>-*` inputs
 - **Offload only the zstd writes to a thread pool** (`asyncio.to_thread` on
   `flush_due`; pyarrow/zstd releases the GIL during compression) — unblocks the loop
   for the *write* portion **without** multi-process. *Pro:* much smaller change.
-  *Con:* the **parse/dispatch/depth-maintenance is pure-Python (GIL-bound)** and stays
-  on the loop; if *that* is the dominant cost (likely, at 5k msg/s JSON), threads
-  won't break the saturation. **Worth measuring the parse-vs-write split** — if writes
-  dominate, this is a cheap partial fix; if parsing dominates, only multi-process (or
-  reduced load) helps.
+  *Con:* **MEASURED INSUFFICIENT (§0.1).** Only ~11% of the core releases the GIL; the
+  dominant **~72%** (inbound recv/decompress/parse + pure-Python `store.py`) holds the
+  GIL on the loop thread, which threads cannot parallelize. A write-offload thread
+  cannot break this saturation — **ruled out** as more than a marginal tweak. Only
+  multi-process (separate GILs) or reduced load helps.
 
 ---
 
 ## 7. (G) Recommendation, implementation outline, trial plan
 
-**Recommendation:** **multi-process sharding**, **N = 3 capture cores** as the
-default (Option B) — the operator sets the final N and the cpuset core map against the
-engine's needs. Split symbols by stable volume-weighted hash; one process owns the
-array streams **and** all depth-snapshot REST seeding (simplest budget coordination);
-single shared compaction timer; systemd template + `AllowedCPUs` pinning disjoint from
-the engine; capture compute-deprioritized so it can never starve trading. First, a
-quick **measurement** of the parse-vs-write CPU split — if writes dominate, ship the
-thread-offload as a cheap interim while sharding lands.
+**Recommendation (ACCEPTED — ADR-039):** **multi-process sharding**, with **N a
+configuration parameter** (`CAPTURE_N_SHARDS`, default **3** = Option B); the operator
+sets the final N and the cpuset core map against the engine's needs. Split symbols by
+stable volume-weighted hash; one process owns the array streams **and** all
+depth-snapshot REST seeding (simplest budget coordination); single shared compaction
+timer; systemd template + `AllowedCPUs` pinning disjoint from the engine; capture
+compute-deprioritized so it can never starve trading. The parse-vs-write split is now
+**measured (§0.1):** multi-process is required and the thread-offload interim is **ruled
+out** (it relieves only the ~11% GIL-releasing writes). The two pure-Python hot-path
+wins are already **shipped (PR #31, merged)**.
 
 **Cleanly implementable on the current code?** Mostly:
 - `conn_manager` / `service` already run a clean event loop per process — instantiate
