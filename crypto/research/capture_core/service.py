@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
+import pathlib
 import signal
 import time
 from typing import Any, Callable, Optional, Sequence
@@ -185,6 +187,8 @@ class CaptureService:
         disk_check_interval_s: float = cfg.CAPTURE_DISK_CHECK_INTERVAL_S,
         notifier: Optional[Any] = None,
         watchdog_liveness_window_s: float = cfg.SOCKET_SILENCE_TIMEOUT_S,
+        heartbeat_dir: Optional[str] = None,
+        heartbeat_interval_s: float = cfg.CAPTURE_HEARTBEAT_INTERVAL_S,
     ) -> None:
         self._root = root
         self._client = client
@@ -266,6 +270,15 @@ class CaptureService:
         self._notifier = notifier or sd_notify.SystemdNotifier(None)
         self._watchdog_liveness_window_s = watchdog_liveness_window_s
         self._last_msg_monotonic = 0.0
+
+        # ADR-039 §D layer-2: this shard's heartbeat ({dispatched, bytes_in, rows, ts_ns})
+        # written every interval; the stall-detector timer reads all shards' heartbeats to
+        # catch a hung/asymmetric shard (cross-process — layer 1 sd_notify only catches a
+        # wedged loop within THIS process).
+        self._heartbeat_dir = (heartbeat_dir if heartbeat_dir is not None
+                               else cfg.CAPTURE_HEARTBEAT_DIR)
+        self._heartbeat_interval_s = heartbeat_interval_s
+        self._last_hb_monotonic = 0.0
 
         self._stop = asyncio.Event()
         self._current_mgr: Any = None
@@ -410,6 +423,38 @@ class CaptureService:
                 w.flush_due()
             self._maybe_enforce_guards()
             self._feed_watchdog_if_live()
+            self._maybe_write_heartbeat()
+
+    def _heartbeat_payload(self) -> dict:
+        mgr = self._current_mgr
+        return {
+            "shard": "full" if self._shard is None else str(self._shard),
+            "ts_ns": time.time_ns(),
+            "dispatched": getattr(mgr, "dispatched", 0),
+            "bytes_in": getattr(mgr, "bytes_in", 0),
+            "rows": sum(w.rows_written for w in self._writers),
+        }
+
+    def _write_heartbeat(self) -> None:
+        """Atomically write this shard's layer-2 heartbeat. Best-effort — a heartbeat write
+        must NEVER take down the capture loop, so all errors degrade to a log line."""
+        try:
+            payload = self._heartbeat_payload()
+            d = pathlib.Path(self._heartbeat_dir)
+            d.mkdir(parents=True, exist_ok=True)
+            path = d / f"shard-{payload['shard']}.json"
+            tmp = path.with_name(path.name + ".tmp")
+            tmp.write_text(json.dumps(payload))
+            tmp.replace(path)                        # atomic rename
+        except Exception:                            # noqa: BLE001
+            logger.warning("capture-core heartbeat write failed", exc_info=True)
+
+    def _maybe_write_heartbeat(self) -> None:
+        now = time.monotonic()
+        if now - self._last_hb_monotonic < self._heartbeat_interval_s:
+            return
+        self._last_hb_monotonic = now
+        self._write_heartbeat()
 
     def _feed_watchdog_if_live(self) -> None:
         """Heartbeat the systemd watchdog ONLY while messages are flowing. A wedged loop

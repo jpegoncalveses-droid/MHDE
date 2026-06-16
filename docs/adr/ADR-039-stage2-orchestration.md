@@ -32,6 +32,21 @@ crypto-trading-engine repo** (its units live in `/etc/systemd/system/`) — NOT 
 "Provably disjoint" holds only once all three are installed: this delegation + the capture band +
 the engine pin. cpuset (system.slice has it) enforces on the engine side already.
 
+**As-built reconciliation (§D layer-2 dead-shard detector, BUILD-ONLY):** layer 1 (sd_notify
+`WatchdogSec`) shipped in gap 3; **layer 2** (peer-asymmetry) ships here. Each shard writes a
+heartbeat `{ts_ns, dispatched, bytes_in, rows}` every `CAPTURE_HEARTBEAT_INTERVAL_S=10s` to
+`<RAW_DIR>/.ipc/heartbeats/shard-<K>.json` (atomic rename; `.ipc/` is guard/retention-excluded).
+A `--user` oneshot `mhde-capture-stall-detector.service` + 30s `.timer` runs `capture-stall-check
+--of 8`, which reads all heartbeats + `systemctl --user is-failed` per unit and Telegram-alerts
+(DB-free `monitoring.alert.send_text`) on: a `failed` unit, a stale/absent heartbeat (> 3×
+interval), or the **asymmetry tell** — a shard whose **rows** stop advancing while peers flow.
+**Advance is keyed on ROWS** (the persistent parquet writers — monotonic across a
+connection-manager rebuild), per §D's "partitions stop advancing"; the mgr-scoped `dispatched`
+resets on a universe re-resolve and would false-alert. A global lull (NO peer advances) is NOT
+flagged. `evaluate` is pure (all I/O injected); the detector persists a per-run baseline
+(`.ipc/heartbeats/.stall_state.json`) for the asymmetry comparison. Layer 3 (gap-rate spike) and
+the kill-a-shard / kill-the-owner §G resilience drill remain deploy/trial steps.
+
 **Date:** 2026-06-15. **Author:** capture-core workstream. Builds on **ADR-039** (accepted —
 multi-process sharding, N a config parameter) and **ADR-038** (write-then-compact) and **ADR-037**
 (inode/compaction) and **ADR-036** (resource model). Stage 1 (shard-aware writer + symbol splitter,

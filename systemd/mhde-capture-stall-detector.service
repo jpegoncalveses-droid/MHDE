@@ -1,0 +1,29 @@
+# /home/jpcg/.config/systemd/user/mhde-capture-stall-detector.service
+[Unit]
+Description=MHDE capture-core layer-2 dead-shard detector (ADR-039 §D peer-asymmetry)
+After=network-online.target
+
+[Service]
+# systemd --user oneshot (linger), NO User=/Group= (capture family convention).
+# BUILT-NOT-DEPLOYED: tracked, not installed/enabled. Paired with the .timer.
+#
+# Reads every shard's heartbeat under .ipc/heartbeats/ + the systemd unit states and
+# Telegram-alerts on a `failed` unit, a stale/absent heartbeat, or a shard whose rows stop
+# advancing while peers flow — the HUNG-shard tell that systemd Restart= and layer-1 sd_notify
+# (same-process only) both miss. Filesystem + `systemctl --user is-failed` + the DB-free
+# monitoring.alert.send_text path; NEVER opens the production database.
+#
+# --of 8 MUST match the shard units' --of so the expected shard set is right.
+Type=oneshot
+WorkingDirectory=/home/jpcg/MHDE
+ExecStartPre=/usr/bin/test -x /home/jpcg/MHDE/venv/bin/python
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto capture-stall-check --of 8
+# Negligible periodic check: idle CPU/IO + OOM-first so it never disturbs the engine's cycle.
+Nice=19
+IOSchedulingClass=idle
+MemoryMax=256M
+CPUWeight=20
+IOWeight=20
+OOMScoreAdjust=800
+StandardOutput=journal
+StandardError=journal

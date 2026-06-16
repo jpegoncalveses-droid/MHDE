@@ -1,0 +1,14 @@
+# /home/jpcg/.config/systemd/user/mhde-capture-stall-detector.timer
+[Unit]
+Description=MHDE capture-core layer-2 dead-shard detector — every 30s
+
+[Timer]
+# Heartbeats refresh every CAPTURE_HEARTBEAT_INTERVAL_S=10s; stale threshold = 3x = 30s. Run
+# every 30s so a hung / asymmetric shard is caught within ~one stale window. NOT Persistent: a
+# frequent liveness probe — a missed run after host downtime is moot (the next 30s tick covers
+# it, and a long downtime is its own alert).
+OnBootSec=60
+OnUnitActiveSec=30
+
+[Install]
+WantedBy=timers.target
