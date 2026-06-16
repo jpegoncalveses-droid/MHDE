@@ -17,6 +17,21 @@ the flush loop only while messages flow; owner `READY` at socket-bind + a steady
 `WATCHDOG` keepalive. `AllowedCPUs` is intentionally absent (gap 4). Capture-family `--user`
 convention kept (no `User=`). REST stays mainnet (no env override).
 
+**As-built reconciliation (gap 4 — cpuset, BUILD-ONLY):** core map on the 8-core host is
+**engine = 0-3, capture = 4-7** (a 4/4 disjoint split; the §B map of engine 0-4 / capture 5-7 is
+superseded). **N stays 8** — all 8 shards + the owner share the 4-7 band via two `--user` drop-ins
+(`mhde-capture-core@.service.d/cpuset.conf` template + `mhde-capture-owner.service.d/cpuset.conf`,
+both `AllowedCPUs=4-7`); the kernel balances the 8 loops across 4 cores (shard-0 is heavier — it
+owns the array streams — so a shared band beats one-core-per-shard pinning). These are **INERT**
+until the **verified host blocker** is cleared: `app.slice` still lacks the cpuset controller
+(`cgroup.controllers = cpu memory pids`), so a `--user` `AllowedCPUs` is a silent no-op. The fix
+ships as a tracked **sudo** drop-in `systemd/system/user@.service.d/10-cpuset-delegate.conf`
+(`Delegate=cpu cpuset memory pids`), installed per OPERATIONS.md. The **engine pin
+(`AllowedCPUs=0-3` on `trading-engine-*`)** is the **cross-repo counterpart owned by the
+crypto-trading-engine repo** (its units live in `/etc/systemd/system/`) — NOT authored here.
+"Provably disjoint" holds only once all three are installed: this delegation + the capture band +
+the engine pin. cpuset (system.slice has it) enforces on the engine side already.
+
 **Date:** 2026-06-15. **Author:** capture-core workstream. Builds on **ADR-039** (accepted —
 multi-process sharding, N a config parameter) and **ADR-038** (write-then-compact) and **ADR-037**
 (inode/compaction) and **ADR-036** (resource model). Stage 1 (shard-aware writer + symbol splitter,
