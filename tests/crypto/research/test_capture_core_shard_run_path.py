@@ -190,3 +190,73 @@ def test_seed_loop_does_not_swallow_cancellation():
 
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(drive())
+
+
+# -- leak fix: a FAILED seed must be durable (re-queued), not dropped-and-forgotten --
+
+def test_failed_seed_is_reenqueued_until_it_succeeds():
+    # ROOT-CAUSE GUARD: today a failed seed hits `finally: _pending.discard(symbol)`
+    # and is never retried, so the symbol's book stays unsynced forever and leaks.
+    # A transient failure must be re-queued and eventually seed.
+    seeded = []
+    attempts = {"n": 0}
+
+    class FlakyOnceClient:
+        async def request(self, symbol):
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise ValueError("transient owner error")   # first attempt fails
+            return {"symbol": symbol, "snapshot": {"lastUpdateId": 1}}
+
+    async def fast_sleep(_s):                                # don't actually wait
+        return None
+
+    sched = so.SnapshotClientScheduler(
+        client=FlakyOnceClient(),
+        on_snapshot=lambda sym, snap, ns: seeded.append(sym),
+        sleep_fn=fast_sleep)
+    sched.request("BTCUSDT")
+
+    async def drive():
+        task = asyncio.ensure_future(sched.run())
+        for _ in range(2000):
+            await asyncio.sleep(0)
+            if seeded:
+                break
+        sched.stop()
+        await task
+
+    asyncio.run(drive())
+    assert seeded == ["BTCUSDT"]                # retried after the first failure (today: [])
+    assert attempts["n"] >= 2                    # at least one retry happened
+
+
+def test_seed_retry_backoff_grows_and_caps():
+    # The durable retry must back off exponentially AND cap, so a perpetually-failing
+    # symbol cannot hammer the shared owner.
+    recorded = []
+
+    async def rec_sleep(s):
+        recorded.append(s)
+
+    class AlwaysFails:
+        async def request(self, symbol):
+            raise ValueError("owner down")
+
+    sched = so.SnapshotClientScheduler(
+        client=AlwaysFails(), on_snapshot=lambda *a: None, sleep_fn=rec_sleep,
+        backoff_initial=1.0, backoff_max=8.0)
+    sched.request("X")
+
+    async def drive():
+        task = asyncio.ensure_future(sched.run())
+        for _ in range(4000):
+            await asyncio.sleep(0)
+            if len(recorded) >= 5:
+                break
+        sched.stop()
+        await task
+
+    asyncio.run(drive())
+    assert recorded[:5] == [1.0, 2.0, 4.0, 8.0, 8.0]   # exponential then capped (today: [])
+    assert max(recorded) <= 8.0

@@ -92,3 +92,35 @@ def test_snapshot_then_later_diffs_sync_without_gap():
     assert res1.synced_now is True
     assert res1.gap is None
     assert m.last_u == 205
+
+
+# -- leak fix: the awaiting-snapshot buffer must be BOUNDED ---------------------
+
+def test_unsynced_buffer_is_bounded_by_maxlen():
+    # ROOT-CAUSE GUARD: a symbol whose seeding snapshot never lands keeps appending
+    # one diff per message forever (the firehose memory leak). The buffer MUST cap.
+    m = DepthMaintainer("BTCUSDT", buffer_maxlen=5)
+    for i in range(50):                        # 50 diffs, never a snapshot -> unsynced
+        m.on_diff(i * 10 + 1, i * 10 + 10, i * 10, ts=i)
+    assert len(m._buffer) <= 5                  # today: 50 (unbounded) -> RED
+
+
+def test_bounded_buffer_still_syncs_within_window():
+    # The cap must NOT break the normal seed path: a snapshot arriving while the
+    # buffered diffs still fit the window syncs exactly as before.
+    m = DepthMaintainer("BTCUSDT", buffer_maxlen=5)
+    m.on_diff(11, 20, 10, ts=2)                # bridges lastUpdateId 15
+    m.on_diff(21, 30, 20, ts=3)
+    res = m.on_snapshot(last_update_id=15, ts=4)
+    assert res.synced_now is True
+    assert m.synced is True and m.last_u == 30
+
+
+def test_never_synced_book_requests_reseed_past_threshold():
+    # Closes the re-request hole: a book stuck unsynced (snapshot never lands) must
+    # itself raise needs_snapshot once it has buffered too long, so the service
+    # re-queues a seed instead of silently buffering forever.
+    m = DepthMaintainer("BTCUSDT", buffer_maxlen=100, reseed_threshold=3)
+    results = [m.on_diff(i * 10 + 1, i * 10 + 10, i * 10, ts=i) for i in range(5)]
+    assert results[0].needs_snapshot is False   # below threshold
+    assert results[2].needs_snapshot is True    # at/over threshold -> re-request (today: never)

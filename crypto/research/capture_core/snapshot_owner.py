@@ -229,15 +229,21 @@ class SnapshotClientScheduler:
         on_snapshot: Callable[[str, dict, int], None],
         clock_ns: Callable[[], int] = time.time_ns,
         sleep_fn: Callable[[float], Awaitable[Any]] = asyncio.sleep,
-        error_backoff_s: float = 1.0,
+        backoff_initial: Optional[float] = None,
+        backoff_max: Optional[float] = None,
     ) -> None:
         self._client = client
         self._on_snapshot = on_snapshot
         self._clock_ns = clock_ns
         self._sleep = sleep_fn
-        self._error_backoff_s = error_backoff_s
+        self._backoff_initial = (backoff_initial if backoff_initial is not None
+                                 else cfg.CAPTURE_SEED_RETRY_BACKOFF_INITIAL_S)
+        self._backoff_max = (backoff_max if backoff_max is not None
+                             else cfg.CAPTURE_SEED_RETRY_BACKOFF_MAX_S)
         self._queue: "asyncio.Queue[str]" = asyncio.Queue()
         self._pending: "set[str]" = set()
+        self._retry_delay: "dict[str, float]" = {}
+        self._retry_tasks: "set[asyncio.Future]" = set()
         self._stop = asyncio.Event()
         self.fetched = 0
         self.errors = 0
@@ -254,31 +260,59 @@ class SnapshotClientScheduler:
         self._stop.set()
 
     async def run(self) -> None:
-        while not self._stop.is_set():
-            symbol = await self._next()
-            if symbol is None:
-                return
-            try:
-                resp = await self._client.request(symbol)
-                snap = resp.get("snapshot") if isinstance(resp, dict) else None
-                if snap is not None:
-                    self._on_snapshot(symbol, snap, self._clock_ns())
-                    self.fetched += 1
-                else:                                  # typed error from the owner
+        try:
+            while not self._stop.is_set():
+                symbol = await self._next()
+                if symbol is None:
+                    return
+                seeded = False
+                try:
+                    resp = await self._client.request(symbol)
+                    snap = resp.get("snapshot") if isinstance(resp, dict) else None
+                    if snap is not None:
+                        self._on_snapshot(symbol, snap, self._clock_ns())
+                        self.fetched += 1
+                        seeded = True
+                    else:                              # typed error from the owner
+                        self.errors += 1
+                except SnapshotOwnerUnavailable:
                     self.errors += 1
-            except SnapshotOwnerUnavailable:
-                self.errors += 1
-                await self._sleep(self._error_backoff_s)   # owner down; resync re-requests
-            except Exception as exc:  # noqa: BLE001 - isolate ONE symbol's seed (parity
-                # with SnapshotScheduler): a malformed/raising owner response or an
-                # on_snapshot error must not kill the loop and silently stale the whole
-                # shard's books. NOT BaseException — CancelledError/KeyboardInterrupt/
-                # SystemExit still propagate for clean async shutdown.
-                self.errors += 1
-                logger.warning("snapshot-client seed failed for %s (%s: %s)",
-                               symbol, type(exc).__name__, exc)
-            finally:
-                self._pending.discard(symbol)
+                except Exception as exc:  # noqa: BLE001 - isolate ONE symbol's seed
+                    # (parity with SnapshotScheduler): a malformed/raising owner response
+                    # or an on_snapshot error must not kill the loop and silently stale
+                    # the whole shard's books. NOT BaseException — CancelledError/
+                    # KeyboardInterrupt/SystemExit still propagate for clean shutdown.
+                    self.errors += 1
+                    logger.warning("snapshot-client seed failed for %s (%s: %s)",
+                                   symbol, type(exc).__name__, exc)
+                if seeded:
+                    self._pending.discard(symbol)       # done; clear dedup + backoff
+                    self._retry_delay.pop(symbol, None)
+                else:
+                    # DURABLE retry: re-queue the symbol after a capped exponential
+                    # backoff WITHOUT blocking the loop (other symbols keep seeding). It
+                    # stays in _pending so request() still dedups. Closes the dropped-seed
+                    # leak — a failed seed is never silently forgotten (which would leave
+                    # the symbol's book unsynced and its diff buffer growing forever).
+                    self._schedule_retry(symbol)
+        finally:
+            for t in self._retry_tasks:
+                t.cancel()
+            if self._retry_tasks:
+                await asyncio.gather(*self._retry_tasks, return_exceptions=True)
+            self._retry_tasks.clear()
+
+    def _schedule_retry(self, symbol: str) -> None:
+        delay = self._retry_delay.get(symbol, self._backoff_initial)
+        self._retry_delay[symbol] = min(delay * 2.0, self._backoff_max)
+        task = asyncio.ensure_future(self._delayed_requeue(symbol, delay))
+        self._retry_tasks.add(task)
+        task.add_done_callback(self._retry_tasks.discard)
+
+    async def _delayed_requeue(self, symbol: str, delay: float) -> None:
+        await self._sleep(delay)
+        if not self._stop.is_set():
+            self._queue.put_nowait(symbol)
 
     async def _next(self):
         get_task = asyncio.ensure_future(self._queue.get())

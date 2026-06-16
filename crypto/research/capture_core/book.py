@@ -19,8 +19,11 @@ Binance USDT-M procedure implemented here:
 """
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from typing import NamedTuple, Optional
+
+from crypto.research.capture_core import config as cfg
 
 
 class _Diff(NamedTuple):
@@ -47,12 +50,21 @@ class SyncResult:
 class DepthMaintainer:
     """Maintain the depth-diff cursor for one symbol; detect gaps + resync."""
 
-    def __init__(self, symbol: str) -> None:
+    def __init__(self, symbol: str, *, buffer_maxlen: Optional[int] = None,
+                 reseed_threshold: Optional[int] = None) -> None:
         self.symbol = symbol
         self.synced = False
         self.last_u: Optional[int] = None
         self.last_update_id: Optional[int] = None
-        self._buffer: list[_Diff] = []
+        # BOUNDED: while AWAITING a snapshot the maintainer buffers diffs; an unsynced
+        # symbol otherwise grows this forever (the firehose leak). maxlen drops the
+        # OLDEST diff once full — only diffs near the lastUpdateId boundary can sync, so
+        # stale ones are pure waste.
+        self._maxlen = (buffer_maxlen if buffer_maxlen is not None
+                        else cfg.CAPTURE_DEPTH_BUFFER_MAXLEN)
+        self._reseed_threshold = (reseed_threshold if reseed_threshold is not None
+                                  else cfg.CAPTURE_UNSYNCED_RESEED_THRESHOLD)
+        self._buffer: "deque[_Diff]" = deque(maxlen=self._maxlen)
         self._last_good_ts: Optional[int] = None
         self._pending_gap_start: Optional[int] = None
 
@@ -64,9 +76,16 @@ class DepthMaintainer:
             self.last_u = u
             self._last_good_ts = ts
             return SyncResult()
-        # awaiting a snapshot: buffer, then try to sync if a snapshot is in hand
+        # awaiting a snapshot: buffer (bounded; oldest evicted at maxlen), then try to
+        # sync if a snapshot is in hand.
         self._buffer.append(_Diff(U, u, pu, ts))
         if self.last_update_id is None:
+            # No snapshot has ever landed, so the synced/boundary paths that raise
+            # needs_snapshot are unreachable — a stuck-unsynced book would otherwise never
+            # ask for a (re)seed. Once it has buffered past the threshold, re-request one
+            # (the scheduler dedups). Closes the never-synced re-request hole.
+            if len(self._buffer) >= self._reseed_threshold:
+                return SyncResult(needs_snapshot=True)
             return SyncResult()
         return self._try_sync()
 
@@ -84,23 +103,25 @@ class DepthMaintainer:
         self.synced = False
         self.last_u = None
         self.last_update_id = None          # the prior snapshot is stale now
-        self._buffer = [_Diff(U, u, pu, ts)]
+        self._buffer = deque([_Diff(U, u, pu, ts)], maxlen=self._maxlen)
         return SyncResult(needs_snapshot=True)
 
     def _try_sync(self) -> SyncResult:
         lid = self.last_update_id
         if lid is None:
             return SyncResult()
-        # drop stale (u < lastUpdateId)
-        self._buffer = [d for d in self._buffer if d.u >= lid]
-        idx = next((i for i, d in enumerate(self._buffer)
+        # drop stale (u < lastUpdateId). Work on a list for the index/slice logic, then
+        # store back a BOUNDED deque so the cap survives every sync attempt.
+        buf = [d for d in self._buffer if d.u >= lid]
+        idx = next((i for i, d in enumerate(buf)
                     if d.U <= lid + 1 <= d.u), None)
         if idx is None:
-            if self._buffer and self._buffer[0].U > lid + 1:
+            self._buffer = deque(buf, maxlen=self._maxlen)
+            if buf and buf[0].U > lid + 1:
                 # hole between snapshot and earliest buffered diff -> re-snapshot
                 return SyncResult(needs_snapshot=True)
             return SyncResult()             # not enough diffs yet; keep waiting
-        sync_ev = self._buffer[idx]
+        sync_ev = buf[idx]
         self.synced = True
         self.last_u = sync_ev.u
         self._last_good_ts = sync_ev.ts
@@ -108,8 +129,8 @@ class DepthMaintainer:
         if self._pending_gap_start is not None:
             gap = (self._pending_gap_start, sync_ev.ts, "sequence_gap")
             self._pending_gap_start = None
-        rest = self._buffer[idx + 1:]
-        self._buffer = []
+        rest = buf[idx + 1:]
+        self._buffer = deque(maxlen=self._maxlen)
         for d in rest:
             if d.pu != self.last_u:
                 follow = self._enter_resync(d.U, d.u, d.pu, d.ts)
