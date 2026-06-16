@@ -506,6 +506,156 @@ systemctl --user daemon-reload
 systemctl --user enable --now mhde-NEW.timer
 ```
 
+### Firehose deploy (§G) — sharded capture re-enable
+
+Brings the ADR-039 sharded firehose live. **This procedure deploys nothing — it is the
+ordered plan.** Run it deliberately, top to bottom, only when you mean to enable capture.
+
+**State going in (all merged to `master`, build-only — nothing enabled yet):**
+
+- PR #39 — leak fix (bounded `DepthMaintainer._buffer` + durable seeding).
+- PR #40 — sharded units + sd_notify (layer-1 watchdog).
+- PR #41 — cpuset core-pinning drop-ins.
+- PR #42 — layer-2 peer-asymmetry dead-shard detector.
+- `master` @ `fbbd9f1`. Capture units are tracked but **NOT installed/enabled**.
+- The **engine is LIVE** (paper mode, `ENGINE_MODE=paper` → testnet), runs as **system**
+  units under `system.slice`, and **holds open positions**. Nothing below touches it except
+  step 1 (its own pin) — which is applied through the engine's own deploy.
+
+Cores: 8 (`0-7`). Target map — **engine `0-3`, capture `4-7`** (4/4 disjoint). `cpuset` enforces
+on `system.slice` already; on the `--user` side it is a silent no-op until the delegation
+drop-in is installed (the verified §B blocker).
+
+#### Deploy steps — in order
+
+**1. Engine pin (cross-repo — built + gated in the crypto-trading-engine repo, not here).**
+A cpuset drop-in `AllowedCPUs=0-3` on the engine's **system** units
+(`/etc/systemd/system/trading-engine-{entry,monitor,reconcile,backup,self-monitor-*}.service.d/`).
+Built-only there; applied with `sudo systemctl daemon-reload` and picked up at the next engine
+**fire** (the engine is timer-driven oneshots, not a daemon), so it **does not disturb open
+positions**.
+
+**2. Sudo install the pinning drop-ins (operator — CC has no passwordless sudo).** Three MHDE
+drop-ins clear the §B blocker and pin capture to `4-7`:
+
+```bash
+cd /home/jpcg/MHDE
+# (a) the SUDO system delegation drop-in — adds cpuset to what user@.service delegates to app.slice
+sudo install -D -m 0644 \
+  systemd/system/user@.service.d/10-cpuset-delegate.conf \
+  /etc/systemd/system/user@.service.d/10-cpuset-delegate.conf
+sudo systemctl daemon-reload
+# (b) the two --user cpuset band drop-ins (AllowedCPUs=4-7)
+install -D -m 0644 systemd/mhde-capture-core@.service.d/cpuset.conf \
+  ~/.config/systemd/user/mhde-capture-core@.service.d/cpuset.conf
+install -D -m 0644 systemd/mhde-capture-owner.service.d/cpuset.conf \
+  ~/.config/systemd/user/mhde-capture-owner.service.d/cpuset.conf
+# (c) re-derive app.slice's controllers so cpuset is now delegated (or a full re-login)
+sudo systemctl restart user@1000.service
+```
+
+> **`restart user@1000.service` restarts the whole `--user` manager — it bounces ALL `--user`
+> units (the dashboard/Streamlit, and capture if it were running), but NOT the engine** (it is
+> system-level under `system.slice`, with its positions untouched). **Time this for a window
+> where brief dashboard downtime is acceptable.** Confirm cpuset is now delegated:
+> `cat /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/cgroup.controllers`
+> should now include `cpuset`.
+
+**3. Install + enable the capture units.**
+
+```bash
+cd /home/jpcg/MHDE
+cp systemd/mhde-capture-owner.service        ~/.config/systemd/user/
+cp systemd/mhde-capture-core@.service        ~/.config/systemd/user/
+cp systemd/mhde-capture.target               ~/.config/systemd/user/
+cp systemd/mhde-capture-stall-detector.service ~/.config/systemd/user/
+cp systemd/mhde-capture-stall-detector.timer   ~/.config/systemd/user/
+systemctl --user daemon-reload
+# (do NOT enable yet — see the ordering gate below)
+```
+
+**4. Boot-persistence.**
+
+```bash
+loginctl enable-linger jpcg   # capture survives logout / reboot
+```
+
+#### ⛔ ORDERING GATE — both pins MUST be live before enabling `mhde-capture.target`
+
+**Do not run `systemctl --user enable --now mhde-capture.target` until BOTH step 1 (engine pin
+`0-3`) AND step 2 (capture delegation + `4-7` drop-ins, restart applied) are live.** Until both
+are in: capture is confined to `4-7` but the **engine still floats across `0-7`**, so they
+**overlap on `4-7`** and the "provably disjoint" guarantee is not real — the engine's entry
+cycle and the firehose would contend on the same cores. This is a blocking gate, not a caveat.
+
+Verify before proceeding: engine units show `AllowedCPUs=0-3`
+(`systemctl show trading-engine-entry.service -p AllowedCPUs`) **and** the capture delegation is
+live (the `cgroup.controllers` check above includes `cpuset`).
+
+#### 5. Resilience drill — the LAST check before the live enable
+
+Enable the owner + shards (still pre-`enable`, start them transiently to drill), then:
+
+- **Kill one shard by PID** (`systemctl --user kill -s SIGKILL mhde-capture-core@3.service`, or
+  `kill <pid>`). **Expected:** systemd restarts it (`Restart=on-failure`, `RestartSec=5`); the
+  **layer-2 alert fires** for the silent shard (stale heartbeat / no-rows-while-peers-flow,
+  within ~one 30s detector tick); the **other 7 shards + owner are undisturbed** (no `Requires=`
+  between shards).
+- **Kill the owner by PID.** **Expected:** the shards are `Wants=`/`After=` the owner, **NOT
+  `Requires=`**, so they are **not cycled**; the **raw WS tape keeps flowing** (every diff is
+  stored unconditionally); depth books **reseed via the durable seed-retry** (PR #39) once the
+  owner restarts.
+
+**Proceed to the live enable only after both behave as expected:**
+
+```bash
+systemctl --user enable --now mhde-capture.target
+systemctl --user enable --now mhde-capture-stall-detector.timer
+```
+
+#### 6. Verify healthy
+
+```bash
+# all 8 shards + owner active
+systemctl --user list-units 'mhde-capture-core@*.service' 'mhde-capture-owner.service' --no-legend
+# heartbeats fresh (mtime within ~30s; 8 files shard-0..7.json)
+ls -l --time-style=+%H:%M:%S data/research/capture_core/.ipc/heartbeats/shard-*.json
+# no stall alert fired
+journalctl --user -u mhde-capture-stall-detector.service -n 20 --no-pager
+# parquet landing under the firehose datasets (part-* advancing)
+for d in aggTrade depth bookTicker forceOrder markPrice depth_snapshot; do
+  printf "%-14s " "$d"; find "data/research/capture_core/$d" -name 'part-*' -newermt '-2 min' | wc -l
+done
+```
+
+#### 7. Rollback
+
+```bash
+systemctl --user stop mhde-capture.target            # stops owner + all 8 shards
+systemctl --user stop mhde-capture-stall-detector.timer
+# to fully back out: systemctl --user disable mhde-capture.target mhde-capture-stall-detector.timer
+```
+
+Capture is isolated on `4-7` under its own target. **Stopping or killing it never touches the
+engine** (different slice, different cores). Rollback is safe at any point.
+
+#### Operational notes
+
+- **`MemoryMax=4G` per shard and the owner** (in the merged units). This is a backstop above
+  the **bounded RSS high-water (~560–570 MiB/shard)** measured in the residual diagnostic — NOT
+  the live heap. `4G` clears that high-water ~7×. It is a per-unit **ceiling, not a reservation**:
+  8×4G + owner = 36G nominal on a 15 GiB box is fine because actual resident is ~570 MiB/shard.
+- **N stays 8 shards across the 4 cpuset cores `4-7`** (kernel-balanced; the §G re-measure put
+  the firehose's true cost at ~3–4 cores, comfortably inside the 4-core band, none saturated).
+  **Do not drop N below 8** — it is hard-wired (`--of 8`) in the shard, target, and stall-detector
+  units; changing N is a deliberate whole-target restart that re-shards every symbol.
+- **Never hand-run `capture-stall-check` without `--of 8`.** The bare default is
+  `config.CAPTURE_N_SHARDS = 3`, which would expect only shards 0–2 and false-alert "no heartbeat"
+  for shards 3–7. The `mhde-capture-stall-detector.service` always passes `--of 8`.
+- Heartbeats + the detector baseline live under `data/research/capture_core/.ipc/` (interval
+  `10s`, stale at `3×` = `30s`), which is excluded from retention/compaction and the disk/inode
+  guards — they never sweep the live socket or heartbeats.
+
 ### Updating dashboard auth credentials
 
 Auth env vars live as `Environment=` lines in
