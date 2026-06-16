@@ -1,0 +1,45 @@
+# /home/jpcg/.config/systemd/user/mhde-capture-owner.service
+[Unit]
+Description=MHDE capture-core snapshot-owner — sole /fapi/v1/depth REST broker (ADR-039)
+After=network-online.target
+Wants=network-online.target
+# A crash-LOOP (vs a one-off restart) trips the unit to `failed` (visible/alertable).
+# StartLimit* live in [Unit], not [Service].
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+# systemd --user unit (installed under ~/.config/systemd/user/): runs as the logging-in
+# user via linger, so NO User=/Group= line (the capture family convention; see
+# mhde-capture-core.service). Read-only against Binance USDT-M PUBLIC REST; never opens any DB.
+#
+# BUILT-NOT-DEPLOYED (ADR-039 gap 3): this file is tracked but NOT installed/enabled. The
+# whole sharded firehose is enabled as one unit via mhde-capture.target, and only AFTER the
+# §G trial + the gap-4 cpuset work (per OPERATIONS.md). Do NOT enable against the live engine.
+#
+# Type=notify REQUIRES the process to emit sd_notify READY=1 (socket bound) + WATCHDOG=1
+# heartbeats — capture-owner-run does this via the raw NOTIFY_SOCKET datagram (no sdnotify
+# pip dep). A Type=notify unit whose process never sends READY=1 hangs `activating` then fails.
+# REST stays MAINNET to match the WS firehose: no testnet override is set here.
+Type=notify
+NotifyAccess=main
+WorkingDirectory=/home/jpcg/MHDE
+ExecStartPre=/usr/bin/test -x /home/jpcg/MHDE/venv/bin/python
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto capture-owner-run --socket /home/jpcg/MHDE/data/research/capture_core/.ipc/snapshot-owner.sock
+Restart=on-failure
+RestartSec=5
+# Up from 30s (ADR-039 §E): give the owner time to drain on SIGTERM before SIGKILL.
+TimeoutStopSec=90
+# Liveness: a wedged owner loop stops feeding WATCHDOG -> systemd restarts it.
+WatchdogSec=30
+# Generous backstop above the ~0.6 GiB owner working set; it is a kill-switch, not a reservation.
+MemoryMax=4G
+# Priority caps (PR-3): the engine (system.slice) wins CPU/IO under contention; owner is the
+# first OOM victim. cpuset (AllowedCPUs) is intentionally NOT set — that is gap 4 (a silent
+# no-op on --user units until the user@.service cpuset delegation drop-in lands).
+CPUWeight=20
+IOWeight=20
+OOMScoreAdjust=800
+StandardOutput=journal
+StandardError=journal
+# No [Install]: pulled in by mhde-capture.target; enabled/lingered only post-trial (OPERATIONS.md).

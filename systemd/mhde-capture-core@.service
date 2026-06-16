@@ -1,0 +1,45 @@
+# /home/jpcg/.config/systemd/user/mhde-capture-core@.service
+[Unit]
+Description=MHDE capture-core shard %i of 8 — raw Binance USDT-M firehose (ADR-039 sharded)
+# Soft Wants= the owner (NOT Requires=): an owner crash-loop must NOT cycle the 8 shards
+# (ADR-039 §A). Socket-down is non-fatal — the shard buffers diffs in its bounded
+# DepthMaintainer, retries the owner socket with backoff, and replays on reconnect.
+After=network-online.target mhde-capture-owner.service
+Wants=network-online.target mhde-capture-owner.service
+# StartLimit* live in [Unit]: a crash-LOOP trips this shard to `failed` (alertable) rather
+# than flapping silently — and one shard failing never touches the other seven.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+# systemd --user unit (linger), NO User=/Group= (capture family convention).
+# BUILT-NOT-DEPLOYED (ADR-039 gap 3): tracked, not installed/enabled. The instance set is
+# pinned by mhde-capture.target's Wants= (@0..@7); %i is the shard id. N is hard-wired to 8
+# in ExecStart; changing N is a deliberate whole-target restart (re-shards every symbol).
+#
+# Type=notify REQUIRES the process to emit sd_notify READY=1 (shard up) + WATCHDOG=1 — the
+# CaptureService run loop does this via the raw NOTIFY_SOCKET datagram. WATCHDOG is fed from
+# the flush loop ONLY while messages flow, so a wedged loop OR a silently-stalled socket both
+# let WatchdogSec escalate to a restart. REST stays MAINNET (no testnet override set here).
+#
+# cpuset pinning (AllowedCPUs=5/6/7 via per-instance drop-ins) is gap 4: a silent no-op on
+# --user units until the user@.service cpuset delegation lands, so it is intentionally absent.
+Type=notify
+NotifyAccess=main
+WorkingDirectory=/home/jpcg/MHDE
+ExecStartPre=/usr/bin/test -x /home/jpcg/MHDE/venv/bin/python
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto capture-core-run --shard %i --of 8 --snapshot-socket /home/jpcg/MHDE/data/research/capture_core/.ipc/snapshot-owner.sock
+Restart=on-failure
+RestartSec=5
+# Up from 30s (ADR-039 §E): an un-saturated per-core loop drains its parquet buffers fast.
+TimeoutStopSec=90
+WatchdogSec=30
+# Per-shard backstop (per-shard peak RSS measured ~0.6 GiB). Aggregate 8x4G + owner is a
+# CEILING not a reservation — actual use is far lower; document at deploy (OPERATIONS.md).
+MemoryMax=4G
+CPUWeight=20
+IOWeight=20
+OOMScoreAdjust=800
+StandardOutput=journal
+StandardError=journal
+# No [Install]: instances are pulled in by mhde-capture.target's Wants=.

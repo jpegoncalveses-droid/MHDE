@@ -13,6 +13,7 @@ returned payload, preserving the one-writer-per-partition invariant.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -21,6 +22,7 @@ import time
 from typing import Any, Awaitable, Callable, Optional
 
 from crypto.research.capture_core import config as cfg
+from crypto.research.capture_core import sd_notify
 from crypto.research.capture_core import rest_throttle as rt
 from crypto.research.capture_core.client import RateLimited
 from crypto.research.capture_core.rest_header_gate import HeaderGate
@@ -359,15 +361,21 @@ async def run_owner(
     stop_event: Optional[asyncio.Event] = None,
     install_signal_handlers: bool = True,
     ready_event: Optional[asyncio.Event] = None,
+    notifier: Optional[Any] = None,
 ) -> None:
     """Run the owner as a standalone process (the ``crypto capture-owner-run`` body).
 
     Binds the unix socket, serves until SIGTERM/SIGINT (or ``stop_event`` is set), then
-    releases the socket. This is the manual Trial-1 owner runner (ADR-039 §G): NO
-    sd_notify / watchdog wiring yet (that is the systemd piece). Single-box testable —
-    pass ``stop_event`` to drive shutdown deterministically and ``ready_event`` to await
-    the moment the socket is listening. The socket is ALWAYS unlinked on exit (no stale
-    socket, no orphaned server), even if serving raises.
+    releases the socket. Single-box testable — pass ``stop_event`` to drive shutdown
+    deterministically and ``ready_event`` to await the moment the socket is listening. The
+    socket is ALWAYS unlinked on exit (no stale socket, no orphaned server), even if serving
+    raises.
+
+    ADR-039 gap 3 systemd wiring: ``owner.start()`` is INSIDE the try whose finally removes
+    the signal handlers, so a bind failure no longer leaks them. When ``notifier`` is given,
+    emit systemd ``READY=1`` once the socket is bound and run a STEADY ``WATCHDOG=1`` keepalive
+    (the owner is request-driven and legitimately idle, so its watchdog is time-based, NOT
+    activity-gated).
     """
     loop = asyncio.get_running_loop()
     stop = stop_event if stop_event is not None else asyncio.Event()
@@ -382,13 +390,18 @@ async def run_owner(
                 # stop_event. The runner still serves and shuts down cleanly.
                 pass
 
-    await owner.start()                       # bind the socket up-front (listening now)
-    if ready_event is not None:
-        ready_event.set()
-
-    serve_task = asyncio.ensure_future(owner.serve())
-    stop_task = asyncio.ensure_future(stop.wait())
+    serve_task = None
+    stop_task = None
+    wd_task = None
     try:
+        await owner.start()                   # bind the socket up-front (listening now)
+        if ready_event is not None:
+            ready_event.set()
+        if notifier is not None:
+            notifier.ready()                  # systemd READY=1 — socket bound + serving
+        serve_task = asyncio.ensure_future(owner.serve())
+        stop_task = asyncio.ensure_future(stop.wait())
+        wd_task = _spawn_owner_watchdog(notifier, stop)
         await asyncio.wait({serve_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
         if serve_task.done() and not serve_task.cancelled():
             serve_task.result()               # surface a serve-time failure (e.g. bind)
@@ -398,12 +411,36 @@ async def run_owner(
                 loop.remove_signal_handler(sig)
             except (NotImplementedError, RuntimeError):
                 pass
-        for t in (serve_task, stop_task):
-            if not t.done():
+        # Guard each task with `is not None`: a start() failure leaves them unassigned, and
+        # touching `t.done()` on None would mask the original bind exception with AttributeError.
+        for t in (serve_task, stop_task, wd_task):
+            if t is not None and not t.done():
                 t.cancel()
         await owner.stop()                    # close server + unlink socket (idempotent)
-        for t in (serve_task, stop_task):     # drain the cancelled tasks
+        for t in (serve_task, stop_task, wd_task):   # drain the cancelled tasks
+            if t is None:
+                continue
             try:
                 await t
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
+
+
+def _spawn_owner_watchdog(notifier, stop: asyncio.Event):
+    """Steady systemd WATCHDOG=1 keepalive for the owner. Returns None when there is no
+    notifier or no ``WATCHDOG_USEC`` (manual / non-systemd runs), so nothing is spawned."""
+    if notifier is None:
+        return None
+    interval = sd_notify.watchdog_interval_s()
+    if interval is None:
+        return None
+
+    async def _loop():
+        while not stop.is_set():
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(stop.wait(), timeout=interval)
+            if stop.is_set():
+                break
+            notifier.watchdog()
+
+    return asyncio.ensure_future(_loop())

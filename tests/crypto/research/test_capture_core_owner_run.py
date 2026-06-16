@@ -13,8 +13,21 @@ import asyncio
 import os
 import signal
 
+import pytest
+
 from crypto.research.capture_core import rest_throttle as rt
 from crypto.research.capture_core import snapshot_owner as so
+
+
+class _RecordingNotifier:
+    def __init__(self):
+        self.calls = []
+
+    def ready(self):
+        self.calls.append("READY")
+
+    def watchdog(self):
+        self.calls.append("WATCHDOG")
 
 
 SNAP = {"lastUpdateId": 7, "E": 1000, "bids": [["1", "2"]], "asks": [["3", "4"]]}
@@ -94,6 +107,84 @@ def test_owner_run_sigint_stops_and_releases_socket(tmp_path):
 
 
 # -- (a) the CLI command parses --socket and wires it into the owner -----------
+
+# -- gap 3: sd_notify READY + the start()-in-try handler-leak tidy ------------
+
+def test_run_owner_fires_ready_via_notifier(tmp_path):
+    sock = str(tmp_path / "owner.sock")
+    owner = _owner(sock)
+    notifier = _RecordingNotifier()
+
+    async def scenario():
+        stop = asyncio.Event()
+        ready = asyncio.Event()
+        task = asyncio.ensure_future(
+            so.run_owner(owner, stop_event=stop, install_signal_handlers=False,
+                         ready_event=ready, notifier=notifier))
+        await asyncio.wait_for(ready.wait(), timeout=2)
+        stop.set()
+        await asyncio.wait_for(task, timeout=2)
+
+    asyncio.run(scenario())
+    assert "READY" in notifier.calls                       # READY=1 fired after bind
+
+
+def test_run_owner_removes_signal_handlers_when_start_raises():
+    # A start() bind failure must STILL remove the installed signal handlers (no leak) and
+    # re-raise the bind error — not mask it with a NameError from the finally touching
+    # serve_task/stop_task before they were assigned.
+    class _OwnerFailsStart:
+        async def start(self):
+            raise OSError("EADDRINUSE")
+
+        async def serve(self):
+            return None
+
+        async def stop(self):
+            return None
+
+    state = {}
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        try:
+            await so.run_owner(_OwnerFailsStart(), stop_event=asyncio.Event(),
+                               install_signal_handlers=True)
+        except OSError:
+            state["raised"] = True
+        state["leaked"] = [s for s in (signal.SIGTERM, signal.SIGINT)
+                           if s in getattr(loop, "_signal_handlers", {})]
+
+    asyncio.run(scenario())
+    assert state.get("raised") is True                     # bind error propagated
+    assert state["leaked"] == []                           # handlers cleaned up despite failure
+
+
+def test_run_owner_watchdog_keepalive_fires_then_stops_clean(tmp_path, monkeypatch):
+    # With WATCHDOG_USEC set, the owner emits a STEADY WATCHDOG keepalive (not activity-
+    # gated — an idle owner is healthy), and the watchdog task is drained on stop (no hang).
+    monkeypatch.setenv("WATCHDOG_USEC", "100000")          # 0.1s deadline -> 0.05s ping
+    sock = str(tmp_path / "owner.sock")
+    owner = _owner(sock)
+    notifier = _RecordingNotifier()
+
+    async def scenario():
+        stop = asyncio.Event()
+        ready = asyncio.Event()
+        task = asyncio.ensure_future(
+            so.run_owner(owner, stop_event=stop, install_signal_handlers=False,
+                         ready_event=ready, notifier=notifier))
+        await asyncio.wait_for(ready.wait(), timeout=2)
+        for _ in range(200):                               # poll up to ~2s for a ping
+            await asyncio.sleep(0.01)
+            if "WATCHDOG" in notifier.calls:
+                break
+        stop.set()
+        await asyncio.wait_for(task, timeout=2)            # drains cleanly, no hang
+
+    asyncio.run(scenario())
+    assert "WATCHDOG" in notifier.calls
+
 
 def test_capture_owner_run_cli_parses_socket_and_wires_owner(tmp_path, monkeypatch):
     import main
