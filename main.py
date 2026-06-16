@@ -1938,9 +1938,11 @@ def crypto_capture_core_run(root, shard, n_shards, snapshot_socket):
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    from crypto.research.capture_core import sd_notify
     svc = CaptureService(root=root or cc_cfg.RAW_DIR, client=CaptureRestClient(),
                          shard=shard, n_shards=n_shards,
-                         snapshot_socket_path=snapshot_socket)
+                         snapshot_socket_path=snapshot_socket,
+                         notifier=sd_notify.notifier_from_env())
     asyncio.run(svc.run())
 
 
@@ -1956,14 +1958,15 @@ def crypto_capture_owner_run(socket_path):
     --snapshot-socket``). Wraps ``build_owner`` (reads the live REQUEST_WEIGHT cap ->
     throttle budget + the all-traffic header-gate) and serves until SIGTERM/SIGINT,
     releasing the socket cleanly. Read-only against Binance USDT-M PUBLIC REST; NEVER
-    opens any DB. This is the manual Trial-1 owner runner: NO systemd/sd_notify, NO
-    cpuset, NO shard launch, NO live capture.
+    opens any DB. Emits systemd sd_notify READY/WATCHDOG when run under a Type=notify unit
+    (no-op otherwise — manual runs unaffected). cpuset pinning is gap 4.
     """
     import asyncio
     import logging
 
     from crypto.research.capture_core import config as cc_cfg
     from crypto.research.capture_core.client import CaptureRestClient
+    from crypto.research.capture_core import sd_notify
     from crypto.research.capture_core import snapshot_owner as so
 
     logging.basicConfig(
@@ -1974,7 +1977,7 @@ def crypto_capture_owner_run(socket_path):
         CaptureRestClient(),
         socket_path=socket_path or cc_cfg.CAPTURE_SNAPSHOT_SOCKET_PATH,
     )
-    asyncio.run(so.run_owner(owner))
+    asyncio.run(so.run_owner(owner, notifier=sd_notify.notifier_from_env()))
 
 
 @crypto.command("capture-core-loadtest")

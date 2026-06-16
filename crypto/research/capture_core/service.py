@@ -24,6 +24,7 @@ from typing import Any, Callable, Optional, Sequence
 
 from crypto.research.capture_core import config as cfg
 from crypto.research.capture_core import conn_manager as cm
+from crypto.research.capture_core import sd_notify
 from crypto.research.capture_core import sharding
 from crypto.research.capture_core import store
 from crypto.research.capture_core.book import DepthMaintainer
@@ -182,6 +183,8 @@ class CaptureService:
         inode_guard: Optional[Any] = None,
         inode_guard_enabled: bool = True,
         disk_check_interval_s: float = cfg.CAPTURE_DISK_CHECK_INTERVAL_S,
+        notifier: Optional[Any] = None,
+        watchdog_liveness_window_s: float = cfg.SOCKET_SILENCE_TIMEOUT_S,
     ) -> None:
         self._root = root
         self._client = client
@@ -256,6 +259,14 @@ class CaptureService:
         else:
             self._snap_sched = None
 
+        # sd_notify supervision (ADR-039 gap 3). Default = a disabled notifier so every
+        # CLI / test run (NOTIFY_SOCKET unset) is a no-op. READY fires when the shard is
+        # up; WATCHDOG is fed from the flush loop only while messages flow, so a wedged
+        # loop OR a silently-stalled socket both let systemd's WatchdogSec escalate.
+        self._notifier = notifier or sd_notify.SystemdNotifier(None)
+        self._watchdog_liveness_window_s = watchdog_liveness_window_s
+        self._last_msg_monotonic = 0.0
+
         self._stop = asyncio.Event()
         self._current_mgr: Any = None
 
@@ -267,6 +278,11 @@ class CaptureService:
                 or (self._inode_guard is not None and self._inode_guard.halted))
 
     def _on_message(self, stream: str, data: Any, recv_ns: int) -> None:
+        # Liveness for the systemd watchdog: stamp BEFORE the halt guard. A CRITICAL halt
+        # intentionally DROPS data (forward-only) but the socket is alive and the process
+        # is behaving correctly — it must keep feeding the watchdog. Use a monotonic clock
+        # (not recv_ns wall-clock) so an NTP step can't corrupt the watchdog age.
+        self._last_msg_monotonic = time.monotonic()
         # Guard CRITICAL (byte OR inode): drop incoming firehose data (forward-only —
         # a hole is recorded by absence; we never backfill). Resumes on recovery.
         if self._writes_halted():
@@ -393,6 +409,17 @@ class CaptureService:
             for w in self._writers:
                 w.flush_due()
             self._maybe_enforce_guards()
+            self._feed_watchdog_if_live()
+
+    def _feed_watchdog_if_live(self) -> None:
+        """Heartbeat the systemd watchdog ONLY while messages are flowing. A wedged loop
+        stops ticking this; a silently-stalled socket lets the liveness age exceed the
+        window — both then let WatchdogSec escalate to a restart. Liveness keys on ANY
+        stream: every shard (shard-0 included, which also owns the high-rate array
+        streams) carries high-rate per-symbol streams, so a quiet moment never false-trips.
+        """
+        if (time.monotonic() - self._last_msg_monotonic) < self._watchdog_liveness_window_s:
+            self._notifier.watchdog()
 
     def _maybe_enforce_guards(self) -> None:
         """Run the disk + inode guards on their (coarser) shared cadence."""
@@ -427,6 +454,11 @@ class CaptureService:
         self._current_mgr = mgr
         mgr_task = asyncio.create_task(mgr.run())
         logger.info("capture-core service started: %d symbols", len(universe))
+        # systemd READY=1: the shard is up (universe resolved, seed requested, manager
+        # launched). Seed the liveness clock so the first watchdog feed isn't already stale
+        # in the gap before the first frame arrives.
+        self._last_msg_monotonic = time.monotonic()
+        self._notifier.ready()
 
         try:
             while not self._stop.is_set():

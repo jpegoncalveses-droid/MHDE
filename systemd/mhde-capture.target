@@ -1,0 +1,13 @@
+# /home/jpcg/.config/systemd/user/mhde-capture.target
+[Unit]
+Description=MHDE sharded capture-core firehose (ADR-039) — snapshot-owner + 8 shards
+# One-shot enable/disable for the whole firehose. NO Requires= between shards (one
+# crash-restart never cycles the others). Start ordering (owner before shards) lives on the
+# shard template's After=mhde-capture-owner.service, not here; a shard that races ahead
+# retries the socket via its backoff path.
+# BUILT-NOT-DEPLOYED (ADR-039 gap 3): tracked, not enabled. Do NOT enable against the live
+# engine before gap 4 — 8 shards would contend the engine's 1s cycle without cpuset pinning.
+Wants=mhde-capture-owner.service mhde-capture-core@0.service mhde-capture-core@1.service mhde-capture-core@2.service mhde-capture-core@3.service mhde-capture-core@4.service mhde-capture-core@5.service mhde-capture-core@6.service mhde-capture-core@7.service
+
+[Install]
+WantedBy=default.target
