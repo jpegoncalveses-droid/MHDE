@@ -177,6 +177,30 @@ CAPTURE_REST_WEIGHT_PER_MIN = 1200
 #: therefore stagger over ~9 minutes.
 SNAPSHOT_MIN_INTERVAL_S = DEPTH_SNAPSHOT_WEIGHT * 60.0 / CAPTURE_REST_WEIGHT_PER_MIN
 
+# -- Depth-maintenance memory safety (leak root cause, found in the §G N=12 trial) --
+#: The per-symbol DepthMaintainer buffers raw depth diffs while AWAITING a REST
+#: snapshot (book.py). If a symbol's seed never lands (a dropped seed, or repeated
+#: resyncs faster than the paced owner can re-seed), that buffer otherwise grows one
+#: diff per message FOREVER — the N-independent, monotonic per-shard heap+CPU climb
+#: that saturated all 8 cores in the N=12 measurement run. Bound it: the buffer only
+#: needs the diffs NEAR the lastUpdateId boundary to sync, so old entries are pure
+#: waste and the oldest are dropped once the cap is hit.
+#: Worst-case maintainer RAM ~= CAPTURE_DEPTH_BUFFER_MAXLEN * symbols-per-shard *
+#: ~200 B/_Diff (e.g. 5000 * 44 * 200 B ~= 42 MiB/shard, all symbols maxed) — bounded,
+#: vs the unbounded multi-GiB leak it replaces.
+CAPTURE_DEPTH_BUFFER_MAXLEN = 5000
+#: While a maintainer is stuck unsynced and its buffer has grown past this many diffs,
+#: it proactively re-raises ``needs_snapshot`` so the service re-queues a seed (the
+#: never-synced on_diff path otherwise never asks). Must be < the maxlen so the
+#: re-request fires BEFORE the cap starts evicting. The snapshot scheduler dedups, so
+#: re-raising every diff past the threshold is harmless.
+CAPTURE_UNSYNCED_RESEED_THRESHOLD = 1000
+#: Durable seed retry (SnapshotClientScheduler): a failed seed is re-queued (not
+#: dropped) with exponential backoff between attempts, starting here and capped below,
+#: so a perpetually-failing symbol cannot hammer the shared snapshot-owner.
+CAPTURE_SEED_RETRY_BACKOFF_INITIAL_S = 1.0
+CAPTURE_SEED_RETRY_BACKOFF_MAX_S = 60.0
+
 # -- Long-horizon 1h klines store (capture-completion piece 2; ADR-035 long-context
 #    reference frame — distinct from the 24h firehose buffer). Seeded once, then
 #    maintained forward hourly. Closed bars only. All on the weight-counted /fapi pool.
