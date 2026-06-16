@@ -201,6 +201,18 @@ CAPTURE_UNSYNCED_RESEED_THRESHOLD = 1000
 CAPTURE_SEED_RETRY_BACKOFF_INITIAL_S = 1.0
 CAPTURE_SEED_RETRY_BACKOFF_MAX_S = 60.0
 
+# -- ADR-039 §D layer-2 dead-shard detector (peer-asymmetry heartbeats) --------
+#: Each shard writes a heartbeat {ts_ns, dispatched, bytes_in, rows} here every
+#: CAPTURE_HEARTBEAT_INTERVAL_S; the mhde-capture-stall-detector timer reads them ALL and
+#: alerts on a `failed` unit, a stale/absent heartbeat, or a shard whose rows stop advancing
+#: while peers flow (the dead-shard tell a single-process design never had — sd_notify layer 1
+#: only catches a wedged loop within the SAME process). Lives under .ipc/, which is NOT a
+#: symbol=/date= dataset, so retention/compaction/disk+inode guards never sweep it.
+CAPTURE_HEARTBEAT_DIR = f"{RAW_DIR}/.ipc/heartbeats"
+CAPTURE_HEARTBEAT_INTERVAL_S = 10.0
+#: A heartbeat older than this many intervals => the shard is hung/gone.
+CAPTURE_HEARTBEAT_STALE_FACTOR = 3
+
 # -- Long-horizon 1h klines store (capture-completion piece 2; ADR-035 long-context
 #    reference frame — distinct from the 24h firehose buffer). Seeded once, then
 #    maintained forward hourly. Closed bars only. All on the weight-counted /fapi pool.

@@ -1980,6 +1980,39 @@ def crypto_capture_owner_run(socket_path):
     asyncio.run(so.run_owner(owner, notifier=sd_notify.notifier_from_env()))
 
 
+@crypto.command("capture-stall-check")
+@click.option("--of", "n_shards", default=None, type=int,
+              help="Shard count to expect (default config.CAPTURE_N_SHARDS). Match the "
+                   "deployed --of so the detector expects the right shard set.")
+def crypto_capture_stall_check(n_shards):
+    """ADR-039 §D layer-2 dead-shard detector (oneshot; the stall-detector timer's body).
+
+    Reads every shard's heartbeat + the systemd unit states and Telegram-alerts on a `failed`
+    unit, a stale/absent heartbeat, or a shard whose rows stop advancing while peers flow (a
+    HUNG shard is invisible to Restart= and to layer-1 sd_notify). Read-only; never opens any DB
+    (the DB-free monitoring.alert.send_text path). Persists a per-run baseline for asymmetry.
+    """
+    import time
+
+    from crypto.research.capture_core import config as cc_cfg
+    from crypto.research.capture_core import stall_detector as sd
+
+    n = n_shards if n_shards is not None else cc_cfg.CAPTURE_N_SHARDS
+    if n < 1:
+        raise click.BadParameter("--of must be >= 1")
+    units = (["mhde-capture-owner.service"]
+             + [f"mhde-capture-core@{i}.service" for i in range(n)])
+    sd.run_check(
+        heartbeat_dir=cc_cfg.CAPTURE_HEARTBEAT_DIR,
+        expected_shards=[str(i) for i in range(n)],
+        unit_names=units,
+        interval_s=cc_cfg.CAPTURE_HEARTBEAT_INTERVAL_S,
+        stale_factor=cc_cfg.CAPTURE_HEARTBEAT_STALE_FACTOR,
+        state_path=f"{cc_cfg.CAPTURE_HEARTBEAT_DIR}/.stall_state.json",
+        now_ns=time.time_ns(),
+    )
+
+
 @crypto.command("capture-core-loadtest")
 @click.option("--seconds", default=60.0, type=float,
               help="Measurement window length in seconds.")
