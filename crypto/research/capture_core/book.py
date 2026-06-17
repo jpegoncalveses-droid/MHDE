@@ -1,11 +1,14 @@
-"""Per-symbol depth sequence maintenance for capture-core (cursor only).
+"""Per-symbol depth maintenance for capture-core: update-id cursor + (optional)
+online level book.
 
-This is **book MAINTENANCE, not a live order book**: it tracks only the diff
-update-id cursor needed to (a) detect sequence gaps and (b) decide when a fresh
-REST snapshot is required to resync. It never stores raw diffs (the service
-stores every raw diff unconditionally) and never reconstructs bid/ask levels —
-that is the offline replay tool's job, seeded from the separately-stored
-``depth_snapshot`` dataset.
+The cursor logic tracks the diff update-id sequence to (a) detect gaps and (b)
+decide when a fresh REST snapshot is required to resync — it stores no raw diffs
+(the service stores every raw diff unconditionally). This file ADDITIONALLY
+maintains an online bid/ask level book when fed the diff/snapshot level arrays:
+diffs are applied as absolute SETs (qty 0 removes the level), the book is seeded
+from a REST snapshot, cleared on any gap, and rebuilt from the next snapshot.
+Feeding ids WITHOUT level arrays (the legacy call shape) is pure cursor
+maintenance and never builds a book — behaviour identical to before.
 
 Binance USDT-M procedure implemented here:
   * Buffer diffs until a REST snapshot (``lastUpdateId``) applies.
@@ -31,6 +34,8 @@ class _Diff(NamedTuple):
     u: int    # final update id in event
     pu: int   # previous final update id (futures continuity field)
     ts: int   # local receive timestamp (ns)
+    bids: Optional[list] = None   # bid level deltas [[price_str, qty_str], ...] (None = cursor-only)
+    asks: Optional[list] = None   # ask level deltas
 
 
 @dataclass
@@ -48,7 +53,7 @@ class SyncResult:
 
 
 class DepthMaintainer:
-    """Maintain the depth-diff cursor for one symbol; detect gaps + resync."""
+    """Maintain the depth-diff cursor (and optional level book) for one symbol."""
 
     def __init__(self, symbol: str, *, buffer_maxlen: Optional[int] = None,
                  reseed_threshold: Optional[int] = None) -> None:
@@ -67,18 +72,24 @@ class DepthMaintainer:
         self._buffer: "deque[_Diff]" = deque(maxlen=self._maxlen)
         self._last_good_ts: Optional[int] = None
         self._pending_gap_start: Optional[int] = None
+        # ADDITIVE online level book. Empty + untouched unless fed level arrays.
+        # price_str -> qty_str, kept lossless (cast only for the qty-0 test + sorting).
+        self.bids: dict[str, str] = {}
+        self.asks: dict[str, str] = {}
 
-    def on_diff(self, U: int, u: int, pu: int, ts: int) -> SyncResult:
-        """Feed one raw depth-diff event's update ids."""
+    def on_diff(self, U: int, u: int, pu: int, ts: int,
+                bids: Optional[list] = None, asks: Optional[list] = None) -> SyncResult:
+        """Feed one raw depth-diff event's update ids (and optionally its levels)."""
         if self.synced:
             if pu != self.last_u:
-                return self._enter_resync(U, u, pu, ts)
+                return self._enter_resync(U, u, pu, ts, bids, asks)
+            self._apply_levels(bids, asks)
             self.last_u = u
             self._last_good_ts = ts
             return SyncResult()
         # awaiting a snapshot: buffer (bounded; oldest evicted at maxlen), then try to
         # sync if a snapshot is in hand.
-        self._buffer.append(_Diff(U, u, pu, ts))
+        self._buffer.append(_Diff(U, u, pu, ts, bids, asks))
         if self.last_update_id is None:
             # No snapshot has ever landed, so the synced/boundary paths that raise
             # needs_snapshot are unreachable — a stuck-unsynced book would otherwise never
@@ -89,21 +100,85 @@ class DepthMaintainer:
             return SyncResult()
         return self._try_sync()
 
-    def on_snapshot(self, last_update_id: int, ts: int) -> SyncResult:
-        """Feed a REST snapshot's ``lastUpdateId``; attempt to (re)sync."""
+    def on_snapshot(self, last_update_id: int, ts: int,
+                    bids: Optional[list] = None, asks: Optional[list] = None) -> SyncResult:
+        """Feed a REST snapshot's ``lastUpdateId`` (and optionally its full book).
+
+        UNIFORM (re)seed: always drop to awaiting and rebuild the book from THIS
+        snapshot, so ``book`` / ``last_u`` / ``synced`` stay mutually consistent
+        whether or not we were already synced — a late or duplicate seed must not
+        leave a stale cursor on a freshly-rebuilt book. ``_try_sync`` then
+        re-establishes sync via the normal bracket + pu-chain path.
+        """
+        self.synced = False
+        self.last_u = None
         self.last_update_id = last_update_id
+        if bids is not None or asks is not None:
+            self._rebuild_from_snapshot(bids or [], asks or [])
+        else:
+            self.bids = {}
+            self.asks = {}
         return self._try_sync()
+
+    def top_levels(self, n: int) -> tuple[list, list]:
+        """Top-``n`` bids (desc by price) and asks (asc by price), as
+        ``[[price_str, qty_str], ...]`` — the lossless venue strings."""
+        bids = sorted(self.bids.items(), key=lambda kv: float(kv[0]), reverse=True)[:n]
+        asks = sorted(self.asks.items(), key=lambda kv: float(kv[0]))[:n]
+        return [[p, q] for p, q in bids], [[p, q] for p, q in asks]
 
     # -- internals --
 
-    def _enter_resync(self, U: int, u: int, pu: int, ts: int) -> SyncResult:
-        """A continuity break while synced: drop to awaiting, remember the gap."""
+    @staticmethod
+    def _validate(deltas: Optional[list]) -> list:
+        """Parse + validate every level (price AND qty must parse as float) and
+        return ``[(price_str, qty_str, is_zero), ...]``. Raises on a malformed
+        level — callers validate BEFORE mutating, so a bad level leaves the book
+        untouched (no partial apply) and a non-numeric price can never reach
+        ``top_levels``' float sort. Prices/qtys are stored as the lossless venue
+        strings; the float parse is for the zero-test + key validation only."""
+        out = []
+        for level in (deltas or []):
+            price_s, qty_s = level[0], level[1]
+            float(price_s)                       # validate the key
+            out.append((price_s, qty_s, float(qty_s) == 0.0))
+        return out
+
+    @staticmethod
+    def _set_side(book: dict, validated: list) -> None:
+        for price_s, qty_s, is_zero in validated:
+            if is_zero:
+                book.pop(price_s, None)          # qty 0 removes the level
+            else:
+                book[price_s] = qty_s            # absolute SET (replace)
+
+    def _apply_levels(self, bids: Optional[list], asks: Optional[list]) -> None:
+        """Apply diff level deltas as absolute SETs; qty 0 removes the price level.
+        Atomic-on-failure: both sides are validated before either is mutated."""
+        vb = self._validate(bids)
+        va = self._validate(asks)
+        self._set_side(self.bids, vb)
+        self._set_side(self.asks, va)
+
+    def _rebuild_from_snapshot(self, bids: list, asks: list) -> None:
+        """Replace the level book wholesale from a REST snapshot's full ladders."""
+        vb = self._validate(bids)
+        va = self._validate(asks)
+        self.bids = {p: q for p, q, is_zero in vb if not is_zero}
+        self.asks = {p: q for p, q, is_zero in va if not is_zero}
+
+    def _enter_resync(self, U: int, u: int, pu: int, ts: int,
+                      bids: Optional[list] = None, asks: Optional[list] = None) -> SyncResult:
+        """A continuity break while synced: drop to awaiting, remember the gap,
+        discard the now-stale level book (rebuilt on the next snapshot)."""
         if self._pending_gap_start is None:
             self._pending_gap_start = self._last_good_ts
         self.synced = False
         self.last_u = None
         self.last_update_id = None          # the prior snapshot is stale now
-        self._buffer = deque([_Diff(U, u, pu, ts)], maxlen=self._maxlen)
+        self.bids = {}                      # stale book discarded; never apply across the gap
+        self.asks = {}
+        self._buffer = deque([_Diff(U, u, pu, ts, bids, asks)], maxlen=self._maxlen)
         return SyncResult(needs_snapshot=True)
 
     def _try_sync(self) -> SyncResult:
@@ -125,6 +200,7 @@ class DepthMaintainer:
         self.synced = True
         self.last_u = sync_ev.u
         self._last_good_ts = sync_ev.ts
+        self._apply_levels(sync_ev.bids, sync_ev.asks)   # bracket event's levels (SET; idempotent overlap)
         gap = None
         if self._pending_gap_start is not None:
             gap = (self._pending_gap_start, sync_ev.ts, "sequence_gap")
@@ -133,11 +209,12 @@ class DepthMaintainer:
         self._buffer = deque(maxlen=self._maxlen)
         for d in rest:
             if d.pu != self.last_u:
-                follow = self._enter_resync(d.U, d.u, d.pu, d.ts)
+                follow = self._enter_resync(d.U, d.u, d.pu, d.ts, d.bids, d.asks)
                 # We synced then immediately broke again -> NOT synced now. The
                 # first gap (if any) is still reported; a new resync is pending.
                 return SyncResult(synced_now=False, gap=gap,
                                   needs_snapshot=follow.needs_snapshot)
+            self._apply_levels(d.bids, d.asks)
             self.last_u = d.u
             self._last_good_ts = d.ts
         return SyncResult(synced_now=True, gap=gap)

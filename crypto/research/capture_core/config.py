@@ -185,9 +185,16 @@ SNAPSHOT_MIN_INTERVAL_S = DEPTH_SNAPSHOT_WEIGHT * 60.0 / CAPTURE_REST_WEIGHT_PER
 #: that saturated all 8 cores in the N=12 measurement run. Bound it: the buffer only
 #: needs the diffs NEAR the lastUpdateId boundary to sync, so old entries are pure
 #: waste and the oldest are dropped once the cap is hit.
-#: Worst-case maintainer RAM ~= CAPTURE_DEPTH_BUFFER_MAXLEN * symbols-per-shard *
-#: ~200 B/_Diff (e.g. 5000 * 44 * 200 B ~= 42 MiB/shard, all symbols maxed) — bounded,
-#: vs the unbounded multi-GiB leak it replaces.
+#: SIZING (updated for the online level book): a buffered ``_Diff`` now carries the
+#: diff's bid/ask level arrays (needed to apply the bracket + drained diffs onto the
+#: seeded book at sync), so each entry is ~4-5 KiB at the measured ~12.5 levels/side
+#: mean and up to ~35 KiB for a deep-book diff (vs ~230 B cursor-only). Worst case is
+#: a STUCK-UNSYNCED symbol filling the cap: 5000 * ~5 KiB ~= 24 MiB/symbol (mean), and
+#: a mass-resync (WS reconnect storm, all ~44 sym/shard stuck) ~= ~1 GiB/shard / ~12
+#: GiB host at the mean — bounded (maxlen + the reseed threshold below re-seed before
+#: the cap), NOT the unbounded leak it replaces. DEPLOY NOTE: tune this down (it gates
+#: only the near-boundary diffs; must stay > the reseed threshold) and monitor RSS
+#: under a reconnect storm before the depth_state online-book redeploy.
 CAPTURE_DEPTH_BUFFER_MAXLEN = 5000
 #: While a maintainer is stuck unsynced and its buffer has grown past this many diffs,
 #: it proactively re-raises ``needs_snapshot`` so the service re-queues a seed (the
@@ -286,6 +293,18 @@ CAPTURE_RAW_RETENTION_DAYS = 7
 # -- Stream cadences --
 DEPTH_UPDATE_SPEED = "100ms"   # rawest diff cadence (operator GO: no pre-coarsen)
 MARKPRICE_SPEED = "1s"
+
+# -- Online book-state dataset (depth_state) --
+# Periodic compact top-N book states reconstructed ONLINE from the depth diff
+# stream (book.py level book) and written on the flush loop for the brain to
+# consume read-only. A consumption BUFFER (short retention), not a history tape:
+# the brain keeps only its own within-window summaries. Full-diff persistence is
+# disk-infeasible (~11-12 GB/day vs the 50 GiB DiskGuard floor); this digested
+# layer is ~15-50x fewer rows. INERT until a deliberate capture redeploy.
+DEPTH_STATE_DATASET = "depth_state"
+DEPTH_STATE_TOP_N = 20            # levels per side (the signal-rich near book)
+DEPTH_STATE_CADENCE_S = 5.0       # one state per synced symbol every 5s
+DEPTH_STATE_RETENTION_DAYS = 2    # short consumption buffer (not the 7d firehose tape)
 
 # -- Streams intentionally NOT captured (recorded decisions, not omissions) --
 #: Losslessly derivable from a captured raw stream, or inapplicable to single-asset

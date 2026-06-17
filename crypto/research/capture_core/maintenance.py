@@ -251,6 +251,33 @@ def expire_firehose_partitions(
     return removed
 
 
+def expire_depth_state_partitions(
+    root: str,
+    *,
+    days: int = cfg.DEPTH_STATE_RETENTION_DAYS,
+    now_ms: Optional[int] = None,
+) -> list[str]:
+    """Delete ``depth_state`` ``date=`` partitions older than ``days``.
+
+    depth_state is a SHORT consumption buffer (the online top-N book states), not a
+    history tape, so it prunes on its OWN short retention — separate from the 7-day
+    firehose window — and is deliberately NOT in ``FIREHOSE_PRUNABLE_DATASETS``.
+    Reuses the same symbol=/date= partition enumerator. Filesystem-only; no DB.
+    """
+    now_ms = now_ms if now_ms is not None else int(time.time() * 1000)
+    cutoff = _date_str(now_ms - days * 86_400_000)
+    parts = dg.list_firehose_partitions(root, (cfg.DEPTH_STATE_DATASET,))
+    removed: list[str] = []
+    for p in sorted(parts, key=lambda x: (x.date, x.path)):  # oldest-first
+        if p.date < cutoff:                                  # ISO dates sort lexically
+            shutil.rmtree(p.path)
+            removed.append(p.path)
+    if removed:
+        logger.info("depth_state retention: expired %d partitions older than %s",
+                    len(removed), cutoff)
+    return removed
+
+
 # -- one-shot migration -------------------------------------------------------
 
 @dataclass

@@ -136,6 +136,21 @@ def snapshot_row(symbol: str, snap: dict, recv_ns: int) -> dict:
     }
 
 
+def book_state_row(symbol: str, maintainer: DepthMaintainer, recv_ns: int, top_n: int) -> dict:
+    """Map a maintained level book to a depth_state row: top-N per side + validity.
+
+    ``valid`` is the maintainer's synced state at the sample instant (fully seeded
+    and continuous); the periodic writer only emits synced books, so the brain
+    consumes only valid states.
+    """
+    bids, asks = maintainer.top_levels(top_n)
+    return {
+        "recv_ts_ns": recv_ns, "s": symbol,
+        "update_id": maintainer.last_u, "valid": maintainer.synced,
+        "b": bids, "a": asks,
+    }
+
+
 def aggtrade_row(data: dict, recv_ns: int) -> dict:
     """Map an aggTrade ``data`` payload to a store row (ids->int, price->str)."""
     return {
@@ -236,9 +251,13 @@ class CaptureService:
         self._forceorder = store.forceorder_writer(root, **_wkw)
         self._markprice = store.markprice_writer(root, **_wkw)
         self._snapshot = store.depth_snapshot_writer(root, **_wkw)
+        # Online book-state dataset: periodic top-N states from the level book.
+        # Additive — the raw depth/snapshot persist path above is unchanged.
+        self._depth_state = store.depth_state_writer(root, **_wkw)
+        self._last_book_state_monotonic = 0.0
         self._gaps = store.gap_writer(root)
-        self._writers = [self._agg, self._depth, self._bookticker,
-                         self._forceorder, self._markprice, self._snapshot, self._gaps]
+        self._writers = [self._agg, self._depth, self._bookticker, self._forceorder,
+                         self._markprice, self._snapshot, self._depth_state, self._gaps]
 
         # Per-symbol depth sequence maintenance (cursor only; not a level book).
         self._maintainers: dict[str, DepthMaintainer] = {}
@@ -325,7 +344,7 @@ class CaptureService:
         # Maintenance works in EVENT-time ms so gap bounds match the manifest's
         # *_ms columns (and the conn-manager gaps).
         res = m.on_diff(int(data["U"]), int(data["u"]), int(data["pu"]),
-                        int(data["E"]))
+                        int(data["E"]), bids=data.get("b"), asks=data.get("a"))
         self._apply_depth_result(symbol, res)
 
     def _on_snapshot_arrived(self, symbol: str, snap: dict, recv_ns: int) -> None:
@@ -333,7 +352,8 @@ class CaptureService:
         m = self._maintainers.get(symbol)
         if m is None:
             m = self._maintainers[symbol] = DepthMaintainer(symbol)
-        res = m.on_snapshot(int(snap["lastUpdateId"]), int(snap.get("E", 0)))
+        res = m.on_snapshot(int(snap["lastUpdateId"]), int(snap.get("E", 0)),
+                            bids=snap.get("bids"), asks=snap.get("asks"))
         self._apply_depth_result(symbol, res)
 
     def _apply_depth_result(self, symbol: str, res: Any) -> None:
@@ -419,6 +439,7 @@ class CaptureService:
             await self._wait_stop_or_timeout(self._flush_poll_s)
             if self._stop.is_set():
                 break
+            self._maybe_write_book_states()
             for w in self._writers:
                 w.flush_due()
             self._maybe_enforce_guards()
@@ -448,6 +469,30 @@ class CaptureService:
             tmp.replace(path)                        # atomic rename
         except Exception:                            # noqa: BLE001
             logger.warning("capture-core heartbeat write failed", exc_info=True)
+
+    def _maybe_write_book_states(self) -> None:
+        """Every DEPTH_STATE_CADENCE_S, append a top-N book-state row for each
+        SYNCED (valid) symbol to the depth_state dataset. Additive to the firehose;
+        the writer flushes with the others. Buffered like any other writer."""
+        now = time.monotonic()
+        if now - self._last_book_state_monotonic < cfg.DEPTH_STATE_CADENCE_S:
+            return
+        self._last_book_state_monotonic = now
+        recv_ns = time.time_ns()
+        for symbol, m in self._maintainers.items():
+            # Only fully-seeded-and-continuous (valid), non-empty books.
+            if not (m.synced and m.bids and m.asks):
+                continue
+            # STRICTLY best-effort + per-symbol isolated: this runs on the SAME flush
+            # loop that flushes the live firehose and runs the disk/inode guards +
+            # watchdog, so a single bad book must NEVER take it down (mirrors
+            # _write_heartbeat). One symbol's failure does not drop the others.
+            try:
+                self._depth_state.append(
+                    book_state_row(symbol, m, recv_ns, cfg.DEPTH_STATE_TOP_N))
+            except Exception:                        # noqa: BLE001
+                logger.warning("capture-core book-state write failed for %s",
+                               symbol, exc_info=True)
 
     def _maybe_write_heartbeat(self) -> None:
         now = time.monotonic()
