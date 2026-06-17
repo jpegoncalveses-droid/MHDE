@@ -17,7 +17,7 @@ def _bk(symbol="BTCUSDT", *, window_start_ns=1000, n=3, recv=500):
         "window_start_ns": window_start_ns,
         "window_end_ns": window_start_ns + 60,
         "recv_ts_ns": recv,
-        "n_trades": n,
+        "n_events": n,
     }
 
 
@@ -64,7 +64,7 @@ def test_bookkeeping_is_idempotent_on_window_pk(tmp_path):
         registry.advance(conn, "trades", new_recv_ts_ns=110,
                          bookkeeping=[_bk(window_start_ns=1000, n=99)], now_ns=2)
         rows = conn.execute(
-            "SELECT n_trades FROM snapshot_bookkeeping WHERE window_start_ns=1000"
+            "SELECT n_events FROM snapshot_bookkeeping WHERE window_start_ns=1000"
         ).fetchall()
         assert len(rows) == 1
         assert rows[0][0] == 3  # first write wins (INSERT OR IGNORE)

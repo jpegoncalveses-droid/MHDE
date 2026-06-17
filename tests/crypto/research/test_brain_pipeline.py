@@ -16,7 +16,7 @@ import pytest
 
 from crypto.research.capture_core import store as capture_store
 from crypto.research.brain import config as cfg
-from crypto.research.brain import pipeline, store, reader, trades
+from crypto.research.brain import pipeline, store, reader, trades, sources
 
 
 _T0_MS = 1_781_640_000_000          # 2026-06-16 20:00:00 UTC, a 60s boundary
@@ -54,6 +54,7 @@ _W1_ROWS = [
 
 def _run(tmp_path, now_ns):
     return pipeline.run_once(
+        sources.TRADES,
         capture_root=str(tmp_path / "capture"),
         store_root=str(tmp_path / "brain"),
         registry_path=str(tmp_path / "brain" / "registry.sqlite"),
@@ -68,7 +69,7 @@ def test_end_to_end_capture_to_store_round_trip(tmp_path):
     summary = _run(tmp_path, now)
     assert summary["snapshots_written"] == 2
 
-    snaps = {s["window_start_ns"]: s for s in store.read_snapshots(str(tmp_path / "brain"))}
+    snaps = {s["window_start_ns"]: s for s in store.read_snapshots(str(tmp_path / "brain"), "trades")}
     w0 = snaps[_T0_MS * 1_000_000]
     assert w0["taker_buy_vol"] == 2.0      # m=False side
     assert w0["taker_sell_vol"] == 3.0     # m=True side
@@ -84,7 +85,7 @@ def test_settled_window_watermark_holds_back_incomplete_window(tmp_path):
     summary = _run(tmp_path, now)
     assert summary["snapshots_written"] == 1
 
-    starts = {s["window_start_ns"] for s in store.read_snapshots(str(tmp_path / "brain"))}
+    starts = {s["window_start_ns"] for s in store.read_snapshots(str(tmp_path / "brain"), "trades")}
     assert starts == {_T0_MS * 1_000_000}            # only W0
     assert _W0_END_NS not in starts                  # W1 (start == W0 end) held back
 
@@ -94,21 +95,21 @@ def test_resume_emits_held_back_window_with_no_double_count_no_gap(tmp_path):
 
     # Pass 1: only W0 settled.
     _run(tmp_path, _W0_END_NS + cfg.BRAIN_WATERMARK_NS)
-    after_p1 = store.read_snapshots(str(tmp_path / "brain"))
+    after_p1 = store.read_snapshots(str(tmp_path / "brain"), "trades")
     assert {s["window_start_ns"] for s in after_p1} == {_T0_MS * 1_000_000}
 
     # Pass 2: now W1 is settled too -> it emits, W0 is NOT re-emitted (no double
     # count) and W1 is NOT skipped (no gap).
     summary2 = _run(tmp_path, _W1_END_NS + cfg.BRAIN_WATERMARK_NS)
     assert summary2["snapshots_written"] == 1
-    after_p2 = store.read_snapshots(str(tmp_path / "brain"))
+    after_p2 = store.read_snapshots(str(tmp_path / "brain"), "trades")
     starts = sorted(s["window_start_ns"] for s in after_p2)
     assert starts == [_T0_MS * 1_000_000, _W0_END_NS]   # exactly W0 + W1, once each
 
     # Pass 3: identical now -> nothing new (idempotent, no double count).
     summary3 = _run(tmp_path, _W1_END_NS + cfg.BRAIN_WATERMARK_NS)
     assert summary3["snapshots_written"] == 0
-    assert len(store.read_snapshots(str(tmp_path / "brain"))) == 2
+    assert len(store.read_snapshots(str(tmp_path / "brain"), "trades")) == 2
 
 
 def test_no_new_data_is_a_clean_noop(tmp_path):
@@ -150,8 +151,8 @@ def test_live_capture_read_only_smoke(tmp_path):
     assert all(r["taker_buy"] is (not r["is_buyer_maker"]) for r in rows)
 
     snaps = trades.bucket_trades(rows, cadence_ns=cfg.BRAIN_BASE_CADENCE_NS)
-    store.write_snapshots(str(tmp_path / "brain"), snaps)
-    got = store.read_snapshots(str(tmp_path / "brain"))
+    store.write_snapshots(str(tmp_path / "brain"), "trades", store.TRADES_SNAPSHOT_SCHEMA, snaps)
+    got = store.read_snapshots(str(tmp_path / "brain"), "trades")
     assert len(got) == len(snaps)
     # isolation: writes landed only under tmp_path.
     assert pathlib.Path(tmp_path, "brain", "trades").exists()

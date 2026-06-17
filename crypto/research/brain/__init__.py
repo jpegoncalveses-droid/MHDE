@@ -1,11 +1,17 @@
 """Brain subsystem (Phase 1): an isolated reader + event store over the
 capture_core tape.
 
-Phase 1 step 1 is a vertical slice — read capture's ``aggTrade`` dataset
-READ-ONLY, summarize each ``(symbol, base-cadence window)`` into RAW, separable
-within-window primitives, persist them to the brain's OWN parquet event store,
-and advance a resumable cursor in a SQLite-WAL registry. No continuous runner,
-no systemd, nothing deployed.
+Each source reads one capture dataset READ-ONLY, summarizes each
+``(symbol, base-cadence window)`` into RAW, separable within-window primitives,
+persists them to the brain's OWN parquet event store (one dataset per source),
+and advances a resumable per-source cursor in a SQLite-WAL registry. A single
+generic pipeline is driven by a declarative :class:`sources.SourceSpec`. No
+continuous runner, no systemd, nothing deployed.
+
+Sources: step 1 — ``aggTrade`` -> ``trades``; step 2a — ``bookTicker`` ->
+``bookticker`` (bid/ask OHLC + qty summaries + bid-ask spread), ``markPrice`` ->
+``markprice`` (mark/index/settle OHLC + funding summaries), ``forceOrder`` ->
+``forceorder`` (liquidations split by side, like trades).
 
 Isolation: the brain is its own writer domain (``data/research/brain/``). It
 never opens ``mhde.duckdb``, the engine DB, or capture's store for writing, and
