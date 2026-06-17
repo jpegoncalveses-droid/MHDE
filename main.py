@@ -2187,6 +2187,9 @@ def crypto_capture_firehose_expire(root, days):
     removed = mt.expire_firehose_partitions(
         root or cc_cfg.RAW_DIR, days=days or cc_cfg.CAPTURE_RAW_RETENTION_DAYS)
     click.echo(f"firehose retention: {len(removed)} partitions expired")
+    # depth_state is a short consumption buffer with its OWN (shorter) retention.
+    ds_removed = mt.expire_depth_state_partitions(root or cc_cfg.RAW_DIR)
+    click.echo(f"depth_state retention: {len(ds_removed)} partitions expired")
 
 
 @crypto.command("capture-firehose-compact")

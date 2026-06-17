@@ -114,6 +114,19 @@ DEPTH_SNAPSHOT_SCHEMA = pa.schema([
     ("a", _PRICE_LEVELS),
 ])
 
+#: Periodic compact book state: top-N bid/ask ladders reconstructed online from
+#: the depth diff stream (book.py level book), sampled on the flush loop. ``valid``
+#: marks a fully-seeded-and-continuous book (vs mid-re-seed) so the brain consumes
+#: only valid states. Levels kept as lossless venue strings, like depth_snapshot.
+DEPTH_STATE_SCHEMA = pa.schema([
+    ("recv_ts_ns", pa.int64()),   # sample instant (capture-side ns)
+    ("s", pa.string()),
+    ("update_id", pa.int64()),    # the book's last applied diff u
+    ("valid", pa.bool_()),        # synced + continuous at the sample instant
+    ("b", _PRICE_LEVELS),         # top-N bids, best first
+    ("a", _PRICE_LEVELS),         # top-N asks, best first
+])
+
 #: Gap manifest: records a hole in capture; never backfilled.
 GAP_SCHEMA = pa.schema([
     ("symbol", pa.string()),
@@ -314,6 +327,18 @@ def depth_snapshot_writer(root: str, **kwargs: Any) -> RawDatasetWriter:
     """Writer for the REST ``depth_snapshot`` seeding dataset (symbol + event date)."""
     return RawDatasetWriter(root, "depth_snapshot", DEPTH_SNAPSHOT_SCHEMA,
                             _symbol_event_partition, **kwargs)
+
+
+def _state_partition(row: Mapping[str, Any]) -> str:
+    """``symbol=<s>/date=<sample-day>`` keyed on the sample instant ``recv_ts_ns``
+    (a book state has no venue event time; the sample wall-clock day is correct)."""
+    return f"symbol={row['s']}/date={_date_str(row['recv_ts_ns'] // 1_000_000)}"
+
+
+def depth_state_writer(root: str, **kwargs: Any) -> RawDatasetWriter:
+    """Writer for the online ``depth_state`` top-N book-state dataset (symbol + sample date)."""
+    return RawDatasetWriter(root, cfg.DEPTH_STATE_DATASET, DEPTH_STATE_SCHEMA,
+                            _state_partition, **kwargs)
 
 
 def dataset_writer(root: str, name: str, schema: "pa.Schema", *,
