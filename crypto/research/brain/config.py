@@ -34,10 +34,23 @@ BRAIN_STORE_ROOT = "data/research/brain"
 #: never contend with the writer (DuckDB allows a single writer at a time).
 BRAIN_REGISTRY_PATH = "data/research/brain/registry.sqlite"
 
-#: Trades-primitive dataset name under the store root.
+#: Per-source datasets. For each: the capture dir we read (READ-ONLY), the brain
+#: store dataset we write, and the registry reader/cursor name. Each source has
+#: its OWN cursor so they advance independently.
 TRADES_DATASET = "trades"
-#: Registry reader name for the trades cursor (step 1 has exactly one reader).
 TRADES_READER = "trades"
+
+BOOKTICKER_CAPTURE_DATASET = "bookTicker"
+BOOKTICKER_DATASET = "bookticker"
+BOOKTICKER_READER = "bookticker"
+
+MARKPRICE_CAPTURE_DATASET = "markPrice"
+MARKPRICE_DATASET = "markprice"
+MARKPRICE_READER = "markprice"
+
+FORCEORDER_CAPTURE_DATASET = "forceOrder"
+FORCEORDER_DATASET = "forceorder"
+FORCEORDER_READER = "forceorder"
 
 #: zstd, mirroring capture_core (compaction-friendly).
 PARQUET_COMPRESSION = "zstd"

@@ -1,9 +1,9 @@
 """Tests for the brain parquet event store (write -> read round-trip + schema).
 
 Mirrors the capture_core store convention (pyarrow + zstd + Hive
-``symbol=/date=`` partitions), but persists the brain's numeric snapshot
-columns. The schema is the persistence-layer half of the NO-BIAS guardrail:
-its field names must be exactly the raw-primitive whitelist.
+``symbol=/date=`` partitions), generic over ``(dataset, schema)``. The trades
+schema is the persistence-layer half of the NO-BIAS guardrail; its field names
+must be exactly the raw-primitive whitelist.
 """
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from crypto.research.brain import store
 
 
 _CADENCE_NS = 60 * 1_000_000_000
+_DS = "trades"
 
 # Ordered whitelist — hardcoded so any composed column added to the schema
 # breaks exact equality.
@@ -27,6 +28,14 @@ _EXPECTED_ORDER = [
     "price_open", "price_high", "price_low", "price_close",
     "qty_sum", "qty_max", "qty_mean",
 ]
+
+
+def _write(root, snaps):
+    return store.write_snapshots(root, _DS, store.TRADES_SNAPSHOT_SCHEMA, snaps)
+
+
+def _read(root, symbol=None):
+    return store.read_snapshots(root, _DS, symbol)
 
 
 def _ws_ns(dt: datetime) -> int:
@@ -84,15 +93,15 @@ def test_write_then_read_round_trips_identically(tmp_path):
         _snapshot("BTCUSDT", window_start_ns=ws, recv=111),
         _snapshot("ETHUSDT", window_start_ns=ws, recv=222, factor=0.5),
     ]
-    paths = store.write_snapshots(str(tmp_path), snaps)
+    paths = _write(str(tmp_path), snaps)
     assert paths
-    got = store.read_snapshots(str(tmp_path))
+    got = _read(str(tmp_path))
     assert _key(got) == _key(snaps)
 
 
 def test_partition_layout_is_symbol_then_event_date(tmp_path):
     dt = datetime(2026, 6, 16, 20, 0, 0, tzinfo=timezone.utc)
-    store.write_snapshots(str(tmp_path), [_snapshot("BTCUSDT", window_start_ns=_ws_ns(dt))])
+    _write(str(tmp_path), [_snapshot("BTCUSDT", window_start_ns=_ws_ns(dt))])
     files = list(pathlib.Path(tmp_path, "trades").rglob("*.parquet"))
     parts = {fp.relative_to(tmp_path / "trades").parts[:2] for fp in files}
     assert ("symbol=BTCUSDT", "date=2026-06-16") in parts
@@ -101,7 +110,7 @@ def test_partition_layout_is_symbol_then_event_date(tmp_path):
 def test_event_date_partition_splits_across_utc_midnight(tmp_path):
     before = _ws_ns(datetime(2026, 6, 16, 23, 59, 0, tzinfo=timezone.utc))
     after = _ws_ns(datetime(2026, 6, 17, 0, 1, 0, tzinfo=timezone.utc))
-    store.write_snapshots(str(tmp_path), [
+    _write(str(tmp_path), [
         _snapshot("BTCUSDT", window_start_ns=before),
         _snapshot("BTCUSDT", window_start_ns=after),
     ])
@@ -110,21 +119,18 @@ def test_event_date_partition_splits_across_utc_midnight(tmp_path):
 
 
 def test_utf8_and_digit_leading_symbols_round_trip(tmp_path):
-    # CJK and digit-leading symbols both exist on Binance USDT-M; the partition
-    # path and the in-row value must both survive (no ASCII regex anywhere).
     ws = _ws_ns(datetime(2026, 6, 16, 20, 0, 0, tzinfo=timezone.utc))
     symbols = ["0GUSDT", "1000PEPEUSDT", "我踏马来了USDT"]
     for sym in symbols:
-        store.write_snapshots(str(tmp_path), [_snapshot(sym, window_start_ns=ws)])
-    got = {r["symbol"] for r in store.read_snapshots(str(tmp_path))}
+        _write(str(tmp_path), [_snapshot(sym, window_start_ns=ws)])
+    got = {r["symbol"] for r in _read(str(tmp_path))}
     assert set(symbols) <= got
     dirs = {p.name for p in pathlib.Path(tmp_path, "trades").glob("symbol=*")}
     assert "symbol=我踏马来了USDT" in dirs
-    # Reading back filtered by a UTF-8 symbol works too.
-    only = store.read_snapshots(str(tmp_path), symbol="我踏马来了USDT")
+    only = _read(str(tmp_path), symbol="我踏马来了USDT")
     assert only and all(r["symbol"] == "我踏马来了USDT" for r in only)
 
 
 def test_empty_write_is_noop(tmp_path):
-    assert store.write_snapshots(str(tmp_path), []) == []
-    assert store.read_snapshots(str(tmp_path)) == []
+    assert _write(str(tmp_path), []) == []
+    assert _read(str(tmp_path)) == []

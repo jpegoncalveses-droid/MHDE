@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS snapshot_bookkeeping (
     window_start_ns INTEGER NOT NULL,
     window_end_ns   INTEGER NOT NULL,
     recv_ts_ns      INTEGER NOT NULL,
-    n_trades        INTEGER NOT NULL,
+    n_events        INTEGER NOT NULL,
     written_at_ns   INTEGER NOT NULL,
     PRIMARY KEY (dataset, symbol, window_start_ns)
 );
@@ -91,7 +91,7 @@ def advance(
     rows = [
         (
             b["dataset"], b["symbol"], b["window_start_ns"], b["window_end_ns"],
-            b["recv_ts_ns"], b["n_trades"], now_ns,
+            b["recv_ts_ns"], b["n_events"], now_ns,
         )
         for b in bookkeeping
     ]
@@ -100,7 +100,7 @@ def advance(
             conn.executemany(
                 "INSERT OR IGNORE INTO snapshot_bookkeeping "
                 "(dataset, symbol, window_start_ns, window_end_ns, recv_ts_ns, "
-                " n_trades, written_at_ns) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                " n_events, written_at_ns) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 rows,
             )
         conn.execute(

@@ -1,32 +1,55 @@
-"""Brain capture reader: a READ-ONLY pyarrow consumer of capture's aggTrade tape.
+"""Brain capture readers: READ-ONLY pyarrow consumers of the capture tape.
 
-Reads ``<capture_root>/aggTrade/symbol=*/date=*/*.parquet`` and returns clean
-trade dicts in ``recv_ts_ns`` order, advancing past a caller-supplied cursor.
-Capture stores venue numerics as VARCHAR (lossless); the reader casts ``p``/``q``
-to float here. Field names are cleaned from the terse venue codes. Symbols are
-UTF-8 (CJK / digit-leading exist on Binance USDT-M) — read straight through the
-Hive partitioning / in-row ``s`` field, never an ASCII regex.
+One generic core (:func:`_read_dataset_rows`) reads any capture dataset under
+``<capture_root>/<dataset>/symbol=*/date=*`` filtered to ``recv_ts_ns > cursor``
+and globally sorted by ``recv_ts_ns`` (part files are disjoint but hash-named, so
+filename order is not time order). Per-source functions then map the terse venue
+field names to clean names and cast the VARCHAR numerics to float.
 
-Part files within a ``symbol=/date=`` partition cover DISJOINT recv_ts_ns
-windows but their (hash) filenames are not time-ordered, so the reader globally
-sorts the result by ``recv_ts_ns`` (the canonical capture cursor field).
+Symbols are UTF-8 (CJK / digit-leading exist on Binance USDT-M) — read through
+the Hive partitioning / in-row ``s`` field, never an ASCII regex.
 
-Strictly read-only: this module never writes anything, anywhere.
+Bucket (event-time) field per source — all clean rows expose ``event_time_ms``
+as the field the primitives bucket on:
+  * aggTrade   -> trade time ``T`` (the match time), also exposes event_time_ms = E
+  * bookTicker -> event time ``E``
+  * markPrice  -> event time ``E``  (FOOTGUN: markPrice ``T`` is the *next funding
+    time*, a future stamp — never bucket on it; it is kept as ``next_funding_time_ms``)
+  * forceOrder -> event time ``E``  (``T`` trade time also exposed)
+
+Strictly read-only: these never write anything, anywhere.
 """
 from __future__ import annotations
 
 import pathlib
 from typing import Optional, Sequence
 
-import pyarrow.compute as pc
 import pyarrow.dataset as ds
+import pyarrow.compute as pc
 
 from crypto.research.brain import config as cfg
 
-# In-row venue columns we project (NOT the Hive ``symbol``/``date`` partition
-# columns — we read the value from the in-row ``s`` to avoid a dictionary-vs-
-# string collision and keep the read by physical schema).
-_COLUMNS = ["recv_ts_ns", "E", "a", "s", "p", "q", "T", "m"]
+
+def _read_dataset_rows(
+    capture_root: str,
+    capture_dataset: str,
+    after_recv_ts_ns: int,
+    columns: list[str],
+    symbols: Optional[Sequence[str]],
+) -> list[dict]:
+    """Read terse rows from a capture dataset, ``recv_ts_ns > cursor``, sorted asc."""
+    base = pathlib.Path(capture_root, capture_dataset)
+    if not base.exists() or not any(base.rglob("*.parquet")):
+        return []
+    dataset = ds.dataset(str(base), format="parquet", partitioning="hive")
+    flt = pc.field("recv_ts_ns") > after_recv_ts_ns
+    if symbols is not None:
+        # Filter on in-row ``s`` (string) — robust regardless of partition
+        # dictionary encoding; partition pruning still applies via the path.
+        flt = flt & pc.field("s").isin(list(symbols))
+    table = dataset.to_table(columns=columns, filter=flt)
+    table = table.sort_by([("recv_ts_ns", "ascending")])
+    return table.to_pylist()
 
 
 def read_new_aggtrades(
@@ -34,28 +57,15 @@ def read_new_aggtrades(
     after_recv_ts_ns: int = 0,
     symbols: Optional[Sequence[str]] = None,
 ) -> list[dict]:
-    """Return clean aggTrade dicts with ``recv_ts_ns > after_recv_ts_ns``.
+    """Clean aggTrade dicts with ``recv_ts_ns > after_recv_ts_ns``, recv-order.
 
-    Each dict: ``recv_ts_ns`` (int), ``symbol`` (str), ``event_time_ms`` (int),
-    ``trade_time_ms`` (int), ``agg_id`` (int), ``price`` (float), ``qty`` (float),
-    ``is_buyer_maker`` (bool), ``taker_buy`` (bool == not is_buyer_maker).
-    Sorted ascending by ``recv_ts_ns``. Empty if the dataset is absent.
+    Keys: recv_ts_ns, symbol, event_time_ms, trade_time_ms, agg_id, price, qty,
+    is_buyer_maker, taker_buy. Primitive buckets on ``trade_time_ms``.
     """
-    base = pathlib.Path(capture_root, cfg.AGGTRADE_DATASET)
-    if not base.exists() or not any(base.rglob("*.parquet")):
-        return []
-
-    dataset = ds.dataset(str(base), format="parquet", partitioning="hive")
-    flt = pc.field("recv_ts_ns") > after_recv_ts_ns
-    if symbols is not None:
-        # Filter on the in-row ``s`` (string) — robust regardless of partition
-        # dictionary encoding; partition pruning still applies via the path.
-        flt = flt & pc.field("s").isin(list(symbols))
-    table = dataset.to_table(columns=_COLUMNS, filter=flt)
-    table = table.sort_by([("recv_ts_ns", "ascending")])
-
+    rows = _read_dataset_rows(capture_root, cfg.AGGTRADE_DATASET, after_recv_ts_ns,
+                              ["recv_ts_ns", "E", "a", "s", "p", "q", "T", "m"], symbols)
     out: list[dict] = []
-    for r in table.to_pylist():
+    for r in rows:
         m = bool(r["m"])
         out.append({
             "recv_ts_ns": int(r["recv_ts_ns"]),
@@ -67,5 +77,89 @@ def read_new_aggtrades(
             "qty": float(r["q"]),     # VARCHAR -> float
             "is_buyer_maker": m,
             "taker_buy": not m,       # m=False -> taker BUY
+        })
+    return out
+
+
+def read_new_bookticker(
+    capture_root: str,
+    after_recv_ts_ns: int = 0,
+    symbols: Optional[Sequence[str]] = None,
+) -> list[dict]:
+    """Clean bookTicker dicts with ``recv_ts_ns > after_recv_ts_ns``, recv-order.
+
+    Keys: recv_ts_ns, symbol, event_time_ms, transaction_time_ms, bid, bid_qty,
+    ask, ask_qty. Primitive buckets on ``event_time_ms`` (E).
+    """
+    rows = _read_dataset_rows(capture_root, cfg.BOOKTICKER_CAPTURE_DATASET, after_recv_ts_ns,
+                              ["recv_ts_ns", "E", "T", "s", "b", "B", "a", "A"], symbols)
+    out: list[dict] = []
+    for r in rows:
+        out.append({
+            "recv_ts_ns": int(r["recv_ts_ns"]),
+            "symbol": r["s"],
+            "event_time_ms": int(r["E"]),
+            "transaction_time_ms": int(r["T"]),
+            "bid": float(r["b"]),       # VARCHAR -> float
+            "bid_qty": float(r["B"]),
+            "ask": float(r["a"]),
+            "ask_qty": float(r["A"]),
+        })
+    return out
+
+
+def read_new_markprice(
+    capture_root: str,
+    after_recv_ts_ns: int = 0,
+    symbols: Optional[Sequence[str]] = None,
+) -> list[dict]:
+    """Clean markPrice dicts with ``recv_ts_ns > after_recv_ts_ns``, recv-order.
+
+    Keys: recv_ts_ns, symbol, event_time_ms, mark, index, settle, funding,
+    next_funding_time_ms. Primitive buckets on ``event_time_ms`` (E). FOOTGUN:
+    the venue ``T`` is the *next funding time* (future) -> ``next_funding_time_ms``,
+    NEVER the bucket key.
+    """
+    rows = _read_dataset_rows(capture_root, cfg.MARKPRICE_CAPTURE_DATASET, after_recv_ts_ns,
+                              ["recv_ts_ns", "E", "s", "p", "i", "P", "r", "T"], symbols)
+    out: list[dict] = []
+    for r in rows:
+        out.append({
+            "recv_ts_ns": int(r["recv_ts_ns"]),
+            "symbol": r["s"],
+            "event_time_ms": int(r["E"]),
+            "mark": float(r["p"]),      # VARCHAR -> float
+            "index": float(r["i"]),
+            "settle": float(r["P"]),
+            "funding": float(r["r"]),
+            "next_funding_time_ms": int(r["T"]),  # future funding time, NOT an event time
+        })
+    return out
+
+
+def read_new_forceorder(
+    capture_root: str,
+    after_recv_ts_ns: int = 0,
+    symbols: Optional[Sequence[str]] = None,
+) -> list[dict]:
+    """Clean forceOrder (liquidation) dicts, ``recv_ts_ns > after``, recv-order.
+
+    Keys: recv_ts_ns, symbol, event_time_ms, trade_time_ms, side, qty, price.
+    Primitive buckets on ``event_time_ms`` (E). ``side`` is the raw venue ``S``
+    ('BUY' / 'SELL'); only the fields the primitive needs are projected (avoids
+    the flattened single-letter collisions ``o``/``l``/``z``).
+    """
+    rows = _read_dataset_rows(capture_root, cfg.FORCEORDER_CAPTURE_DATASET, after_recv_ts_ns,
+                              ["recv_ts_ns", "E", "T", "s", "S", "q", "p"], symbols)
+    out: list[dict] = []
+    for r in rows:
+        out.append({
+            "recv_ts_ns": int(r["recv_ts_ns"]),
+            "symbol": r["s"],
+            "event_time_ms": int(r["E"]),
+            "trade_time_ms": int(r["T"]),
+            "side": r["S"],             # raw venue side: 'BUY' / 'SELL'
+            "qty": float(r["q"]),       # VARCHAR -> float
+            "price": float(r["p"]),
         })
     return out
