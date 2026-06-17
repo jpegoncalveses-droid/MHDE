@@ -66,10 +66,10 @@ FORCEORDER = SourceSpec(
 # Sparse point-in-time series share one generic reader + primitive, parameterized
 # by the venue field map. Each emits one as-of value per window (count == 1).
 
-def _asof_reader(capture_dataset, value_map, time_col, symbol_col="s", int_map=None):
+def _asof_reader(capture_dataset, value_map, asof_time_col, symbol_col="s", int_map=None):
     def _read(capture_root, after_recv_ts_ns=0, symbols=None):
         return reader.read_new_asof(
-            capture_root, capture_dataset, value_map=value_map, time_col=time_col,
+            capture_root, capture_dataset, value_map=value_map, asof_time_col=asof_time_col,
             symbol_col=symbol_col, int_map=int_map,
             after_recv_ts_ns=after_recv_ts_ns, symbols=symbols)
     return _read
@@ -82,13 +82,15 @@ def _asof_bucket(value_fields, tiebreak_fields=()):
     return _bucket
 
 
-def _asof_spec(name, *, value_map, time_col, schema, symbol_col="s", int_map=None):
+def _asof_spec(name, *, value_map, asof_time_col, schema, symbol_col="s", int_map=None):
     value_fields = list(value_map) + list(int_map or {})
     return SourceSpec(
         dataset=name, reader_name=name,
-        read_fn=_asof_reader(name, value_map, time_col, symbol_col, int_map),
-        bucket_fn=_asof_bucket(value_fields), schema=schema,
-        event_time_key="event_time_ms", count_fn=lambda s: 1,
+        read_fn=_asof_reader(name, value_map, asof_time_col, symbol_col, int_map),
+        # Arrival-keyed (event_time_ms = recv): a batched fetch delivers many
+        # observations at one recv -> collapse to the latest by VENUE time.
+        bucket_fn=_asof_bucket(value_fields, tiebreak_fields=("asof_event_time_ms",)),
+        schema=schema, event_time_key="event_time_ms", count_fn=lambda s: 1,
     )
 
 
@@ -97,7 +99,7 @@ _LS_MAP = {"long_account": "longAccount", "short_account": "shortAccount",
 
 OPEN_INTEREST = _asof_spec(
     cfg.OPEN_INTEREST_DATASET, value_map={"open_interest": "openInterest"},
-    time_col="time", schema=store.OPEN_INTEREST_SNAPSHOT_SCHEMA)
+    asof_time_col="time", schema=store.OPEN_INTEREST_SNAPSHOT_SCHEMA)
 
 PREMIUM_INDEX = _asof_spec(
     cfg.PREMIUM_INDEX_DATASET,
@@ -105,31 +107,31 @@ PREMIUM_INDEX = _asof_spec(
                "estimated_settle_price": "estimatedSettlePrice",
                "last_funding_rate": "lastFundingRate", "interest_rate": "interestRate"},
     int_map={"next_funding_time": "nextFundingTime"},
-    time_col="time", schema=store.PREMIUM_INDEX_SNAPSHOT_SCHEMA)
+    asof_time_col="time", schema=store.PREMIUM_INDEX_SNAPSHOT_SCHEMA)
 
 GLOBAL_LS_ACCOUNT = _asof_spec(
-    cfg.GLOBAL_LS_ACCOUNT_DATASET, value_map=_LS_MAP, time_col="timestamp",
+    cfg.GLOBAL_LS_ACCOUNT_DATASET, value_map=_LS_MAP, asof_time_col="timestamp",
     schema=store.GLOBAL_LS_ACCOUNT_SNAPSHOT_SCHEMA)
 
 TOP_LS_ACCOUNT = _asof_spec(
-    cfg.TOP_LS_ACCOUNT_DATASET, value_map=_LS_MAP, time_col="timestamp",
+    cfg.TOP_LS_ACCOUNT_DATASET, value_map=_LS_MAP, asof_time_col="timestamp",
     schema=store.TOP_LS_ACCOUNT_SNAPSHOT_SCHEMA)
 
 TOP_LS_POSITION = _asof_spec(
-    cfg.TOP_LS_POSITION_DATASET, value_map=_LS_MAP, time_col="timestamp",
+    cfg.TOP_LS_POSITION_DATASET, value_map=_LS_MAP, asof_time_col="timestamp",
     schema=store.TOP_LS_POSITION_SNAPSHOT_SCHEMA)
 
 TAKER_LS_RATIO = _asof_spec(
     cfg.TAKER_LS_RATIO_DATASET,
     value_map={"buy_sell_ratio": "buySellRatio", "buy_vol": "buyVol", "sell_vol": "sellVol"},
-    time_col="timestamp", schema=store.TAKER_LS_RATIO_SNAPSHOT_SCHEMA)
+    asof_time_col="timestamp", schema=store.TAKER_LS_RATIO_SNAPSHOT_SCHEMA)
 
 BASIS = _asof_spec(
     cfg.BASIS_DATASET,
     value_map={"index_price": "indexPrice", "futures_price": "futuresPrice",
                "basis": "basis", "basis_rate": "basisRate",
                "annualized_basis_rate": "annualizedBasisRate"},
-    time_col="timestamp", symbol_col="pair", schema=store.BASIS_SNAPSHOT_SCHEMA)
+    asof_time_col="timestamp", symbol_col="pair", schema=store.BASIS_SNAPSHOT_SCHEMA)
 
 #: The seven REST present-state ("as-of") scalar series.
 ASOF_SOURCES = [OPEN_INTEREST, PREMIUM_INDEX, GLOBAL_LS_ACCOUNT, TOP_LS_ACCOUNT,

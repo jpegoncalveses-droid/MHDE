@@ -1,13 +1,19 @@
-"""Brain AS-OF primitive: bucket sparse REST present-state observations into
-base-cadence windows by the venue time-key and keep the latest (as-of) value.
+"""Brain AS-OF primitive: bucket sparse observations into base-cadence windows by
+the bucket key (``event_time_ms``) and keep the latest (as-of) value.
 
-These series (open interest, premium/funding, long/short ratios, basis) are
-point-in-time values valid AS OF a timestamp, sampled sparsely — never more than
-one observation per 60s window. So the within-window "summary" is degenerate: the
-window holds the single (latest) observation's RAW field values, NOT an OHLC
-summary (which would be four identical copies). Windows with no observation get
-no snapshot — a consumer forward-fills at read time by taking the last window
-<= its query time (the as-of value). No forward-fill is synthesized here.
+FORWARD-ONLY: callers key ``event_time_ms`` on recv ARRIVAL (``recv_ts_ns // 1e6``),
+not the venue time, so a value is visible only once the brain observed it — never
+retroactively in a window before its arrival (a lookahead). The venue time is
+retained as ``asof_event_time_ms``, a stored staleness signal, no longer the
+visibility gate. This is uniform for the REST present-state series and klines.
+
+These series (open interest, premium/funding, long/short ratios, basis, the 1h
+bar) are point-in-time values sampled sparsely — never more than one observation
+per 60s window in normal operation. So the within-window "summary" is degenerate:
+the window holds the single (latest) observation's RAW field values, NOT an OHLC
+summary (which would be identical copies). Windows with no observation get no
+snapshot — a consumer forward-fills at read time by taking the last window <= its
+query time (the as-of value). No forward-fill is synthesized here.
 
 NO-BIAS (information vs interpretation): the value fields are the venue's OWN
 fields, kept verbatim. Native ratios/rates (longShortRatio, buySellRatio,
@@ -37,11 +43,13 @@ def bucket_asof(
 ) -> list[dict]:
     """Group clean as-of rows into ``(symbol, window)`` snapshots of the as-of value.
 
-    Each input row: recv_ts_ns, symbol, event_time_ms (the as-of time-key), and
-    each name in ``value_fields`` (float or int, or None for an absent venue
-    value). Per ``(symbol, window)`` the LATEST observation (by event time, then
-    recv_ts_ns, then ``tiebreak_fields``) supplies the value — this also dedups
-    overlapping re-fetches that re-deliver the same timestamp.
+    Each input row: recv_ts_ns, symbol, event_time_ms (the bucket key — recv
+    arrival, forward-only), an optional ``asof_event_time_ms`` (venue staleness
+    time; defaults to event_time_ms when absent, e.g. klines), and each name in
+    ``value_fields`` (float or int, or None for an absent venue value). Per
+    ``(symbol, window)`` the LATEST observation (by event time, then recv_ts_ns,
+    then ``tiebreak_fields``) supplies the value — this also dedups overlapping
+    re-fetches and collapses a batched fetch to its latest-by-venue-time value.
 
     ``tiebreak_fields`` break a remaining tie when event time and recv_ts_ns are
     equal (e.g. klines: a backfill page delivers many bars at one recv_ts_ns, so
@@ -62,7 +70,10 @@ def bucket_asof(
             "symbol": symbol,
             "window_start_ns": ws,
             "window_end_ns": ws + cadence_ns,
-            "asof_event_time_ms": last["event_time_ms"],
+            # The staleness signal: the value's own as-of time when the source
+            # provides one (the venue time-key); else the bucket/event time (e.g.
+            # klines, whose as-of instant IS its recv arrival).
+            "asof_event_time_ms": last.get("asof_event_time_ms", last["event_time_ms"]),
         }
         for f in value_fields:
             snap[f] = last[f]
