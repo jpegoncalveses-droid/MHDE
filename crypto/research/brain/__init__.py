@@ -18,9 +18,13 @@ timestamp, one per window at most): step 2b ``open_interest``, ``premium_index``
 hourly-context bar (a MULTI-FIELD as-of source storing the native bar fields +
 openTime/closeTime identity). As-of snapshots hold the latest raw value per
 window (not an OHLC summary), and venue-native ratios/rates are RAW information.
-klines is FORWARD-ONLY: it keys the as-of on recv arrival, NOT the bar's
-closeTime (a REST-backfilled bar's closeTime can precede the brain observing it;
-keying on closeTime would be lookahead).
+All as-of sources are FORWARD-ONLY (uniform): they key visibility on recv arrival,
+NOT the venue time — a value is visible only once the brain observed it, never
+retroactively in a window before its arrival (a lookahead; acute for klines,
+whose REST-backfilled closeTime can long precede arrival, and for batched
+futures_data fetches re-delivering old buckets). The venue time is retained as
+``asof_event_time_ms``, a stored staleness signal; a batched fetch collapses to
+its latest-by-venue-time value.
 
 Isolation: the brain is its own writer domain (``data/research/brain/``). It
 never opens ``mhde.duckdb``, the engine DB, or capture's store for writing, and

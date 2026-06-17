@@ -3,9 +3,9 @@
 The REST present-state series (open interest, funding/premium, long/short ratios,
 basis) are point-in-time values valid AS OF a timestamp, sampled sparsely (one
 new value every 5–34 min, never more than one per 60s window). The as-of
-primitive buckets by the venue time-key and keeps the latest (as-of) observation
-per window — the raw value, NOT an OHLC summary (which would be redundant for a
-single-observation window).
+primitive buckets by recv ARRIVAL (forward-only, uniform with klines) and keeps
+the latest (as-of) observation per window — the raw value, NOT an OHLC summary;
+the venue time is retained as asof_event_time_ms (a staleness signal).
 
 NO-BIAS: venue-native fields (incl. native ratios/rates like longShortRatio,
 buySellRatio, basisRate) ARE raw information. The guard is "only native fields,
@@ -38,16 +38,20 @@ def _oi_clean(*, recv_ns, time_ms, oi, symbol="BTCUSDT"):
 # -- generic reader --
 
 def test_reader_casts_varchar_and_clean_names_open_interest(tmp_path):
+    recv_ms = _T0_MS + 500
     w = capture_store.dataset_writer(str(tmp_path), "open_interest",
                                      rest_series.OPEN_INTEREST_SCHEMA, symbol_key="s", time_key="time")
-    w.append({"recv_ts_ns": 10, "s": "BTCUSDT", "openInterest": "98672.073", "time": _T0_MS + 1000})
+    w.append({"recv_ts_ns": recv_ms * 1_000_000, "s": "BTCUSDT",
+              "openInterest": "98672.073", "time": _T0_MS + 1000})
     w.flush_all()
     (row,) = reader.read_new_asof(str(tmp_path), "open_interest",
                                   value_map={"open_interest": "openInterest"},
-                                  time_col="time", symbol_col="s")
-    assert set(row) == {"recv_ts_ns", "symbol", "event_time_ms", "open_interest"}
+                                  asof_time_col="time", symbol_col="s")
+    assert set(row) == {"recv_ts_ns", "symbol", "event_time_ms", "asof_event_time_ms", "open_interest"}
     assert row["open_interest"] == 98672.073 and isinstance(row["open_interest"], float)
-    assert row["symbol"] == "BTCUSDT" and row["event_time_ms"] == _T0_MS + 1000
+    assert row["symbol"] == "BTCUSDT"
+    assert row["event_time_ms"] == recv_ms          # bucket key == recv ARRIVAL
+    assert row["asof_event_time_ms"] == _T0_MS + 1000  # venue time retained as staleness
 
 
 def test_reader_empty_string_numeric_becomes_none_basis(tmp_path):
@@ -61,7 +65,7 @@ def test_reader_empty_string_numeric_becomes_none_basis(tmp_path):
                                   value_map={"index_price": "indexPrice", "futures_price": "futuresPrice",
                                              "basis": "basis", "basis_rate": "basisRate",
                                              "annualized_basis_rate": "annualizedBasisRate"},
-                                  time_col="timestamp", symbol_col="pair")
+                                  asof_time_col="timestamp", symbol_col="pair")
     assert row["symbol"] == "BTCUSDT"                 # symbol_col='pair'
     assert row["basis"] == -18.7 and row["basis_rate"] == -0.0003
     assert row["annualized_basis_rate"] is None        # '' -> None
@@ -79,7 +83,7 @@ def test_reader_int_map_keeps_next_funding_time_as_int(tmp_path):
                                              "estimated_settle_price": "estimatedSettlePrice",
                                              "last_funding_rate": "lastFundingRate", "interest_rate": "interestRate"},
                                   int_map={"next_funding_time": "nextFundingTime"},
-                                  time_col="time", symbol_col="s")
+                                  asof_time_col="time", symbol_col="s")
     assert row["last_funding_rate"] == 0.00006033 and isinstance(row["last_funding_rate"], float)
     assert row["next_funding_time"] == _T0_MS + 8 * 3600_000 and isinstance(row["next_funding_time"], int)
 
@@ -91,10 +95,10 @@ def test_reader_recv_order_and_cursor(tmp_path):
         w.append({"recv_ts_ns": recv, "s": "BTCUSDT", "openInterest": "1", "time": t})
     w.flush_all()
     rows = reader.read_new_asof(str(tmp_path), "open_interest",
-                               value_map={"open_interest": "openInterest"}, time_col="time", symbol_col="s")
+                               value_map={"open_interest": "openInterest"}, asof_time_col="time", symbol_col="s")
     assert [r["recv_ts_ns"] for r in rows] == [100, 200, 300]
     after = reader.read_new_asof(str(tmp_path), "open_interest",
-                                 value_map={"open_interest": "openInterest"}, time_col="time",
+                                 value_map={"open_interest": "openInterest"}, asof_time_col="time",
                                  symbol_col="s", after_recv_ts_ns=150)
     assert [r["recv_ts_ns"] for r in after] == [200, 300]
 
@@ -154,3 +158,45 @@ def test_no_bias_keys_are_provenance_plus_native_fields_only():
     for name in snap:
         for bad in _ENGINEERED:
             assert bad not in name.lower(), f"engineered token {bad!r} in {name!r}"
+
+
+# -- forward-only (arrival-keyed) as-of: uniform with klines --
+
+def test_forward_only_keyed_on_recv_arrival_not_venue_time(tmp_path):
+    # A value valid as-of an EARLY venue time but OBSERVED (recv) later must be
+    # visible only in its ARRIVAL window, never the venue-time window (lookahead).
+    venue_ms = _T0_MS + 1000
+    recv_ms = _T0_MS + 200_000           # observed ~3 min after the venue time
+    recv_ns = recv_ms * 1_000_000
+    w = capture_store.dataset_writer(str(tmp_path), "open_interest",
+                                     rest_series.OPEN_INTEREST_SCHEMA, symbol_key="s", time_key="time")
+    w.append({"recv_ts_ns": recv_ns, "s": "BTCUSDT", "openInterest": "100", "time": venue_ms})
+    w.flush_all()
+    (row,) = reader.read_new_asof(str(tmp_path), "open_interest",
+                                  value_map={"open_interest": "openInterest"},
+                                  asof_time_col="time", symbol_col="s")
+    assert row["event_time_ms"] == recv_ms          # bucket/visibility key == ARRIVAL
+    assert row["asof_event_time_ms"] == venue_ms     # venue time retained as staleness signal
+
+    (snap,) = asof.bucket_asof([row], cadence_ns=_CADENCE_NS, value_fields=["open_interest"],
+                               tiebreak_fields=("asof_event_time_ms",))
+    assert snap["window_start_ns"] == (recv_ms // 60_000) * 60_000 * 1_000_000     # arrival window
+    assert snap["window_start_ns"] != (venue_ms // 60_000) * 60_000 * 1_000_000    # NOT the venue window
+    assert snap["asof_event_time_ms"] == venue_ms    # a venue-time-keyed impl would fail the line above
+
+
+def test_batched_one_recv_collapses_to_latest_venue_time():
+    # A futures_data fetch delivers several 5-min buckets at ONE recv_ts_ns ->
+    # one arrival window; the as-of is the latest by VENUE time.
+    recv_ns = (_T0_MS + 1000) * 1_000_000
+    recv_ms = recv_ns // 1_000_000
+    rows = [
+        {"recv_ts_ns": recv_ns, "symbol": "BTCUSDT", "event_time_ms": recv_ms,
+         "asof_event_time_ms": _T0_MS - 600_000, "long_short_ratio": 10.0},   # older bucket
+        {"recv_ts_ns": recv_ns, "symbol": "BTCUSDT", "event_time_ms": recv_ms,
+         "asof_event_time_ms": _T0_MS - 300_000, "long_short_ratio": 99.0},   # latest bucket
+    ]
+    (snap,) = asof.bucket_asof(rows, cadence_ns=_CADENCE_NS, value_fields=["long_short_ratio"],
+                               tiebreak_fields=("asof_event_time_ms",))
+    assert snap["asof_event_time_ms"] == _T0_MS - 300_000   # latest venue time
+    assert snap["long_short_ratio"] == 99.0

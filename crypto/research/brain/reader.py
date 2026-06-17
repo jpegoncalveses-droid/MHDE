@@ -178,7 +178,7 @@ def read_new_asof(
     capture_dataset: str,
     *,
     value_map: dict,
-    time_col: str,
+    asof_time_col: str,
     symbol_col: str = "s",
     int_map: Optional[dict] = None,
     after_recv_ts_ns: int = 0,
@@ -186,22 +186,31 @@ def read_new_asof(
 ) -> list[dict]:
     """Clean rows for a REST present-state ("as-of") series, recv-order.
 
+    FORWARD-ONLY, uniform with klines: ``event_time_ms`` (the bucket / visibility
+    key) is the recv-time ARRIVAL ms (``recv_ts_ns // 1e6``), NOT the venue time —
+    a value is visible only once the brain has observed it, never retroactively in
+    a window before its arrival (which would be a lookahead, e.g. a batched
+    futures_data fetch re-delivering old 5-min buckets). The venue time-key
+    (``asof_time_col``) is kept as ``asof_event_time_ms`` — a stored staleness
+    signal, no longer the visibility gate.
+
     ``value_map`` maps clean float field name -> venue VARCHAR column; ``int_map``
-    (optional) maps clean int field name -> venue int column. ``time_col`` is the
-    venue as-of timestamp column (mapped to ``event_time_ms``); ``symbol_col`` is
-    the in-row symbol field (``s`` or ``pair``). Empty-string numerics -> None.
+    (optional) maps clean int field name -> venue int column. ``symbol_col`` is the
+    in-row symbol field (``s`` or ``pair``). Empty-string numerics -> None.
     """
     int_map = int_map or {}
-    columns = (["recv_ts_ns", symbol_col, time_col]
+    columns = (["recv_ts_ns", symbol_col, asof_time_col]
                + list(value_map.values()) + list(int_map.values()))
     rows = _read_dataset_rows(capture_root, capture_dataset, after_recv_ts_ns,
                               columns, symbols, symbol_col=symbol_col)
     out: list[dict] = []
     for r in rows:
+        recv = int(r["recv_ts_ns"])
         clean = {
-            "recv_ts_ns": int(r["recv_ts_ns"]),
+            "recv_ts_ns": recv,
             "symbol": r[symbol_col],
-            "event_time_ms": int(r[time_col]),
+            "event_time_ms": recv // 1_000_000,        # ARRIVAL — bucket/visibility key
+            "asof_event_time_ms": int(r[asof_time_col]),  # venue time — staleness signal only
         }
         for clean_name, venue_col in value_map.items():
             clean[clean_name] = _safe_float(r[venue_col])
