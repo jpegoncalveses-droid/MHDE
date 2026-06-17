@@ -22,6 +22,7 @@ _CADENCE_NS = 60 * 1_000_000_000
 _EXPECTED_ORDER = [
     "recv_ts_ns", "symbol", "window_start_ns", "window_end_ns",
     "taker_buy_vol", "taker_sell_vol",
+    "taker_buy_quote_vol", "taker_sell_quote_vol",
     "buy_trade_count", "sell_trade_count", "trade_count",
     "price_open", "price_high", "price_low", "price_close",
     "qty_sum", "qty_max", "qty_mean",
@@ -40,6 +41,8 @@ def _snapshot(symbol="BTCUSDT", *, window_start_ns, recv=999, factor=1.0):
         "window_end_ns": window_start_ns + _CADENCE_NS,
         "taker_buy_vol": 3.0 * factor,
         "taker_sell_vol": 5.0 * factor,
+        "taker_buy_quote_vol": 300.0 * factor,
+        "taker_sell_quote_vol": 500.0 * factor,
         "buy_trade_count": 2,
         "sell_trade_count": 1,
         "trade_count": 3,
@@ -69,7 +72,8 @@ def test_schema_types_are_int_string_float_only():
     assert sch.field("symbol").type == pa.string()
     for c in ("buy_trade_count", "sell_trade_count", "trade_count"):
         assert sch.field(c).type == pa.int64()
-    for c in ("taker_buy_vol", "taker_sell_vol", "price_open", "price_high",
+    for c in ("taker_buy_vol", "taker_sell_vol", "taker_buy_quote_vol",
+              "taker_sell_quote_vol", "price_open", "price_high",
               "price_low", "price_close", "qty_sum", "qty_max", "qty_mean"):
         assert sch.field(c).type == pa.float64()
 

@@ -29,24 +29,35 @@ def _trade(*, recv_ns, T_ms, price, qty, m, symbol="BTCUSDT"):
     }
 
 
-# The canonical, hand-maintained whitelist. Hardcoded here (NOT imported from
-# the module under test) so the assertion is an independent guard: adding any
-# composed/normalized/threshold column to the primitive breaks exact equality.
+# NO-BIAS line is INFORMATION vs INTERPRETATION (not "presence of a product"):
+#   * ALLOWED  — raw per-event quantities that cannot be reconstructed from the
+#     stored summaries (e.g. notional Σ(price*qty) per side, irrecoverable from
+#     Σqty + price OHLC), and within-window single-field summaries.
+#   * FORBIDDEN (Phase 3) — engineered signals computed OVER the window
+#     summaries: ratios/imbalance, normalized/rank/z-score, thresholds, selection.
+#
+# The canonical, hand-maintained whitelist. Hardcoded here (NOT imported from the
+# module under test) so the assertion is an independent guard: adding any
+# interpretation column to the primitive breaks exact equality.
 _EXPECTED_COLUMNS = {
     # provenance / immutable bounds (not features)
     "recv_ts_ns", "symbol", "window_start_ns", "window_end_ns",
-    # raw separable primitives (single-field within-window + mandated taker split)
+    # raw separable primitives (per-event raw quantities + single-field summaries,
+    # taker split kept SEPARATE)
     "taker_buy_vol", "taker_sell_vol",
+    "taker_buy_quote_vol", "taker_sell_quote_vol",  # raw notional, irrecoverable downstream
     "buy_trade_count", "sell_trade_count", "trade_count",
     "price_open", "price_high", "price_low", "price_close",
     "qty_sum", "qty_max", "qty_mean",
 }
 
-# Substrings that betray a composed/normalized/threshold/selected feature.
+# Substrings that betray an engineered signal computed OVER the window summaries
+# (interpretation). Raw quantities like notional/quote-vol are NOT here — they
+# carry information, not a hypothesis.
 _FORBIDDEN_SUBSTRINGS = [
     "ratio", "imbalance", "zscore", "z_score", "rank", "norm",
     "threshold", "thresh", "flag", "signal", "vwap", "ofi", "cvd",
-    "skew", "pct", "percent", "quote", "notional", "delta", "net",
+    "skew", "pct", "percent",
 ]
 
 
@@ -132,16 +143,46 @@ def test_empty_input_is_empty_output():
     assert trades.bucket_trades([], cadence_ns=_CADENCE_NS) == []
 
 
-def test_no_bias_snapshot_holds_only_raw_separable_primitives():
+def test_taker_quote_vol_is_per_event_notional_split_by_side():
+    # Notional is summed per-event (price*qty per trade) within the window and
+    # split by taker side. It is RAW: it cannot be reconstructed from the stored
+    # qty/price summaries (different per-trade price*qty pairings share the same
+    # qty_sum and price OHLC but differ in notional).
+    rows = [
+        _trade(recv_ns=1, T_ms=_T0_MS + 1_000, price=100.0, qty=2.0, m=False),  # BUY  notional 200
+        _trade(recv_ns=2, T_ms=_T0_MS + 2_000, price=50.0, qty=3.0, m=False),   # BUY  notional 150
+        _trade(recv_ns=3, T_ms=_T0_MS + 3_000, price=10.0, qty=4.0, m=True),    # SELL notional 40
+    ]
+    (snap,) = trades.bucket_trades(rows, cadence_ns=_CADENCE_NS)
+    assert snap["taker_buy_quote_vol"] == 350.0   # 200 + 150 on the m=False (BUY) side
+    assert snap["taker_sell_quote_vol"] == 40.0   # 40 on the m=True (SELL) side
+
+
+def test_no_bias_allows_raw_primitives_only():
     rows = [
         _trade(recv_ns=1, T_ms=_T0_MS + 1_000, price=100.0, qty=2.0, m=False),
         _trade(recv_ns=2, T_ms=_T0_MS + 2_000, price=101.0, qty=3.0, m=True),
     ]
     (snap,) = trades.bucket_trades(rows, cadence_ns=_CADENCE_NS)
-    # Exact whitelist: any extra (composed) key OR any missing key fails.
+    # Exact whitelist: any interpretation key OR any missing key fails.
     assert set(snap.keys()) == _EXPECTED_COLUMNS
-    # No column name may betray a ratio/normalized/threshold/selected feature.
+    # No column name may betray an engineered signal over the window summaries.
     for name in snap:
         low = name.lower()
         for bad in _FORBIDDEN_SUBSTRINGS:
-            assert bad not in low, f"forbidden composed/normalized token {bad!r} in column {name!r}"
+            assert bad not in low, f"forbidden interpretation token {bad!r} in column {name!r}"
+
+
+def test_no_bias_scan_catches_interpretation_columns():
+    # Adversarial: the forbidden scan MUST reject engineered signals over the
+    # summaries, and MUST NOT reject the new raw notional columns.
+    interpretation = [
+        "taker_imbalance", "buy_sell_ratio", "qty_zscore", "price_rank",
+        "vol_threshold", "ret_vwap", "norm_qty", "flow_skew", "buy_pct",
+    ]
+    for name in interpretation:
+        low = name.lower()
+        assert any(bad in low for bad in _FORBIDDEN_SUBSTRINGS), f"{name} should be rejected"
+    for name in ["taker_buy_quote_vol", "taker_sell_quote_vol", "qty_sum", "price_open"]:
+        low = name.lower()
+        assert not any(bad in low for bad in _FORBIDDEN_SUBSTRINGS), f"{name} should pass"

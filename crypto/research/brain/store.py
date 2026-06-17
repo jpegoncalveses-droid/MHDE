@@ -6,9 +6,11 @@ on the *event* time (window start, UTC). Unlike capture (which keeps raw venue
 strings lossless), the brain persists NUMERIC within-window summaries, so the
 schema is int64 / float64 / string only.
 
-The schema field names are the persistence half of the NO-BIAS guardrail: only
-raw, separable, single-field primitives plus immutable provenance/bounds — no
-ratios, normalization, thresholds, or cross-field products.
+The schema field names are the persistence half of the NO-BIAS guardrail
+(INFORMATION vs INTERPRETATION): raw per-event quantities (incl. notional, which
+is irrecoverable from the qty/price summaries) and within-window single-field
+summaries, plus immutable provenance/bounds — but NO engineered signals over the
+summaries (ratios/imbalance, normalization, thresholds, selection).
 
 This module writes ONLY under the given ``root`` and NEVER opens DuckDB, the
 engine DB, or capture's store.
@@ -33,9 +35,12 @@ TRADES_SNAPSHOT_SCHEMA = pa.schema([
     ("symbol", pa.string()),
     ("window_start_ns", pa.int64()),  # immutable bound (event-time floor)
     ("window_end_ns", pa.int64()),    # immutable bound (start + cadence)
-    # raw separable primitives (single-field within-window + taker split)
+    # raw separable primitives (per-event quantities + single-field summaries,
+    # taker split kept separate)
     ("taker_buy_vol", pa.float64()),
     ("taker_sell_vol", pa.float64()),
+    ("taker_buy_quote_vol", pa.float64()),   # raw notional (price*qty), irrecoverable downstream
+    ("taker_sell_quote_vol", pa.float64()),
     ("buy_trade_count", pa.int64()),
     ("sell_trade_count", pa.int64()),
     ("trade_count", pa.int64()),
