@@ -36,14 +36,15 @@ def _run(tmp_path, spec, now_ns):
 
 # -- registry --
 
-def test_sources_registry_has_four_independent_sources():
-    assert set(sources.SOURCES) == {"trades", "bookticker", "markprice", "forceorder"}
-    for name, spec in sources.SOURCES.items():
+def test_sources_registry_has_the_four_stream_sources():
+    stream = {"trades", "bookticker", "markprice", "forceorder"}
+    assert stream <= set(sources.SOURCES)
+    for name, spec in sources.SOURCES.items():   # every registered source is well-formed
         assert spec.dataset == name
         assert callable(spec.read_fn) and callable(spec.bucket_fn)
         assert spec.schema is not None and callable(spec.count_fn)
-    # each source has its OWN cursor name
-    assert len({s.reader_name for s in sources.SOURCES.values()}) == 4
+    # every source (stream + as-of) has its OWN cursor name
+    assert len({s.reader_name for s in sources.SOURCES.values()}) == len(sources.SOURCES)
 
 
 # -- bookTicker end-to-end + watermark + resume (E-bucketed source) --
