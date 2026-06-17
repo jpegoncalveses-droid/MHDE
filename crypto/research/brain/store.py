@@ -165,6 +165,23 @@ BASIS_SNAPSHOT_SCHEMA = _asof_schema([
     ("annualized_basis_rate", pa.float64()),
 ])
 
+#: klines_1h snapshot — the hourly bar's native fields verbatim + openTime/
+#: closeTime as the bar's identity. As-of keyed on recv arrival (forward-only),
+#: stored sparsely at the bar cadence. NO returns/MA/momentum (Phase 3).
+KLINES_SNAPSHOT_SCHEMA = _asof_schema([
+    ("open", pa.float64()),
+    ("high", pa.float64()),
+    ("low", pa.float64()),
+    ("close", pa.float64()),
+    ("volume", pa.float64()),
+    ("quote_volume", pa.float64()),
+    ("trades", pa.int64()),
+    ("taker_buy_base", pa.float64()),
+    ("taker_buy_quote", pa.float64()),
+    ("open_time", pa.int64()),    # bar identity
+    ("close_time", pa.int64()),   # bar identity (closed vs in-progress check downstream)
+])
+
 _MS_PER_DAY = 86_400_000
 
 

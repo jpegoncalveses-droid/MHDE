@@ -62,6 +62,11 @@ TOP_LS_POSITION_DATASET = "top_ls_position"
 TAKER_LS_RATIO_DATASET = "taker_ls_ratio"
 BASIS_DATASET = "basis"
 
+# klines_1h: the hourly-context bar (a multi-field as-of source). capture dir ==
+# brain store dataset == cursor name.
+KLINES_CAPTURE_DATASET = "klines_1h"
+KLINES_DATASET = "klines_1h"
+
 #: zstd, mirroring capture_core (compaction-friendly).
 PARQUET_COMPRESSION = "zstd"
 

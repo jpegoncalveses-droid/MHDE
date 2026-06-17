@@ -14,8 +14,13 @@ window): step 1 ``aggTrade`` -> ``trades``; step 2a ``bookTicker`` ->
 AS-OF series (REST present-state, sparse — point-in-time values valid AS OF a
 timestamp, one per window at most): step 2b ``open_interest``, ``premium_index``,
 ``global_ls_account``, ``top_ls_account``, ``top_ls_position``, ``taker_ls_ratio``,
-``basis`` -> same-named datasets. As-of snapshots hold the latest raw value per
+``basis`` -> same-named datasets; step 2c ``klines_1h`` -> ``klines_1h``, the
+hourly-context bar (a MULTI-FIELD as-of source storing the native bar fields +
+openTime/closeTime identity). As-of snapshots hold the latest raw value per
 window (not an OHLC summary), and venue-native ratios/rates are RAW information.
+klines is FORWARD-ONLY: it keys the as-of on recv arrival, NOT the bar's
+closeTime (a REST-backfilled bar's closeTime can precede the brain observing it;
+keying on closeTime would be lookahead).
 
 Isolation: the brain is its own writer domain (``data/research/brain/``). It
 never opens ``mhde.duckdb``, the engine DB, or capture's store for writing, and
