@@ -33,14 +33,19 @@ def bucket_asof(
     *,
     cadence_ns: int,
     value_fields: Sequence[str],
+    tiebreak_fields: Sequence[str] = (),
 ) -> list[dict]:
     """Group clean as-of rows into ``(symbol, window)`` snapshots of the as-of value.
 
-    Each input row: recv_ts_ns, symbol, event_time_ms (the venue time-key), and
+    Each input row: recv_ts_ns, symbol, event_time_ms (the as-of time-key), and
     each name in ``value_fields`` (float or int, or None for an absent venue
     value). Per ``(symbol, window)`` the LATEST observation (by event time, then
-    recv_ts_ns) supplies the value — this also dedups overlapping re-fetches that
-    re-deliver the same timestamp.
+    recv_ts_ns, then ``tiebreak_fields``) supplies the value — this also dedups
+    overlapping re-fetches that re-deliver the same timestamp.
+
+    ``tiebreak_fields`` break a remaining tie when event time and recv_ts_ns are
+    equal (e.g. klines: a backfill page delivers many bars at one recv_ts_ns, so
+    the highest ``close_time`` bar is the deterministic as-of for that window).
     """
     groups: dict[tuple[str, int], list[dict]] = {}
     for r in rows:
@@ -49,7 +54,8 @@ def bucket_asof(
 
     snapshots: list[dict] = []
     for (symbol, ws), obs in groups.items():
-        obs.sort(key=lambda r: (r["event_time_ms"], r["recv_ts_ns"]))
+        obs.sort(key=lambda r: (r["event_time_ms"], r["recv_ts_ns"],
+                                *(r[f] for f in tiebreak_fields)))
         last = obs[-1]   # the as-of observation for this window
         snap = {
             "recv_ts_ns": last["recv_ts_ns"],

@@ -75,9 +75,10 @@ def _asof_reader(capture_dataset, value_map, time_col, symbol_col="s", int_map=N
     return _read
 
 
-def _asof_bucket(value_fields):
+def _asof_bucket(value_fields, tiebreak_fields=()):
     def _bucket(rows, *, cadence_ns):
-        return asof.bucket_asof(rows, cadence_ns=cadence_ns, value_fields=value_fields)
+        return asof.bucket_asof(rows, cadence_ns=cadence_ns, value_fields=value_fields,
+                                tiebreak_fields=tiebreak_fields)
     return _bucket
 
 
@@ -130,11 +131,31 @@ BASIS = _asof_spec(
                "annualized_basis_rate": "annualizedBasisRate"},
     time_col="timestamp", symbol_col="pair", schema=store.BASIS_SNAPSHOT_SCHEMA)
 
-#: The seven REST present-state ("as-of") sources.
+#: The seven REST present-state ("as-of") scalar series.
 ASOF_SOURCES = [OPEN_INTEREST, PREMIUM_INDEX, GLOBAL_LS_ACCOUNT, TOP_LS_ACCOUNT,
                 TOP_LS_POSITION, TAKER_LS_RATIO, BASIS]
 
+# klines_1h: the hourly-context bar — a MULTI-FIELD as-of source. Same as-of
+# mechanism, but its reader keys event_time on recv ARRIVAL (forward-only; the
+# bar is REST-backfilled so closeTime can precede arrival), and a backfill page
+# delivers many bars at one recv -> break the tie on close_time (latest bar).
+_KLINES_FIELDS = ["open", "high", "low", "close", "volume", "quote_volume", "trades",
+                  "taker_buy_base", "taker_buy_quote", "open_time", "close_time"]
+
+
+def _klines_reader(capture_root, after_recv_ts_ns=0, symbols=None):
+    return reader.read_new_klines(capture_root, after_recv_ts_ns=after_recv_ts_ns, symbols=symbols)
+
+
+KLINES = SourceSpec(
+    dataset=cfg.KLINES_DATASET, reader_name=cfg.KLINES_DATASET,
+    read_fn=_klines_reader,
+    bucket_fn=_asof_bucket(_KLINES_FIELDS, tiebreak_fields=("close_time",)),
+    schema=store.KLINES_SNAPSHOT_SCHEMA, event_time_key="event_time_ms",
+    count_fn=lambda s: 1,
+)
+
 #: All sources keyed by dataset name.
 SOURCES: dict[str, SourceSpec] = {
-    s.dataset: s for s in (TRADES, BOOKTICKER, MARKPRICE, FORCEORDER, *ASOF_SOURCES)
+    s.dataset: s for s in (TRADES, BOOKTICKER, MARKPRICE, FORCEORDER, *ASOF_SOURCES, KLINES)
 }

@@ -209,3 +209,49 @@ def read_new_asof(
             clean[clean_name] = int(r[venue_col])
         out.append(clean)
     return out
+
+
+# klines_1h on-disk columns (the 'ignore' venue field is dropped by capture).
+_KLINES_COLUMNS = ["recv_ts_ns", "s", "openTime", "open", "high", "low", "close",
+                   "volume", "closeTime", "quoteVolume", "trades", "takerBuyBase", "takerBuyQuote"]
+
+
+def read_new_klines(
+    capture_root: str,
+    after_recv_ts_ns: int = 0,
+    symbols: Optional[Sequence[str]] = None,
+) -> list[dict]:
+    """Clean klines_1h bars with ``recv_ts_ns > after_recv_ts_ns``, recv-order.
+
+    Keys: recv_ts_ns, symbol, event_time_ms, + the native bar fields (open, high,
+    low, close, volume, quote_volume, trades, taker_buy_base, taker_buy_quote) and
+    the bar identity (open_time, close_time).
+
+    FORWARD-ONLY (load-bearing): ``event_time_ms`` is the recv-time ARRIVAL ms
+    (``recv_ts_ns // 1e6``), NOT the bar's openTime/closeTime. A 1h bar is
+    REST-backfilled, so its closeTime can be long before the brain observed it;
+    keying the as-of on closeTime would expose a bar before it was available
+    (lookahead). The bar's own times are kept only as identity fields.
+    """
+    rows = _read_dataset_rows(capture_root, cfg.KLINES_CAPTURE_DATASET, after_recv_ts_ns,
+                              _KLINES_COLUMNS, symbols)
+    out: list[dict] = []
+    for r in rows:
+        recv = int(r["recv_ts_ns"])
+        out.append({
+            "recv_ts_ns": recv,
+            "symbol": r["s"],
+            "event_time_ms": recv // 1_000_000,   # ARRIVAL time, NOT the bar time
+            "open": float(r["open"]),
+            "high": float(r["high"]),
+            "low": float(r["low"]),
+            "close": float(r["close"]),
+            "volume": float(r["volume"]),
+            "quote_volume": float(r["quoteVolume"]),
+            "trades": int(r["trades"]),
+            "taker_buy_base": float(r["takerBuyBase"]),
+            "taker_buy_quote": float(r["takerBuyQuote"]),
+            "open_time": int(r["openTime"]),
+            "close_time": int(r["closeTime"]),
+        })
+    return out
