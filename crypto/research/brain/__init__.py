@@ -8,10 +8,14 @@ and advances a resumable per-source cursor in a SQLite-WAL registry. A single
 generic pipeline is driven by a declarative :class:`sources.SourceSpec`. No
 continuous runner, no systemd, nothing deployed.
 
-Sources: step 1 — ``aggTrade`` -> ``trades``; step 2a — ``bookTicker`` ->
-``bookticker`` (bid/ask OHLC + qty summaries + bid-ask spread), ``markPrice`` ->
-``markprice`` (mark/index/settle OHLC + funding summaries), ``forceOrder`` ->
-``forceorder`` (liquidations split by side, like trades).
+Sources fall into two shapes. EVENT STREAMS (WS, dense — aggregate within a
+window): step 1 ``aggTrade`` -> ``trades``; step 2a ``bookTicker`` ->
+``bookticker``, ``markPrice`` -> ``markprice``, ``forceOrder`` -> ``forceorder``.
+AS-OF series (REST present-state, sparse — point-in-time values valid AS OF a
+timestamp, one per window at most): step 2b ``open_interest``, ``premium_index``,
+``global_ls_account``, ``top_ls_account``, ``top_ls_position``, ``taker_ls_ratio``,
+``basis`` -> same-named datasets. As-of snapshots hold the latest raw value per
+window (not an OHLC summary), and venue-native ratios/rates are RAW information.
 
 Isolation: the brain is its own writer domain (``data/research/brain/``). It
 never opens ``mhde.duckdb``, the engine DB, or capture's store for writing, and

@@ -36,6 +36,7 @@ def _read_dataset_rows(
     after_recv_ts_ns: int,
     columns: list[str],
     symbols: Optional[Sequence[str]],
+    symbol_col: str = "s",
 ) -> list[dict]:
     """Read terse rows from a capture dataset, ``recv_ts_ns > cursor``, sorted asc."""
     base = pathlib.Path(capture_root, capture_dataset)
@@ -44,12 +45,19 @@ def _read_dataset_rows(
     dataset = ds.dataset(str(base), format="parquet", partitioning="hive")
     flt = pc.field("recv_ts_ns") > after_recv_ts_ns
     if symbols is not None:
-        # Filter on in-row ``s`` (string) — robust regardless of partition
-        # dictionary encoding; partition pruning still applies via the path.
-        flt = flt & pc.field("s").isin(list(symbols))
+        # Filter on the in-row symbol field (``s``, or ``pair`` for basis) — robust
+        # regardless of partition dictionary encoding; path pruning still applies.
+        flt = flt & pc.field(symbol_col).isin(list(symbols))
     table = dataset.to_table(columns=columns, filter=flt)
     table = table.sort_by([("recv_ts_ns", "ascending")])
     return table.to_pylist()
+
+
+def _safe_float(v) -> Optional[float]:
+    """Cast a VARCHAR venue numeric to float; empty string / None -> None (null)."""
+    if v is None or v == "":
+        return None
+    return float(v)
 
 
 def read_new_aggtrades(
@@ -162,4 +170,42 @@ def read_new_forceorder(
             "qty": float(r["q"]),       # VARCHAR -> float
             "price": float(r["p"]),
         })
+    return out
+
+
+def read_new_asof(
+    capture_root: str,
+    capture_dataset: str,
+    *,
+    value_map: dict,
+    time_col: str,
+    symbol_col: str = "s",
+    int_map: Optional[dict] = None,
+    after_recv_ts_ns: int = 0,
+    symbols: Optional[Sequence[str]] = None,
+) -> list[dict]:
+    """Clean rows for a REST present-state ("as-of") series, recv-order.
+
+    ``value_map`` maps clean float field name -> venue VARCHAR column; ``int_map``
+    (optional) maps clean int field name -> venue int column. ``time_col`` is the
+    venue as-of timestamp column (mapped to ``event_time_ms``); ``symbol_col`` is
+    the in-row symbol field (``s`` or ``pair``). Empty-string numerics -> None.
+    """
+    int_map = int_map or {}
+    columns = (["recv_ts_ns", symbol_col, time_col]
+               + list(value_map.values()) + list(int_map.values()))
+    rows = _read_dataset_rows(capture_root, capture_dataset, after_recv_ts_ns,
+                              columns, symbols, symbol_col=symbol_col)
+    out: list[dict] = []
+    for r in rows:
+        clean = {
+            "recv_ts_ns": int(r["recv_ts_ns"]),
+            "symbol": r[symbol_col],
+            "event_time_ms": int(r[time_col]),
+        }
+        for clean_name, venue_col in value_map.items():
+            clean[clean_name] = _safe_float(r[venue_col])
+        for clean_name, venue_col in int_map.items():
+            clean[clean_name] = int(r[venue_col])
+        out.append(clean)
     return out

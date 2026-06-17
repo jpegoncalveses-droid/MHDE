@@ -114,6 +114,57 @@ FORCEORDER_SNAPSHOT_SCHEMA = pa.schema(_PROVENANCE + [
     ("liq_sell_count", pa.int64()),
 ])
 
+# -- AS-OF (REST present-state) snapshot schemas --------------------------------
+# Sparse point-in-time series: provenance/bounds + the as-of event timestamp +
+# the venue's OWN raw fields (native ratios/rates included — they are RAW venue
+# information, not engineered signals). Float fields are nullable (a venue '' ->
+# null). One observation per window; no OHLC (it would be redundant).
+
+#: provenance/bounds + the as-of (venue time-key) instant.
+_ASOF_PROVENANCE = _PROVENANCE + [("asof_event_time_ms", pa.int64())]
+
+
+def _asof_schema(value_specs):
+    return pa.schema(_ASOF_PROVENANCE + list(value_specs))
+
+
+OPEN_INTEREST_SNAPSHOT_SCHEMA = _asof_schema([
+    ("open_interest", pa.float64()),
+])
+
+PREMIUM_INDEX_SNAPSHOT_SCHEMA = _asof_schema([
+    ("mark_price", pa.float64()),
+    ("index_price", pa.float64()),
+    ("estimated_settle_price", pa.float64()),
+    ("last_funding_rate", pa.float64()),
+    ("interest_rate", pa.float64()),
+    ("next_funding_time", pa.int64()),
+])
+
+# global / top account / top position long-short ratios share one shape.
+_LS_RATIO_SPECS = [
+    ("long_account", pa.float64()),
+    ("short_account", pa.float64()),
+    ("long_short_ratio", pa.float64()),   # native venue ratio (raw)
+]
+GLOBAL_LS_ACCOUNT_SNAPSHOT_SCHEMA = _asof_schema(_LS_RATIO_SPECS)
+TOP_LS_ACCOUNT_SNAPSHOT_SCHEMA = _asof_schema(_LS_RATIO_SPECS)
+TOP_LS_POSITION_SNAPSHOT_SCHEMA = _asof_schema(_LS_RATIO_SPECS)
+
+TAKER_LS_RATIO_SNAPSHOT_SCHEMA = _asof_schema([
+    ("buy_sell_ratio", pa.float64()),     # native venue ratio (raw)
+    ("buy_vol", pa.float64()),
+    ("sell_vol", pa.float64()),
+])
+
+BASIS_SNAPSHOT_SCHEMA = _asof_schema([
+    ("index_price", pa.float64()),
+    ("futures_price", pa.float64()),
+    ("basis", pa.float64()),
+    ("basis_rate", pa.float64()),         # native venue rate (raw)
+    ("annualized_basis_rate", pa.float64()),
+])
+
 _MS_PER_DAY = 86_400_000
 
 

@@ -52,6 +52,16 @@ FORCEORDER_CAPTURE_DATASET = "forceOrder"
 FORCEORDER_DATASET = "forceorder"
 FORCEORDER_READER = "forceorder"
 
+# As-of (REST present-state) sources. For these the capture dir name is already
+# snake_case, so capture dir == brain store dataset == registry cursor name.
+OPEN_INTEREST_DATASET = "open_interest"
+PREMIUM_INDEX_DATASET = "premium_index"
+GLOBAL_LS_ACCOUNT_DATASET = "global_ls_account"
+TOP_LS_ACCOUNT_DATASET = "top_ls_account"
+TOP_LS_POSITION_DATASET = "top_ls_position"
+TAKER_LS_RATIO_DATASET = "taker_ls_ratio"
+BASIS_DATASET = "basis"
+
 #: zstd, mirroring capture_core (compaction-friendly).
 PARQUET_COMPRESSION = "zstd"
 
