@@ -162,7 +162,7 @@ def _diff(symbol, U, u, pu, *, b=None, a=None):
 
 
 def test_service_periodic_write_synced_only_and_cadence_gated(tmp_path):
-    s = service.CaptureService(root=str(tmp_path), client=None)
+    s = service.CaptureService(root=str(tmp_path), client=None, depth_state_enabled=True)
     # seed + sync BTCUSDT's level book
     s._on_snapshot_arrived("BTCUSDT", {"lastUpdateId": 100, "bids": _A_BIDS, "asks": _A_ASKS}, recv_ns=1)
     s._handle_depth(_diff("BTCUSDT", 99, 105, 98, b=[["100.0", "7"]]), recv_ns=2)
@@ -213,7 +213,7 @@ def test_malformed_level_leaves_book_untouched_atomic():
 
 def test_service_periodic_write_is_best_effort_per_symbol(tmp_path):
     # One symbol's corrupt book must NOT take down the flush loop or drop the others.
-    s = service.CaptureService(root=str(tmp_path), client=None)
+    s = service.CaptureService(root=str(tmp_path), client=None, depth_state_enabled=True)
     s._on_snapshot_arrived("BTCUSDT", {"lastUpdateId": 100, "bids": _A_BIDS, "asks": _A_ASKS}, recv_ns=1)
     s._handle_depth(_diff("BTCUSDT", 99, 105, 98, b=[["100.0", "7"]]), recv_ns=2)
     s._on_snapshot_arrived("ETHUSDT", {"lastUpdateId": 50, "bids": [["10.0", "1"]], "asks": [["11.0", "1"]]}, recv_ns=3)

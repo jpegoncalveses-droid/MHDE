@@ -301,6 +301,12 @@ MARKPRICE_SPEED = "1s"
 # the brain keeps only its own within-window summaries. Full-diff persistence is
 # disk-infeasible (~11-12 GB/day vs the 50 GiB DiskGuard floor); this digested
 # layer is ~15-50x fewer rows. INERT until a deliberate capture redeploy.
+# DORMANCY GATE — default OFF (mandatory): the shards auto-restart on a crash, so the
+# online level book + depth_state writer must NEVER activate on an unplanned restart.
+# OFF keeps the maintainer CURSOR-ONLY (the proven pre-#49 path: no per-symbol book, no
+# fat level-carrying _Diff buffers — the reconnect-storm OOM source). Flip ON only as a
+# deliberate depth-state activation (alongside tuning CAPTURE_DEPTH_BUFFER_MAXLEN).
+DEPTH_STATE_ENABLED = False
 DEPTH_STATE_DATASET = "depth_state"
 DEPTH_STATE_TOP_N = 20            # levels per side (the signal-rich near book)
 DEPTH_STATE_CADENCE_S = 5.0       # one state per synced symbol every 5s

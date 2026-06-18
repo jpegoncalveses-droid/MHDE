@@ -200,6 +200,7 @@ class CaptureService:
         inode_guard: Optional[Any] = None,
         inode_guard_enabled: bool = True,
         disk_check_interval_s: float = cfg.CAPTURE_DISK_CHECK_INTERVAL_S,
+        depth_state_enabled: bool = cfg.DEPTH_STATE_ENABLED,
         notifier: Optional[Any] = None,
         watchdog_liveness_window_s: float = cfg.SOCKET_SILENCE_TIMEOUT_S,
         heartbeat_dir: Optional[str] = None,
@@ -254,13 +255,19 @@ class CaptureService:
         self._forceorder = store.forceorder_writer(root, **_wkw)
         self._markprice = store.markprice_writer(root, **_wkw)
         self._snapshot = store.depth_snapshot_writer(root, **_wkw)
-        # Online book-state dataset: periodic top-N states from the level book.
-        # Additive — the raw depth/snapshot persist path above is unchanged.
-        self._depth_state = store.depth_state_writer(root, **_wkw)
+        # Online book-state dataset: periodic top-N states from the level book. GATED
+        # by DEPTH_STATE_ENABLED — when OFF the maintainer stays cursor-only (no level
+        # feed, no book, no fat buffers) and this writer is never created or flushed,
+        # so the raw firehose path is byte-identical to pre-#49.
+        self._depth_state_enabled = depth_state_enabled
+        self._depth_state = (store.depth_state_writer(root, **_wkw)
+                             if self._depth_state_enabled else None)
         self._last_book_state_monotonic = 0.0
         self._gaps = store.gap_writer(root)
         self._writers = [self._agg, self._depth, self._bookticker, self._forceorder,
-                         self._markprice, self._snapshot, self._depth_state, self._gaps]
+                         self._markprice, self._snapshot, self._gaps]
+        if self._depth_state is not None:
+            self._writers.append(self._depth_state)
 
         # Per-symbol depth sequence maintenance (cursor only; not a level book).
         self._maintainers: dict[str, DepthMaintainer] = {}
@@ -345,9 +352,11 @@ class CaptureService:
         if m is None:
             m = self._maintainers[symbol] = DepthMaintainer(symbol)
         # Maintenance works in EVENT-time ms so gap bounds match the manifest's
-        # *_ms columns (and the conn-manager gaps).
+        # *_ms columns (and the conn-manager gaps). Levels are fed ONLY when depth_state
+        # is enabled — otherwise the maintainer stays cursor-only (no book, no fat buffer).
+        b, a = (data.get("b"), data.get("a")) if self._depth_state_enabled else (None, None)
         res = m.on_diff(int(data["U"]), int(data["u"]), int(data["pu"]),
-                        int(data["E"]), bids=data.get("b"), asks=data.get("a"))
+                        int(data["E"]), bids=b, asks=a)
         self._apply_depth_result(symbol, res)
 
     def _on_snapshot_arrived(self, symbol: str, snap: dict, recv_ns: int) -> None:
@@ -355,8 +364,9 @@ class CaptureService:
         m = self._maintainers.get(symbol)
         if m is None:
             m = self._maintainers[symbol] = DepthMaintainer(symbol)
-        res = m.on_snapshot(int(snap["lastUpdateId"]), int(snap.get("E", 0)),
-                            bids=snap.get("bids"), asks=snap.get("asks"))
+        # Seed the level book ONLY when depth_state is enabled; otherwise cursor-only.
+        b, a = (snap.get("bids"), snap.get("asks")) if self._depth_state_enabled else (None, None)
+        res = m.on_snapshot(int(snap["lastUpdateId"]), int(snap.get("E", 0)), bids=b, asks=a)
         self._apply_depth_result(symbol, res)
 
     def _apply_depth_result(self, symbol: str, res: Any) -> None:
@@ -476,7 +486,11 @@ class CaptureService:
     def _maybe_write_book_states(self) -> None:
         """Every DEPTH_STATE_CADENCE_S, append a top-N book-state row for each
         SYNCED (valid) symbol to the depth_state dataset. Additive to the firehose;
-        the writer flushes with the others. Buffered like any other writer."""
+        the writer flushes with the others. Buffered like any other writer. No-op
+        while depth_state is disabled (no writer is created, and the maintainer is
+        cursor-only so there is no book to sample)."""
+        if self._depth_state is None:
+            return
         now = time.monotonic()
         if now - self._last_book_state_monotonic < cfg.DEPTH_STATE_CADENCE_S:
             return
