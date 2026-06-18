@@ -21,6 +21,7 @@ import logging
 import os
 import shutil
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Callable, Sequence
 
 from crypto.research.capture_core import config as cfg
@@ -93,18 +94,29 @@ def list_firehose_partitions(root: str, datasets: Sequence[str]) -> list[Partiti
     return parts
 
 
-def select_oldest_to_reclaim(parts: Sequence[Partition], deficit: int) -> list[Partition]:
+def select_oldest_to_reclaim(parts: Sequence[Partition], deficit: int, *,
+                             protect_dates: Sequence[str] = ()) -> list[Partition]:
     """Oldest-first selection whose cumulative size covers ``deficit`` bytes.
 
     Pure. Sorts by ``(date, path)`` ascending so the oldest exchange-day partitions
     go first, uniformly across datasets. Returns everything available if the deficit
     exceeds the total; empty when ``deficit <= 0``.
+
+    ``protect_dates`` are NEVER selected — the actively-written (current-day)
+    partitions. Since the guard now enforces OFF the flush loop (concurrently with the
+    writer), excluding the live date is what guarantees the pruner and the writer can
+    never touch the same directory. If the deficit can only be met by protected
+    partitions, the guard simply frees less and escalates to the CRITICAL halt rather
+    than racing/deleting live data.
     """
     if deficit <= 0:
         return []
+    protected = set(protect_dates)
     chosen: list[Partition] = []
     freed = 0
     for p in sorted(parts, key=lambda x: (x.date, x.path)):
+        if p.date in protected:
+            continue
         chosen.append(p)
         freed += p.size
         if freed >= deficit:
@@ -127,6 +139,12 @@ def prune_paths(paths: Sequence[str]) -> int:
 def free_bytes(path: str) -> int:
     st = os.statvfs(path)
     return st.f_bavail * st.f_frsize
+
+
+def _utc_today_str() -> str:
+    """Current UTC date as ``YYYY-MM-DD`` — matches the store's ``date=`` partition key,
+    so the partition the writer is actively appending can be excluded from pruning."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
 # -- the guard --
@@ -154,6 +172,7 @@ class DiskGuard:
         free_fn: Callable[[str], int] = free_bytes,
         prune_fn: Callable[[Sequence[str]], int] = prune_paths,
         list_fn: Callable[[str, Sequence[str]], list[Partition]] = list_firehose_partitions,
+        active_date_fn: Callable[[], str] = _utc_today_str,
         log: logging.Logger = logger,
     ) -> None:
         self._root = root
@@ -163,6 +182,7 @@ class DiskGuard:
         self._free_fn = free_fn
         self._prune_fn = prune_fn
         self._list_fn = list_fn
+        self._active_date_fn = active_date_fn
         self._log = log
         self.halted = False
 
@@ -172,7 +192,8 @@ class DiskGuard:
         if free < self._soft:
             deficit = self._soft - free
             victims = select_oldest_to_reclaim(
-                self._list_fn(self._root, self._datasets), deficit)
+                self._list_fn(self._root, self._datasets), deficit,
+                protect_dates=(self._active_date_fn(),))
             if victims:
                 reclaimed = self._prune_fn([v.path for v in victims])
                 pruned = [v.path for v in victims]

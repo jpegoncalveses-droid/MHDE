@@ -813,6 +813,81 @@ to deployed; this KI is the durable tracker for resolution.
 - `data/exports/active_spec.json` — `risk.max_account_drawdown_pct
   = 0.30` and `backtest_expectations.portfolio_max_dd_pct = -23.7%`.
 
+### KI-156 — Capture shards SIGABRT-restart under a prune storm: DiskGuard.enforce() blocked the watchdog-feeding flush loop (resolved 2026-06-18)
+
+**Severity: high — crashed the live firehose ~76× across ~21h (all 8
+shards), undiagnosed until 2026-06-17.** Onset 2026-06-16 21:16, ~16
+min after the ADR-039 8-shard firehose re-enable; first surfaced while
+pre-flighting the depth-online (`depth_state`) deploy.
+
+**Symptom.** Every `mhde-capture-core@N.service` shard periodically hit
+`Watchdog timeout (limit 30s)!` → systemd `Killing process … with
+signal SIGABRT` → `code=dumped, status=6/ABRT` → `Failed with result
+'watchdog'`, then `Restart=on-failure` recycled it in 5s. Per-shard the
+`status=6/ABRT` count equalled the `Watchdog timeout` count exactly
+(8/11/15/7/10/5/11/8); **zero** internal-abort signatures (no `Fatal
+Python error` / `terminate called` / `Check failed` / `free():` /
+assert / pyarrow / zstd), no core (coredumpctl/systemd-coredump absent;
+apport empty), no Python traceback (faulthandler unregistered). Memory
+peaked 67–452 MB vs `MemoryMax=4G` — **not** OOM. So: systemd's watchdog
+reaped a STALLED event loop, not an internal crash. (`WatchdogSec=30`,
+`WatchdogSignal=6`=SIGABRT.)
+
+**Root cause.** The host was pinned exactly at the 50 GiB DiskGuard soft
+floor (the re-enabled 7-day firehose ingests faster than free allows),
+so `DiskGuard.enforce()` pruned on essentially every flush tick (31,687
+prune events, ~1,500/hr, N up to 1242 partitions/sweep). `enforce()` ran
+its full-tree `scandir`/`_dir_size` walk + `shutil.rmtree` of
+up-to-thousands of `symbol=/date=` dirs **synchronously on the asyncio
+flush loop** (`service.py` `_flush_loop` → `_maybe_enforce_guards` →
+`self._disk_guard.enforce()`, no thread offload — contrast the
+`asyncio.to_thread` universe fetch). The `WATCHDOG=1` feed
+(`_feed_watchdog_if_live`) runs on that SAME loop on the very next line,
+so a prune sweep exceeding 30s starved the watchdog → SIGABRT. Load-
+driven (tracked prune intensity, peaked 05:00–09:00; spread across all 8
+shards), not timer-aligned. **Not** a write-path/ENOSPC abort (0 such
+errors; never reached the 10 GiB critical floor). The `becc14b`/PR #39
+depth-buffer leak fix is unrelated (low mem confirms); PR #49
+(`depth_state`) is inert and merged ~22h *after* onset — chronologically
+impossible as a cause, but it would have *worsened* this (another
+per-flush writer + more disk pressure on the same loop).
+
+**Resolution — `fix/capture-diskguard-offloop`.** Offload the guard
+enforcement off the event loop: `_maybe_enforce_guards` now launches
+`_run_guards_offloop` as a BACKGROUND task that runs both guards via
+`asyncio.to_thread`, with at most one enforce in flight (skip while the
+previous runs). The flush loop keeps iterating and feeding the watchdog
+on its ~1s cadence during a big prune, so a slow prune can no longer
+starve it. The watchdog feed STAYS on the loop, gated on message
+liveness — it still reflects GENUINE loop health (a truly wedged loop
+still misses the feed); it was deliberately NOT decoupled onto a
+message-receipt timer, which would mask real stalls. Prune-vs-write
+race (new, from the now-concurrent prune + writer): `enforce()` excludes
+the active (current-UTC-date) partition from prune candidates
+(`select_oldest_to_reclaim(..., protect_dates=(today,))`), so the
+oldest-first pruner can never touch the directory the writer is
+appending; if only the live date could satisfy the deficit the guard
+frees less and escalates to the CRITICAL halt rather than racing/
+deleting live data. The inode guard's Telegram notify is offloaded too
+(it could also block the loop). `halted` is written by the worker thread
+and read on the message path — a GIL-atomic bool, at worst one-iteration
+stale, harmless on a forward-only substrate.
+
+**Accepted tradeoffs (documented, not bugs).** (1) The watchdog now
+guards LOOP health, not enforce-thread health: a hypothetically-hung
+enforce thread (infinite `rmtree`) would not be watchdog-caught — but
+`rmtree` is bounded, the one-in-flight guard prevents pileup, and this
+is far rarer than the prune-storm starvation it fixes. (2) The active-
+date exclusion protects today only; a late yesterday-flush colliding
+with a below-floor prune in the seconds after UTC midnight is bounded by
+`prune_paths`' `FileNotFoundError` handling + forward-only semantics.
+
+**Deploy note.** This is the durable fix for the watchdog-SIGABRT crash;
+it is INERT (no firehose restart). The stabilizing restart is a separate
+deploy. The disk is still pinned at the floor — relieving disk pressure
+(capacity / shorter firehose retention / a higher floor) remains a
+separate operational follow-up so the guard isn't pruning every tick.
+
 ### KI-149 — Equity ML pipeline silently ships T-2 predictions every weekday — layered defect chain
 
 **Severity: high — recurring every weekday since at least 2026-05-12,
