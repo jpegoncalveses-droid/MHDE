@@ -67,6 +67,12 @@ BASIS_DATASET = "basis"
 KLINES_CAPTURE_DATASET = "klines_1h"
 KLINES_DATASET = "klines_1h"
 
+# depth (step 3b): the periodically-sampled top-N book. We read capture's
+# ``depth_state`` snapshots and emit per-level + full-book within-window depth
+# primitives. Brain store dataset == cursor name == "depth".
+DEPTH_STATE_CAPTURE_DATASET = "depth_state"
+DEPTH_DATASET = "depth"
+
 #: zstd, mirroring capture_core (compaction-friendly).
 PARQUET_COMPRESSION = "zstd"
 

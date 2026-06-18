@@ -8,7 +8,7 @@ and advances a resumable per-source cursor in a SQLite-WAL registry. A single
 generic pipeline is driven by a declarative :class:`sources.SourceSpec`. No
 continuous runner, no systemd, nothing deployed.
 
-Sources fall into two shapes. EVENT STREAMS (WS, dense — aggregate within a
+Sources fall into three shapes. EVENT STREAMS (WS, dense — aggregate within a
 window): step 1 ``aggTrade`` -> ``trades``; step 2a ``bookTicker`` ->
 ``bookticker``, ``markPrice`` -> ``markprice``, ``forceOrder`` -> ``forceorder``.
 AS-OF series (REST present-state, sparse — point-in-time values valid AS OF a
@@ -18,6 +18,12 @@ timestamp, one per window at most): step 2b ``open_interest``, ``premium_index``
 hourly-context bar (a MULTI-FIELD as-of source storing the native bar fields +
 openTime/closeTime identity). As-of snapshots hold the latest raw value per
 window (not an OHLC summary), and venue-native ratios/rates are RAW information.
+SAMPLED STATE (a periodically-sampled top-N book): step 3b ``depth_state`` ->
+``depth`` — many book samples per window, summarized as the per-level ladder
+(levels 2-20; L1 is bookTicker's) price OHLC + qty last/min/max/mean, plus the
+full-book per-sample total qty (max/min — the mean total is recoverable) and
+total notional (mean/max/min — irrecoverable). Imbalance / micro-price / any
+engineered book signal is Phase 3.
 All as-of sources are FORWARD-ONLY (uniform): they key visibility on recv arrival,
 NOT the venue time — a value is visible only once the brain observed it, never
 retroactively in a window before its arrival (a lookahead; acute for klines,
