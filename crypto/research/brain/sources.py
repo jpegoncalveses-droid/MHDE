@@ -18,7 +18,7 @@ import pyarrow as pa
 
 from crypto.research.brain import config as cfg
 from crypto.research.brain import (
-    asof, bookticker, forceorder, markprice, reader, store, trades,
+    asof, bookticker, depth, forceorder, markprice, reader, store, trades,
 )
 
 
@@ -157,7 +157,18 @@ KLINES = SourceSpec(
     count_fn=lambda s: 1,
 )
 
+# depth (step 3b): periodically-sampled top-N book -> per-level + full-book depth
+# primitives. Arrival-keyed (event_time_ms = recv ms), forward-only by construction;
+# within-window event count = the number of book samples in the window.
+DEPTH = SourceSpec(
+    dataset=cfg.DEPTH_DATASET, reader_name=cfg.DEPTH_DATASET,
+    read_fn=reader.read_new_depth_state, bucket_fn=depth.bucket_depth,
+    schema=store.DEPTH_SNAPSHOT_SCHEMA, event_time_key="event_time_ms",
+    count_fn=lambda s: s["sample_count"],
+)
+
 #: All sources keyed by dataset name.
 SOURCES: dict[str, SourceSpec] = {
-    s.dataset: s for s in (TRADES, BOOKTICKER, MARKPRICE, FORCEORDER, *ASOF_SOURCES, KLINES)
+    s.dataset: s for s in (TRADES, BOOKTICKER, MARKPRICE, FORCEORDER, *ASOF_SOURCES,
+                           KLINES, DEPTH)
 }

@@ -173,6 +173,39 @@ def read_new_forceorder(
     return out
 
 
+def read_new_depth_state(
+    capture_root: str,
+    after_recv_ts_ns: int = 0,
+    symbols: Optional[Sequence[str]] = None,
+) -> list[dict]:
+    """Clean depth_state book-snapshot rows with ``recv_ts_ns > after``, recv-order.
+
+    Keys: recv_ts_ns, symbol, event_time_ms, update_id, bids, asks. ``bids``/``asks``
+    are ``[(price, qty), ...]`` float tuples (venue best-first order), parsed from the
+    stored ``[[price_str, qty_str], ...]`` ladders. Only the synced (``valid``) book
+    is ever written, so no validity filter is needed here.
+
+    FORWARD-ONLY: ``event_time_ms`` is the recv ARRIVAL ms (``recv_ts_ns // 1e6``).
+    A depth_state sample is a reconstructed book with NO single venue wall-clock (it
+    aggregates many diffs; ``update_id`` is the last applied sequence, not a time), so
+    the sample's only time is its arrival — there is nothing to look ahead from.
+    """
+    rows = _read_dataset_rows(capture_root, cfg.DEPTH_STATE_CAPTURE_DATASET, after_recv_ts_ns,
+                              ["recv_ts_ns", "s", "update_id", "b", "a"], symbols)
+    out: list[dict] = []
+    for r in rows:
+        recv = int(r["recv_ts_ns"])
+        out.append({
+            "recv_ts_ns": recv,
+            "symbol": r["s"],
+            "event_time_ms": recv // 1_000_000,    # ARRIVAL — forward-only bucket key
+            "update_id": int(r["update_id"]),
+            "bids": [(float(p), float(q)) for p, q in (r["b"] or [])],
+            "asks": [(float(p), float(q)) for p, q in (r["a"] or [])],
+        })
+    return out
+
+
 def read_new_asof(
     capture_root: str,
     capture_dataset: str,

@@ -182,6 +182,45 @@ KLINES_SNAPSHOT_SCHEMA = _asof_schema([
     ("close_time", pa.int64()),   # bar identity (closed vs in-progress check downstream)
 ])
 
+#: depth (step 3b) snapshot — the periodically-sampled top-N book, window-summarized.
+#: Per-level ladder (levels 2-20; L1 is bookTicker's domain): price OHLC + qty
+#: last/min/max/mean. Full-book per-sample totals: qty max/min (mean is recoverable
+#: from the per-level qty means -> omitted), notional mean/max/min (irrecoverable).
+#: All level fields are NULLABLE (a level absent in a window's samples -> null).
+def _depth_level_fields():
+    # levels 2-20, both sides; mirrors brain.depth LADDER_FROM=2 / TOP_N=20 (pinned
+    # by test_full_book_snapshot_keys_match_schema_exactly).
+    fields = []
+    for side in ("bid", "ask"):
+        for lvl in range(2, 21):
+            fields += [
+                (f"{side}_l{lvl}_price_open", pa.float64()),
+                (f"{side}_l{lvl}_price_high", pa.float64()),
+                (f"{side}_l{lvl}_price_low", pa.float64()),
+                (f"{side}_l{lvl}_price_close", pa.float64()),
+                (f"{side}_l{lvl}_qty_last", pa.float64()),
+                (f"{side}_l{lvl}_qty_min", pa.float64()),
+                (f"{side}_l{lvl}_qty_max", pa.float64()),
+                (f"{side}_l{lvl}_qty_mean", pa.float64()),
+            ]
+    return fields
+
+
+DEPTH_SNAPSHOT_SCHEMA = pa.schema(_PROVENANCE + [
+    ("sample_count", pa.int64()),
+    ("update_id_last", pa.int64()),
+    ("bid_total_qty_max", pa.float64()),
+    ("bid_total_qty_min", pa.float64()),
+    ("ask_total_qty_max", pa.float64()),
+    ("ask_total_qty_min", pa.float64()),
+    ("bid_total_notional_mean", pa.float64()),  # Σ price·qty per sample (irrecoverable)
+    ("bid_total_notional_max", pa.float64()),
+    ("bid_total_notional_min", pa.float64()),
+    ("ask_total_notional_mean", pa.float64()),
+    ("ask_total_notional_max", pa.float64()),
+    ("ask_total_notional_min", pa.float64()),
+] + _depth_level_fields())
+
 _MS_PER_DAY = 86_400_000
 
 

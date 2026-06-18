@@ -189,7 +189,7 @@ def test_resume_no_double_count(tmp_path):
 
 def test_klines_in_sources_registry():
     assert "klines_1h" in sources.SOURCES
-    assert len(sources.SOURCES) == 12
+    assert len(sources.SOURCES) == 13   # + depth (step 3b)
 
 
 def test_live_smoke_klines(tmp_path):
