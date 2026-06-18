@@ -21,13 +21,17 @@ Strictly read-only: these never write anything, anywhere.
 """
 from __future__ import annotations
 
+import logging
 import pathlib
 from typing import Optional, Sequence
 
+import pyarrow as pa
 import pyarrow.dataset as ds
 import pyarrow.compute as pc
 
 from crypto.research.brain import config as cfg
+
+logger = logging.getLogger("mhde.crypto.brain.reader")
 
 
 def _read_dataset_rows(
@@ -36,21 +40,44 @@ def _read_dataset_rows(
     after_recv_ts_ns: int,
     columns: list[str],
     symbols: Optional[Sequence[str]],
-    symbol_col: str = "s",
 ) -> list[dict]:
-    """Read terse rows from a capture dataset, ``recv_ts_ns > cursor``, sorted asc."""
+    """Read terse rows from a capture dataset, ``recv_ts_ns > cursor``, sorted asc.
+
+    A bounded read (``symbols`` given) prunes on the Hive ``symbol=`` PARTITION
+    column (capture partitions every dataset by ``symbol=`` — the ``s``/``pair``
+    value), so only the selected symbols' fragments are opened — NOT a full-dataset
+    scan filtered on the in-row field. (Full-universe ``symbols=None`` still scans
+    every fragment; that is the runner's job to chunk by symbol-batch.)
+
+    FRAGMENT-ROBUST: a corrupt/truncated parquet is SKIPPED and LOGGED (the partition
+    is recorded as missing data), never silently dropped and never crashing the read.
+    """
     base = pathlib.Path(capture_root, capture_dataset)
     if not base.exists() or not any(base.rglob("*.parquet")):
         return []
     dataset = ds.dataset(str(base), format="parquet", partitioning="hive")
-    flt = pc.field("recv_ts_ns") > after_recv_ts_ns
+    row_filter = pc.field("recv_ts_ns") > after_recv_ts_ns
+    frag_filter = row_filter
     if symbols is not None:
-        # Filter on the in-row symbol field (``s``, or ``pair`` for basis) — robust
-        # regardless of partition dictionary encoding; path pruning still applies.
-        flt = flt & pc.field(symbol_col).isin(list(symbols))
-    table = dataset.to_table(columns=columns, filter=flt)
-    table = table.sort_by([("recv_ts_ns", "ascending")])
-    return table.to_pylist()
+        # PARTITION pruning: `symbol` is the Hive partition column, so this restricts
+        # get_fragments to the selected partitions' files (predicate pushdown on the
+        # partition, not the in-row `s`).
+        frag_filter = row_filter & pc.field("symbol").isin(list(symbols))
+
+    tables: list[pa.Table] = []
+    for frag in dataset.get_fragments(filter=frag_filter):
+        try:
+            table = frag.to_table(columns=columns, filter=row_filter)
+        except (pa.ArrowInvalid, OSError) as exc:  # corrupt/truncated/unreadable file
+            logger.warning(
+                "brain reader: skipping unreadable capture fragment (data absent for "
+                "this partition): %s (%s: %s)", frag.path, type(exc).__name__, exc)
+            continue
+        if table.num_rows:
+            tables.append(table)
+    if not tables:
+        return []
+    return pa.concat_tables(tables).sort_by([("recv_ts_ns", "ascending")]).to_pylist()
 
 
 def _safe_float(v) -> Optional[float]:
@@ -235,7 +262,7 @@ def read_new_asof(
     columns = (["recv_ts_ns", symbol_col, asof_time_col]
                + list(value_map.values()) + list(int_map.values()))
     rows = _read_dataset_rows(capture_root, capture_dataset, after_recv_ts_ns,
-                              columns, symbols, symbol_col=symbol_col)
+                              columns, symbols)
     out: list[dict] = []
     for r in rows:
         recv = int(r["recv_ts_ns"])
