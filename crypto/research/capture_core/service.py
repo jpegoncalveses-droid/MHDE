@@ -243,6 +243,9 @@ class CaptureService:
 
         self._disk_check_interval_s = disk_check_interval_s
         self._last_disk_check = 0.0
+        # The guard enforce (scandir + rmtree of up-to-thousands of partitions) runs OFF
+        # the flush loop as a background task; at most one in flight at a time.
+        self._enforce_task: Optional[asyncio.Task] = None
 
         _wkw = dict(flush_interval_s=flush_interval_s, flush_max_bytes=flush_max_bytes)
         self._agg = store.aggtrade_writer(root, **_wkw)
@@ -512,17 +515,39 @@ class CaptureService:
             self._notifier.watchdog()
 
     def _maybe_enforce_guards(self) -> None:
-        """Run the disk + inode guards on their (coarser) shared cadence."""
+        """Launch the disk + inode guard enforcement OFF the event loop on the guard
+        cadence.
+
+        The disk guard's scandir + rmtree (and the inode guard's notify) can take tens
+        of seconds under a prune storm. Running them inline blocked the asyncio flush
+        loop, so the WATCHDOG=1 feed on the next line was delayed past WatchdogSec=30s
+        and systemd SIGABRT'd the shard. Enforcing in a worker thread as a BACKGROUND
+        task keeps the loop iterating and feeding the watchdog — which still reflects
+        GENUINE loop health (a truly wedged loop still misses the feed; see
+        _feed_watchdog_if_live). At most ONE enforce in flight: skip while the previous
+        is still running, so there are never overlapping prunes (no prune-vs-prune, and
+        the off-loop pruner never races the writer — it also excludes the live date)."""
         if self._disk_guard is None and self._inode_guard is None:
             return
+        if self._enforce_task is not None and not self._enforce_task.done():
+            return                                       # previous enforce still running
         now = time.monotonic()
         if now - self._last_disk_check < self._disk_check_interval_s:
             return
         self._last_disk_check = now
-        if self._disk_guard is not None:
-            self._disk_guard.enforce()
-        if self._inode_guard is not None:
-            self._inode_guard.enforce()
+        self._enforce_task = asyncio.create_task(self._run_guards_offloop())
+
+    async def _run_guards_offloop(self) -> None:
+        """Run the blocking guard enforcement in a worker thread (off the event loop).
+        Best-effort: it runs as a detached task, so a guard failure degrades to a log
+        line and never takes down the flush loop."""
+        try:
+            if self._disk_guard is not None:
+                await asyncio.to_thread(self._disk_guard.enforce)
+            if self._inode_guard is not None:
+                await asyncio.to_thread(self._inode_guard.enforce)
+        except Exception:                                # noqa: BLE001
+            logger.warning("capture-core guard enforce failed", exc_info=True)
 
     def _install_signal_handlers(self) -> None:
         loop = asyncio.get_running_loop()
@@ -579,7 +604,7 @@ class CaptureService:
                 self._snap_sched.stop()
             with contextlib.suppress(Exception):
                 await mgr_task
-            for task in (flush_task, snap_task):
+            for task in (flush_task, snap_task, self._enforce_task):
                 if task is None:
                     continue
                 task.cancel()
