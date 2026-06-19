@@ -87,3 +87,9 @@ BRAIN_BASE_CADENCE_NS = int(BRAIN_BASE_CADENCE_S * 1_000_000_000)
 #: on disk) PLUS one base window of slack before treating a window as complete.
 BRAIN_WATERMARK_S = capture_cfg.CAPTURE_FIREHOSE_FLUSH_S + BRAIN_BASE_CADENCE_S
 BRAIN_WATERMARK_NS = int(BRAIN_WATERMARK_S * 1_000_000_000)
+
+#: Symbols per batch in a full-universe chunked pass (``pipeline.run_pass``). Each
+#: batch is one bounded (symbol + date-pruned) read, so peak memory ~ one batch, not
+#: the whole universe. Conservative default — the first all-symbols run is the
+#: riskiest memory operation and is gated as a separate step; tune up once profiled.
+BRAIN_PASS_BATCH_SIZE = 25
