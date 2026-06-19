@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import pathlib
+from datetime import datetime, timezone
 from typing import Optional, Sequence
 
 import pyarrow as pa
@@ -32,6 +33,42 @@ import pyarrow.compute as pc
 from crypto.research.brain import config as cfg
 
 logger = logging.getLogger("mhde.crypto.brain.reader")
+
+_MS_PER_DAY = 86_400_000
+#: One UTC day of slack subtracted from the recv cursor before deriving the lower-bound
+#: ``date=`` partition. The ``date=`` of a recv-aligned dataset is keyed on the live-WS
+#: event time E (which trails recv by sub-second) or on recv itself, so a row received
+#: just after a UTC midnight can sit in the prior day's partition (E at 23:59 on D-1).
+#: ``date=`` is day-granular, so one day of margin can NEVER drop such a row while still
+#: pruning all history older than the cursor's prior day (memory stays O(2 days), not
+#: O(history)). Far exceeds any flush (30s) or clock skew.
+_DATE_PRUNE_MARGIN_NS = 86_400 * 1_000_000_000
+
+#: Datasets whose ``date=`` partition is RECV-ALIGNED — keyed on recv_ts itself
+#: (depth_state) or on the live-WS event time E that trails recv within one flush
+#: interval (the WS firehose). For these, a recv-cursor lower-date filter can never drop
+#: an in-window row, so date-pruning is safe. EXCLUDES the venue-time-decoupled datasets:
+#: klines_1h (``date=`` keyed on bar openTime — a backfill writes 90-day-old partitions
+#: at recv=now) and the REST as-of series (the /futures/data ones key ``date=`` on a
+#: bucket timestamp up to ~35 min behind recv). Pruning those by recv-date would silently
+#: drop just-arrived rows, so they keep the full per-symbol scan (they are sparse — no
+#: memory pressure). read_new_asof is one function shared by recv-aligned /fapi AND
+#: decoupled /futures/data series, so the whole as-of path stays out (a per-function flag
+#: could not separate them; the gate must be per-dataset, here).
+_RECV_DATED_DATASETS = frozenset({
+    cfg.AGGTRADE_DATASET,
+    cfg.BOOKTICKER_CAPTURE_DATASET,
+    cfg.MARKPRICE_CAPTURE_DATASET,
+    cfg.FORCEORDER_CAPTURE_DATASET,
+    cfg.DEPTH_STATE_CAPTURE_DATASET,
+})
+
+
+def _date_str_from_ns(ns: int) -> str:
+    """UTC ``YYYY-MM-DD`` for a ns stamp — byte-identical to capture's ``date=`` label
+    (``_date_str`` over ms), so a lexicographic ``>=`` compare equals a chronological one."""
+    day = (ns // 1_000_000) // _MS_PER_DAY
+    return datetime.fromtimestamp(day * 86_400, tz=timezone.utc).strftime("%Y-%m-%d")
 
 
 def _read_dataset_rows(
@@ -43,11 +80,15 @@ def _read_dataset_rows(
 ) -> list[dict]:
     """Read terse rows from a capture dataset, ``recv_ts_ns > cursor``, sorted asc.
 
-    A bounded read (``symbols`` given) prunes on the Hive ``symbol=`` PARTITION
-    column (capture partitions every dataset by ``symbol=`` — the ``s``/``pair``
-    value), so only the selected symbols' fragments are opened — NOT a full-dataset
-    scan filtered on the in-row field. (Full-universe ``symbols=None`` still scans
-    every fragment; that is the runner's job to chunk by symbol-batch.)
+    A bounded read prunes on BOTH Hive partition columns:
+      * ``symbol=`` — when ``symbols`` is given, only those partitions are opened (PR #53).
+      * ``date=`` — when the dataset is RECV-ALIGNED (see ``_RECV_DATED_DATASETS``), a
+        lower-bound ``date >= date(cursor - 1 day)`` prunes every partition older than the
+        cursor's prior day, so memory stops scaling with total history length. Skipped for
+        venue-time-decoupled datasets (klines/as-of), where ``date=`` can lag the recv
+        cursor by minutes..days and pruning would drop just-arrived rows.
+    (Full-universe ``symbols=None`` still scans every selected-date fragment; chunking by
+    symbol-batch is the runner's job. The date prune still applies, bounding memory.)
 
     FRAGMENT-ROBUST: a corrupt/truncated parquet is SKIPPED and LOGGED (the partition
     is recorded as missing data), never silently dropped and never crashing the read.
@@ -62,7 +103,15 @@ def _read_dataset_rows(
         # PARTITION pruning: `symbol` is the Hive partition column, so this restricts
         # get_fragments to the selected partitions' files (predicate pushdown on the
         # partition, not the in-row `s`).
-        frag_filter = row_filter & pc.field("symbol").isin(list(symbols))
+        frag_filter = frag_filter & pc.field("symbol").isin(list(symbols))
+    if (capture_dataset in _RECV_DATED_DATASETS
+            and after_recv_ts_ns > _DATE_PRUNE_MARGIN_NS):
+        # DATE partition pruning (time-twin of the symbol prune): `date` is the Hive
+        # partition column (a 'YYYY-MM-DD' string -> lexicographic >= is chronological),
+        # so this prunes get_fragments to partitions at/after the margin-adjusted cursor
+        # day. Gated cursor > margin so a from-zero read (cursor 0) keeps all history.
+        lower_date = _date_str_from_ns(after_recv_ts_ns - _DATE_PRUNE_MARGIN_NS)
+        frag_filter = frag_filter & (pc.field("date") >= lower_date)
 
     tables: list[pa.Table] = []
     for frag in dataset.get_fragments(filter=frag_filter):
