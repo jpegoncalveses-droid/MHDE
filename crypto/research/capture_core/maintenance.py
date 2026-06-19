@@ -317,7 +317,7 @@ def compact_firehose_closed_hours(
     :func:`_merge_files`) rather than dropping rows.
     """
     now_ts = now_ts if now_ts is not None else time.time()
-    parts = dg.list_firehose_partitions(root, tuple(datasets))
+    parts = dg.list_firehose_partitions(root, tuple(datasets), with_size=False)
     report = FirehoseCompactionReport()
     gap_records: list = []
     for p in parts:
@@ -364,7 +364,7 @@ def expire_firehose_partitions(
     """
     now_ms = now_ms if now_ms is not None else int(time.time() * 1000)
     cutoff = _date_str(now_ms - days * 86_400_000)
-    parts = dg.list_firehose_partitions(root, tuple(datasets))
+    parts = dg.list_firehose_partitions(root, tuple(datasets), with_size=False)
     removed: list[str] = []
     for p in sorted(parts, key=lambda x: (x.date, x.path)):  # oldest-first
         if p.date < cutoff:                                  # ISO dates sort lexically
@@ -391,7 +391,7 @@ def expire_depth_state_partitions(
     """
     now_ms = now_ms if now_ms is not None else int(time.time() * 1000)
     cutoff = _date_str(now_ms - days * 86_400_000)
-    parts = dg.list_firehose_partitions(root, (cfg.DEPTH_STATE_DATASET,))
+    parts = dg.list_firehose_partitions(root, (cfg.DEPTH_STATE_DATASET,), with_size=False)
     removed: list[str] = []
     for p in sorted(parts, key=lambda x: (x.date, x.path)):  # oldest-first
         if p.date < cutoff:                                  # ISO dates sort lexically
@@ -436,7 +436,7 @@ def migrate_compact(
     """
     date_filter = set(dates) if dates is not None else None
     today = _date_str(now_ms if now_ms is not None else int(time.time() * 1000))
-    parts = dg.list_firehose_partitions(root, tuple(datasets))
+    parts = dg.list_firehose_partitions(root, tuple(datasets), with_size=False)
     report = MigrationReport()
     gap_records: list = []
     for p in sorted(parts, key=lambda x: (x.date, x.path)):
