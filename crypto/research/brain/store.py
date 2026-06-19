@@ -222,6 +222,10 @@ DEPTH_SNAPSHOT_SCHEMA = pa.schema(_PROVENANCE + [
 ] + _depth_level_fields())
 
 _MS_PER_DAY = 86_400_000
+#: Date-prune skew margin (1 day): the partition date is the WINDOW-start date, but the
+#: caller's cursor is a recv stamp, so prune a day below the cursor's date to never drop a
+#: window whose recv just crossed midnight (mirrors the capture reader's PR #55 margin).
+_DATE_PRUNE_MARGIN_NS = 86_400 * 1_000_000_000
 
 
 def _date_str_from_ns(ns: int) -> str:
@@ -261,22 +265,45 @@ def write_snapshots(
     return written
 
 
-def read_snapshots(root: str, dataset: str, symbol: Optional[str] = None) -> list[dict]:
+def read_snapshots(root: str, dataset: str, symbol: Optional[str] = None, *,
+                   after_recv_ts_ns: int = 0) -> list[dict]:
     """Read persisted snapshots from ``<root>/<dataset>`` back as dicts.
 
     Used for round-trip fidelity and downstream consumption. Files are read by
     their physical schema (via ``ParquetFile`` so pyarrow does NOT infer the Hive
     ``symbol=`` partition as a dictionary column and collide with our in-row
     string ``symbol``). Callers needing event order sort by ``window_start_ns``.
+
+    ``after_recv_ts_ns`` (default 0 = read everything) is a cursor-driven DATE prune:
+    ``date=`` partitions older than its date (minus a 1-day skew margin) are skipped
+    WITHOUT opening their files, so a forward read stops rescanning a symbol's entire
+    history. It is an optimisation — partition-granular, not a row filter — and the
+    structural fix for fan-out is the (separate) compactor, not this.
+
+    CAVEAT before wiring a real recv cursor: the 1-day margin assumes a snapshot's
+    ``recv_ts_ns`` lags its ``window_start_ns`` (the partition date) by < 1 day. A
+    late/replayed write with > 1-day lag could be pruned while a recv-cursor caller still
+    wants it — widen the margin (or pass ``after_recv_ts_ns=0``) for such sources. Only
+    files under ``symbol=*/date=*`` are enumerated (everything ``write_snapshots`` emits);
+    a non-conforming stray parquet elsewhere is not read.
     """
     base = pathlib.Path(root, dataset)
     if not base.exists():
         return []
+    lower_date = (_date_str_from_ns(after_recv_ts_ns - _DATE_PRUNE_MARGIN_NS)
+                  if after_recv_ts_ns > _DATE_PRUNE_MARGIN_NS else None)
     if symbol is None:
-        files = base.rglob("*.parquet")
+        sym_dirs = sorted(base.glob("symbol=*"))
     else:
-        files = base.glob(f"symbol={symbol}/**/*.parquet")
+        sym_dir = base / f"symbol={symbol}"
+        sym_dirs = [sym_dir] if sym_dir.exists() else []
+    files: list[pathlib.Path] = []
+    for sym_dir in sym_dirs:
+        for date_dir in sorted(sym_dir.glob("date=*")):
+            if lower_date is not None and date_dir.name[len("date="):] < lower_date:
+                continue                              # pruned: older than the cursor window
+            files.extend(sorted(date_dir.glob("*.parquet")))
     rows: list[dict] = []
-    for fp in sorted(files):
+    for fp in files:
         rows.extend(pq.ParquetFile(str(fp)).read().to_pylist())
     return rows
