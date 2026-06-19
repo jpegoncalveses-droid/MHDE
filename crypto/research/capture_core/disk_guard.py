@@ -71,10 +71,19 @@ def _dir_size(path: str) -> int:
     return total
 
 
-def list_firehose_partitions(root: str, datasets: Sequence[str]) -> list[Partition]:
+def list_firehose_partitions(root: str, datasets: Sequence[str], *,
+                             with_size: bool = True) -> list[Partition]:
     """All ``<root>/<dataset>/symbol=*/date=*`` partitions of the given firehose
-    datasets, with on-disk size. Only those datasets are scanned, so non-firehose
-    stores can never be selected for pruning."""
+    datasets. Only those datasets are scanned, so non-firehose stores can never be
+    selected for pruning.
+
+    ``with_size`` controls the per-partition on-disk size. The default (``True``)
+    stats every file via :func:`_dir_size` — needed by the disk guard's size-based
+    oldest-first reclaim. Callers that prune/compact by DATE only (the compaction +
+    expire one-shots, the closed-hour timer) pass ``with_size=False`` so enumeration
+    is O(partition dirs) not O(total files): on a fragmented tape (millions of tiny
+    part-*), the size stat-storm alone pinned / OOM-killed the 1G-capped units. With
+    ``with_size=False`` the size is ``0`` (those callers never read it)."""
     parts: list[Partition] = []
     for ds in datasets:
         ds_dir = os.path.join(root, ds)
@@ -89,7 +98,7 @@ def list_firehose_partitions(root: str, datasets: Sequence[str]) -> list[Partiti
                 parts.append(Partition(
                     path=date_entry.path,
                     date=date_entry.name.split("date=", 1)[1],
-                    size=_dir_size(date_entry.path),
+                    size=_dir_size(date_entry.path) if with_size else 0,
                 ))
     return parts
 
