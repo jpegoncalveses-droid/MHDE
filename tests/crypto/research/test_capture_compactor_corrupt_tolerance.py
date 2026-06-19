@@ -59,10 +59,15 @@ _CORRUPT = _truncated_real_parquet()
 
 def _write_part(root, symbol="BTCUSDT", *, recv_ns, mtime=None):
     """One single-row part-*.parquet (recv_ns controls its only row; optional mtime)."""
+    pd = _part_dir(root, symbol)
+    before = set(pd.glob("part-*.parquet")) if pd.exists() else set()
     w = capture_store.aggtrade_writer(str(root), flush_max_bytes=1, flush_interval_s=10 ** 9)
     w.append(_agg_row(symbol, recv_ns=recv_ns))
     w.flush_all()
-    f = max(_part_dir(root, symbol).glob("part-*.parquet"), key=lambda p: p.stat().st_mtime_ns)
+    # the file JUST written, by set-difference — robust to an mtime tie between two fast
+    # writes (max-by-mtime could return the prior file, leaving the new one un-utimed in a
+    # different flush-hour bucket -> a ~10% flake in the closed-hour test).
+    f = (set(pd.glob("part-*.parquet")) - before).pop()
     if mtime is not None:
         os.utime(f, (mtime, mtime))
     return f

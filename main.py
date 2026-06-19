@@ -2252,12 +2252,13 @@ def crypto_capture_firehose_compact_recent(root):
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    report = mt.compact_firehose_closed_hours(root or cc_cfg.RAW_DIR)
+    # Chunked, subprocess-bounded (the timer's permanent model): bounds peak RSS by run
+    # size so a busy hour or a downtime catch-up never OOMs the 1G-capped unit.
+    report = mt.compact_firehose_chunked(root or cc_cfg.RAW_DIR)
     click.echo(
-        f"firehose closed-hour compaction: scanned {report.partitions_scanned}, "
-        f"compacted {report.hours_compacted} hours, "
+        f"firehose closed-hour compaction (chunked): compacted "
+        f"{report.hours_compacted} hours across {report.partitions_scanned} partitions, "
         f"files {report.files_before}->{report.files_after}, "
-        f"rows {report.rows_before}->{report.rows_after}, "
         f"mismatches {len(report.mismatches)}")
     if report.mismatches:
         for m in report.mismatches:
