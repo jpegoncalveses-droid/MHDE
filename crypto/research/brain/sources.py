@@ -32,27 +32,32 @@ class SourceSpec:
     schema: pa.Schema                             # store snapshot schema
     event_time_key: str                           # clean-row field the bucket keys on
     count_fn: Callable[[Mapping[str, Any]], int]  # snapshot -> within-window event count
+    capture_dataset: str                          # CAPTURE-side dataset dir (for universe
+    #                                               enumeration: <capture_root>/<capture_dataset>/
+    #                                               symbol=*). NOTE this is the capture dir
+    #                                               ('aggTrade', 'depth_state'), NOT the brain
+    #                                               store ``dataset`` ('trades', 'depth').
 
 
 TRADES = SourceSpec(
     dataset=cfg.TRADES_DATASET, reader_name=cfg.TRADES_READER,
     read_fn=reader.read_new_aggtrades, bucket_fn=trades.bucket_trades,
     schema=store.TRADES_SNAPSHOT_SCHEMA, event_time_key="trade_time_ms",
-    count_fn=lambda s: s["trade_count"],
+    count_fn=lambda s: s["trade_count"], capture_dataset=cfg.AGGTRADE_DATASET,
 )
 
 BOOKTICKER = SourceSpec(
     dataset=cfg.BOOKTICKER_DATASET, reader_name=cfg.BOOKTICKER_READER,
     read_fn=reader.read_new_bookticker, bucket_fn=bookticker.bucket_bookticker,
     schema=store.BOOKTICKER_SNAPSHOT_SCHEMA, event_time_key="event_time_ms",
-    count_fn=lambda s: s["update_count"],
+    count_fn=lambda s: s["update_count"], capture_dataset=cfg.BOOKTICKER_CAPTURE_DATASET,
 )
 
 MARKPRICE = SourceSpec(
     dataset=cfg.MARKPRICE_DATASET, reader_name=cfg.MARKPRICE_READER,
     read_fn=reader.read_new_markprice, bucket_fn=markprice.bucket_markprice,
     schema=store.MARKPRICE_SNAPSHOT_SCHEMA, event_time_key="event_time_ms",
-    count_fn=lambda s: s["update_count"],
+    count_fn=lambda s: s["update_count"], capture_dataset=cfg.MARKPRICE_CAPTURE_DATASET,
 )
 
 FORCEORDER = SourceSpec(
@@ -60,6 +65,7 @@ FORCEORDER = SourceSpec(
     read_fn=reader.read_new_forceorder, bucket_fn=forceorder.bucket_forceorder,
     schema=store.FORCEORDER_SNAPSHOT_SCHEMA, event_time_key="event_time_ms",
     count_fn=lambda s: s["liq_buy_count"] + s["liq_sell_count"],
+    capture_dataset=cfg.FORCEORDER_CAPTURE_DATASET,
 )
 
 # -- AS-OF (REST present-state) sources -----------------------------------------
@@ -91,6 +97,8 @@ def _asof_spec(name, *, value_map, asof_time_col, schema, symbol_col="s", int_ma
         # observations at one recv -> collapse to the latest by VENUE time.
         bucket_fn=_asof_bucket(value_fields, tiebreak_fields=("asof_event_time_ms",)),
         schema=schema, event_time_key="event_time_ms", count_fn=lambda s: 1,
+        # As-of capture dir == the series name (basis stores under symbol=<pair>).
+        capture_dataset=name,
     )
 
 
@@ -154,7 +162,7 @@ KLINES = SourceSpec(
     read_fn=_klines_reader,
     bucket_fn=_asof_bucket(_KLINES_FIELDS, tiebreak_fields=("close_time",)),
     schema=store.KLINES_SNAPSHOT_SCHEMA, event_time_key="event_time_ms",
-    count_fn=lambda s: 1,
+    count_fn=lambda s: 1, capture_dataset=cfg.KLINES_CAPTURE_DATASET,
 )
 
 # depth (step 3b): periodically-sampled top-N book -> per-level + full-book depth
@@ -165,6 +173,8 @@ DEPTH = SourceSpec(
     read_fn=reader.read_new_depth_state, bucket_fn=depth.bucket_depth,
     schema=store.DEPTH_SNAPSHOT_SCHEMA, event_time_key="event_time_ms",
     count_fn=lambda s: s["sample_count"],
+    # reader reads the depth_state capture dir (NOT the raw 'depth' diff stream).
+    capture_dataset=cfg.DEPTH_STATE_CAPTURE_DATASET,
 )
 
 #: All sources keyed by dataset name.

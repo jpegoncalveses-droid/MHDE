@@ -73,6 +73,46 @@ def get_cursor(conn: sqlite3.Connection, reader: str) -> int:
     return int(row[0]) if row is not None else 0
 
 
+def _insert_bookkeeping(
+    conn: sqlite3.Connection,
+    bookkeeping: Iterable[Mapping[str, object]],
+    now_ns: int,
+) -> None:
+    """INSERT OR IGNORE the bookkeeping rows (no transaction, no cursor). Re-seen
+    ``(dataset, symbol, window_start_ns)`` windows are first-write-wins no-ops."""
+    rows = [
+        (
+            b["dataset"], b["symbol"], b["window_start_ns"], b["window_end_ns"],
+            b["recv_ts_ns"], b["n_events"], now_ns,
+        )
+        for b in bookkeeping
+    ]
+    if rows:
+        conn.executemany(
+            "INSERT OR IGNORE INTO snapshot_bookkeeping "
+            "(dataset, symbol, window_start_ns, window_end_ns, recv_ts_ns, "
+            " n_events, written_at_ns) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+
+
+def record_windows(
+    conn: sqlite3.Connection,
+    bookkeeping: Iterable[Mapping[str, object]],
+    *,
+    now_ns: int = 0,
+) -> None:
+    """Record ``bookkeeping`` windows WITHOUT moving any cursor (own transaction).
+
+    Used by the chunked full-universe pass: each batch records its settled windows
+    immediately (so a mid-pass crash leaves them deduped via ``seen_windows`` on
+    re-run — no duplicate primitives), while the per-source cursor is advanced ONCE
+    after every batch by a single :func:`advance` call.
+    """
+    with conn:
+        _insert_bookkeeping(conn, bookkeeping, now_ns)
+
+
 def advance(
     conn: sqlite3.Connection,
     reader: str,
@@ -88,21 +128,8 @@ def advance(
     ``(dataset, symbol, window_start_ns)`` so re-seen windows are no-ops. Both
     happen in a single transaction.
     """
-    rows = [
-        (
-            b["dataset"], b["symbol"], b["window_start_ns"], b["window_end_ns"],
-            b["recv_ts_ns"], b["n_events"], now_ns,
-        )
-        for b in bookkeeping
-    ]
     with conn:  # one transaction; commits on success, rolls back on error
-        if rows:
-            conn.executemany(
-                "INSERT OR IGNORE INTO snapshot_bookkeeping "
-                "(dataset, symbol, window_start_ns, window_end_ns, recv_ts_ns, "
-                " n_events, written_at_ns) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                rows,
-            )
+        _insert_bookkeeping(conn, bookkeeping, now_ns)
         conn.execute(
             "INSERT INTO reader_cursor (reader, last_recv_ts_ns, updated_at_ns) "
             "VALUES (?, ?, ?) "
