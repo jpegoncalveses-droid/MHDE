@@ -18,9 +18,12 @@ event-time partitioning, the per-stream field names/types, and ``recv_ts_ns``.
 """
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import shutil
+import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -342,6 +345,101 @@ def compact_firehose_closed_hours(
         report.partitions_scanned, report.hours_compacted, report.files_before,
         report.files_after, report.rows_before, report.rows_after,
         len(report.mismatches))
+    return report
+
+
+# -- chunked, subprocess-bounded compaction (the timer's permanent run model) ---
+# Closed-hour MERGING accrues anon memory ~per-merge (pyarrow pool retention), so one
+# process compacting a whole hour (~thousands of merges) sits ON the 1G cap and a backlog
+# OOMs. Bound peak RSS by RUN SIZE: process partitions in chunks of ~merges_per_chunk
+# merges, each chunk in its OWN subprocess — process exit resets the pool between chunks
+# (in-process release does not reliably return it to the OS). Same model for the steady-
+# state hour AND a catch-up backlog: a bigger run is just more chunks, each bounded.
+
+def _compact_chunk(root: str, paths: Sequence[str], budget: int, now_ts: float,
+                   grace_s: float) -> dict:
+    """Compact partitions' closed hours until ~``budget`` merges are done; persist this
+    chunk's gaps. ``completed`` is the count of partitions FULLY processed (the caller
+    advances past them). The shared unit run by both the subprocess worker and the
+    in-process test runner."""
+    merges = files_before = files_after = completed = 0
+    gaps: list = []
+    mismatches: list = []
+    for path in paths:
+        try:
+            results = compact_partition_closed_hours(path, now_ts=now_ts, grace_s=grace_s)
+        except ValueError as exc:       # parity mismatch (originals left intact) — RECORD it
+            mismatches.append(str(exc))  # (mirrors compact_firehose_closed_hours), don't crash
+            completed += 1
+            if merges >= budget:
+                break
+            continue
+        for r in results:
+            merges += 1
+            files_before += r.files_before
+            files_after += r.files_after
+            gaps.extend(r.gaps)
+        completed += 1
+        if merges >= budget:            # finish the current partition, then stop
+            break
+    _persist_gaps(root, gaps)           # always — a mid-chunk mismatch never drops earlier gaps
+    return {"completed": completed, "merges": merges, "files_before": files_before,
+            "files_after": files_after, "gaps": len(gaps), "mismatches": mismatches}
+
+
+def _run_chunk_subprocess(root: str, paths: Sequence[str], budget: int, now_ts: float,
+                          grace_s: float) -> dict:
+    """Run one chunk in a FRESH subprocess (the memory reset). Partition paths go over
+    stdin (no argv length limit). A failed chunk (e.g. an OOM-killed subprocess) returns
+    completed=0; the driver still advances by 1 so a single bad partition cannot wedge it."""
+    proc = subprocess.run(
+        [sys.executable, "-m", "crypto.research.capture_core._compact_chunk_worker",
+         root, str(int(budget)), repr(float(now_ts)), str(float(grace_s))],
+        input="\n".join(paths), capture_output=True, text=True)
+    if proc.returncode != 0 or not proc.stdout.strip():
+        logger.error("compaction chunk subprocess failed (rc=%s): %s",
+                     proc.returncode, (proc.stderr or "")[-500:])
+        return {"completed": 0, "merges": 0, "files_before": 0, "files_after": 0,
+                "gaps": 0, "mismatches": []}
+    return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
+def compact_firehose_chunked(
+    root: str,
+    *,
+    datasets: Sequence[str] = cfg.FIREHOSE_PRUNABLE_DATASETS,
+    merges_per_chunk: int = cfg.CAPTURE_COMPACT_MERGES_PER_CHUNK,
+    now_ts: Optional[float] = None,
+    grace_s: float = cfg.CAPTURE_COMPACTION_GRACE_S,
+    chunk_runner=None,
+) -> FirehoseCompactionReport:
+    """Closed-hour compaction across every firehose partition, in subprocess-bounded
+    chunks of ~``merges_per_chunk`` merges (peak RSS bounded by RUN SIZE, not total tape).
+
+    ``chunk_runner(root, paths, budget, now_ts, grace_s) -> dict`` runs one chunk; the
+    default isolates each in a subprocess. Enumeration is size-free (``with_size=False``).
+    The hourly timer and the backlog catch-up both go through here."""
+    chunk_runner = chunk_runner or _run_chunk_subprocess
+    now_ts = now_ts if now_ts is not None else time.time()
+    paths = [p.path for p in
+             dg.list_firehose_partitions(root, tuple(datasets), with_size=False)]
+    report = FirehoseCompactionReport()
+    chunks = 0
+    i = 0
+    while i < len(paths):
+        res = chunk_runner(root, paths[i:], merges_per_chunk, now_ts, grace_s)
+        report.partitions_scanned += int(res["completed"])
+        report.hours_compacted += int(res["merges"])
+        report.files_before += int(res["files_before"])
+        report.files_after += int(res["files_after"])
+        report.mismatches.extend(res.get("mismatches", []))   # preserve the parity-guard signal
+        i += max(int(res["completed"]), 1)     # always advance -> no infinite loop
+        chunks += 1
+    logger.info(
+        "chunked firehose compaction: %d partitions, %d hour-merges over %d subprocess "
+        "chunks (budget %d merges), files %d -> %d",
+        report.partitions_scanned, report.hours_compacted, chunks, merges_per_chunk,
+        report.files_before, report.files_after)
     return report
 
 

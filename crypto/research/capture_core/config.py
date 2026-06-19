@@ -74,6 +74,14 @@ CAPTURE_FIREHOSE_FLUSH_MAX_BYTES = 16 * 1024 * 1024  # 16 MiB
 #: file). The open hour and any hour still within this margin are NEVER touched.
 CAPTURE_COMPACTION_GRACE_S = 300.0  # 5 min (10× the 30s flush)
 
+#: Merge budget per compaction SUBPROCESS chunk. Closed-hour merging accrues anon memory
+#: ~per-merge (pyarrow pool retention), so compaction runs in chunks of ~this many merges,
+#: each in its own subprocess; process exit resets the pool between chunks, bounding peak
+#: RSS by RUN SIZE not total tape. Measured: ~0.25 MiB/merge avg + ~520 MiB base, so a full
+#: hour (~2000 merges) sits ON the 1G cap. Sized for the WORST-CASE busy merge (leaning low,
+#: not the average) so a busy hour has headroom; tune up only after profiling a busy hour.
+CAPTURE_COMPACT_MERGES_PER_CHUNK = 400
+
 # -- FIREHOSE sharding (ADR-039) -----------------------------------------------
 # The single-process firehose saturates ONE core (profile 2026-06-15: ~72% of the
 # core is GIL-bound on the event-loop thread), starving reconnect handshakes. ADR-039
