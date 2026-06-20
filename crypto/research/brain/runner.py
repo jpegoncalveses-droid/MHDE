@@ -197,6 +197,10 @@ class BrainRunner:
             ticks += 1
             if self._stop_event.is_set():           # stop requested DURING the tick
                 break
+            # INVARIANT: the cadence sleep below must stay UNCONDITIONAL — every tick reaches
+            # it, including one whose passes all errored (errors are isolated in tick(), never
+            # raised here). That is what bounds a total-failure tick to one-per-cadence instead
+            # of a hot CPU spin; never add an early continue/skip-sleep on error above this line.
             elapsed = self._monotonic() - start
             sleep_s = max(0.0, self._tick_interval_s - elapsed)
             if self._sleep(sleep_s):                # True == stop requested during the sleep
