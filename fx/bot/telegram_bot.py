@@ -1,7 +1,8 @@
 """FX Telegram bot — long-polling command handler and shared alert sender.
 
-Reuses TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID env vars from /home/jpcg/ATSRP/.env
-(loaded via python-dotenv).
+Reads TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID from the MHDE host env file
+(storage.config.load_env_file; default ~/.config/mhde/telegram.env), falling
+back to whatever is already in the environment.
 
 Public entry points:
     run_bot()                   — long-polling loop, blocks forever.
@@ -18,7 +19,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger("mhde.fx.bot")
@@ -28,26 +28,15 @@ LONG_POLL_TIMEOUT_S = 25
 HTTP_TIMEOUT_S = 30
 COOLDOWN_HOURS = 4
 
-# Env file shared with the legacy ATSRP system.
-ATSRP_ENV = Path("/home/jpcg/ATSRP/.env")
-
 
 def _load_env() -> None:
-    """Load TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID from ATSRP .env if not already set."""
+    """Load TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID from the MHDE host env file if
+    not already set in the environment."""
     if os.environ.get("TELEGRAM_BOT_TOKEN") and os.environ.get("TELEGRAM_CHAT_ID"):
         return
-    try:
-        from dotenv import load_dotenv
-        if ATSRP_ENV.exists():
-            load_dotenv(ATSRP_ENV)
-    except ImportError:
-        if ATSRP_ENV.exists():
-            for line in ATSRP_ENV.read_text().splitlines():
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, v = line.split("=", 1)
-                os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+    from storage.config import load_env_file
+
+    load_env_file()
 
 
 def _credentials() -> tuple[str, str]:
@@ -517,7 +506,7 @@ def run_bot() -> None:
     if not token or not chat_id:
         raise RuntimeError(
             "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set "
-            "(in env or /home/jpcg/ATSRP/.env)"
+            "(in env or ~/.config/mhde/telegram.env)"
         )
     allowed_chat = str(chat_id)
 

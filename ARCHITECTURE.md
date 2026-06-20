@@ -399,9 +399,11 @@ crypto **skip** the predict if stale. FX **logs but continues** —
 intentional, because partial bars are still useful.
 
 ### `notifications/telegram.py`
-Reads `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` from
-`/home/jpcg/ATSRP/.env` (not the MHDE `.env`). Used by both the FX bot
-and the health check. Documented in `INFRASTRUCTURE.md` "Secrets".
+Receives `telegram_bot_token` / `telegram_chat_id` via the `cfg` dict from
+`storage/config.py`, which loads them from the host env file
+`~/.config/mhde/telegram.env` (see `load_env_file()`). The FX bot
+(`fx/bot/telegram_bot.py`) reads the same file. Documented in
+`INFRASTRUCTURE.md` "Telegram credentials".
 
 ### `storage/db.py`
 `get_connection()` wraps `duckdb.connect()` with lock-retry: 30s, 60s,
@@ -427,8 +429,10 @@ hashes and estimated cost.
 1. ~~`fx/data/refresh.py` shells out to ATSRP for Dukascopy bi5 hourly bars.~~
    **Removed in ADR-013 cutover (2026-05-08).** FX bars now come from
    TwelveData via in-process REST calls; no subprocess dependency.
-2. `notifications/telegram.py` loads `TELEGRAM_BOT_TOKEN` and
-   `TELEGRAM_CHAT_ID` from `/home/jpcg/ATSRP/.env`. (Still required.)
+2. ~~`notifications/telegram.py` loads `TELEGRAM_BOT_TOKEN` and
+   `TELEGRAM_CHAT_ID` from `/home/jpcg/ATSRP/.env`.~~ **Migrated off ATSRP on
+   2026-06-20 (shelving step 1):** creds now load from `~/.config/mhde/telegram.env`
+   via `storage/config.py::load_env_file()`. No remaining MHDE→ATSRP creds dependency.
 
 The systemd services for the old ATSRP FX engine itself are disabled
 (per Session 0 ADR-003). Telegram credentials are now the only remaining
