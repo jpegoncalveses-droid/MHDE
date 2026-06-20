@@ -1,0 +1,29 @@
+# /home/jpcg/.config/systemd/user/mhde-capture-asof-compact.service
+[Unit]
+Description=MHDE capture-core as-of seal-yesterday whole-partition compaction
+After=network-online.target
+
+[Service]
+# Daily oneshot: WHOLE-PARTITION compact the 7 REST present-state ("as-of") series'
+# yesterday partitions (collapse each sealed symbol=/date= to ~1 file, row-count verified
+# before delete). The as-of series are low-rate AND never date-pruned by the brain, so the
+# hourly closed-hour compactor only buys ~2x; this collapses them ~40x. Scheduled post-01:00
+# so yesterday's as-of date= (which lags recv by ~35 min) has sealed; today is never touched.
+# Subprocess-bounded (a day is ~thousands of merges). Filesystem-only under the capture
+# store; never opens the production database. Paired with the .timer.
+#
+# BUILT-NOT-DEPLOYED: tracked but not installed/enabled.
+Type=oneshot
+WorkingDirectory=/home/jpcg/MHDE
+ExecStartPre=/usr/bin/test -x /home/jpcg/MHDE/venv/bin/python
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto capture-asof-compact
+# Shared-host invariant (ADR-036/038): idle CPU+IO and OOM-first, so compaction never
+# disturbs the engine's 1s cycle even though it reads+rewrites while capture is live.
+Nice=19
+IOSchedulingClass=idle
+MemoryMax=1G
+CPUWeight=20
+IOWeight=20
+OOMScoreAdjust=800
+StandardOutput=journal
+StandardError=journal
