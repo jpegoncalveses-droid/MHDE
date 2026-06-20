@@ -260,6 +260,22 @@ KLINES_RETENTION_DAYS = 90
 FIREHOSE_PRUNABLE_DATASETS = (
     "aggTrade", "depth", "bookTicker", "forceOrder", "markPrice", "depth_snapshot",
 )
+#: The 7 REST present-state ("as-of") series. Low-rate AND never date-pruned by the
+#: brain reader (every date partition is read every tick), so the closed-hour
+#: (flush-mtime-hour) compactor only buys ~1.5-2x; instead they get a DAILY WHOLE-
+#: PARTITION seal-yesterday pass that collapses each sealed (symbol,date) to ~1 file.
+#: MUST mirror ``rest_series.SERIES`` names (pinned by a test); kept as a literal here
+#: because ``rest_series`` imports this module (a derive would be circular).
+CAPTURE_ASOF_DATASETS = (
+    "open_interest", "premium_index", "global_ls_account", "top_ls_account",
+    "top_ls_position", "taker_ls_ratio", "basis",
+)
+#: Datasets the hourly CLOSED-HOUR compactor sweeps: the WS firehose set PLUS
+#: ``klines_1h``. klines is compacted for fragment-count (~3x — it is low files/
+#: partition) but is NOT firehose-prunable: it keeps its own 90-day retention, so it
+#: is added to the COMPACTION coverage here, never to ``FIREHOSE_PRUNABLE_DATASETS``
+#: (which the 7-day firehose expire reads — that would shorten klines to 7 days).
+CAPTURE_CLOSED_HOUR_COMPACT_DATASETS = FIREHOSE_PRUNABLE_DATASETS + (KLINES_DATASET,)
 #: SOFT floor: below this free space, prune the OLDEST firehose date-partitions
 #: (across the firehose datasets) until back above the floor. 50 GiB on the host's
 #: ~107 GB free keeps ~50 GB free (~31h of firehose buffer ≥ the brain's ~24h need)

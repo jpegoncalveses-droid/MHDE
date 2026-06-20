@@ -2253,11 +2253,53 @@ def crypto_capture_firehose_compact_recent(root):
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
     # Chunked, subprocess-bounded (the timer's permanent model): bounds peak RSS by run
-    # size so a busy hour or a downtime catch-up never OOMs the 1G-capped unit.
-    report = mt.compact_firehose_chunked(root or cc_cfg.RAW_DIR)
+    # size so a busy hour or a downtime catch-up never OOMs the 1G-capped unit. Coverage =
+    # the WS firehose set PLUS klines_1h (CAPTURE_CLOSED_HOUR_COMPACT_DATASETS); klines is
+    # compacted here but keeps its own 90d retention (never firehose-expired).
+    report = mt.compact_firehose_chunked(
+        root or cc_cfg.RAW_DIR, datasets=cc_cfg.CAPTURE_CLOSED_HOUR_COMPACT_DATASETS)
     click.echo(
         f"firehose closed-hour compaction (chunked): compacted "
         f"{report.hours_compacted} hours across {report.partitions_scanned} partitions, "
+        f"files {report.files_before}->{report.files_after}, "
+        f"mismatches {len(report.mismatches)}")
+    if report.mismatches:
+        for m in report.mismatches:
+            click.echo(f"  MISMATCH: {m}")
+
+
+@crypto.command("capture-asof-compact")
+@click.option("--root", default=None,
+              help="Raw capture dir. Default: capture_core.config.RAW_DIR.")
+@click.option("--date", "date", default=None,
+              help="YYYY-MM-DD to seal (default: yesterday). Today is always skipped.")
+def crypto_capture_asof_compact(root, date):
+    """Daily seal-yesterday WHOLE-PARTITION compaction of the 7 REST as-of series.
+
+    The as-of series are low-rate AND never date-pruned by the brain, so the closed-hour
+    compactor only buys ~2x; this collapses each sealed (symbol,date) partition to ~1
+    file (~40x). Subprocess-bounded (a day is ~thousands of merges). Scheduled post-01:00
+    so yesterday's as-of date= (which lags recv by ~35 min) has sealed; today is never
+    touched. ``--date`` re-seals a specific day (e.g. catching up a missed run).
+    Filesystem-only; never opens the production DB.
+    """
+    import logging
+
+    from crypto.research.capture_core import config as cc_cfg
+    from crypto.research.capture_core import maintenance as mt
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    if date:
+        report = mt.migrate_compact_chunked(
+            root or cc_cfg.RAW_DIR, datasets=cc_cfg.CAPTURE_ASOF_DATASETS, dates={date})
+    else:
+        report = mt.compact_asof_yesterday(root or cc_cfg.RAW_DIR)
+    click.echo(
+        f"as-of seal compaction (chunked): compacted {report.partitions_compacted} "
+        f"of {report.partitions_scanned} partitions, "
         f"files {report.files_before}->{report.files_after}, "
         f"mismatches {len(report.mismatches)}")
     if report.mismatches:

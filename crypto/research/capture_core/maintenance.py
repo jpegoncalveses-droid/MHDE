@@ -575,3 +575,123 @@ def migrate_compact(
         report.files_after, report.rows_before, report.rows_after,
         len(report.mismatches), " (DRY RUN)" if dry_run else "")
     return report
+
+
+# -- chunked, subprocess-bounded WHOLE-PARTITION compaction (the as-of seal pass) ---
+# The closed-hour chunked model bounds peak RSS by RUN SIZE for the per-hour merge. The
+# low-rate, never-date-pruned REST as-of series instead want a WHOLE-PARTITION collapse
+# (compact_partition -> ~1 file/sealed partition, ~40x vs closed-hour's ~2x). A single
+# day's seal-yesterday sweep is ~thousands of whole-partition merges, which would OOM the
+# same way in one process — so it reuses the identical subprocess-per-chunk model, just
+# with compact_partition (whole) as the per-partition unit. No new merge logic.
+
+def _migrate_chunk(root: str, paths: Sequence[str], budget: int, now_ms: int) -> dict:
+    """Whole-partition compact each partition until ~``budget`` merges; persist this
+    chunk's gaps. Mirror of :func:`_compact_chunk` but the per-partition unit is
+    :func:`compact_partition` (collapse all ``*.parquet`` -> one ``compact-migrated-*``).
+    ``completed`` is the count of partitions FULLY processed (the caller advances past
+    them); a partition that already held <=1 file is a no-op and does NOT spend budget."""
+    compacted = files_before = files_after = completed = 0
+    gaps: list = []
+    mismatches: list = []
+    for path in paths:
+        try:
+            res = compact_partition(path)
+        except ValueError as exc:       # parity mismatch (originals left intact) — RECORD it
+            mismatches.append(str(exc))  # (mirrors migrate_compact), don't crash the chunk
+            completed += 1
+            if compacted >= budget:
+                break
+            continue
+        files_before += res.files_before
+        files_after += res.files_after
+        gaps.extend(res.gaps)
+        if res.files_before > 1:        # an actual merge happened (not a 0/1-file no-op)
+            compacted += 1
+        completed += 1
+        if compacted >= budget:         # finish the current partition, then stop
+            break
+    _persist_gaps(root, gaps, now_ms=now_ms)
+    return {"completed": completed, "compacted": compacted, "files_before": files_before,
+            "files_after": files_after, "gaps": len(gaps), "mismatches": mismatches}
+
+
+def _run_migrate_chunk_subprocess(root: str, paths: Sequence[str], budget: int,
+                                  now_ms: int) -> dict:
+    """Run one whole-partition chunk in a FRESH subprocess (the memory reset). Partition
+    paths go over stdin (no argv length limit). A failed chunk (e.g. an OOM-killed
+    subprocess) returns completed=0; the driver still advances by 1 so a single bad
+    partition cannot wedge it."""
+    proc = subprocess.run(
+        [sys.executable, "-m", "crypto.research.capture_core._migrate_chunk_worker",
+         root, str(int(budget)), str(int(now_ms))],
+        input="\n".join(paths), capture_output=True, text=True)
+    if proc.returncode != 0 or not proc.stdout.strip():
+        logger.error("migrate chunk subprocess failed (rc=%s): %s",
+                     proc.returncode, (proc.stderr or "")[-500:])
+        return {"completed": 0, "compacted": 0, "files_before": 0, "files_after": 0,
+                "gaps": 0, "mismatches": []}
+    return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
+def migrate_compact_chunked(
+    root: str,
+    *,
+    datasets: Sequence[str],
+    dates: Optional[Sequence[str]] = None,
+    merges_per_chunk: int = cfg.CAPTURE_COMPACT_MERGES_PER_CHUNK,
+    now_ms: Optional[int] = None,
+    chunk_runner=None,
+) -> MigrationReport:
+    """Whole-partition compaction across every selected ``symbol=/date=`` partition, in
+    subprocess-bounded chunks of ~``merges_per_chunk`` merges (peak RSS bounded by RUN
+    SIZE, not total tape). TODAY's partition is always skipped (never race the live
+    writer); ``dates`` (a set of ``YYYY-MM-DD``) further restricts the sweep — e.g. the
+    seal-yesterday pass passes a single date. ``chunk_runner(root, paths, budget, now_ms)
+    -> dict`` runs one chunk; the default isolates each in a subprocess."""
+    chunk_runner = chunk_runner or _run_migrate_chunk_subprocess
+    now_ms = now_ms if now_ms is not None else int(time.time() * 1000)
+    today = _date_str(now_ms)
+    date_filter = set(dates) if dates is not None else None
+    parts = sorted(dg.list_firehose_partitions(root, tuple(datasets), with_size=False),
+                   key=lambda x: (x.date, x.path))
+    paths = [p.path for p in parts if p.date != today
+             and (date_filter is None or p.date in date_filter)]
+    report = MigrationReport()
+    chunks = 0
+    i = 0
+    while i < len(paths):
+        res = chunk_runner(root, paths[i:], merges_per_chunk, now_ms)
+        report.partitions_scanned += int(res["completed"])
+        report.partitions_compacted += int(res["compacted"])
+        report.files_before += int(res["files_before"])
+        report.files_after += int(res["files_after"])
+        report.mismatches.extend(res.get("mismatches", []))   # preserve the parity-guard signal
+        i += max(int(res["completed"]), 1)     # always advance -> no infinite loop
+        chunks += 1
+    logger.info(
+        "chunked whole-partition compaction: %d partitions, %d compacted over %d "
+        "subprocess chunks (budget %d merges), files %d -> %d, mismatches %d",
+        report.partitions_scanned, report.partitions_compacted, chunks, merges_per_chunk,
+        report.files_before, report.files_after, len(report.mismatches))
+    return report
+
+
+def compact_asof_yesterday(
+    root: str,
+    *,
+    now_ms: Optional[int] = None,
+    merges_per_chunk: int = cfg.CAPTURE_COMPACT_MERGES_PER_CHUNK,
+    chunk_runner=None,
+) -> MigrationReport:
+    """Daily seal-yesterday whole-partition compaction of the 7 REST as-of series.
+
+    Collapses each of YESTERDAY's ``symbol=/date=`` partitions (across
+    ``cfg.CAPTURE_ASOF_DATASETS``) to ~1 file. Scheduled post-01:00 so yesterday's
+    as-of ``date=`` (which lags recv by ~35 min) has sealed; today is never touched.
+    Subprocess-bounded like the closed-hour chunked compactor. Filesystem-only."""
+    now_ms = now_ms if now_ms is not None else int(time.time() * 1000)
+    yesterday = _date_str(now_ms - 86_400_000)
+    return migrate_compact_chunked(
+        root, datasets=cfg.CAPTURE_ASOF_DATASETS, dates={yesterday},
+        merges_per_chunk=merges_per_chunk, now_ms=now_ms, chunk_runner=chunk_runner)
