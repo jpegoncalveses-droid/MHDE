@@ -213,6 +213,7 @@ def run_once(
     horizons_min: Sequence[int] = HORIZONS_MIN,
     symbols: Optional[Sequence[str]] = None,
     now_ns: int = 0,
+    bound_reads: bool = True,
 ) -> list[dict]:
     """Materialize newly-settled forward-path labels; return the records written.
 
@@ -221,6 +222,19 @@ def run_once(
     ``capture_root``; appends label rows under ``label_store_root`` (defaults to
     ``store_root``). Idempotent: only ``(symbol, window, H)`` keys that are both
     settled and not previously recorded are emitted.
+
+    LABEL-READ BOUND (``bound_reads=True``, the default): only markprice windows that can
+    STILL settle are read. A window with ``window_end <= frontier - max(horizons_min)`` has
+    every horizon already settled (and recorded in ``label_bookkeeping``), so it yields no new
+    labels; the oldest window that can still settle is exactly at ``window_end = frontier -
+    max(horizons_min)``. That edge is passed as :func:`store.read_snapshots`' date-prune floor.
+    ``read_snapshots`` ALREADY widens the floor by its own 1-day margin
+    (``store._DATE_PRUNE_MARGIN_NS``), so we pass the edge itself — neither doubling that margin
+    nor under-shooting it (a naive recv cursor near the frontier would drop the whole
+    still-settling backlog and silently lose labels). ``bound_reads=False`` restores the prior
+    unbounded full-history read (regression escape hatch). The bound assumes the steady-state
+    continuous runner: a window older than the floor that was somehow never labeled (e.g. the
+    runner down longer than ``max(horizons_min)``) is intentionally not back-labeled.
     """
     label_store_root = label_store_root or store_root
     conn = registry.connect(str(registry_path))
@@ -232,14 +246,22 @@ def run_once(
             return []
         gaps = _markprice_gap_intervals_ns(capture_root)
 
+        # The date-prune floor: at-or-below the oldest still-settling window's edge. 0 disables
+        # the prune (full read) — both when bound_reads is off and when there is no horizon.
+        read_floor_ns = 0
+        if bound_reads and horizons_min:
+            read_floor_ns = frontier - max(horizons_min) * _MIN_NS
+
         if symbols is None:
             symbols = sorted(
                 {r["symbol"]
-                 for r in store.read_snapshots(str(store_root), MARKPRICE_DATASET)})
+                 for r in store.read_snapshots(str(store_root), MARKPRICE_DATASET,
+                                               after_recv_ts_ns=read_floor_ns)})
 
         written: list[dict] = []
         for symbol in symbols:
-            snaps = store.read_snapshots(str(store_root), MARKPRICE_DATASET, symbol)
+            snaps = store.read_snapshots(str(store_root), MARKPRICE_DATASET, symbol,
+                                         after_recv_ts_ns=read_floor_ns)
             if not snaps:
                 continue
             mark_by_window = {int(s["window_start_ns"]): s for s in snaps}
