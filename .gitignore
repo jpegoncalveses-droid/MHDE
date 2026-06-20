@@ -3,6 +3,9 @@ __pycache__/
 *.py[cod]
 *.bak
 .env
+# Telegram creds live host-local at ~/.config/mhde/telegram.env; this guards
+# against an accidental in-repo copy being committed.
+telegram.env
 samples/
 *.egg-info/
 .pytest_cache/
