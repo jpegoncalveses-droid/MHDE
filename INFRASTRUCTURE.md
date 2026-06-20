@@ -144,9 +144,18 @@ All in `/home/jpcg/MHDE/data/logs/`. Files written by system-level services are 
 | `OPENAI_API_KEY` | LLM analysis (fallback) |
 | `REVIEW_UI_USERNAME`, `REVIEW_UI_PASSWORD` | Review server basic auth |
 
-### Telegram credentials — **NOT in MHDE/.env**
+### Telegram credentials — host env file (outside the repo)
 
-`TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are loaded from **`/home/jpcg/ATSRP/.env`** by `notifications/telegram.py`. If absent, Telegram alerts and the FX bot fail with a clear error. Do not duplicate them into MHDE/.env without removing the ATSRP-loader fallback.
+`TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are loaded from the gitignored host
+file **`~/.config/mhde/telegram.env`** (mode 600) by `storage/config.py::load_env_file()`,
+which `load_engine_config()` calls (feeding `notifications/telegram.py`) and which
+`fx/bot/telegram_bot.py` also calls. The path is overridable via `MHDE_ENV_FILE`.
+Loading uses `os.environ.setdefault`, so a systemd `EnvironmentFile` still wins.
+If absent, Telegram alerts and the FX bot fail with a clear error.
+
+Migrated off `/home/jpcg/ATSRP/.env` on 2026-06-20 (ATSRP-shelving step 1). The
+ATSRP `.env` was left intact so ATSRP's still-live alert timers keep working;
+its copy of the keys is deleted only when ATSRP itself is removed.
 
 ### Dashboard auth
 

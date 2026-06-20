@@ -6,6 +6,50 @@ are at the top.
 
 ---
 
+## 2026-06-20 — Telegram creds migrated off ATSRP/.env (ATSRP-shelving step 1; creds-only)
+
+**Branch:** `feat/telegram-creds-to-mhde` (off `master`, draft PR; **awaiting
+operator merge**). Creds-only: **no timers stopped, no tables dropped, no ATSRP
+data removed.** Step 1 of shelving MHDE's FX + equity engines / removing ATSRP.
+
+**Why.** The ~24G `mhde.duckdb` FX/equity reclaim and ATSRP removal are blocked
+on MHDE no longer depending on the ATSRP working tree. The only MHDE→ATSRP code
+coupling for alerting was the Telegram creds: `fx/bot/telegram_bot.py` hardcoded
+`/home/jpcg/ATSRP/.env` and loaded it into `os.environ`, which then cascaded to
+`storage/config.py` → `notifications/telegram.py`. (Note: `notifications/telegram.py`
+itself never referenced the ATSRP path — it reads the `cfg` dict.)
+
+**Delivered (TDD; 7 tests written + confirmed failing first):**
+- New host secrets file **`~/.config/mhde/telegram.env`** (mode 600, outside the
+  repo, gitignored by location). The two keys were **copied** from
+  `/home/jpcg/ATSRP/.env`; the ATSRP file was **left untouched** (mtime unchanged)
+  so ATSRP's still-live `atsrp-alert-scan` / paper-notifier timers keep working.
+  Deleting the ATSRP copy is the later ATSRP-removal step.
+- `storage/config.py`: added `load_env_file()` + `mhde_env_path()` (default
+  `~/.config/mhde/telegram.env`, override via `MHDE_ENV_FILE`; `setdefault`
+  semantics so a systemd `EnvironmentFile` still wins). `load_engine_config()`
+  now calls it, so the notifications path is self-sufficient and no longer
+  depends on the FX bot's import side-effect (the FX bot is being shelved).
+- `fx/bot/telegram_bot.py`: `_load_env()` now delegates to
+  `storage.config.load_env_file()`; removed the `ATSRP_ENV` constant, the
+  `python-dotenv` dependency, the now-unused `Path` import, and the ATSRP path
+  from the docstring + the `run_bot()` error message.
+- Docs: `INFRASTRUCTURE.md` "Telegram credentials" + `ARCHITECTURE.md` (component
+  note and ATSRP-dependency section) updated to the new path.
+
+**Verified.** Targeted suites green (31 tests inc. the 7 new). End-to-end: a real
+test alert was **delivered** (Telegram API `ok=True`, `message_id=14605`) with
+`TELEGRAM_*`/`MHDE_ENV_FILE` cleared from the environment, reading solely from
+`~/.config/mhde/telegram.env`; both the `load_engine_config` path and the FX-bot
+`_credentials()` path resolved the creds; `inspect.getsource` confirms no ATSRP
+reference remains in the FX bot.
+
+**Pending / next steps (NOT in this PR).** (a) Deploy the host file on the VPS if
+this runs elsewhere; (b) later ATSRP-removal step deletes the ATSRP copy and
+shelves the FX/equity engines + drops `fx_*`/equity tables (~22G reclaim).
+
+---
+
 ## 2026-06-14 — Capture-core write-then-compact (ADR-038; supersedes the Phase-0 roll-up writer)
 
 **Branch:** `feat/capture-write-then-compact` (off `master`, draft PR; **awaiting
