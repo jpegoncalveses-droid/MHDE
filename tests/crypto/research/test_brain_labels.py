@@ -239,3 +239,94 @@ def test_missing_forward_window_marks_invalid_without_a_recorded_gap(tmp_path):
     assert rows[("AAAUSDT", _w(0), 5)]["valid"] is False
     # window 5: forward span {6,7,8,9,10} is intact -> valid. Proves the hole is local.
     assert rows[("AAAUSDT", _w(5), 5)]["valid"] is True
+
+
+# (g) LABEL-READ BOUND (step 2): turn on the #61 date-prune for the markprice reads ----
+#
+# labels.run_once previously read each symbol's FULL markprice history per call. The bound
+# reads only windows that can STILL settle: the oldest is at window_end = frontier -
+# max(horizons_min); everything older has every horizon settled (and recorded), so it
+# produces no new labels. The floor is passed as read_snapshots' date-prune threshold, which
+# already widens it by its own 1-day margin — so we pass the edge itself (no double, no
+# under-shoot). bound_reads=False restores the unbounded read (the prior default).
+
+_DAY_NS = 86_400 * 1_000_000_000
+
+
+def _detached(symbol, window_start_ns, *, close):
+    """A markprice row at an explicit (off-grid / far-apart) window_start_ns."""
+    snap = _mp(symbol, 0, close=close)
+    snap["window_start_ns"] = window_start_ns
+    snap["window_end_ns"] = window_start_ns + _MIN_NS
+    snap["recv_ts_ns"] = window_start_ns
+    return snap
+
+
+def test_read_bound_settles_the_edge_window_and_prunes_older(tmp_path):
+    # horizons=[5] -> floor = frontier - 5min. Frontier = _w(10); the EDGE entry window 4 has
+    # window_end _w(5) == floor, and h=5 span_end = _w(10) == frontier (settles, the == case).
+    snaps = [_mp("AAAUSDT", k, close=100.0 + k) for k in range(4, 10)]   # windows 4..9
+    far_start = _w(4) - 3 * _DAY_NS                                      # 3 days below the floor
+    snaps.append(_detached("AAAUSDT", far_start, close=50.0))           # fully-settled far-old
+    _write_markprice(tmp_path / "store", snaps)
+    _seed_frontier(tmp_path / "reg.db", _w(10))
+
+    labels.run_once(                                                    # prune ON (default)
+        store_root=str(tmp_path / "store"), capture_root=str(tmp_path / "capture"),
+        registry_path=str(tmp_path / "reg.db"), horizons_min=[5], symbols=["AAAUSDT"])
+    rows = _read_labels(tmp_path)
+    assert ("AAAUSDT", _w(4), 5) in rows               # the settling edge window is kept
+    assert ("AAAUSDT", far_start, 5) not in rows       # the far-old window is pruned (not read)
+
+
+def test_read_bound_off_reads_full_history_unchanged(tmp_path):
+    # Regression guard: bound_reads=False reproduces the prior unbounded behavior — the same
+    # far-old window the bound prunes is read and labeled.
+    snaps = [_mp("AAAUSDT", k, close=100.0 + k) for k in range(4, 10)]
+    far_start = _w(4) - 3 * _DAY_NS
+    snaps.append(_detached("AAAUSDT", far_start, close=50.0))
+    _write_markprice(tmp_path / "store", snaps)
+    _seed_frontier(tmp_path / "reg.db", _w(10))
+
+    labels.run_once(
+        store_root=str(tmp_path / "store"), capture_root=str(tmp_path / "capture"),
+        registry_path=str(tmp_path / "reg.db"), horizons_min=[5], symbols=["AAAUSDT"],
+        bound_reads=False)
+    rows = _read_labels(tmp_path)
+    assert ("AAAUSDT", _w(4), 5) in rows
+    assert ("AAAUSDT", far_start, 5) in rows           # full history -> the far-old window emits
+
+
+def test_read_bound_applies_to_symbol_discovery(tmp_path):
+    # symbols=None -> the discovery read is bounded too. An ACTIVE symbol (recent data) is
+    # discovered + labeled; a STALE symbol (only far-old, fully-settled data) is pruned from
+    # discovery and produces no labels — safe, because it has no still-settling window.
+    snaps = [_mp("ACTIVEUSDT", k, close=100.0 + k) for k in range(4, 10)]
+    snaps.append(_detached("STALEUSDT", _w(4) - 3 * _DAY_NS, close=50.0))
+    _write_markprice(tmp_path / "store", snaps)
+    _seed_frontier(tmp_path / "reg.db", _w(10))
+
+    labels.run_once(                                                    # symbols=None -> discovery
+        store_root=str(tmp_path / "store"), capture_root=str(tmp_path / "capture"),
+        registry_path=str(tmp_path / "reg.db"), horizons_min=[5])
+    syms = {k[0] for k in _read_labels(tmp_path)}
+    assert "ACTIVEUSDT" in syms
+    assert "STALEUSDT" not in syms
+
+
+def test_read_bound_floor_uses_max_horizon_not_min(tmp_path):
+    # With a >1-day horizon the store's day-granular 1-day margin no longer hides the
+    # max-vs-min choice: a window that settles ONLY at the long horizon sits >1 day below the
+    # frontier, so a floor computed from the MIN horizon would prune it and silently lose its
+    # long-horizon label. The floor must use max(horizons_min).
+    h_long = 2880                                                       # 2 days of 60s windows
+    w_start = _w(0) - (h_long + 1) * _MIN_NS                            # window_end = frontier - 2880min
+    _write_markprice(tmp_path / "store", [_detached("AAAUSDT", w_start, close=100.0)])
+    _seed_frontier(tmp_path / "reg.db", _w(0))                          # frontier = _w(0)
+
+    labels.run_once(
+        store_root=str(tmp_path / "store"), capture_root=str(tmp_path / "capture"),
+        registry_path=str(tmp_path / "reg.db"), horizons_min=[5, h_long], symbols=["AAAUSDT"])
+    rows = _read_labels(tmp_path)
+    # h=2880 span_end = window_end + 2880min == frontier -> settles; kept only by the max floor.
+    assert ("AAAUSDT", w_start, h_long) in rows
