@@ -42,6 +42,28 @@ HYSTERESIS_DAYS = 7
 LISTING_FLOOR_DAYS = 60
 
 
+def _recent_ranking_dates(
+    conn: duckdb.DuckDBPyConnection, n: int
+) -> list[date]:
+    """Return the ``n`` most-recent distinct ranking_dates (newest first).
+
+    Fetches ALL distinct ranking_dates DESC and slices in Python rather than
+    pushing ``LIMIT n`` into SQL. DuckDB 1.5.2 mis-optimizes
+    ``SELECT DISTINCT col ... ORDER BY col DESC LIMIT n`` via a TOP_N +
+    dynamic-filter pushdown that collapses the result to a single row on
+    certain persisted table layouts (see KNOWN_ISSUES.md — "DuckDB 1.5.2
+    DISTINCT + ORDER BY DESC + LIMIT collapse"). That made the hysteresis guard
+    raise spuriously on a healthy buffer and crash-loop the daily rebuild.
+    Removing the LIMIT avoids the buggy optimizer path entirely; the distinct
+    ranking_date set is tiny (one row per calendar day).
+    """
+    all_dates = [r[0] for r in conn.execute(
+        "SELECT DISTINCT ranking_date FROM crypto_universe_ranking_buffer "
+        "ORDER BY ranking_date DESC"
+    ).fetchall()]
+    return all_dates[:n]
+
+
 def build_universe(
     conn: duckdb.DuckDBPyConnection,
     dry_run: bool = False,
@@ -77,10 +99,7 @@ def build_universe(
     ).fetchall()}
 
     # 2. Most recent N ranking_dates
-    last_dates = [r[0] for r in conn.execute(
-        "SELECT DISTINCT ranking_date FROM crypto_universe_ranking_buffer "
-        "ORDER BY ranking_date DESC LIMIT ?", [hysteresis_days],
-    ).fetchall()]
+    last_dates = _recent_ranking_dates(conn, hysteresis_days)
     if len(last_dates) < hysteresis_days:
         raise ValueError(
             f"crypto_universe_ranking_buffer has only {len(last_dates)} "

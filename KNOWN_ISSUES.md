@@ -1,8 +1,9 @@
 # Known Issues
 
-**19 open observations** (KI-122, KI-123, KI-126, KI-131, KI-132,
+**20 open observations** (KI-122, KI-123, KI-126, KI-131, KI-132,
 KI-134, KI-136, KI-137, KI-139, KI-144, KI-145,
-KI-146, KI-147, KI-148, KI-149, KI-151, KI-152, KI-153, KI-155). KI-122/123 are cosmetic; KI-126 is a future
+KI-146, KI-147, KI-148, KI-149, KI-151, KI-152, KI-153, KI-155,
+KI-157). KI-122/123 are cosmetic; KI-126 is a future
 Phase 0 enhancement deferred until weekly reliability snapshots
 accumulate; KI-131 is a low-priority single-day production-model
 row-count dip; KI-132 is a dashboard-deployment-process gap (no
@@ -55,6 +56,13 @@ when the pipeline they monitor is red, which `systemctl status`
 reports as `Active: failed (Result: exit-code)` and is
 indistinguishable from a real monitor crash; the initial KI-150
 diagnosis confused the two and prescribed a fix for a non-bug.
+KI-157 is a DuckDB 1.5.2 optimizer bug — `SELECT DISTINCT col … ORDER
+BY col DESC LIMIT n` collapses to one row on the live `mhde.duckdb`'s
+storage layout, which crash-looped `crypto build-universe`'s 7-day
+hysteresis guard against a perfectly healthy 48-date buffer; the
+"run backfill-universe-rankings" hint in the error is misleading
+(backfilling can't fix it), fixed by fetching without `LIMIT` and
+slicing in Python (branch `fix/build-universe-distinct-limit-duckdb`).
 
 **KI-138** opened + resolved (option A) 2026-05-12 — the cap-at-today-1
 OHLCV ingestion fix (commit 8f9d707) made `MAX(trade_date)` in
@@ -1294,6 +1302,77 @@ the column was intentionally removed). Decision needs whoever owns
   not include `promotion_status`.
 - [[KI-135]] — retrain auto-promotion gating (resolved); related
   but historically distinct.
+
+### KI-157 — DuckDB 1.5.2 `DISTINCT + ORDER BY DESC + LIMIT` collapse crash-loops `crypto build-universe` against a healthy ranking buffer
+
+**Severity: high — broke the daily universe rebuild.** Onset 2026-06-21
+after the live `data/mhde.duckdb` was rebuilt; `build_universe` had run
+cleanly daily for weeks before (last success 2026-06-20 00:29).
+
+**Symptom.** `mhde-crypto-build-universe-daily.service` exits 1 in ~1s on
+every run and `Restart=on-failure` recycles it every 5 min, with the
+identical traceback in the journal (14 attempts 09:51→12:16 UTC on the
+onset day):
+
+```
+ValueError: crypto_universe_ranking_buffer has only 1 distinct dates;
+need 7. Run rank-universe-daily (or backfill-universe-rankings) first.
+```
+
+The buffer is **healthy** at the time — 48 distinct `ranking_date`s
+(2026-05-03 → 2026-06-21), 4800 rows, `COUNT(DISTINCT ranking_date) = 48`.
+
+**Root cause.** The hysteresis guard read the N most-recent dates with
+`SELECT DISTINCT ranking_date FROM crypto_universe_ranking_buffer ORDER BY
+ranking_date DESC LIMIT ?` (`crypto/ingestion/universe_builder.py:80-83`).
+On DuckDB **1.5.2** that exact shape — `DISTINCT` (planned as
+`HASH_GROUP_BY`) feeding a `TOP_N` with a **dynamic filter** pushed into
+the scan — collapses the result to the **single most-recent date** instead
+of N. `len(last_dates)` is then 1, so the `< hysteresis_days` guard
+(line 84-89) raises and, with no `except` around the call
+(`main.py:1639`), the process exits 1.
+
+The bug is **layout/statistics-sensitive**: it reproduces ONLY against the
+real, incrementally written `data/mhde.duckdb` (built over ~48 daily
+per-date writes + the rebuild). It does **not** reproduce on synthetic
+buffers of any shape/scale, with or without the `PRIMARY KEY`, in-memory
+or persisted, nor on a `CREATE TABLE … AS SELECT` copy of the live table
+(a clean re-layout returns 7). Verified read-only on the live DB
+(DuckDB 1.5.2):
+
+```
+DISTINCT … ORDER BY DESC LIMIT 7  -> 1   (BUG)
+DISTINCT … ORDER BY ASC  LIMIT 7  -> 7
+GROUP BY ranking_date DESC LIMIT 7 -> 7
+DISTINCT … ORDER BY DESC (no LIMIT) -> 48
+EXPLAIN -> TOP_N (Top: 7) over HASH_GROUP_BY, "Dynamic Filter (ranking_date)" on the SEQ_SCAN
+```
+
+The error message's **"Run rank-universe-daily (or backfill-universe-
+rankings) first" advice is misleading** here: the buffer already holds 48
+dates, so backfilling more cannot satisfy the guard — the count is
+mis-read by the optimizer, not actually low.
+
+**Fix path (branch `fix/build-universe-distinct-limit-duckdb`).** Extract
+the date selection into `_recent_ranking_dates(conn, n)`, which fetches
+**all** distinct `ranking_date`s `ORDER BY … DESC` with **no `LIMIT`** and
+slices `[:n]` in Python — removing the `LIMIT`-pushdown optimizer path
+entirely rather than dodging one instance of it. The distinct-date set is
+tiny (one row per calendar day), so the full fetch is trivial.
+
+**Regression test.** Two pieces (the bug is not synthetically reproducible,
+see above):
+- `tests/integration/test_universe_builder_live_buffer.py` — **host-only**,
+  the real RED→GREEN against the live DB (old query → 1 → fail; fix → 7 →
+  pass). Skips unless the live DB is present with ≥7 distinct dates, so it
+  is **not** a CI gate and is point-in-time (the triggering layout drifts
+  as `rank-universe-daily` appends daily).
+- `tests/crypto/test_universe_builder_recent_dates.py` — durable CI guard
+  for the helper's logic contract (returns `min(N, hysteresis_days)`,
+  raises below 7, passes at/above 7). Its docstring states it does NOT
+  cover the optimizer bug.
+
+When this lands, move the entry to the archive per the conventions below.
 
 ## Recently resolved (post-Session-7)
 
