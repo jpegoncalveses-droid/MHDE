@@ -95,13 +95,13 @@ try:
                 st.caption(f"Threshold: {report.threshold}")
                 if not report.is_fresh:
                     st.warning(report.message)
-except duckdb.Error as exc:
-    # The freshness banner is best-effort observability: a missing or renamed
-    # price table (e.g. fx_prices_hourly) raises duckdb.CatalogException here.
-    # It must never crash the page, so degrade to a visible notice and let
-    # every tab below still render. freshness.py is deliberately left to keep
-    # hard-failing for the health check (health/checks.py) — this guard is the
-    # dashboard call site only.
+except Exception as exc:  # noqa: BLE001 — non-critical banner; never crash the page
+    # The freshness banner is best-effort observability and must never crash
+    # the page, so catch broadly: a missing/renamed table raises
+    # duckdb.CatalogException, but any other failure here is equally non-fatal.
+    # Degrade to a visible notice and let every tab below still render.
+    # freshness.py is deliberately left to keep hard-failing for the health
+    # check (health/checks.py) — this guard is the dashboard call site only.
     logging.getLogger("dashboard.app").warning(
         "System Health freshness banner unavailable: %s", exc
     )
@@ -123,237 +123,238 @@ tab_paper, tab_equities, tab_crypto, tab_fx, tab_probe = st.tabs(
 # ===============================================================================
 conn = _open_conn()
 with tab_equities:
-    st.title("ML Predictions")
-    st.caption(
-        "Equity predictions run on a **T-2 cadence**: free-tier Polygon "
-        "delays the current-day grouped-daily endpoint by ≥2 trading days, "
-        "so each scoring run uses the most recent fully-covered feature "
-        "snapshot. See `docs/EQUITY_WORKSTREAM_PAUSED.md` for the "
-        "architectural decision and the path to T-0 if/when paper-trading "
-        "calibration justifies a paid data tier."
-    )
-
-    # --- Health Checks Banner ---
-    with st.expander("System Health", expanded=False):
-        from health.ml_checks import (
-            check_trained_models,
-            check_last_prediction,
-            check_rolling_precision,
-            check_ml_tables_freshness,
+    try:
+        st.title("ML Predictions")
+        st.caption(
+            "Equity predictions run on a **T-2 cadence**: free-tier Polygon "
+            "delays the current-day grouped-daily endpoint by ≥2 trading days, "
+            "so each scoring run uses the most recent fully-covered feature "
+            "snapshot. See `docs/EQUITY_WORKSTREAM_PAUSED.md` for the "
+            "architectural decision and the path to T-0 if/when paper-trading "
+            "calibration justifies a paid data tier."
         )
-        checks = [
-            check_trained_models(),
-            check_last_prediction(conn),
-            check_rolling_precision(conn),
-            *check_ml_tables_freshness(conn),
-        ]
-        for c in checks:
-            icon = {"pass": "✅", "warn": "⚠️", "fail": "❌", "skip": "⏭️"}.get(c["status"], "❓")
-            st.markdown(f"{icon} **{c['check_name']}** — {c['message']}")
 
-    # --- Model Health Banner ---
-    model_info = conn.execute("""
+        # --- Health Checks Banner ---
+        with st.expander("System Health", expanded=False):
+            from health.ml_checks import (
+                check_trained_models,
+                check_last_prediction,
+                check_rolling_precision,
+                check_ml_tables_freshness,
+            )
+            checks = [
+                check_trained_models(),
+                check_last_prediction(conn),
+                check_rolling_precision(conn),
+                *check_ml_tables_freshness(conn),
+            ]
+            for c in checks:
+                icon = {"pass": "✅", "warn": "⚠️", "fail": "❌", "skip": "⏭️"}.get(c["status"], "❓")
+                st.markdown(f"{icon} **{c['check_name']}** — {c['message']}")
+
+        # --- Model Health Banner ---
+        model_info = conn.execute("""
         SELECT model_id, horizon, created_at, train_start, train_end,
                auc_roc, lift_over_base, precision_at_threshold, base_rate
         FROM ml_model_runs WHERE is_active = true
         ORDER BY horizon
     """).fetchdf()
 
-    if model_info.empty:
-        st.error("No active ML models found. Run `python main.py ml train` first.")
-    else:
-        with st.expander("Model Health", expanded=False):
-            cols = st.columns(len(model_info))
-            for i, (_, row) in enumerate(model_info.iterrows()):
-                with cols[i]:
-                    st.metric(f"{row['horizon']} model", f"AUC {row['auc_roc']:.3f}")
-                    st.caption(f"Lift: {row['lift_over_base']:.2f}x | "
-                               f"Train: {row['train_start']} → {row['train_end']}")
-
-        # --- Date selector ---
-        available_dates = get_distinct_prediction_dates(
-            conn, "ml_predictions", "prediction_date", limit=30
-        )
-
-        if not available_dates:
-            st.warning("No predictions yet. Run `python main.py ml predict` to generate predictions.")
+        if model_info.empty:
+            st.error("No active ML models found. Run `python main.py ml train` first.")
         else:
-            selected_date = st.selectbox(
-                "Prediction date",
-                available_dates,
-                format_func=lambda d: d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d),
-                help=(
-                    "Dates available in ml_predictions. Equity cadence is "
-                    "T-2 (see banner below)."
-                ),
+            with st.expander("Model Health", expanded=False):
+                cols = st.columns(len(model_info))
+                for i, (_, row) in enumerate(model_info.iterrows()):
+                    with cols[i]:
+                        st.metric(f"{row['horizon']} model", f"AUC {row['auc_roc']:.3f}")
+                        st.caption(f"Lift: {row['lift_over_base']:.2f}x | "
+                                   f"Train: {row['train_start']} → {row['train_end']}")
+
+            # --- Date selector ---
+            available_dates = get_distinct_prediction_dates(
+                conn, "ml_predictions", "prediction_date", limit=30
             )
 
-            st.markdown(format_equity_t2_banner(
-                prediction_date=selected_date,
-                today=datetime.now(timezone.utc).date(),
-            ))
+            if not available_dates:
+                st.warning("No predictions yet. Run `python main.py ml predict` to generate predictions.")
+            else:
+                selected_date = st.selectbox(
+                    "Prediction date",
+                    available_dates,
+                    format_func=lambda d: d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d),
+                    help=(
+                        "Dates available in ml_predictions. Equity cadence is "
+                        "T-2 (see banner below)."
+                    ),
+                )
 
-            # --- Load predictions for selected date ---
-            preds_df = get_equity_predictions(conn, selected_date)
+                st.markdown(format_equity_t2_banner(
+                    prediction_date=selected_date,
+                    today=datetime.now(timezone.utc).date(),
+                ))
 
-            # --- Regime Indicator ---
-            total_universe = conn.execute("""
+                # --- Load predictions for selected date ---
+                preds_df = get_equity_predictions(conn, selected_date)
+
+                # --- Regime Indicator ---
+                total_universe = conn.execute("""
                 SELECT COUNT(DISTINCT ticker) FROM ml_features
                 WHERE trade_date = ?
             """, [selected_date]).fetchone()[0]
 
-            n_above_60 = len(preds_df[preds_df["predicted_probability"] >= 0.60])
-            pct_above_60 = n_above_60 / total_universe * 100 if total_universe > 0 else 0
+                n_above_60 = len(preds_df[preds_df["predicted_probability"] >= 0.60])
+                pct_above_60 = n_above_60 / total_universe * 100 if total_universe > 0 else 0
 
-            if pct_above_60 > 30:
-                regime_label = "HIGH ACTIVITY"
-                regime_color = "red"
-                regime_desc = "Broad opportunity — many stocks showing signal. Higher correlation risk."
-            elif pct_above_60 > 10:
-                regime_label = "NORMAL"
-                regime_color = "blue"
-                regime_desc = "Normal conditions — selective opportunities."
-            else:
-                regime_label = "LOW ACTIVITY"
-                regime_color = "gray"
-                regime_desc = "Few signals — market may be range-bound or signals concentrated."
+                if pct_above_60 > 30:
+                    regime_label = "HIGH ACTIVITY"
+                    regime_color = "red"
+                    regime_desc = "Broad opportunity — many stocks showing signal. Higher correlation risk."
+                elif pct_above_60 > 10:
+                    regime_label = "NORMAL"
+                    regime_color = "blue"
+                    regime_desc = "Normal conditions — selective opportunities."
+                else:
+                    regime_label = "LOW ACTIVITY"
+                    regime_color = "gray"
+                    regime_desc = "Few signals — market may be range-bound or signals concentrated."
 
-            st.markdown(f"### Regime: :{regime_color}[{regime_label}]")
-            st.caption(f"{regime_desc} — {n_above_60} of {total_universe} tickers above 0.60 ({pct_above_60:.1f}%)")
+                st.markdown(f"### Regime: :{regime_color}[{regime_label}]")
+                st.caption(f"{regime_desc} — {n_above_60} of {total_universe} tickers above 0.60 ({pct_above_60:.1f}%)")
 
-            # --- Correlation Warning ---
-            sector_counts = preds_df.groupby("sector").size().reset_index(name="count")
-            sector_counts["pct"] = sector_counts["count"] / len(preds_df) * 100
-            concentrated = sector_counts[sector_counts["pct"] > 30]
+                # --- Correlation Warning ---
+                sector_counts = preds_df.groupby("sector").size().reset_index(name="count")
+                sector_counts["pct"] = sector_counts["count"] / len(preds_df) * 100
+                concentrated = sector_counts[sector_counts["pct"] > 30]
 
-            if not concentrated.empty:
-                for _, row in concentrated.iterrows():
-                    st.warning(
-                        f"**Correlation risk:** {row['sector']} has {row['count']} predictions "
-                        f"({row['pct']:.0f}% of total). Correlated positions increase drawdown risk."
-                    )
+                if not concentrated.empty:
+                    for _, row in concentrated.iterrows():
+                        st.warning(
+                            f"**Correlation risk:** {row['sector']} has {row['count']} predictions "
+                            f"({row['pct']:.0f}% of total). Correlated positions increase drawdown risk."
+                        )
 
-            # --- Horizon filter ---
-            horizons = sorted(preds_df["horizon"].unique())
-            selected_horizons = st.multiselect("Horizons", horizons, default=horizons)
+                # --- Horizon filter ---
+                horizons = sorted(preds_df["horizon"].unique())
+                selected_horizons = st.multiselect("Horizons", horizons, default=horizons)
 
-            filtered = preds_df[preds_df["horizon"].isin(selected_horizons)].copy()
+                filtered = preds_df[preds_df["horizon"].isin(selected_horizons)].copy()
 
-            # --- Sidebar filters ---
-            with st.sidebar:
-                st.subheader("Filters")
-                min_prob = st.slider("Min probability", 0.40, 0.95, 0.50, 0.05)
-                filtered = filtered[filtered["predicted_probability"] >= min_prob]
+                # --- Sidebar filters ---
+                with st.sidebar:
+                    st.subheader("Filters")
+                    min_prob = st.slider("Min probability", 0.40, 0.95, 0.50, 0.05)
+                    filtered = filtered[filtered["predicted_probability"] >= min_prob]
 
-                sectors = ["All"] + sorted(filtered["sector"].dropna().unique().tolist())
-                sel_sector = st.selectbox("Sector", sectors)
-                if sel_sector != "All":
-                    filtered = filtered[filtered["sector"] == sel_sector]
+                    sectors = ["All"] + sorted(filtered["sector"].dropna().unique().tolist())
+                    sel_sector = st.selectbox("Sector", sectors)
+                    if sel_sector != "All":
+                        filtered = filtered[filtered["sector"] == sel_sector]
 
-                caps = ["All"] + sorted(filtered["market_cap_bucket"].dropna().unique().tolist())
-                sel_cap = st.selectbox("Market Cap", caps)
-                if sel_cap != "All":
-                    filtered = filtered[filtered["market_cap_bucket"] == sel_cap]
+                    caps = ["All"] + sorted(filtered["market_cap_bucket"].dropna().unique().tolist())
+                    sel_cap = st.selectbox("Market Cap", caps)
+                    if sel_cap != "All":
+                        filtered = filtered[filtered["market_cap_bucket"] == sel_cap]
 
-            # --- Main predictions table ---
-            st.subheader(
-                f"Predictions for {selected_date} ({len(filtered)} shown)"
-            )
-
-            if filtered.empty:
-                st.info("No predictions match current filters.")
-            else:
-                display_df = filtered.copy()
-                display_df["prob"] = display_df["predicted_probability"].apply(lambda x: f"{x:.0%}")
-                display_df["confidence"] = display_df["predicted_probability"].apply(
-                    lambda x: "High" if x >= 0.60 else "Lower"
+                # --- Main predictions table ---
+                st.subheader(
+                    f"Predictions for {selected_date} ({len(filtered)} shown)"
                 )
 
-                if display_df["actual_hit"].notna().any():
-                    display_df["outcome"] = display_df.apply(
-                        lambda r: f"{'HIT' if r['actual_hit'] else 'miss'} ({r['actual_max_return']*100:+.1f}%)"
-                        if pd.notna(r["actual_hit"]) else "pending",
+                if filtered.empty:
+                    st.info("No predictions match current filters.")
+                else:
+                    display_df = filtered.copy()
+                    display_df["prob"] = display_df["predicted_probability"].apply(lambda x: f"{x:.0%}")
+                    display_df["confidence"] = display_df["predicted_probability"].apply(
+                        lambda x: "High" if x >= 0.60 else "Lower"
+                    )
+
+                    if display_df["actual_hit"].notna().any():
+                        display_df["outcome"] = display_df.apply(
+                            lambda r: f"{'HIT' if r['actual_hit'] else 'miss'} ({r['actual_max_return']*100:+.1f}%)"
+                            if pd.notna(r["actual_hit"]) else "pending",
+                            axis=1,
+                        )
+                    else:
+                        display_df["outcome"] = "pending"
+
+                    display_df["pct_move_str"] = display_df.apply(
+                        lambda r: format_pct_move(pct_move_equity_or_crypto(
+                            r.get("actual_max_return"),
+                            r.get("price_at_prediction"),
+                            r.get("current_price"),
+                            pd.notna(r.get("outcome_filled_at")),
+                        )),
                         axis=1,
                     )
-                else:
-                    display_df["outcome"] = "pending"
+                    display_df["time_remaining_str"] = display_df.apply(
+                        lambda r: format_time_remaining(time_remaining_days(
+                            r.get("maturity_date"),
+                            outcome_filled=pd.notna(r.get("outcome_filled_at")),
+                        )),
+                        axis=1,
+                    )
 
-                display_df["pct_move_str"] = display_df.apply(
-                    lambda r: format_pct_move(pct_move_equity_or_crypto(
-                        r.get("actual_max_return"),
-                        r.get("price_at_prediction"),
-                        r.get("current_price"),
-                        pd.notna(r.get("outcome_filled_at")),
-                    )),
-                    axis=1,
-                )
-                display_df["time_remaining_str"] = display_df.apply(
-                    lambda r: format_time_remaining(time_remaining_days(
-                        r.get("maturity_date"),
-                        outcome_filled=pd.notna(r.get("outcome_filled_at")),
-                    )),
-                    axis=1,
-                )
+                    show_cols = ["ticker", "horizon", "prob", "confidence", "sector",
+                                 "market_cap_bucket", "price_at_prediction",
+                                 "maturity_date", "price_at_maturity",
+                                 "pct_move_str", "time_remaining_str", "outcome"]
+                    st.dataframe(
+                        display_df[show_cols].reset_index(drop=True),
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "ticker": st.column_config.TextColumn("Ticker", width="small"),
+                            "horizon": st.column_config.TextColumn("Horizon", width="small"),
+                            "prob": st.column_config.TextColumn("Probability", width="small"),
+                            "confidence": st.column_config.TextColumn("Conf", width="small"),
+                            "sector": st.column_config.TextColumn("Sector"),
+                            "market_cap_bucket": st.column_config.TextColumn("Cap", width="small"),
+                            "price_at_prediction": st.column_config.NumberColumn(
+                                "Price @ Pred", format="$%.2f", width="small"
+                            ),
+                            "maturity_date": st.column_config.DateColumn(
+                                "Maturity", width="small"
+                            ),
+                            "price_at_maturity": st.column_config.NumberColumn(
+                                "Price @ Maturity", format="$%.2f", width="small"
+                            ),
+                            "pct_move_str": st.column_config.TextColumn(
+                                "% Move", width="small"
+                            ),
+                            "time_remaining_str": st.column_config.TextColumn(
+                                "Time Left", width="small"
+                            ),
+                            "outcome": st.column_config.TextColumn("Outcome", width="medium"),
+                        },
+                    )
 
-                show_cols = ["ticker", "horizon", "prob", "confidence", "sector",
-                             "market_cap_bucket", "price_at_prediction",
-                             "maturity_date", "price_at_maturity",
-                             "pct_move_str", "time_remaining_str", "outcome"]
+                # --- Sector Breakdown ---
+                st.subheader("Sector Concentration")
+                sector_summary = preds_df.groupby("sector").agg(
+                    count=("ticker", "size"),
+                    avg_prob=("predicted_probability", "mean"),
+                ).reset_index()
+                sector_summary["pct"] = sector_summary["count"] / len(preds_df) * 100
+                sector_summary = sector_summary.sort_values("count", ascending=False)
+                sector_summary["risk"] = sector_summary["pct"].apply(lambda x: "CORRELATED" if x > 30 else "")
+
                 st.dataframe(
-                    display_df[show_cols].reset_index(drop=True),
+                    sector_summary.rename(columns={
+                        "sector": "Sector", "count": "Predictions", "avg_prob": "Avg Prob",
+                        "pct": "% of Total", "risk": "Risk"
+                    }),
                     use_container_width=True,
                     hide_index=True,
                     column_config={
-                        "ticker": st.column_config.TextColumn("Ticker", width="small"),
-                        "horizon": st.column_config.TextColumn("Horizon", width="small"),
-                        "prob": st.column_config.TextColumn("Probability", width="small"),
-                        "confidence": st.column_config.TextColumn("Conf", width="small"),
-                        "sector": st.column_config.TextColumn("Sector"),
-                        "market_cap_bucket": st.column_config.TextColumn("Cap", width="small"),
-                        "price_at_prediction": st.column_config.NumberColumn(
-                            "Price @ Pred", format="$%.2f", width="small"
-                        ),
-                        "maturity_date": st.column_config.DateColumn(
-                            "Maturity", width="small"
-                        ),
-                        "price_at_maturity": st.column_config.NumberColumn(
-                            "Price @ Maturity", format="$%.2f", width="small"
-                        ),
-                        "pct_move_str": st.column_config.TextColumn(
-                            "% Move", width="small"
-                        ),
-                        "time_remaining_str": st.column_config.TextColumn(
-                            "Time Left", width="small"
-                        ),
-                        "outcome": st.column_config.TextColumn("Outcome", width="medium"),
+                        "Avg Prob": st.column_config.NumberColumn(format="%.0%%"),
+                        "% of Total": st.column_config.NumberColumn(format="%.0f%%"),
                     },
                 )
 
-            # --- Sector Breakdown ---
-            st.subheader("Sector Concentration")
-            sector_summary = preds_df.groupby("sector").agg(
-                count=("ticker", "size"),
-                avg_prob=("predicted_probability", "mean"),
-            ).reset_index()
-            sector_summary["pct"] = sector_summary["count"] / len(preds_df) * 100
-            sector_summary = sector_summary.sort_values("count", ascending=False)
-            sector_summary["risk"] = sector_summary["pct"].apply(lambda x: "CORRELATED" if x > 30 else "")
-
-            st.dataframe(
-                sector_summary.rename(columns={
-                    "sector": "Sector", "count": "Predictions", "avg_prob": "Avg Prob",
-                    "pct": "% of Total", "risk": "Risk"
-                }),
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Avg Prob": st.column_config.NumberColumn(format="%.0%%"),
-                    "% of Total": st.column_config.NumberColumn(format="%.0f%%"),
-                },
-            )
-
-            # --- Historical Accuracy ---
-            accuracy_df = conn.execute("""
+                # --- Historical Accuracy ---
+                accuracy_df = conn.execute("""
                 SELECT
                     horizon,
                     COUNT(*) AS n,
@@ -366,61 +367,67 @@ with tab_equities:
                 GROUP BY horizon
             """).fetchdf()
 
-            if not accuracy_df.empty:
-                st.subheader("Historical Accuracy (all dates with outcomes)")
-                accuracy_df["precision"] = accuracy_df["hits"] / accuracy_df["n"]
-                accuracy_df["precision_pct"] = accuracy_df["precision"].apply(lambda x: f"{x:.0%}")
+                if not accuracy_df.empty:
+                    st.subheader("Historical Accuracy (all dates with outcomes)")
+                    accuracy_df["precision"] = accuracy_df["hits"] / accuracy_df["n"]
+                    accuracy_df["precision_pct"] = accuracy_df["precision"].apply(lambda x: f"{x:.0%}")
 
-                col1, col2, col3 = st.columns(3)
-                for i, (_, row) in enumerate(accuracy_df.iterrows()):
-                    with [col1, col2, col3][i % 3]:
-                        st.metric(
-                            f"{row['horizon']} precision",
-                            row["precision_pct"],
-                            f"n={int(row['n'])}, avg ret={row['avg_max_return_pct']:+.1f}%",
-                        )
+                    col1, col2, col3 = st.columns(3)
+                    for i, (_, row) in enumerate(accuracy_df.iterrows()):
+                        with [col1, col2, col3][i % 3]:
+                            st.metric(
+                                f"{row['horizon']} precision",
+                                row["precision_pct"],
+                                f"n={int(row['n'])}, avg ret={row['avg_max_return_pct']:+.1f}%",
+                            )
 
-                with st.expander("Recent outcomes detail", expanded=False):
-                    recent_outcomes = get_equity_recent_outcomes(conn, limit=50)
-                    if not recent_outcomes.empty:
-                        recent_outcomes["result"] = recent_outcomes.apply(
-                            lambda r: f"{'HIT' if r['actual_hit'] else 'miss'} "
-                                      f"(max: {r['actual_max_return']*100:+.1f}%, "
-                                      f"dd: {r['actual_max_drawdown']*100:+.1f}%)",
-                            axis=1,
-                        )
-                        recent_outcomes["pct_move_str"] = recent_outcomes.apply(
-                            lambda r: format_pct_move(pct_move_equity_or_crypto(
-                                r.get("actual_max_return"),
-                                r.get("price_at_prediction"),
-                                None,
-                                outcome_filled=True,
-                            )),
-                            axis=1,
-                        )
-                        st.dataframe(
-                            recent_outcomes[["ticker", "prediction_date", "horizon",
-                                             "predicted_probability",
-                                             "price_at_prediction",
-                                             "maturity_date", "price_at_maturity",
-                                             "pct_move_str", "result"]],
-                            use_container_width=True,
-                            hide_index=True,
-                            column_config={
-                                "price_at_prediction": st.column_config.NumberColumn(
-                                    "Price @ Pred", format="$%.2f", width="small"
-                                ),
-                                "maturity_date": st.column_config.DateColumn(
-                                    "Maturity", width="small"
-                                ),
-                                "price_at_maturity": st.column_config.NumberColumn(
-                                    "Price @ Maturity", format="$%.2f", width="small"
-                                ),
-                                "pct_move_str": st.column_config.TextColumn(
-                                    "% Move", width="small"
-                                ),
-                            },
-                        )
+                    with st.expander("Recent outcomes detail", expanded=False):
+                        recent_outcomes = get_equity_recent_outcomes(conn, limit=50)
+                        if not recent_outcomes.empty:
+                            recent_outcomes["result"] = recent_outcomes.apply(
+                                lambda r: f"{'HIT' if r['actual_hit'] else 'miss'} "
+                                          f"(max: {r['actual_max_return']*100:+.1f}%, "
+                                          f"dd: {r['actual_max_drawdown']*100:+.1f}%)",
+                                axis=1,
+                            )
+                            recent_outcomes["pct_move_str"] = recent_outcomes.apply(
+                                lambda r: format_pct_move(pct_move_equity_or_crypto(
+                                    r.get("actual_max_return"),
+                                    r.get("price_at_prediction"),
+                                    None,
+                                    outcome_filled=True,
+                                )),
+                                axis=1,
+                            )
+                            st.dataframe(
+                                recent_outcomes[["ticker", "prediction_date", "horizon",
+                                                 "predicted_probability",
+                                                 "price_at_prediction",
+                                                 "maturity_date", "price_at_maturity",
+                                                 "pct_move_str", "result"]],
+                                use_container_width=True,
+                                hide_index=True,
+                                column_config={
+                                    "price_at_prediction": st.column_config.NumberColumn(
+                                        "Price @ Pred", format="$%.2f", width="small"
+                                    ),
+                                    "maturity_date": st.column_config.DateColumn(
+                                        "Maturity", width="small"
+                                    ),
+                                    "price_at_maturity": st.column_config.NumberColumn(
+                                        "Price @ Maturity", format="$%.2f", width="small"
+                                    ),
+                                    "pct_move_str": st.column_config.TextColumn(
+                                        "% Move", width="small"
+                                    ),
+                                },
+                            )
+    except Exception as exc:  # noqa: BLE001 — dormant equity tables must not crash the page
+        logging.getLogger("dashboard.app").warning("Equity tab unavailable: %s", exc)
+        st.warning(
+            "⚠️ Equity data unavailable — the equity engine is dormant and its "
+            "`ml_*` tables are absent. Other tabs are unaffected."
+        )
 
 conn.close()
 
@@ -429,79 +436,80 @@ conn.close()
 # ===============================================================================
 conn = _open_conn()
 with tab_crypto:
-    st.title("Crypto Predictions")
+    try:
+        st.title("Crypto Predictions")
 
-    # --- Model Health Banner ---
-    crypto_model_info = conn.execute("""
+        # --- Model Health Banner ---
+        crypto_model_info = conn.execute("""
         SELECT model_id, horizon, created_at, train_start, train_end,
                auc_roc, lift_over_base, precision_at_threshold, base_rate
         FROM crypto_ml_model_runs WHERE is_active = true
         ORDER BY horizon
     """).fetchdf()
 
-    if crypto_model_info.empty:
-        st.error("No active crypto ML models. Run `python main.py crypto train` first.")
-    else:
-        with st.expander("Model Health", expanded=False):
-            cols = st.columns(len(crypto_model_info))
-            for i, (_, row) in enumerate(crypto_model_info.iterrows()):
-                with cols[i]:
-                    st.metric(f"{row['horizon']} model", f"AUC {row['auc_roc']:.3f}")
-                    st.caption(f"Lift: {row['lift_over_base']:.2f}x | "
-                               f"Train: {row['train_start']} → {row['train_end']}")
-
-        # --- Date selector ---
-        # Backend `prediction_date` is the feature-snapshot date (T-1 =
-        # the just-completed daily bar). Operationally the predictions
-        # are generated for the FOLLOWING calendar day's trading; the
-        # selector relabels accordingly. Backend column semantics
-        # unchanged — translation is presentation-only.
-        crypto_dates = get_distinct_prediction_dates(
-            conn, "crypto_ml_predictions", "prediction_date", limit=30
-        )
-
-        if not crypto_dates:
-            st.warning("No predictions yet. Run `python main.py crypto predict` to generate.")
+        if crypto_model_info.empty:
+            st.error("No active crypto ML models. Run `python main.py crypto train` first.")
         else:
-            crypto_trading_dates = [
-                crypto_feature_date_to_trading_date(d) for d in crypto_dates
-            ]
-            crypto_selected_trading_date = st.selectbox(
-                "Trading date",
-                crypto_trading_dates,
-                format_func=lambda d: d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d),
-                key="crypto_trading_date",
-                help=(
-                    "Date predictions drive trading on. The backend "
-                    "`crypto_ml_predictions.prediction_date` is the "
-                    "feature-snapshot date (T-1); this label is "
-                    "trading-date (T) for operator clarity."
-                ),
-            )
-            crypto_selected_date = crypto_trading_date_to_feature_date(
-                crypto_selected_trading_date
+            with st.expander("Model Health", expanded=False):
+                cols = st.columns(len(crypto_model_info))
+                for i, (_, row) in enumerate(crypto_model_info.iterrows()):
+                    with cols[i]:
+                        st.metric(f"{row['horizon']} model", f"AUC {row['auc_roc']:.3f}")
+                        st.caption(f"Lift: {row['lift_over_base']:.2f}x | "
+                                   f"Train: {row['train_start']} → {row['train_end']}")
+
+            # --- Date selector ---
+            # Backend `prediction_date` is the feature-snapshot date (T-1 =
+            # the just-completed daily bar). Operationally the predictions
+            # are generated for the FOLLOWING calendar day's trading; the
+            # selector relabels accordingly. Backend column semantics
+            # unchanged — translation is presentation-only.
+            crypto_dates = get_distinct_prediction_dates(
+                conn, "crypto_ml_predictions", "prediction_date", limit=30
             )
 
-            # --- Banner: trading date, features-as-of date, generation time ---
-            _crypto_predicted_at = conn.execute(
-                "SELECT MAX(predicted_at) FROM crypto_ml_predictions "
-                "WHERE prediction_date = ?",
-                [crypto_selected_date],
-            ).fetchone()
-            _crypto_predicted_at_val = (
-                _crypto_predicted_at[0] if _crypto_predicted_at else None
-            )
-            st.markdown(format_crypto_trading_date_banner(
-                prediction_date=crypto_selected_date,
-                predicted_at=_crypto_predicted_at_val,
-                today=datetime.now(timezone.utc).date(),
-            ))
+            if not crypto_dates:
+                st.warning("No predictions yet. Run `python main.py crypto predict` to generate.")
+            else:
+                crypto_trading_dates = [
+                    crypto_feature_date_to_trading_date(d) for d in crypto_dates
+                ]
+                crypto_selected_trading_date = st.selectbox(
+                    "Trading date",
+                    crypto_trading_dates,
+                    format_func=lambda d: d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d),
+                    key="crypto_trading_date",
+                    help=(
+                        "Date predictions drive trading on. The backend "
+                        "`crypto_ml_predictions.prediction_date` is the "
+                        "feature-snapshot date (T-1); this label is "
+                        "trading-date (T) for operator clarity."
+                    ),
+                )
+                crypto_selected_date = crypto_trading_date_to_feature_date(
+                    crypto_selected_trading_date
+                )
 
-            # --- Load predictions ---
-            crypto_preds = get_crypto_predictions(conn, crypto_selected_date)
+                # --- Banner: trading date, features-as-of date, generation time ---
+                _crypto_predicted_at = conn.execute(
+                    "SELECT MAX(predicted_at) FROM crypto_ml_predictions "
+                    "WHERE prediction_date = ?",
+                    [crypto_selected_date],
+                ).fetchone()
+                _crypto_predicted_at_val = (
+                    _crypto_predicted_at[0] if _crypto_predicted_at else None
+                )
+                st.markdown(format_crypto_trading_date_banner(
+                    prediction_date=crypto_selected_date,
+                    predicted_at=_crypto_predicted_at_val,
+                    today=datetime.now(timezone.utc).date(),
+                ))
 
-            # --- BTC Regime Indicator ---
-            btc_return_7d = conn.execute("""
+                # --- Load predictions ---
+                crypto_preds = get_crypto_predictions(conn, crypto_selected_date)
+
+                # --- BTC Regime Indicator ---
+                btc_return_7d = conn.execute("""
                 WITH btc_prices AS (
                     SELECT trade_date, close,
                            LAG(close, 7) OVER (ORDER BY trade_date) AS close_7ago
@@ -515,232 +523,148 @@ with tab_crypto:
                 WHERE close_7ago IS NOT NULL
                 ORDER BY trade_date DESC LIMIT 1
             """).fetchone()
-            btc_ret = float(btc_return_7d[0]) if btc_return_7d and btc_return_7d[0] else 0
+                btc_ret = float(btc_return_7d[0]) if btc_return_7d and btc_return_7d[0] else 0
 
-            if btc_ret > 0.03:
-                regime_label = "BULLISH"
-                regime_color = "green"
-                regime_desc = "BTC trending up — altcoin predictions likely correlated to BTC"
-            elif btc_ret < -0.03:
-                regime_label = "BEARISH"
-                regime_color = "red"
-                regime_desc = "BTC trending down — high correlation risk, predictions less reliable"
-            else:
-                regime_label = "NEUTRAL"
-                regime_color = "blue"
-                regime_desc = "BTC flat — coin-specific signals dominate"
+                if btc_ret > 0.03:
+                    regime_label = "BULLISH"
+                    regime_color = "green"
+                    regime_desc = "BTC trending up — altcoin predictions likely correlated to BTC"
+                elif btc_ret < -0.03:
+                    regime_label = "BEARISH"
+                    regime_color = "red"
+                    regime_desc = "BTC trending down — high correlation risk, predictions less reliable"
+                else:
+                    regime_label = "NEUTRAL"
+                    regime_color = "blue"
+                    regime_desc = "BTC flat — coin-specific signals dominate"
 
-            st.markdown(f"### BTC Regime: :{regime_color}[{regime_label}]")
-            st.caption(f"{regime_desc} (BTC 7d return: {btc_ret:+.1%})")
+                st.markdown(f"### BTC Regime: :{regime_color}[{regime_label}]")
+                st.caption(f"{regime_desc} (BTC 7d return: {btc_ret:+.1%})")
 
-            # --- Correlation Warning ---
-            btc_betas = conn.execute("""
+                # --- Correlation Warning ---
+                btc_betas = conn.execute("""
                 SELECT symbol, beta_to_btc_30d
                 FROM crypto_ml_features
                 WHERE trade_date = ? AND beta_to_btc_30d IS NOT NULL
             """, [crypto_selected_date]).fetchdf()
 
-            if not btc_betas.empty and not crypto_preds.empty:
-                pred_with_beta = crypto_preds.merge(btc_betas, on="symbol", how="left")
-                high_beta = pred_with_beta[pred_with_beta["beta_to_btc_30d"] > 0.8]
-                if len(high_beta) > len(crypto_preds) * 0.5:
-                    st.warning(
-                        f"**Correlation risk:** {len(high_beta)} of {len(crypto_preds)} predictions have "
-                        f"BTC beta > 0.8. Effectively one directional BTC bet."
+                if not btc_betas.empty and not crypto_preds.empty:
+                    pred_with_beta = crypto_preds.merge(btc_betas, on="symbol", how="left")
+                    high_beta = pred_with_beta[pred_with_beta["beta_to_btc_30d"] > 0.8]
+                    if len(high_beta) > len(crypto_preds) * 0.5:
+                        st.warning(
+                            f"**Correlation risk:** {len(high_beta)} of {len(crypto_preds)} predictions have "
+                            f"BTC beta > 0.8. Effectively one directional BTC bet."
+                        )
+
+                # --- Sidebar filters ---
+                with st.sidebar:
+                    st.header("Crypto Filters")
+                    crypto_min_prob = st.slider("Min probability", 0.40, 0.90, 0.50, 0.05, key="crypto_prob")
+                    crypto_horizons = st.multiselect(
+                        "Horizons",
+                        crypto_preds["horizon"].unique().tolist(),
+                        default=crypto_preds["horizon"].unique().tolist(),
+                        key="crypto_hz",
                     )
 
-            # --- Sidebar filters ---
-            with st.sidebar:
-                st.header("Crypto Filters")
-                crypto_min_prob = st.slider("Min probability", 0.40, 0.90, 0.50, 0.05, key="crypto_prob")
-                crypto_horizons = st.multiselect(
-                    "Horizons",
-                    crypto_preds["horizon"].unique().tolist(),
-                    default=crypto_preds["horizon"].unique().tolist(),
-                    key="crypto_hz",
+                crypto_filtered = crypto_preds[
+                    (crypto_preds["predicted_probability"] >= crypto_min_prob)
+                    & (crypto_preds["horizon"].isin(crypto_horizons))
+                ].copy()
+
+                # --- Predictions Table ---
+                # feat-dashboard-crypto-exclusion-overlay: surface which
+                # raw predictions actually reach the trading engine.
+                _n_total = len(crypto_filtered)
+                _excluded_mask = (
+                    crypto_filtered["is_excluded"].fillna(False).astype(bool)
+                    if "is_excluded" in crypto_filtered.columns
+                    else pd.Series([False] * _n_total, index=crypto_filtered.index)
                 )
+                _n_excluded = int(_excluded_mask.sum())
+                _excl_reasons = set(
+                    crypto_filtered.loc[_excluded_mask, "exclusion_reason"]
+                    .dropna().astype(str).tolist()
+                ) if "exclusion_reason" in crypto_filtered.columns else set()
+                st.subheader(format_crypto_predictions_summary(
+                    n_total=_n_total,
+                    n_excluded=_n_excluded,
+                    exclusion_reasons=_excl_reasons,
+                ))
 
-            crypto_filtered = crypto_preds[
-                (crypto_preds["predicted_probability"] >= crypto_min_prob)
-                & (crypto_preds["horizon"].isin(crypto_horizons))
-            ].copy()
-
-            # --- Predictions Table ---
-            # feat-dashboard-crypto-exclusion-overlay: surface which
-            # raw predictions actually reach the trading engine.
-            _n_total = len(crypto_filtered)
-            _excluded_mask = (
-                crypto_filtered["is_excluded"].fillna(False).astype(bool)
-                if "is_excluded" in crypto_filtered.columns
-                else pd.Series([False] * _n_total, index=crypto_filtered.index)
-            )
-            _n_excluded = int(_excluded_mask.sum())
-            _excl_reasons = set(
-                crypto_filtered.loc[_excluded_mask, "exclusion_reason"]
-                .dropna().astype(str).tolist()
-            ) if "exclusion_reason" in crypto_filtered.columns else set()
-            st.subheader(format_crypto_predictions_summary(
-                n_total=_n_total,
-                n_excluded=_n_excluded,
-                exclusion_reasons=_excl_reasons,
-            ))
-
-            if crypto_filtered.empty:
-                st.info("No predictions match filters.")
-            else:
-                display = crypto_filtered.copy()
-                display["Prob"] = display["predicted_probability"].map(lambda p: f"{p:.1%}")
-                display["Confidence"] = display["predicted_probability"].map(
-                    lambda p: "High" if p >= 0.60 else "Lower")
-
-                # Status column: per-row exclusion badge takes precedence
-                # over the pending/outcome string. Excluded predictions
-                # never trade, so the badge is the operationally
-                # authoritative answer for that row.
-                _outcome_str = display.apply(
-                    lambda r: f"{'HIT' if r['actual_hit'] else 'miss'} ({r['actual_max_return']:+.1%})"
-                    if pd.notna(r.get("actual_hit")) else "pending",
-                    axis=1,
-                ) if "actual_hit" in display.columns else "pending"
-                display["Status"] = display.apply(
-                    lambda r: format_crypto_exclusion_badge(
-                        reason=r.get("exclusion_reason"),
-                        dd90=r.get("exclusion_dd90"),
-                        ret60=r.get("exclusion_ret60"),
-                        ret5=r.get("exclusion_ret5"),
-                    ) or (
-                        f"{'HIT' if r['actual_hit'] else 'miss'} "
-                        f"({r['actual_max_return']:+.1%})"
-                        if pd.notna(r.get("actual_hit"))
-                        else "pending"
-                    ),
-                    axis=1,
-                )
-
-                display["pct_move_str"] = display.apply(
-                    lambda r: format_pct_move(pct_move_equity_or_crypto(
-                        r.get("actual_max_return"),
-                        r.get("price_at_prediction"),
-                        r.get("current_price"),
-                        pd.notna(r.get("outcome_filled_at")),
-                    )),
-                    axis=1,
-                )
-                display["time_remaining_str"] = display.apply(
-                    lambda r: format_time_remaining(time_remaining_days(
-                        r.get("maturity_date"),
-                        outcome_filled=pd.notna(r.get("outcome_filled_at")),
-                    )),
-                    axis=1,
-                )
-
-                show_cols = ["symbol", "horizon", "Prob", "Confidence",
-                             "market_cap_bucket", "price_at_prediction",
-                             "maturity_date", "price_at_maturity",
-                             "pct_move_str", "time_remaining_str",
-                             "Status"]
-
-                # Visual de-emphasis on excluded rows. Streamlit's
-                # st.dataframe accepts a pandas Styler; we grey the
-                # entire row when is_excluded is True so the operator's
-                # eye treats excluded rows as informational, not actionable.
-                _styled = display[show_cols].style
-                if "is_excluded" in display.columns:
-                    _excluded_idx = display.index[_excluded_mask].tolist()
-
-                    def _grey_excluded_row(row):
-                        return (
-                            ["color: #888; font-style: italic"] * len(row)
-                            if row.name in _excluded_idx else [""] * len(row)
-                        )
-                    _styled = _styled.apply(_grey_excluded_row, axis=1)
-
-                st.dataframe(
-                    _styled,
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "price_at_prediction": st.column_config.NumberColumn(
-                            "Price @ Pred", format="$%.4f", width="small"
-                        ),
-                        "maturity_date": st.column_config.DateColumn(
-                            "Maturity", width="small"
-                        ),
-                        "price_at_maturity": st.column_config.NumberColumn(
-                            "Price @ Maturity", format="$%.4f", width="small"
-                        ),
-                        "pct_move_str": st.column_config.TextColumn(
-                            "% Move", width="small"
-                        ),
-                        "time_remaining_str": st.column_config.TextColumn(
-                            "Time Left", width="small"
-                        ),
-                        "Status": st.column_config.TextColumn(
-                            "Status",
-                            help=(
-                                "Outcome (pending / HIT / miss) for "
-                                "non-excluded rows, OR exclusion badge "
-                                "for predictions filtered by the "
-                                "post-parabolic / short-momentum rule "
-                                "chain (crypto/ml/postparabolic_filter.py, "
-                                "ADR-021 + ADR-028). Excluded rows are "
-                                "informational only — the engine never "
-                                "sees them."
-                            ),
-                        ),
-                    },
-                )
-
-            # --- Historical Accuracy ---
-            crypto_accuracy = conn.execute("""
-                SELECT horizon, COUNT(*) AS n,
-                       SUM(CASE WHEN actual_hit THEN 1 ELSE 0 END) AS hits,
-                       AVG(actual_max_return) AS avg_ret,
-                       AVG(actual_max_drawdown) AS avg_dd
-                FROM crypto_ml_predictions
-                WHERE outcome_filled_at IS NOT NULL
-                GROUP BY horizon
-            """).fetchdf()
-
-            st.subheader("Historical Accuracy")
-            if crypto_accuracy.empty:
-                st.info("No outcomes filled yet — accuracy will appear once prediction horizons elapse.")
-            else:
-                crypto_accuracy["Precision"] = (crypto_accuracy["hits"] / crypto_accuracy["n"] * 100).round(1)
-                crypto_accuracy["Avg MaxRet"] = (crypto_accuracy["avg_ret"] * 100).round(2)
-                crypto_accuracy["Avg MaxDD"] = (crypto_accuracy["avg_dd"] * 100).round(2)
-                st.dataframe(
-                    crypto_accuracy[["horizon", "n", "hits", "Precision", "Avg MaxRet", "Avg MaxDD"]],
-                    use_container_width=True,
-                    hide_index=True,
-                )
-
-            with st.expander("Recent outcomes detail", expanded=False):
-                crypto_recent = get_crypto_recent_outcomes(conn, limit=50)
-                if crypto_recent.empty:
-                    st.info("No outcomes yet — predictions need time for their horizons to elapse.")
+                if crypto_filtered.empty:
+                    st.info("No predictions match filters.")
                 else:
-                    crypto_recent["result"] = crypto_recent.apply(
-                        lambda r: f"{'HIT' if r['actual_hit'] else 'miss'} "
-                                  f"(max: {r['actual_max_return']*100:+.1f}%, "
-                                  f"dd: {r['actual_max_drawdown']*100:+.1f}%)",
+                    display = crypto_filtered.copy()
+                    display["Prob"] = display["predicted_probability"].map(lambda p: f"{p:.1%}")
+                    display["Confidence"] = display["predicted_probability"].map(
+                        lambda p: "High" if p >= 0.60 else "Lower")
+
+                    # Status column: per-row exclusion badge takes precedence
+                    # over the pending/outcome string. Excluded predictions
+                    # never trade, so the badge is the operationally
+                    # authoritative answer for that row.
+                    _outcome_str = display.apply(
+                        lambda r: f"{'HIT' if r['actual_hit'] else 'miss'} ({r['actual_max_return']:+.1%})"
+                        if pd.notna(r.get("actual_hit")) else "pending",
+                        axis=1,
+                    ) if "actual_hit" in display.columns else "pending"
+                    display["Status"] = display.apply(
+                        lambda r: format_crypto_exclusion_badge(
+                            reason=r.get("exclusion_reason"),
+                            dd90=r.get("exclusion_dd90"),
+                            ret60=r.get("exclusion_ret60"),
+                            ret5=r.get("exclusion_ret5"),
+                        ) or (
+                            f"{'HIT' if r['actual_hit'] else 'miss'} "
+                            f"({r['actual_max_return']:+.1%})"
+                            if pd.notna(r.get("actual_hit"))
+                            else "pending"
+                        ),
                         axis=1,
                     )
-                    crypto_recent["pct_move_str"] = crypto_recent.apply(
+
+                    display["pct_move_str"] = display.apply(
                         lambda r: format_pct_move(pct_move_equity_or_crypto(
                             r.get("actual_max_return"),
                             r.get("price_at_prediction"),
-                            None,
-                            outcome_filled=True,
+                            r.get("current_price"),
+                            pd.notna(r.get("outcome_filled_at")),
                         )),
                         axis=1,
                     )
+                    display["time_remaining_str"] = display.apply(
+                        lambda r: format_time_remaining(time_remaining_days(
+                            r.get("maturity_date"),
+                            outcome_filled=pd.notna(r.get("outcome_filled_at")),
+                        )),
+                        axis=1,
+                    )
+
+                    show_cols = ["symbol", "horizon", "Prob", "Confidence",
+                                 "market_cap_bucket", "price_at_prediction",
+                                 "maturity_date", "price_at_maturity",
+                                 "pct_move_str", "time_remaining_str",
+                                 "Status"]
+
+                    # Visual de-emphasis on excluded rows. Streamlit's
+                    # st.dataframe accepts a pandas Styler; we grey the
+                    # entire row when is_excluded is True so the operator's
+                    # eye treats excluded rows as informational, not actionable.
+                    _styled = display[show_cols].style
+                    if "is_excluded" in display.columns:
+                        _excluded_idx = display.index[_excluded_mask].tolist()
+
+                        def _grey_excluded_row(row):
+                            return (
+                                ["color: #888; font-style: italic"] * len(row)
+                                if row.name in _excluded_idx else [""] * len(row)
+                            )
+                        _styled = _styled.apply(_grey_excluded_row, axis=1)
+
                     st.dataframe(
-                        crypto_recent[["symbol", "prediction_date", "horizon",
-                                       "predicted_probability",
-                                       "price_at_prediction",
-                                       "maturity_date", "price_at_maturity",
-                                       "pct_move_str", "result"]],
+                        _styled,
                         use_container_width=True,
                         hide_index=True,
                         column_config={
@@ -756,8 +680,98 @@ with tab_crypto:
                             "pct_move_str": st.column_config.TextColumn(
                                 "% Move", width="small"
                             ),
+                            "time_remaining_str": st.column_config.TextColumn(
+                                "Time Left", width="small"
+                            ),
+                            "Status": st.column_config.TextColumn(
+                                "Status",
+                                help=(
+                                    "Outcome (pending / HIT / miss) for "
+                                    "non-excluded rows, OR exclusion badge "
+                                    "for predictions filtered by the "
+                                    "post-parabolic / short-momentum rule "
+                                    "chain (crypto/ml/postparabolic_filter.py, "
+                                    "ADR-021 + ADR-028). Excluded rows are "
+                                    "informational only — the engine never "
+                                    "sees them."
+                                ),
+                            ),
                         },
                     )
+
+                # --- Historical Accuracy ---
+                crypto_accuracy = conn.execute("""
+                SELECT horizon, COUNT(*) AS n,
+                       SUM(CASE WHEN actual_hit THEN 1 ELSE 0 END) AS hits,
+                       AVG(actual_max_return) AS avg_ret,
+                       AVG(actual_max_drawdown) AS avg_dd
+                FROM crypto_ml_predictions
+                WHERE outcome_filled_at IS NOT NULL
+                GROUP BY horizon
+            """).fetchdf()
+
+                st.subheader("Historical Accuracy")
+                if crypto_accuracy.empty:
+                    st.info("No outcomes filled yet — accuracy will appear once prediction horizons elapse.")
+                else:
+                    crypto_accuracy["Precision"] = (crypto_accuracy["hits"] / crypto_accuracy["n"] * 100).round(1)
+                    crypto_accuracy["Avg MaxRet"] = (crypto_accuracy["avg_ret"] * 100).round(2)
+                    crypto_accuracy["Avg MaxDD"] = (crypto_accuracy["avg_dd"] * 100).round(2)
+                    st.dataframe(
+                        crypto_accuracy[["horizon", "n", "hits", "Precision", "Avg MaxRet", "Avg MaxDD"]],
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+                with st.expander("Recent outcomes detail", expanded=False):
+                    crypto_recent = get_crypto_recent_outcomes(conn, limit=50)
+                    if crypto_recent.empty:
+                        st.info("No outcomes yet — predictions need time for their horizons to elapse.")
+                    else:
+                        crypto_recent["result"] = crypto_recent.apply(
+                            lambda r: f"{'HIT' if r['actual_hit'] else 'miss'} "
+                                      f"(max: {r['actual_max_return']*100:+.1f}%, "
+                                      f"dd: {r['actual_max_drawdown']*100:+.1f}%)",
+                            axis=1,
+                        )
+                        crypto_recent["pct_move_str"] = crypto_recent.apply(
+                            lambda r: format_pct_move(pct_move_equity_or_crypto(
+                                r.get("actual_max_return"),
+                                r.get("price_at_prediction"),
+                                None,
+                                outcome_filled=True,
+                            )),
+                            axis=1,
+                        )
+                        st.dataframe(
+                            crypto_recent[["symbol", "prediction_date", "horizon",
+                                           "predicted_probability",
+                                           "price_at_prediction",
+                                           "maturity_date", "price_at_maturity",
+                                           "pct_move_str", "result"]],
+                            use_container_width=True,
+                            hide_index=True,
+                            column_config={
+                                "price_at_prediction": st.column_config.NumberColumn(
+                                    "Price @ Pred", format="$%.4f", width="small"
+                                ),
+                                "maturity_date": st.column_config.DateColumn(
+                                    "Maturity", width="small"
+                                ),
+                                "price_at_maturity": st.column_config.NumberColumn(
+                                    "Price @ Maturity", format="$%.4f", width="small"
+                                ),
+                                "pct_move_str": st.column_config.TextColumn(
+                                    "% Move", width="small"
+                                ),
+                            },
+                        )
+    except Exception as exc:  # noqa: BLE001 — a dropped crypto_* table must not crash the page
+        logging.getLogger("dashboard.app").warning("Crypto tab unavailable: %s", exc)
+        st.warning(
+            "⚠️ Crypto data unavailable — a required table is missing or "
+            "unreadable. Other tabs are unaffected."
+        )
 
 conn.close()
 

@@ -174,3 +174,66 @@ def test_freshness_banner_cannot_crash_dashboard():
         "the freshness-banner except handler must DEGRADE (log + render a "
         "visible notice), not merely re-raise."
     )
+
+
+def _with_body_has_guarding_try(
+    file_path: Path, ctx_name: str
+) -> tuple[bool, bool, bool]:
+    """Find a ``with <ctx_name>:`` block and report whether its body is wrapped
+    in a degrading try/except. Returns ``(found, guarded, degrades)``:
+
+      found    — a ``with <ctx_name>:`` block exists
+      guarded  — its body contains a direct-child ``try`` with >=1 except handler
+      degrades — at least one handler does something other than only re-``raise``
+
+    AST-based: the dashboard app cannot be imported under test (it opens
+    mhde.duckdb and renders Streamlit at module import). st.tabs() executes
+    every tab body in one pass, so an unguarded tab crashes the whole page.
+    """
+    tree = ast.parse(file_path.read_text())
+
+    target = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.With):
+            for item in node.items:
+                ctx = item.context_expr
+                if isinstance(ctx, ast.Name) and ctx.id == ctx_name:
+                    target = node
+                    break
+        if target is not None:
+            break
+    if target is None:
+        return False, False, False
+
+    for stmt in target.body:
+        if isinstance(stmt, ast.Try) and stmt.handlers:
+            degrades = False
+            for h in stmt.handlers:
+                body = [s for s in h.body if not isinstance(s, ast.Pass)]
+                if body and not all(isinstance(s, ast.Raise) for s in body):
+                    degrades = True
+            return True, True, degrades
+    return True, False, False
+
+
+def test_equity_and_crypto_tabs_degrade_on_missing_tables():
+    """st.tabs() runs every tab body in ONE render pass, so an unguarded tab
+    that queries an absent table crashes the WHOLE page — even with the
+    freshness banner guarded. The Equity/ML tab queries the dormant `ml_*`
+    tables (absent) and the Crypto tab queries `crypto_*` tables (present only
+    by luck). Each tab body must wrap its query path in a try/except that
+    DEGRADES to a visible notice instead of propagating a CatalogException.
+    """
+    app_py = REPO / "dashboard" / "app.py"
+    for ctx in ("tab_equities", "tab_crypto"):
+        found, guarded, degrades = _with_body_has_guarding_try(app_py, ctx)
+        assert found, f"expected a `with {ctx}:` block in dashboard/app.py"
+        assert guarded, (
+            f"the `with {ctx}:` tab body must wrap its queries in a try/except "
+            f"so a missing/absent table (CatalogException) degrades instead of "
+            f"crashing the whole page (st.tabs runs every tab body in one pass)."
+        )
+        assert degrades, (
+            f"the `with {ctx}:` except handler must DEGRADE (log + render a "
+            f"notice), not merely re-raise."
+        )
