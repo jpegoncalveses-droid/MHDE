@@ -20,7 +20,7 @@ ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto capture-firehose-compac
 # disturbs the engine's 1s cycle even though it reads+rewrites while capture is live.
 Nice=19
 IOSchedulingClass=idle
-MemoryMax=1G
+MemoryMax=2G
 CPUWeight=20
 IOWeight=20
 OOMScoreAdjust=800
