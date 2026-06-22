@@ -99,3 +99,78 @@ def test_dashboard_queries_module_imports_cleanly():
     for fn in ("get_overview_stats", "get_candidates", "get_outcomes",
                "get_health_checks", "get_alerts", "get_hypotheses"):
         assert hasattr(mod, fn), f"dashboard.services.queries.{fn} missing"
+
+
+def _freshness_call_guarded(
+    file_path: Path, call_name: str
+) -> tuple[bool, bool, bool]:
+    """Inspect `file_path` for a `try` whose body contains a call to
+    `call_name(...)`. Returns ``(guarded, has_handler, degrades)``:
+
+      guarded      — the call appears inside some `try` block's body
+      has_handler  — that `try` has at least one `except` handler
+      degrades     — at least one handler does something other than only
+                     re-`raise` (i.e. it logs / renders a notice instead of
+                     letting the exception propagate)
+
+    AST-based (the dashboard app cannot be imported under test — it opens
+    mhde.duckdb and renders Streamlit at module import).
+    """
+    tree = ast.parse(file_path.read_text())
+
+    def _body_has_call(try_node: ast.Try) -> bool:
+        for stmt in try_node.body:
+            for n in ast.walk(stmt):
+                if isinstance(n, ast.Call):
+                    func = n.func
+                    name = (
+                        func.id
+                        if isinstance(func, ast.Name)
+                        else getattr(func, "attr", None)
+                    )
+                    if name == call_name:
+                        return True
+        return False
+
+    def _handler_degrades(try_node: ast.Try) -> bool:
+        for h in try_node.handlers:
+            stmts = [s for s in h.body if not isinstance(s, ast.Pass)]
+            if stmts and not all(isinstance(s, ast.Raise) for s in stmts):
+                return True
+        return False
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Try) and _body_has_call(node):
+            return True, bool(node.handlers), _handler_degrades(node)
+    return False, False, False
+
+
+def test_freshness_banner_cannot_crash_dashboard():
+    """The System Health data-freshness banner is non-critical observability
+    and must never crash the whole dashboard.
+
+    The module-level `check_all` call (imported as `_check_all_freshness`) in
+    dashboard/app.py runs at import, before any tab renders. If a freshness
+    check raises — e.g. `_duckdb.CatalogException` from a missing/renamed
+    table such as `fx_prices_hourly` — the unguarded call kills every tab.
+    This regression requires the call to be wrapped in a try/except that
+    DEGRADES (logs + renders a notice) instead of propagating.
+    """
+    app_py = REPO / "dashboard" / "app.py"
+    calls = _module_level_calls_to(app_py, "_check_all_freshness")
+    assert calls, (
+        "expected a module-level _check_all_freshness(conn) call in "
+        "dashboard/app.py"
+    )
+    guarded, has_handler, degrades = _freshness_call_guarded(
+        app_py, "_check_all_freshness"
+    )
+    assert guarded and has_handler, (
+        "dashboard/app.py module-level _check_all_freshness(conn) must be "
+        "wrapped in a try/except so a failing freshness check (e.g. missing "
+        "table -> CatalogException) cannot crash the page."
+    )
+    assert degrades, (
+        "the freshness-banner except handler must DEGRADE (log + render a "
+        "visible notice), not merely re-raise."
+    )

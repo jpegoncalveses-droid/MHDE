@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import datetime, timezone
 
@@ -78,22 +79,39 @@ def _open_engine_conn():
 from pipelines.freshness import check_all as _check_all_freshness
 
 conn = _open_conn()
-_freshness_reports = _check_all_freshness(conn)
-with st.expander(
-    "System Health — Data Freshness",
-    expanded=any(not r.is_fresh for r in _freshness_reports.values()),
-):
-    cols = st.columns(len(_freshness_reports))
-    for col, (engine, report) in zip(cols, _freshness_reports.items()):
-        with col:
-            icon = "🟢" if report.is_fresh else "🔴"
-            label = {"equity": "Equity", "crypto": "Crypto", "fx": "FX"}[engine]
-            latest_str = str(report.latest) if report.latest is not None else "—"
-            st.metric(f"{icon} {label}", latest_str, delta=f"age: {report.age_str}")
-            st.caption(f"Threshold: {report.threshold}")
-            if not report.is_fresh:
-                st.warning(report.message)
-conn.close()
+try:
+    _freshness_reports = _check_all_freshness(conn)
+    with st.expander(
+        "System Health — Data Freshness",
+        expanded=any(not r.is_fresh for r in _freshness_reports.values()),
+    ):
+        cols = st.columns(len(_freshness_reports))
+        for col, (engine, report) in zip(cols, _freshness_reports.items()):
+            with col:
+                icon = "🟢" if report.is_fresh else "🔴"
+                label = {"equity": "Equity", "crypto": "Crypto", "fx": "FX"}[engine]
+                latest_str = str(report.latest) if report.latest is not None else "—"
+                st.metric(f"{icon} {label}", latest_str, delta=f"age: {report.age_str}")
+                st.caption(f"Threshold: {report.threshold}")
+                if not report.is_fresh:
+                    st.warning(report.message)
+except duckdb.Error as exc:
+    # The freshness banner is best-effort observability: a missing or renamed
+    # price table (e.g. fx_prices_hourly) raises duckdb.CatalogException here.
+    # It must never crash the page, so degrade to a visible notice and let
+    # every tab below still render. freshness.py is deliberately left to keep
+    # hard-failing for the health check (health/checks.py) — this guard is the
+    # dashboard call site only.
+    logging.getLogger("dashboard.app").warning(
+        "System Health freshness banner unavailable: %s", exc
+    )
+    st.warning(
+        "⚠️ System Health — Data Freshness banner unavailable "
+        "(a freshness check failed; see logs). Dashboard tabs below are "
+        "unaffected."
+    )
+finally:
+    conn.close()
 
 # Paper Trading first so it is the default tab on open (paper-tab-overhaul).
 tab_paper, tab_equities, tab_crypto, tab_fx, tab_probe = st.tabs(
