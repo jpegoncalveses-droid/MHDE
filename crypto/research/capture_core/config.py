@@ -203,7 +203,7 @@ SNAPSHOT_MIN_INTERVAL_S = DEPTH_SNAPSHOT_WEIGHT * 60.0 / CAPTURE_REST_WEIGHT_PER
 #: the cap), NOT the unbounded leak it replaces. DEPLOY NOTE: tune this down (it gates
 #: only the near-boundary diffs; must stay > the reseed threshold) and monitor RSS
 #: under a reconnect storm before the depth_state online-book redeploy.
-CAPTURE_DEPTH_BUFFER_MAXLEN = 5000
+CAPTURE_DEPTH_BUFFER_MAXLEN = 1500
 #: While a maintainer is stuck unsynced and its buffer has grown past this many diffs,
 #: it proactively re-raises ``needs_snapshot`` so the service re-queues a seed (the
 #: never-synced on_diff path otherwise never asks). Must be < the maxlen so the
@@ -330,7 +330,7 @@ MARKPRICE_SPEED = "1s"
 # OFF keeps the maintainer CURSOR-ONLY (the proven pre-#49 path: no per-symbol book, no
 # fat level-carrying _Diff buffers — the reconnect-storm OOM source). Flip ON only as a
 # deliberate depth-state activation (alongside tuning CAPTURE_DEPTH_BUFFER_MAXLEN).
-DEPTH_STATE_ENABLED = False
+DEPTH_STATE_ENABLED = True
 DEPTH_STATE_DATASET = "depth_state"
 DEPTH_STATE_TOP_N = 20            # levels per side (the signal-rich near book)
 DEPTH_STATE_CADENCE_S = 5.0       # one state per synced symbol every 5s
