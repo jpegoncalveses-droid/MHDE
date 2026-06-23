@@ -4,7 +4,9 @@ PR #49 wired the maintainer's level book + the depth_state writer unconditionall
 so any shard restart (incl. the auto-restart on a crash) would activate them. This
 flag keeps the maintainer CURSOR-ONLY (the proven pre-#49 behavior — no per-symbol
 book, no fat level-carrying _Diff buffers, which are the reconnect-storm OOM source)
-until depth-state capture is explicitly enabled. Default OFF is mandatory.
+when disabled. The default flipped OFF -> ON in PR #71 (deliberate activation, with
+the depth buffer tuned 5000 -> 1500 for host-memory safety); the gate stays so a
+shard can still be forced cursor-only for rollback.
 
 The flag must gate BOTH paths: the level FEED into the maintainer (the buffer/OOM
 source) AND the depth_state WRITER. Gating only the writer would leave the fat
@@ -52,22 +54,26 @@ def _sync(s):
     return s._maintainers["BTCUSDT"]
 
 
-# -- OFF (default): cursor-only, byte-identical to pre-#49 --
+# -- OFF (explicit): cursor-only, byte-identical to pre-#49 --
+# The OFF-behavior tests pass depth_state_enabled=False EXPLICITLY so they prove the
+# gate's semantics independent of the config default (which PR #71 flipped to ON).
 
-def test_gate_off_is_default(tmp_path):
+def test_default_is_now_on(tmp_path):
+    # PR #71 flipped the default OFF -> ON (deliberate activation, depth buffer tuned
+    # 5000 -> 1500 for host-memory safety). The pre-#71 default was False.
     s = svc.CaptureService(root=str(tmp_path), client=None)
-    assert s._depth_state_enabled is False               # default OFF (mandatory)
+    assert s._depth_state_enabled is True                # default ON after activation
 
 
 def test_gate_off_keeps_maintainer_cursor_only(tmp_path):
-    s = svc.CaptureService(root=str(tmp_path), client=None)
+    s = svc.CaptureService(root=str(tmp_path), client=None, depth_state_enabled=False)
     m = _sync(s)
     assert m.synced is True                              # cursor still works...
     assert m.bids == {} and m.asks == {}                # ...but NO level book is built
 
 
 def test_gate_off_creates_no_depth_state_writer_and_writes_nothing(tmp_path):
-    s = svc.CaptureService(root=str(tmp_path), client=None)
+    s = svc.CaptureService(root=str(tmp_path), client=None, depth_state_enabled=False)
     assert s._depth_state is None                        # writer not created
     assert None not in s._writers                        # and not in the flush set
     _sync(s)
@@ -79,7 +85,7 @@ def test_gate_off_creates_no_depth_state_writer_and_writes_nothing(tmp_path):
 def test_gate_off_does_not_feed_levels_into_the_buffer(tmp_path):
     # The fat, level-carrying _Diff buffer is the reconnect-storm OOM source — when
     # OFF, an unsynced diff must buffer WITHOUT its level arrays.
-    s = svc.CaptureService(root=str(tmp_path), client=None)
+    s = svc.CaptureService(root=str(tmp_path), client=None, depth_state_enabled=False)
     s._handle_depth(_diff("ETHUSDT", 5, 10, 4, b=[["10.0", "1"]], a=[["11.0", "1"]]), recv_ns=1)
     m = s._maintainers["ETHUSDT"]
     assert m._buffer[-1].bids is None and m._buffer[-1].asks is None
@@ -87,7 +93,7 @@ def test_gate_off_does_not_feed_levels_into_the_buffer(tmp_path):
 
 def test_gate_off_still_persists_raw_depth(tmp_path):
     # The gate only changes what the MAINTAINER sees; the raw firehose is untouched.
-    s = svc.CaptureService(root=str(tmp_path), client=None)
+    s = svc.CaptureService(root=str(tmp_path), client=None, depth_state_enabled=False)
     s._handle_depth(_diff("BTCUSDT", 5, 10, 4, b=[["10.0", "1"]], a=[]), recv_ns=7)
     s.flush_all()
     raw = _read_depth(str(tmp_path))
