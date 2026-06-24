@@ -1,0 +1,43 @@
+# /home/jpcg/.config/systemd/user/mhde-brain-tick.service
+[Unit]
+Description=MHDE brain TICK loop — continuous primitives + forward-only labels substrate (Phase 1)
+After=network-online.target mhde-capture.target
+Wants=network-online.target
+# A crash-LOOP trips to `failed` (alertable) rather than flapping forever.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+# CONTINUOUS long-running loop (one tick/minute): each tick computes per-(symbol,window)
+# RAW primitives from the live capture tape past each source's cursor and writes them, and
+# every 5th tick computes the forward-only MFE/MAE labels. Cold start FORWARD-SEEDS each
+# source's cursor to now-watermark, so a first start reads only windows settling from now on
+# (NO ~19GB/275K-file backlog replay). Writes ONLY data/research/brain (primitives + labels +
+# registry); reads the capture tape READ-ONLY; never opens the production DuckDB or engine DB.
+#
+# Steady-state work is bounded (25-symbol batches per source per minute). MemoryMax=2G:
+# steady-state primitives are a few hundred MB; the label pass reads at most the
+# max-horizon-bounded (~12h) markprice window for the universe (a few hundred MB once mature);
+# 2G is ~2x headroom for pyarrow buffers/growth while staying far below the host budget.
+# OOM-first (OOMScoreAdjust=800) + Restart=on-failure means an occasional OOM self-heals
+# (cursor unmoved -> retried) and never disturbs the 1s engine cycle. Validate against live
+# RSS once running and lower if warranted.
+#
+# BUILT-NOT-DEPLOYED: tracked but not installed/enabled. Enabling is the operator's deploy.
+Type=simple
+WorkingDirectory=/home/jpcg/MHDE
+ExecStartPre=/usr/bin/test -x /home/jpcg/MHDE/venv/bin/python
+ExecStart=/home/jpcg/MHDE/venv/bin/python -m crypto.research.brain.runner --tick-interval-s 60 --label-every-n-ticks 5
+Restart=on-failure
+RestartSec=10
+Nice=19
+IOSchedulingClass=idle
+MemoryMax=2G
+CPUWeight=20
+IOWeight=20
+OOMScoreAdjust=800
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
