@@ -72,12 +72,22 @@ class ExitResult:
     margin: float
 
 
-def simulate_exit(exit_rule: ExitRule, continuation: Sequence[Mapping],
-                  coin_vol: float) -> Optional[float]:
-    """Vol-normalised realised round-trip return, or None if the path is too short or the
-    vol is undefined. ``continuation[k-1]`` holds the forward window ``t+k`` as ``rel_*``
-    = price/entry_ref (rel_high, rel_low, rel_close) and an optional ``fv`` (engineered
-    feature vector at that window, for the primitive-condition exit)."""
+@dataclass(frozen=True)
+class RoundTrip:
+    """A resolved round trip: vol-normalised + raw realised return, holding windows, and
+    why it closed (``target`` | ``stop`` | ``primitive`` | ``time_cap``)."""
+    vol_normalized: float
+    raw_return: float
+    exit_k: int
+    reason: str
+
+
+def simulate_exit_detail(exit_rule: ExitRule, continuation: Sequence[Mapping],
+                         coin_vol: float) -> Optional[RoundTrip]:
+    """Walk the forward continuation and resolve the round trip, or None if the path is too
+    short before any close or the vol is undefined. ``continuation[k-1]`` holds the forward
+    window ``t+k`` as ``rel_*`` = price/entry_ref (rel_high/rel_low/rel_close) + optional
+    ``fv`` (engineered feature vector at that window, for the primitive-condition exit)."""
     if coin_vol is None or coin_vol <= 0:
         return None
     fav = 1.0 + exit_rule.favorable_vol_mult * coin_vol if exit_rule.favorable_vol_mult else None
@@ -89,16 +99,25 @@ def simulate_exit(exit_rule: ExitRule, continuation: Sequence[Mapping],
             return None                                # ran out of path before cap, no hit
         bar = continuation[k - 1]
         if adv is not None and bar["rel_low"] <= adv:  # stop first if both touch (conservative)
-            return (adv - 1.0) / coin_vol
+            return RoundTrip((adv - 1.0) / coin_vol, adv - 1.0, k, "stop")
         if fav is not None and bar["rel_high"] >= fav:
-            return (fav - 1.0) / coin_vol
+            return RoundTrip((fav - 1.0) / coin_vol, fav - 1.0, k, "target")
         if exit_rule.primitive_cond is not None:
             fv = bar.get("fv")
             if fv is not None and exit_rule.primitive_cond.holds(fv):
-                return (bar["rel_close"] - 1.0) / coin_vol
+                return RoundTrip((bar["rel_close"] - 1.0) / coin_vol, bar["rel_close"] - 1.0,
+                                 k, "primitive")
         if k == cap:                                   # time cap reached -> exit at its close
-            return (bar["rel_close"] - 1.0) / coin_vol
+            return RoundTrip((bar["rel_close"] - 1.0) / coin_vol, bar["rel_close"] - 1.0,
+                             k, "time_cap")
     return None
+
+
+def simulate_exit(exit_rule: ExitRule, continuation: Sequence[Mapping],
+                  coin_vol: float) -> Optional[float]:
+    """Vol-normalised realised round-trip return (the scoring scalar), or None."""
+    rt = simulate_exit_detail(exit_rule, continuation, coin_vol)
+    return None if rt is None else rt.vol_normalized
 
 
 def build_exit_grid(favorable_mults: Sequence[float] = dcfg.EXIT_FAVORABLE_VOL_MULTIPLES,
