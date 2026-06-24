@@ -1,0 +1,28 @@
+# /home/jpcg/.config/systemd/user/mhde-brain-discover.service
+[Unit]
+Description=MHDE brain discovery engine — batch rule discovery/scoring/confirmation (spec §9)
+After=network-online.target
+
+[Service]
+# Heavy periodic BATCH (NOT the tick loop): refresh the engineered primitives, run Stage-1
+# (generate -> score -> permutation null) on settled labels, advance rule states via forward
+# confirmation, run Stage-2 exit discovery on entry survivors, and log simulated round trips.
+# Writes ONLY the discovery SQLite-WAL DB (data/research/brain/discovery.sqlite); reads the
+# brain store + registry READ-ONLY; never opens the production DuckDB or the engine DB. The permutation
+# null is the dominant cost. Sized below the engine on the shared zero-swap 16GB host where
+# HOST-AGGREGATE memory is the binding limit (not this cap), and OOM-first, so a discovery run
+# never disturbs the engine's 1s cycle. Paired with the .timer.
+#
+# BUILT-NOT-DEPLOYED: tracked but not installed/enabled. Enabling is the operator's deploy.
+Type=oneshot
+WorkingDirectory=/home/jpcg/MHDE
+ExecStartPre=/usr/bin/test -x /home/jpcg/MHDE/venv/bin/python
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto brain-discover-run
+Nice=19
+IOSchedulingClass=idle
+MemoryMax=3G
+CPUWeight=20
+IOWeight=20
+OOMScoreAdjust=800
+StandardOutput=journal
+StandardError=journal
