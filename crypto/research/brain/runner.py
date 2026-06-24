@@ -54,6 +54,7 @@ from typing import Callable, Optional, Sequence
 from crypto.research.brain import config as cfg
 from crypto.research.brain import labels
 from crypto.research.brain import pipeline
+from crypto.research.brain import registry
 from crypto.research.brain import sources
 
 logger = logging.getLogger("mhde.crypto.brain.runner")
@@ -86,6 +87,7 @@ class BrainRunner:
         sleep: Optional[Callable[[float], bool]] = None,
         stop_event: Optional[threading.Event] = None,
         install_signals: bool = False,
+        forward_seed: bool = True,
         primitives_pass: Optional[Callable] = None,
         labels_pass: Optional[Callable] = None,
         on_tick: Optional[Callable[[dict], None]] = None,
@@ -111,6 +113,7 @@ class BrainRunner:
         # interruptible sleep: returns True iff a stop was requested DURING the wait.
         self._sleep = sleep if sleep is not None else self._stop_event.wait
         self._install_signals = install_signals
+        self._forward_seed = forward_seed
         # default to the real passes; injectable for tests.
         self._primitives_pass = primitives_pass if primitives_pass is not None else pipeline.run_pass
         self._labels_pass = labels_pass if labels_pass is not None else labels.run_once
@@ -163,10 +166,45 @@ class BrainRunner:
             logger.warning("brain runner: label pass failed; retry next label tick", exc_info=True)
             return {"ok": False, "error": str(exc)}
 
+    def _forward_seed_cold_cursors(self, now_ns: int) -> int:
+        """COLD-START FORWARD SEED. Any source whose registry cursor is absent/zero is
+        seeded forward to ``now - watermark``, so a first tick — or a cursor that was reset
+        to 0 — reads ONLY windows that settle from now on, NEVER replaying the entire
+        historical capture backlog (the fragmentation wall). Per-source and idempotent: an
+        already-advanced cursor is never touched (gated on ``cursor == 0``; a real recv
+        cursor is a large epoch-ns value, so 0 unambiguously means 'never advanced', and
+        ``registry.advance`` is monotonic regardless). Returns the count seeded.
+
+        Gated off when ``now - watermark <= 0`` (a sub-watermark clock, e.g. unit tests or
+        the first seconds of the epoch): nothing is seeded and the registry is not opened.
+        """
+        if not self._forward_seed:
+            return 0
+        seed_to = now_ns - self._watermark_ns
+        if seed_to <= 0:
+            return 0
+        conn = registry.connect(self._registry_path)
+        try:
+            seeded = 0
+            for spec in self._sources:
+                reader_name = getattr(spec, "reader_name", None) or getattr(spec, "dataset", None)
+                if reader_name is None:
+                    continue
+                if registry.get_cursor(conn, reader_name) == 0:
+                    registry.advance(conn, reader_name, new_recv_ts_ns=seed_to, now_ns=now_ns)
+                    seeded += 1
+            if seeded:
+                logger.info("brain runner: forward-seeded %d cold cursor(s) to now-%.0fs "
+                            "(no backlog replay)", seeded, self._watermark_ns / 1e9)
+            return seeded
+        finally:
+            conn.close()
+
     def tick(self, tick_index: int) -> dict:
-        """Run ONE tick: every source's primitives pass, then (on the label sub-cadence) labels.
-        A single ``now_ns`` snapshot is shared by every pass in the tick."""
+        """Run ONE tick: forward-seed any cold cursors, every source's primitives pass, then
+        (on the label sub-cadence) labels. A single ``now_ns`` snapshot is shared by the tick."""
         now_ns = self._clock_ns()
+        self._forward_seed_cold_cursors(now_ns)
         primitives = self._run_primitives(now_ns)
         labels_ran = (tick_index % self._label_every_n_ticks == 0)
         labels_result = self._run_labels(now_ns) if labels_ran else None
@@ -224,6 +262,7 @@ def build_runner(argv_namespace: argparse.Namespace, *, install_signals: bool) -
         label_store_root=argv_namespace.label_store_root,
         label_every_n_ticks=argv_namespace.label_every_n_ticks,
         tick_interval_s=argv_namespace.tick_interval_s,
+        forward_seed=argv_namespace.forward_seed,
         install_signals=install_signals,
     )
 
@@ -242,6 +281,11 @@ def _parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
     p.add_argument("--tick-interval-s", type=float, default=cfg.BRAIN_BASE_CADENCE_S)
     p.add_argument("--max-ticks", type=int, default=None,
                    help="stop after N ticks (default: run until SIGTERM/SIGINT)")
+    p.add_argument("--no-forward-seed", dest="forward_seed", action="store_false",
+                   help="DANGEROUS: disable cold-start forward-seeding, so an uninitialized "
+                        "source replays the ENTIRE capture backlog from cursor 0 (a deliberate "
+                        "full backfill). Default: forward-seed to now-watermark (no replay).")
+    p.set_defaults(forward_seed=True)
     return p.parse_args(argv)
 
 
