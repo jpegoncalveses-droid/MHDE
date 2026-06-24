@@ -1946,6 +1946,28 @@ def crypto_capture_core_run(root, shard, n_shards, snapshot_socket):
     asyncio.run(svc.run())
 
 
+@crypto.command("brain-discover-run")
+@click.option("--now-ns", "now_ns", default=None, type=int,
+              help="Override the discovery clock (ns since epoch). Default: time.time_ns().")
+def crypto_brain_discover_run(now_ns):
+    """Run ONE brain discovery batch pass: Stage-1 (generate -> score -> permutation null)
+    on settled labels, forward confirmation, Stage-2 exit discovery, simulated trade log.
+
+    Reads the brain store + registry READ-ONLY and writes ONLY the discovery SQLite-WAL DB;
+    never opens mhde.duckdb. Wired BUILT-NOT-DEPLOYED via mhde-brain-discover.{service,timer}.
+    """
+    import logging
+    import time
+
+    from crypto.research.brain.discovery import runner as discovery_runner
+
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    summary = discovery_runner.run_discovery(
+        now_ns=now_ns if now_ns is not None else time.time_ns())
+    logging.getLogger("brain.discovery").info("discovery pass complete: %s", summary)
+
+
 @crypto.command("capture-owner-run")
 @click.option("--socket", "socket_path", default=None,
               help="Unix socket the owner listens on. Default: "

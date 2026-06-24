@@ -1,0 +1,14 @@
+# /home/jpcg/.config/systemd/user/mhde-brain-discover.timer
+[Unit]
+Description=MHDE brain discovery engine — every 6h
+
+[Timer]
+# Every 6h at HH:30 (00:30, 06:30, 12:30, 18:30): accumulate meaningful fresh post-discovery
+# instances between runs while keeping the heavy batch's host load modest. Size the cadence
+# against measured run-cost on the host (spec §14). Persistent catches up a missed run after
+# the host was off.
+OnCalendar=*-*-* 00/6:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
