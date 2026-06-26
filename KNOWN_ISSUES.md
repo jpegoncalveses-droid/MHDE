@@ -1,9 +1,9 @@
 # Known Issues
 
-**20 open observations** (KI-122, KI-123, KI-126, KI-131, KI-132,
+**21 open observations** (KI-122, KI-123, KI-126, KI-131, KI-132,
 KI-134, KI-136, KI-137, KI-139, KI-144, KI-145,
 KI-146, KI-147, KI-148, KI-149, KI-151, KI-152, KI-153, KI-155,
-KI-157). KI-122/123 are cosmetic; KI-126 is a future
+KI-157, KI-158). KI-122/123 are cosmetic; KI-126 is a future
 Phase 0 enhancement deferred until weekly reliability snapshots
 accumulate; KI-131 is a low-priority single-day production-model
 row-count dip; KI-132 is a dashboard-deployment-process gap (no
@@ -1373,6 +1373,58 @@ see above):
   cover the optimizer bug.
 
 When this lands, move the entry to the archive per the conventions below.
+
+### KI-158 — Brain bounded-read under-counts a window whose recv-vs-event skew ≥ the watermark (late-arrival silent drop, shared with the unbounded path)
+
+**Severity: low — gated on an abnormal recv-vs-event skew ≥ the 90s
+watermark, which violates capture's recv ≈ event-time operating assumption
+(steady-state skew is sub-second). Pre-existing watermark+dedup limitation,
+NOT introduced by the bounded-per-tick-read fix; surfaced by that PR's
+adversarial review (`fix/brain-bounded-per-tick-read`).**
+
+**Symptom.** A brain primitive window can be emitted with FEWER events than
+the tape holds (e.g. `trade_count = 3` when 4 trades fall in the window) —
+silently: no error, no gap-flag, no duplicate — when one of the window's
+rows has a `recv_ts_ns` that lags its event-time window by ≥
+`BRAIN_WATERMARK_S` (90s = `CAPTURE_FIREHOSE_FLUSH_S` 30 +
+`BRAIN_BASE_CADENCE_S` 60). Confirmed by a swept repro driving
+`pipeline.run_once` (bounded W-stepping vs an unbounded `max_window_ns=None`
+oracle): skew ∈ {0, 89, 90}s → count 4 (equal); skew ∈ {91, 120}s →
+bounded 3 vs oracle 4. The boundary is exactly the watermark.
+
+**Root cause.** Emission is keyed on event-time (`window_end ≤ horizon`)
+while the bounded read's forward ceiling and the cursor are keyed on
+`recv_ts_ns`. `_settle_horizon_ns` (`crypto/research/brain/pipeline.py`)
+seals a window once the ceiling is one watermark past its end — read-complete
+only while `recv ≤ window_end + skew` with `skew < watermark`. When a row's
+skew ≥ watermark its `recv` exceeds the sealing ceiling, so it is not read in
+the sealing pass; a later pass re-reads it, recomputes the same
+`window_start`, hits `seen_windows`, and `INSERT OR IGNORE`s it away
+(`registry.py`). The identical silent drop exists on the UNBOUNDED path in
+realtime (a row landing on disk after its window settled is dropped by the
+same watermark+dedup mechanism); the bounded fix only adds a NEW divergence
+in a *backlog drain* where such an anomalous row is already on disk when the
+window is first processed. The trigger requires a capture-side clock fault
+(boot-before-NTP / NTP step) or sustained >90s backpressure baked into the
+captured tape; it does not occur under normal operation.
+
+**Detection.** `tests/crypto/research/test_brain_pipeline_window_bound.py`
+pins the boundary: `test_skew_below_watermark_keeps_window_equivalence`
+proves bounded == unbounded for skew < watermark (the supported regime);
+`test_skew_beyond_watermark_undercounts_known_limitation` is an
+`xfail(strict)` that reproduces the under-count at skew ≥ watermark and
+flips to a hard failure (forcing its own removal) if a future change fixes
+it. No production symptom under normal skew.
+
+**Fix path (deferred to the gap-handling workstream).** Route a read row
+whose `recv` exceeds the sealing ceiling but whose `window_start` is already
+in `seen_windows` to a late-arrival / gap manifest instead of a silent
+`INSERT OR IGNORE`, restoring the project's "skipped data is a gap, never
+silently zero-counted" discipline (same workstream as the read-time
+corrupt-fragment gap-flagging). A row-count / sub-W chunk cap for the trades
+hot-path tail (W bounds tape-time, not row-count) belongs to the same
+follow-up. When this lands, move the entry to the archive per the
+conventions below.
 
 ## Recently resolved (post-Session-7)
 

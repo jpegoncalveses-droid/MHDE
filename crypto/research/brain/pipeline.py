@@ -102,6 +102,80 @@ def _next_cursor(max_settled, min_pending, cursor_before: int) -> int:
     return max(new_cursor, cursor_before)
 
 
+def _next_cursor_bounded(
+    max_settled, min_pending, cursor_before: int, *,
+    read_ceiling_ns: Optional[int], horizon_ns: int, cadence_ns: int,
+    real_settle_floor_ns: int,
+) -> int:
+    """Cursor advance for a forward-WINDOW-bounded pass.
+
+    Wraps :func:`_next_cursor` (same gap-free, no-double-count frontier) and adds the
+    two things a bounded read needs that an unbounded one never did:
+
+      * QUIET-GAP SKIP — when NO unsettled row was read, advance over the empty/settled
+        tail up to ``horizon_ns - cadence_ns`` (a recv provably below every flushed AND
+        fully-read window), so a quiet window WIDER than W cannot stall the cursor (the
+        plain ``_next_cursor`` would return ``cursor_before`` on an empty read -> a
+        permanent gap, the very trap we are removing).
+      * BACKLOG PROGRESS — when only PENDING rows were read (all near the ceiling, none
+        yet ``ceiling``-settled), still advance strictly below the first pending recv so
+        next step's ceiling grows and those windows settle. A fixed ``now`` would
+        otherwise re-read the identical pending slice forever (``max_settled`` is None ->
+        plain frontier returns ``cursor_before``). Capped at ``real_settle_floor_ns``
+        (= ``now - watermark - cadence``) so we never advance into the live tip where a
+        future row could still land in a not-yet-flushed window.
+
+    ``read_ceiling_ns is None`` (unbounded / from-zero backfill) returns the plain
+    frontier — byte-identical to the behaviour before this fix.
+    """
+    base = _next_cursor(max_settled, min_pending, cursor_before)
+    if read_ceiling_ns is None:
+        return base
+    if min_pending is None:
+        # (cursor, horizon] fully observed and settled -> skip the empty/settled tail.
+        return max(base, horizon_ns - cadence_ns, cursor_before)
+    # Pending rows present: advance below the first pending recv (gap-free), but never
+    # past the provably-flushed floor (so the live tip stays safe).
+    return max(base, min(min_pending - 1, real_settle_floor_ns), cursor_before)
+
+
+def _read_ceiling_ns(cursor_before: int, max_window_ns: Optional[int]) -> Optional[int]:
+    """The forward read ceiling for a pass (``cursor + W``), or ``None`` for an unbounded
+    read. ``None`` when W is disabled OR the cursor is from-zero (``<= 0``): a from-zero
+    cursor is the deliberate full-backfill path, kept unbounded by design (mirrors the
+    date-prune, which is likewise gated on a real, advanced cursor)."""
+    if max_window_ns is None or cursor_before <= 0:
+        return None
+    return cursor_before + max_window_ns
+
+
+def _settle_horizon_ns(now_ns: int, read_ceiling_ns: Optional[int], watermark_ns: int) -> int:
+    """The window-settled cutoff for emission, CLAMPED by the read ceiling. A window is
+    emitted only when ``window_end <= min(now, ceiling) - watermark`` — i.e. only once the
+    ceiling is a full watermark past the window end, which guarantees every row of that
+    window (``recv <= window_end + skew``, skew << watermark) was within the bounded read.
+    Without the clamp a ceiling landing mid-window would emit a partial window and the
+    dedup would then drop the remainder (a silent under-count). Unbounded (ceiling None)
+    -> ``now - watermark``, the original horizon.
+
+    PRECONDITION (KI-158): the read-completeness guarantee holds while ``skew < watermark``
+    (capture's recv ~ event-time assumption; steady-state skew is sub-second). A row skewed
+    by >= the watermark falls past the sealing ceiling and is then deduped away — a known
+    under-count shared with the unbounded path, deferred to the gap-handling workstream."""
+    anchor = now_ns if read_ceiling_ns is None else min(now_ns, read_ceiling_ns)
+    return anchor - watermark_ns
+
+
+def _read_slice(spec, capture_root, cursor_before, symbols, read_ceiling_ns):
+    """Invoke the source ``read_fn``, threading the forward ceiling ONLY when one is
+    active. (An unbounded pass omits the kwarg entirely, so a ``read_fn`` test double that
+    predates the ceiling parameter still works on the unbounded path.)"""
+    if read_ceiling_ns is None:
+        return spec.read_fn(capture_root, after_recv_ts_ns=cursor_before, symbols=symbols)
+    return spec.read_fn(capture_root, after_recv_ts_ns=cursor_before, symbols=symbols,
+                        before_recv_ts_ns=read_ceiling_ns)
+
+
 def _merge_opt(fn, acc, value):
     """Fold ``value`` into the running ``acc`` with ``fn`` (min/max), skipping None."""
     if value is None:
@@ -136,20 +210,30 @@ def run_once(
     cadence_ns: int = cfg.BRAIN_BASE_CADENCE_NS,
     watermark_ns: int = cfg.BRAIN_WATERMARK_NS,
     symbols: Optional[Sequence[str]] = None,
+    max_window_ns: Optional[int] = cfg.BRAIN_MAX_TICK_WINDOW_NS,
 ) -> dict:
     """Run one pass for ``spec`` (a :class:`sources.SourceSpec`).
 
     Returns a summary dict (counts + cursor before/after). The source supplies
     its reader, primitive, store schema, bucket field, and event-count function;
     the settled-window watermark + gap-free cursor logic is identical for all.
+
+    ``max_window_ns`` bounds the forward read to ``(cursor, cursor+W]`` and advances the
+    cursor by that bounded amount, so the pass is constant-cost regardless of the cursor
+    gap. ``None`` (or a from-zero cursor) keeps the unbounded read (full-backfill path).
     """
     conn = registry.connect(registry_path)
     try:
         cursor_before = registry.get_cursor(conn, spec.reader_name)
-        rows = spec.read_fn(capture_root, after_recv_ts_ns=cursor_before, symbols=symbols)
-        sl = _process_slice(conn, spec, rows, horizon_ns=now_ns - watermark_ns,
+        read_ceiling_ns = _read_ceiling_ns(cursor_before, max_window_ns)
+        horizon_ns = _settle_horizon_ns(now_ns, read_ceiling_ns, watermark_ns)
+        rows = _read_slice(spec, capture_root, cursor_before, symbols, read_ceiling_ns)
+        sl = _process_slice(conn, spec, rows, horizon_ns=horizon_ns,
                             cadence_ns=cadence_ns, store_root=store_root)
-        new_cursor = _next_cursor(sl.max_settled, sl.min_pending, cursor_before)
+        new_cursor = _next_cursor_bounded(
+            sl.max_settled, sl.min_pending, cursor_before,
+            read_ceiling_ns=read_ceiling_ns, horizon_ns=horizon_ns, cadence_ns=cadence_ns,
+            real_settle_floor_ns=now_ns - watermark_ns - cadence_ns)
         registry.advance(conn, spec.reader_name, new_recv_ts_ns=new_cursor,
                          bookkeeping=sl.bookkeeping, now_ns=now_ns)
         return {
@@ -176,6 +260,7 @@ def run_pass(
     watermark_ns: int = cfg.BRAIN_WATERMARK_NS,
     symbols: Optional[Sequence[str]] = None,
     batch_size: int = cfg.BRAIN_PASS_BATCH_SIZE,
+    max_window_ns: Optional[int] = cfg.BRAIN_MAX_TICK_WINDOW_NS,
 ) -> dict:
     """One MEMORY-SAFE full-universe pass for ``spec``: process the symbol universe in
     batches of ``batch_size``, each batch a bounded (symbol + date-pruned) read, so
@@ -198,14 +283,16 @@ def run_pass(
         cursor_before = registry.get_cursor(conn, spec.reader_name)
         universe = (list(symbols) if symbols is not None
                     else _enumerate_universe(capture_root, spec.capture_dataset))
-        horizon_ns = now_ns - watermark_ns
+        read_ceiling_ns = _read_ceiling_ns(cursor_before, max_window_ns)
+        horizon_ns = _settle_horizon_ns(now_ns, read_ceiling_ns, watermark_ns)
 
         g_max_settled = g_min_pending = None
         rows_read = settled_rows = pending_rows = snapshots_written = files_written = 0
         n_batches = 0
         for batch in _batched(universe, batch_size):
-            # SAME cursor_before for every batch (never advance mid-pass).
-            rows = spec.read_fn(capture_root, after_recv_ts_ns=cursor_before, symbols=batch)
+            # SAME cursor_before AND forward ceiling for every batch (never advance
+            # mid-pass: a different symbol set must not read past its own rows).
+            rows = _read_slice(spec, capture_root, cursor_before, batch, read_ceiling_ns)
             sl = _process_slice(conn, spec, rows, horizon_ns=horizon_ns,
                                 cadence_ns=cadence_ns, store_root=store_root)
             if sl.bookkeeping:  # record THIS batch now (re-run safety), cursor untouched
@@ -219,8 +306,12 @@ def run_pass(
             files_written += len(sl.files)
             n_batches += 1
 
-        # Advance the per-source cursor ONCE, to the global frontier of the whole pass.
-        new_cursor = _next_cursor(g_max_settled, g_min_pending, cursor_before)
+        # Advance the per-source cursor ONCE, to the global frontier of the whole pass
+        # (bounded by the forward window so a behind cursor advances by ~W per pass).
+        new_cursor = _next_cursor_bounded(
+            g_max_settled, g_min_pending, cursor_before,
+            read_ceiling_ns=read_ceiling_ns, horizon_ns=horizon_ns, cadence_ns=cadence_ns,
+            real_settle_floor_ns=now_ns - watermark_ns - cadence_ns)
         registry.advance(conn, spec.reader_name, new_recv_ts_ns=new_cursor,
                          bookkeeping=(), now_ns=now_ns)
         return {

@@ -103,12 +103,17 @@ BRAIN_PASS_BATCH_SIZE = 25
 #: With the ceiling a behind cursor catches up by W per tick over many ticks instead.
 #:
 #: Sizing: W MUST exceed the tick cadence (``BRAIN_BASE_CADENCE_S`` = 60s) or the loop
-#: never catches up (each tick reads W of tape while ~one cadence of new tape arrives;
-#: net catch-up per tick = W - cadence, must be > 0). 300s nets ~240s of catch-up per
-#: 60s tick (~4x real-time) — a 45h backlog drains in ~11h of wall time. It is also
-#: sized so even the heaviest source (trades) reading W across ONE symbol-batch stays
-#: well under the 2G unit cap. Operator-tunable. NOTE: during a large one-time backlog
-#: drain a full 13-source tick may run longer than the 60s cadence — expected until
-#: caught up (each pass still advances its cursor by W regardless of wall time).
+#: never catches up. Effective catch-up is LESS than W: the settle horizon is clamped to
+#: ``ceiling - watermark`` and the cursor parks just below the first still-settling row,
+#: so a pass advances ~``W - watermark`` of tape and nets that minus the ~60s of new tape
+#: each tick. Measured against the live trades tape: ~176s of tape consumed / ~116s NET
+#: per 60s tick (~2x real-time), so a 45h backlog drains in ~22h of wall time (memory
+#: headroom is large — see below — so W can be raised to drain faster). It is also sized
+#: so even the heaviest source (trades) reading W across ONE symbol-batch stays well under
+#: the 2G unit cap (the busiest real symbol is ~71k rows / 300s, ~20x under the cap).
+#: Operator-tunable. NOTE: during a large one-time backlog drain a full 13-source tick may
+#: run longer than the 60s cadence — expected until caught up (each pass still advances its
+#: cursor by ~W regardless of wall time). W bounds tape-TIME, not row-COUNT; a row-count /
+#: sub-W chunk cap for pathological-density tail-safety is a tracked follow-up (KI-158).
 BRAIN_MAX_TICK_WINDOW_S = 300.0
 BRAIN_MAX_TICK_WINDOW_NS = int(BRAIN_MAX_TICK_WINDOW_S * 1_000_000_000)
