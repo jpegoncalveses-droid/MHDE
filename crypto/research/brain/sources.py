@@ -73,11 +73,12 @@ FORCEORDER = SourceSpec(
 # by the venue field map. Each emits one as-of value per window (count == 1).
 
 def _asof_reader(capture_dataset, value_map, asof_time_col, symbol_col="s", int_map=None):
-    def _read(capture_root, after_recv_ts_ns=0, symbols=None):
+    def _read(capture_root, after_recv_ts_ns=0, symbols=None, before_recv_ts_ns=None):
         return reader.read_new_asof(
             capture_root, capture_dataset, value_map=value_map, asof_time_col=asof_time_col,
             symbol_col=symbol_col, int_map=int_map,
-            after_recv_ts_ns=after_recv_ts_ns, symbols=symbols)
+            after_recv_ts_ns=after_recv_ts_ns, symbols=symbols,
+            before_recv_ts_ns=before_recv_ts_ns)
     return _read
 
 
@@ -153,8 +154,9 @@ _KLINES_FIELDS = ["open", "high", "low", "close", "volume", "quote_volume", "tra
                   "taker_buy_base", "taker_buy_quote", "open_time", "close_time"]
 
 
-def _klines_reader(capture_root, after_recv_ts_ns=0, symbols=None):
-    return reader.read_new_klines(capture_root, after_recv_ts_ns=after_recv_ts_ns, symbols=symbols)
+def _klines_reader(capture_root, after_recv_ts_ns=0, symbols=None, before_recv_ts_ns=None):
+    return reader.read_new_klines(capture_root, after_recv_ts_ns=after_recv_ts_ns,
+                                  symbols=symbols, before_recv_ts_ns=before_recv_ts_ns)
 
 
 KLINES = SourceSpec(

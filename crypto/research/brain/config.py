@@ -93,3 +93,22 @@ BRAIN_WATERMARK_NS = int(BRAIN_WATERMARK_S * 1_000_000_000)
 #: the whole universe. Conservative default — the first all-symbols run is the
 #: riskiest memory operation and is gated as a separate step; tune up once profiled.
 BRAIN_PASS_BATCH_SIZE = 25
+
+#: FORWARD-READ CEILING for one pass. A pass reads at most this many seconds of tape
+#: past its cursor — rows with ``cursor < recv_ts_ns <= cursor + W`` — and then advances
+#: the cursor by that bounded amount. This is what makes a tick CONSTANT-COST no matter
+#: how far behind the cursor has fallen: without it the row filter was ``recv > cursor``
+#: with no ceiling, so a cursor N hours behind materialized the whole ``(cursor, now]``
+#: slice in one read (concat -> to_pylist, several full copies) — the OOM death-spiral.
+#: With the ceiling a behind cursor catches up by W per tick over many ticks instead.
+#:
+#: Sizing: W MUST exceed the tick cadence (``BRAIN_BASE_CADENCE_S`` = 60s) or the loop
+#: never catches up (each tick reads W of tape while ~one cadence of new tape arrives;
+#: net catch-up per tick = W - cadence, must be > 0). 300s nets ~240s of catch-up per
+#: 60s tick (~4x real-time) — a 45h backlog drains in ~11h of wall time. It is also
+#: sized so even the heaviest source (trades) reading W across ONE symbol-batch stays
+#: well under the 2G unit cap. Operator-tunable. NOTE: during a large one-time backlog
+#: drain a full 13-source tick may run longer than the 60s cadence — expected until
+#: caught up (each pass still advances its cursor by W regardless of wall time).
+BRAIN_MAX_TICK_WINDOW_S = 300.0
+BRAIN_MAX_TICK_WINDOW_NS = int(BRAIN_MAX_TICK_WINDOW_S * 1_000_000_000)

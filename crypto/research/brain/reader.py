@@ -77,16 +77,24 @@ def _read_dataset_rows(
     after_recv_ts_ns: int,
     columns: list[str],
     symbols: Optional[Sequence[str]],
+    before_recv_ts_ns: Optional[int] = None,
 ) -> list[dict]:
     """Read terse rows from a capture dataset, ``recv_ts_ns > cursor``, sorted asc.
 
-    A bounded read prunes on BOTH Hive partition columns:
+    A bounded read prunes on BOTH Hive partition columns AND (optionally) the forward
+    extent:
       * ``symbol=`` — when ``symbols`` is given, only those partitions are opened (PR #53).
       * ``date=`` — when the dataset is RECV-ALIGNED (see ``_RECV_DATED_DATASETS``), a
         lower-bound ``date >= date(cursor - 1 day)`` prunes every partition older than the
         cursor's prior day, so memory stops scaling with total history length. Skipped for
         venue-time-decoupled datasets (klines/as-of), where ``date=`` can lag the recv
         cursor by minutes..days and pruning would drop just-arrived rows.
+      * FORWARD CEILING — when ``before_recv_ts_ns`` is given, only rows with
+        ``recv_ts_ns <= before_recv_ts_ns`` are materialized. This is the upper bound the
+        lower-bound cursor always lacked: a pass reads at most ``(cursor, cursor+W]`` of
+        tape, so a cursor that has fallen N hours behind reads O(W) rows, NOT the whole
+        ``(cursor, now]`` backlog (the OOM death-spiral). ``None`` keeps the unbounded read
+        (the deliberate from-zero full-backfill path).
     (Full-universe ``symbols=None`` still scans every selected-date fragment; chunking by
     symbol-batch is the runner's job. The date prune still applies, bounding memory.)
 
@@ -98,6 +106,11 @@ def _read_dataset_rows(
         return []
     dataset = ds.dataset(str(base), format="parquet", partitioning="hive")
     row_filter = pc.field("recv_ts_ns") > after_recv_ts_ns
+    if before_recv_ts_ns is not None:
+        # FORWARD CEILING (the time-twin of the symbol/date prunes): pushed into the
+        # row predicate so each fragment's to_table decodes only rows up to the ceiling,
+        # bounding the materialized slice to W of tape regardless of the cursor gap.
+        row_filter = row_filter & (pc.field("recv_ts_ns") <= before_recv_ts_ns)
     frag_filter = row_filter
     if symbols is not None:
         # PARTITION pruning: `symbol` is the Hive partition column, so this restricts
@@ -140,6 +153,7 @@ def read_new_aggtrades(
     capture_root: str,
     after_recv_ts_ns: int = 0,
     symbols: Optional[Sequence[str]] = None,
+    before_recv_ts_ns: Optional[int] = None,
 ) -> list[dict]:
     """Clean aggTrade dicts with ``recv_ts_ns > after_recv_ts_ns``, recv-order.
 
@@ -147,7 +161,8 @@ def read_new_aggtrades(
     is_buyer_maker, taker_buy. Primitive buckets on ``trade_time_ms``.
     """
     rows = _read_dataset_rows(capture_root, cfg.AGGTRADE_DATASET, after_recv_ts_ns,
-                              ["recv_ts_ns", "E", "a", "s", "p", "q", "T", "m"], symbols)
+                              ["recv_ts_ns", "E", "a", "s", "p", "q", "T", "m"], symbols,
+                              before_recv_ts_ns=before_recv_ts_ns)
     out: list[dict] = []
     for r in rows:
         m = bool(r["m"])
@@ -169,6 +184,7 @@ def read_new_bookticker(
     capture_root: str,
     after_recv_ts_ns: int = 0,
     symbols: Optional[Sequence[str]] = None,
+    before_recv_ts_ns: Optional[int] = None,
 ) -> list[dict]:
     """Clean bookTicker dicts with ``recv_ts_ns > after_recv_ts_ns``, recv-order.
 
@@ -176,7 +192,8 @@ def read_new_bookticker(
     ask, ask_qty. Primitive buckets on ``event_time_ms`` (E).
     """
     rows = _read_dataset_rows(capture_root, cfg.BOOKTICKER_CAPTURE_DATASET, after_recv_ts_ns,
-                              ["recv_ts_ns", "E", "T", "s", "b", "B", "a", "A"], symbols)
+                              ["recv_ts_ns", "E", "T", "s", "b", "B", "a", "A"], symbols,
+                              before_recv_ts_ns=before_recv_ts_ns)
     out: list[dict] = []
     for r in rows:
         out.append({
@@ -196,6 +213,7 @@ def read_new_markprice(
     capture_root: str,
     after_recv_ts_ns: int = 0,
     symbols: Optional[Sequence[str]] = None,
+    before_recv_ts_ns: Optional[int] = None,
 ) -> list[dict]:
     """Clean markPrice dicts with ``recv_ts_ns > after_recv_ts_ns``, recv-order.
 
@@ -205,7 +223,8 @@ def read_new_markprice(
     NEVER the bucket key.
     """
     rows = _read_dataset_rows(capture_root, cfg.MARKPRICE_CAPTURE_DATASET, after_recv_ts_ns,
-                              ["recv_ts_ns", "E", "s", "p", "i", "P", "r", "T"], symbols)
+                              ["recv_ts_ns", "E", "s", "p", "i", "P", "r", "T"], symbols,
+                              before_recv_ts_ns=before_recv_ts_ns)
     out: list[dict] = []
     for r in rows:
         out.append({
@@ -225,6 +244,7 @@ def read_new_forceorder(
     capture_root: str,
     after_recv_ts_ns: int = 0,
     symbols: Optional[Sequence[str]] = None,
+    before_recv_ts_ns: Optional[int] = None,
 ) -> list[dict]:
     """Clean forceOrder (liquidation) dicts, ``recv_ts_ns > after``, recv-order.
 
@@ -234,7 +254,8 @@ def read_new_forceorder(
     the flattened single-letter collisions ``o``/``l``/``z``).
     """
     rows = _read_dataset_rows(capture_root, cfg.FORCEORDER_CAPTURE_DATASET, after_recv_ts_ns,
-                              ["recv_ts_ns", "E", "T", "s", "S", "q", "p"], symbols)
+                              ["recv_ts_ns", "E", "T", "s", "S", "q", "p"], symbols,
+                              before_recv_ts_ns=before_recv_ts_ns)
     out: list[dict] = []
     for r in rows:
         out.append({
@@ -253,6 +274,7 @@ def read_new_depth_state(
     capture_root: str,
     after_recv_ts_ns: int = 0,
     symbols: Optional[Sequence[str]] = None,
+    before_recv_ts_ns: Optional[int] = None,
 ) -> list[dict]:
     """Clean depth_state book-snapshot rows with ``recv_ts_ns > after``, recv-order.
 
@@ -267,7 +289,8 @@ def read_new_depth_state(
     the sample's only time is its arrival — there is nothing to look ahead from.
     """
     rows = _read_dataset_rows(capture_root, cfg.DEPTH_STATE_CAPTURE_DATASET, after_recv_ts_ns,
-                              ["recv_ts_ns", "s", "update_id", "b", "a"], symbols)
+                              ["recv_ts_ns", "s", "update_id", "b", "a"], symbols,
+                              before_recv_ts_ns=before_recv_ts_ns)
     out: list[dict] = []
     for r in rows:
         recv = int(r["recv_ts_ns"])
@@ -292,6 +315,7 @@ def read_new_asof(
     int_map: Optional[dict] = None,
     after_recv_ts_ns: int = 0,
     symbols: Optional[Sequence[str]] = None,
+    before_recv_ts_ns: Optional[int] = None,
 ) -> list[dict]:
     """Clean rows for a REST present-state ("as-of") series, recv-order.
 
@@ -311,7 +335,7 @@ def read_new_asof(
     columns = (["recv_ts_ns", symbol_col, asof_time_col]
                + list(value_map.values()) + list(int_map.values()))
     rows = _read_dataset_rows(capture_root, capture_dataset, after_recv_ts_ns,
-                              columns, symbols)
+                              columns, symbols, before_recv_ts_ns=before_recv_ts_ns)
     out: list[dict] = []
     for r in rows:
         recv = int(r["recv_ts_ns"])
@@ -338,6 +362,7 @@ def read_new_klines(
     capture_root: str,
     after_recv_ts_ns: int = 0,
     symbols: Optional[Sequence[str]] = None,
+    before_recv_ts_ns: Optional[int] = None,
 ) -> list[dict]:
     """Clean klines_1h bars with ``recv_ts_ns > after_recv_ts_ns``, recv-order.
 
@@ -352,7 +377,7 @@ def read_new_klines(
     (lookahead). The bar's own times are kept only as identity fields.
     """
     rows = _read_dataset_rows(capture_root, cfg.KLINES_CAPTURE_DATASET, after_recv_ts_ns,
-                              _KLINES_COLUMNS, symbols)
+                              _KLINES_COLUMNS, symbols, before_recv_ts_ns=before_recv_ts_ns)
     out: list[dict] = []
     for r in rows:
         recv = int(r["recv_ts_ns"])
