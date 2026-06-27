@@ -179,8 +179,16 @@ DEPTH = SourceSpec(
     capture_dataset=cfg.DEPTH_STATE_CAPTURE_DATASET,
 )
 
-#: All sources keyed by dataset name.
+#: All sources wired into the continuous runner, keyed by dataset name.
+#:
+#: DEPTH is DEFERRED OUT (KI-159): it reads ``depth_state``, an expire-only 2-day rolling
+#: buffer deliberately excluded from the capture compactor (``FIREHOSE_PRUNABLE_DATASETS``),
+#: so its ~3M uncompacted fragments OOM ``ds.dataset()`` at construction — a harder wall than
+#: the scoped-construction fix addresses, needing its own fragmentation plan (a depth-aware
+#: compactor over sealed-only partitions, or a latest-snapshot read) before it can rejoin. The
+#: ``DEPTH`` SourceSpec + primitive above stay defined so re-wiring it here is a one-line change
+#: once that lands. Do NOT re-add it to this set without that plan — it re-creates the stall.
 SOURCES: dict[str, SourceSpec] = {
     s.dataset: s for s in (TRADES, BOOKTICKER, MARKPRICE, FORCEORDER, *ASOF_SOURCES,
-                           KLINES, DEPTH)
+                           KLINES)
 }
