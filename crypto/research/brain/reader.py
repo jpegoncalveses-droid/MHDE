@@ -119,13 +119,13 @@ def _open_scoped_dataset(paths: list[str]) -> Optional[ds.Dataset]:
     for i, p in enumerate(paths):
         try:
             pq.ParquetFile(p)                    # footer read; raises on a truncated/missing file
-        except (pa.ArrowInvalid, OSError) as exc:
+            ordered = [p] + paths[:i] + paths[i + 1:]
+            return ds.dataset(ordered, format="parquet", partitioning="hive")
+        except (pa.ArrowInvalid, OSError) as exc:  # also guards a deleted-after-stat race on retry
             logger.warning(
                 "brain reader: skipping unreadable lead capture fragment for schema "
                 "inference: %s (%s: %s)", p, type(exc).__name__, exc)
             continue
-        ordered = [p] + paths[:i] + paths[i + 1:]
-        return ds.dataset(ordered, format="parquet", partitioning="hive")
     return None
 
 
@@ -173,6 +173,7 @@ def _read_dataset_rows(
         lower_date = _date_str_from_ns(after_recv_ts_ns - _DATE_PRUNE_MARGIN_NS)
 
     if symbols is not None:
+        symbols = list(symbols)                  # materialize once (read twice: scope + frag_filter)
         # SCOPED CONSTRUCTION (the structural fix): build the dataset over ONLY the batch's
         # `symbol=/date=` partition dirs, so the fragment list pyarrow materializes BEFORE any
         # filter scales with the BATCH's fragment count, not the dataset total. The whole-tree
