@@ -29,6 +29,7 @@ from typing import Optional, Sequence
 import pyarrow as pa
 import pyarrow.dataset as ds
 import pyarrow.compute as pc
+import pyarrow.parquet as pq
 
 from crypto.research.brain import config as cfg
 
@@ -83,13 +84,13 @@ def _scoped_partition_files(
     the batch's fragments, never the whole ``symbol=*/date=*`` tree, so the in-memory fragment
     list pyarrow builds before any filter scales with the BATCH, not the dataset total.
 
-    Symbols are taken VERBATIM into the path (UTF-8 / CJK / digit-leading safe — never a regex).
+    Symbols are taken VERBATIM into the path (UTF-8 / CJK / digit-leading safe — never a regex)
+    and DEDUPED preserving order — a repeated symbol must not list (and so read) its files twice
+    (the whole-tree path used ``symbol.isin([...])``, i.e. set membership, so each file once).
     A missing ``symbol=`` or ``date=`` dir is skipped, not an error: a sparse source or an empty
-    in-window batch member simply contributes no files. Files are sorted within each partition
-    so a readable fragment leads pyarrow's schema inference (a lone corrupt part is still opened
-    + skipped at ``to_table`` time, exactly as on the whole-tree path)."""
+    in-window batch member simply contributes no files."""
     files: list[pathlib.Path] = []
-    for sym in symbols:
+    for sym in dict.fromkeys(symbols):          # dedup, order-preserving (no double-count)
         sym_dir = base / f"symbol={sym}"
         if not sym_dir.is_dir():
             continue
@@ -100,6 +101,32 @@ def _scoped_partition_files(
                 continue
             files.extend(sorted(date_dir.glob("*.parquet")))
     return files
+
+
+def _open_scoped_dataset(paths: list[str]) -> Optional[ds.Dataset]:
+    """``ds.dataset()`` over an explicit FILE LIST, tolerant of a corrupt LEAD fragment.
+
+    pyarrow seeds the dataset schema from the FIRST file, OUTSIDE the per-fragment ``to_table``
+    guard — so a truncated head (real capture parts are ``part-<uuid>.parquet`` and the
+    lexicographically-first can be the corrupt one) would crash the whole read and, with the
+    cursor left unadvanced, re-crash every tick: a permanent per-source stall. On that failure,
+    move the first READABLE file to the front (corrupt files stay in the list and are still
+    skipped at ``to_table``) and retry. Returns ``None`` iff NO file is readable."""
+    try:
+        return ds.dataset(paths, format="parquet", partitioning="hive")
+    except (pa.ArrowInvalid, OSError):
+        pass
+    for i, p in enumerate(paths):
+        try:
+            pq.ParquetFile(p)                    # footer read; raises on a truncated/missing file
+        except (pa.ArrowInvalid, OSError) as exc:
+            logger.warning(
+                "brain reader: skipping unreadable lead capture fragment for schema "
+                "inference: %s (%s: %s)", p, type(exc).__name__, exc)
+            continue
+        ordered = [p] + paths[:i] + paths[i + 1:]
+        return ds.dataset(ordered, format="parquet", partitioning="hive")
+    return None
 
 
 def _read_dataset_rows(
@@ -154,13 +181,14 @@ def _read_dataset_rows(
         scoped = _scoped_partition_files(base, symbols, lower_date)
         if not scoped:
             return []
-        source: object = [str(f) for f in scoped]
+        dataset = _open_scoped_dataset([str(f) for f in scoped])
+        if dataset is None:                      # every scoped fragment corrupt/absent
+            return []
     else:
         # Full-universe / from-zero read (deliberate, e.g. a one-shot backfill): kept whole-tree.
         if not any(base.rglob("*.parquet")):
             return []
-        source = str(base)
-    dataset = ds.dataset(source, format="parquet", partitioning="hive")
+        dataset = ds.dataset(str(base), format="parquet", partitioning="hive")
 
     row_filter = pc.field("recv_ts_ns") > after_recv_ts_ns
     if before_recv_ts_ns is not None:

@@ -18,6 +18,7 @@ missing-partition guards here.
 """
 from __future__ import annotations
 
+import logging
 import pathlib
 
 from crypto.research.capture_core import store as capture_store
@@ -127,3 +128,45 @@ def test_symbols_none_keeps_whole_tree_construction(tmp_path, monkeypatch):
     assert len(calls) == 1
     assert isinstance(calls[0], str), \
         "symbols=None must keep the whole-tree (str base) construction — the deliberate full read"
+
+
+# --- HARDENING: a corrupt fragment that sorts FIRST in the scoped list must not crash ---
+# (real capture corrupt parts are part-<uuid>.parquet — the lex-first can be the corrupt one,
+# so the scoped file-list must not let it crash ds.dataset() schema inference.)
+
+def _drop_corrupt_sorting_first(root, dataset, symbol, date_str):
+    """A 438-byte truncated parquet named to sort BEFORE any real part-<uuid> file (a uuid4
+    hex is never all-zeros), so it becomes the head of the scoped file list."""
+    d = pathlib.Path(root, dataset, f"symbol={symbol}", f"date={date_str}")
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "part-00000000000000000000000000000000.parquet").write_bytes(b"PAR1" + b"\x00" * 434)
+
+
+def test_corrupt_lead_fragment_in_scoped_partition_is_skipped_not_crashed(tmp_path, caplog):
+    sym = "AAAUSDT"
+    r = _write_bt(tmp_path, sym, _day_ms(4, h=10))               # good row (real part-<uuid>)
+    _drop_corrupt_sorting_first(tmp_path, "bookTicker", sym, "2026-06-20")   # sorts FIRST
+    cursor = _day_ms(4) * _MS_TO_NS - 1
+    with caplog.at_level(logging.WARNING):
+        rows = reader.read_new_bookticker(str(tmp_path), after_recv_ts_ns=cursor, symbols=[sym])
+    assert [x["recv_ts_ns"] for x in rows] == [r], "good row returned; the corrupt lead must not crash the read"
+    assert any("part-00000000000000000000000000000000" in rec.getMessage() for rec in caplog.records), \
+        "the corrupt lead fragment is skipped + logged (never silently dropped, never crashing)"
+
+
+def test_only_corrupt_fragment_returns_empty_not_crash(tmp_path):
+    sym = "AAAUSDT"
+    _drop_corrupt_sorting_first(tmp_path, "bookTicker", sym, "2026-06-20")   # the ONLY file
+    cursor = _day_ms(4) * _MS_TO_NS - 1
+    rows = reader.read_new_bookticker(str(tmp_path), after_recv_ts_ns=cursor, symbols=[sym])
+    assert rows == []                                           # no readable file -> empty, no crash
+
+
+# --- a duplicate symbol in the batch must not double-count (old isin() was set membership) ---
+
+def test_duplicate_symbol_does_not_double_count(tmp_path):
+    sym = "AAAUSDT"
+    r = _write_bt(tmp_path, sym, _day_ms(4, h=10))
+    cursor = _day_ms(4) * _MS_TO_NS - 1
+    rows = reader.read_new_bookticker(str(tmp_path), after_recv_ts_ns=cursor, symbols=[sym, sym])
+    assert [x["recv_ts_ns"] for x in rows] == [r], "a repeated symbol must read its file once, not twice"
