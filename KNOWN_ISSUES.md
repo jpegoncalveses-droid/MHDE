@@ -1,9 +1,9 @@
 # Known Issues
 
-**21 open observations** (KI-122, KI-123, KI-126, KI-131, KI-132,
+**22 open observations** (KI-122, KI-123, KI-126, KI-131, KI-132,
 KI-134, KI-136, KI-137, KI-139, KI-144, KI-145,
 KI-146, KI-147, KI-148, KI-149, KI-151, KI-152, KI-153, KI-155,
-KI-157, KI-158). KI-122/123 are cosmetic; KI-126 is a future
+KI-157, KI-158, KI-159). KI-122/123 are cosmetic; KI-126 is a future
 Phase 0 enhancement deferred until weekly reliability snapshots
 accumulate; KI-131 is a low-priority single-day production-model
 row-count dip; KI-132 is a dashboard-deployment-process gap (no
@@ -1425,6 +1425,51 @@ corrupt-fragment gap-flagging). A row-count / sub-W chunk cap for the trades
 hot-path tail (W bounds tape-time, not row-count) belongs to the same
 follow-up. When this lands, move the entry to the archive per the
 conventions below.
+
+### KI-159 — Brain DEPTH source deferred out of the runner: depth_state (~3M uncompacted fragments) OOMs ds.dataset() at construction
+
+**Severity: medium — a hard blocker for the DEPTH source specifically; the
+other 12 brain sources run. Surfaced diagnosing the post-PR #74 tick-loop
+stall (`fix/brain-reader-scoped-construction`); the operational deferral +
+the structural reader fix landed together, the depth-specific fix did not.**
+
+**Symptom.** With DEPTH wired into the continuous runner's `SOURCES`, the very
+first tick pins at the 2G cgroup ceiling, ~100% CPU, for minutes and never
+returns (SIGTERM cannot interrupt the in-flight pyarrow C++ call → 90s
+`TimeoutStopSec` → SIGKILL). A direct probe of `ds.dataset()` over the
+`depth_state` capture dir throws `std::bad_alloc` at construction, BEFORE any
+symbol/date/recv filter — the ~3M-fragment in-memory fragment list exceeds the
+cap on its own.
+
+**Root cause.** `depth_state` is an expire-only 2-day rolling buffer,
+DELIBERATELY excluded from the capture compactor's
+`FIREHOSE_PRUNABLE_DATASETS` (a compactor would race capture's expiry/rewrite
+of the live window). So while aggTrade / bookTicker / markPrice were compacted
+to `compact-*` hourly files (~tens of fragments/symbol-day), depth_state stayed
+~2,490 raw `part-*` fragments/symbol-day × ~530 symbols ≈ 3M. The
+scoped-construction fix (components 1-2 of this PR) bounds the reader's
+construction to the BATCH's partitions — which makes the other dense source,
+the un-date-pruned klines footer scan, viable — but for depth, even one
+25-symbol batch over the 2-day window is ~95k fragments, and a full pass opens
+~2.0M (≈9 h at ~16.4 ms/fragment) even with construction memory bounded. So
+scoped construction is necessary but NOT sufficient for depth. The 06-19
+`data/processed/markprice_fragmentation_analysis.md` explicitly predicted this
+("If the depth brain source joins the runner, its fragmentation needs a
+separate plan"); the plan was skipped when DEPTH was enabled.
+
+**Mitigation (this PR).** `crypto/research/brain/sources.py` removes DEPTH from
+the runner `SOURCES` set (the `DEPTH` SourceSpec + `depth.py` primitive stay
+defined so re-wiring is a one-line change). `tests/.../test_brain_depth_deferred.py`
+pins the deferral (12 sources, no `depth`, spec preserved).
+
+**Fix path (deferred).** Give depth its "separate plan" before it rejoins:
+either (a) a depth-aware compactor that compacts ONLY sealed partitions older
+than capture's expiry cutoff (coordinated with capture so it never touches the
+live-rewrite window), or (b) — since depth_state is a *state* buffer — a
+materialized latest-snapshot-per-symbol read instead of a recv-window scan.
+Target ~12 fragments/symbol-day → ~13k fragments/pass → ~3.5 min/pass = viable.
+Only then re-add DEPTH to `SOURCES`. Track alongside the brain-store compaction
+workstream.
 
 ## Recently resolved (post-Session-7)
 

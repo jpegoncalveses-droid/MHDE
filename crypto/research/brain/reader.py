@@ -29,6 +29,7 @@ from typing import Optional, Sequence
 import pyarrow as pa
 import pyarrow.dataset as ds
 import pyarrow.compute as pc
+import pyarrow.parquet as pq
 
 from crypto.research.brain import config as cfg
 
@@ -71,6 +72,63 @@ def _date_str_from_ns(ns: int) -> str:
     return datetime.fromtimestamp(day * 86_400, tz=timezone.utc).strftime("%Y-%m-%d")
 
 
+def _scoped_partition_files(
+    base: pathlib.Path, symbols: Sequence[str], lower_date: Optional[str],
+) -> list[pathlib.Path]:
+    """The existing parquet FILE paths under the batch's ``symbol=S/date=D`` partitions with
+    ``D >= lower_date`` (``lower_date is None`` keeps every date — the venue-time-decoupled
+    klines / as-of case). ``ds.dataset()`` only accepts files, not directories, for an explicit
+    source list.
+
+    This is what makes a batched construction CHEAP: ``ds.dataset()`` over this list lists only
+    the batch's fragments, never the whole ``symbol=*/date=*`` tree, so the in-memory fragment
+    list pyarrow builds before any filter scales with the BATCH, not the dataset total.
+
+    Symbols are taken VERBATIM into the path (UTF-8 / CJK / digit-leading safe — never a regex)
+    and DEDUPED preserving order — a repeated symbol must not list (and so read) its files twice
+    (the whole-tree path used ``symbol.isin([...])``, i.e. set membership, so each file once).
+    A missing ``symbol=`` or ``date=`` dir is skipped, not an error: a sparse source or an empty
+    in-window batch member simply contributes no files."""
+    files: list[pathlib.Path] = []
+    for sym in dict.fromkeys(symbols):          # dedup, order-preserving (no double-count)
+        sym_dir = base / f"symbol={sym}"
+        if not sym_dir.is_dir():
+            continue
+        for date_dir in sorted(sym_dir.glob("date=*")):
+            if not date_dir.is_dir():
+                continue
+            if lower_date is not None and date_dir.name[len("date="):] < lower_date:
+                continue
+            files.extend(sorted(date_dir.glob("*.parquet")))
+    return files
+
+
+def _open_scoped_dataset(paths: list[str]) -> Optional[ds.Dataset]:
+    """``ds.dataset()`` over an explicit FILE LIST, tolerant of a corrupt LEAD fragment.
+
+    pyarrow seeds the dataset schema from the FIRST file, OUTSIDE the per-fragment ``to_table``
+    guard — so a truncated head (real capture parts are ``part-<uuid>.parquet`` and the
+    lexicographically-first can be the corrupt one) would crash the whole read and, with the
+    cursor left unadvanced, re-crash every tick: a permanent per-source stall. On that failure,
+    move the first READABLE file to the front (corrupt files stay in the list and are still
+    skipped at ``to_table``) and retry. Returns ``None`` iff NO file is readable."""
+    try:
+        return ds.dataset(paths, format="parquet", partitioning="hive")
+    except (pa.ArrowInvalid, OSError):
+        pass
+    for i, p in enumerate(paths):
+        try:
+            pq.ParquetFile(p)                    # footer read; raises on a truncated/missing file
+            ordered = [p] + paths[:i] + paths[i + 1:]
+            return ds.dataset(ordered, format="parquet", partitioning="hive")
+        except (pa.ArrowInvalid, OSError) as exc:  # also guards a deleted-after-stat race on retry
+            logger.warning(
+                "brain reader: skipping unreadable lead capture fragment for schema "
+                "inference: %s (%s: %s)", p, type(exc).__name__, exc)
+            continue
+    return None
+
+
 def _read_dataset_rows(
     capture_root: str,
     capture_dataset: str,
@@ -102,9 +160,37 @@ def _read_dataset_rows(
     is recorded as missing data), never silently dropped and never crashing the read.
     """
     base = pathlib.Path(capture_root, capture_dataset)
-    if not base.exists() or not any(base.rglob("*.parquet")):
+    if not base.exists():
         return []
-    dataset = ds.dataset(str(base), format="parquet", partitioning="hive")
+
+    # DATE-partition floor (recv-aligned datasets only): a row's `date=` tracks recv within
+    # one flush, so prune every partition older than the margin-adjusted cursor day. Gated
+    # cursor > margin so a from-zero read keeps all history. klines / as-of opt out — their
+    # `date=` is venue-time-decoupled, so pruning by recv-date would drop just-arrived rows.
+    lower_date: Optional[str] = None
+    if (capture_dataset in _RECV_DATED_DATASETS
+            and after_recv_ts_ns > _DATE_PRUNE_MARGIN_NS):
+        lower_date = _date_str_from_ns(after_recv_ts_ns - _DATE_PRUNE_MARGIN_NS)
+
+    if symbols is not None:
+        symbols = list(symbols)                  # materialize once (read twice: scope + frag_filter)
+        # SCOPED CONSTRUCTION (the structural fix): build the dataset over ONLY the batch's
+        # `symbol=/date=` partition dirs, so the fragment list pyarrow materializes BEFORE any
+        # filter scales with the BATCH's fragment count, not the dataset total. The whole-tree
+        # construction was the wall that pinned the runner at the 2G cgroup on the un-date-pruned
+        # klines (226k frags) and OOM'd on depth_state (~3M) — a cost W/row-filter never touched.
+        scoped = _scoped_partition_files(base, symbols, lower_date)
+        if not scoped:
+            return []
+        dataset = _open_scoped_dataset([str(f) for f in scoped])
+        if dataset is None:                      # every scoped fragment corrupt/absent
+            return []
+    else:
+        # Full-universe / from-zero read (deliberate, e.g. a one-shot backfill): kept whole-tree.
+        if not any(base.rglob("*.parquet")):
+            return []
+        dataset = ds.dataset(str(base), format="parquet", partitioning="hive")
+
     row_filter = pc.field("recv_ts_ns") > after_recv_ts_ns
     if before_recv_ts_ns is not None:
         # FORWARD CEILING (the time-twin of the symbol/date prunes): pushed into the
@@ -113,17 +199,12 @@ def _read_dataset_rows(
         row_filter = row_filter & (pc.field("recv_ts_ns") <= before_recv_ts_ns)
     frag_filter = row_filter
     if symbols is not None:
-        # PARTITION pruning: `symbol` is the Hive partition column, so this restricts
-        # get_fragments to the selected partitions' files (predicate pushdown on the
-        # partition, not the in-row `s`).
+        # Redundant after the path scoping above (every scoped fragment already matches),
+        # kept as a defense-in-depth equivalence guarantee on the `symbol=` Hive column.
         frag_filter = frag_filter & pc.field("symbol").isin(list(symbols))
-    if (capture_dataset in _RECV_DATED_DATASETS
-            and after_recv_ts_ns > _DATE_PRUNE_MARGIN_NS):
-        # DATE partition pruning (time-twin of the symbol prune): `date` is the Hive
-        # partition column (a 'YYYY-MM-DD' string -> lexicographic >= is chronological),
-        # so this prunes get_fragments to partitions at/after the margin-adjusted cursor
-        # day. Gated cursor > margin so a from-zero read (cursor 0) keeps all history.
-        lower_date = _date_str_from_ns(after_recv_ts_ns - _DATE_PRUNE_MARGIN_NS)
+    if lower_date is not None:
+        # The load-bearing date prune on the whole-tree (symbols=None) path; redundant but
+        # harmless on the scoped path (which already dropped the older `date=` dirs).
         frag_filter = frag_filter & (pc.field("date") >= lower_date)
 
     tables: list[pa.Table] = []

@@ -153,16 +153,18 @@ def test_reader_parses_levels_and_keys_on_arrival(tmp_path):
 
 def test_round_trip_write_read_preserves_nulls(tmp_path):
     snaps = depth.bucket_depth([_S1, _S2], cadence_ns=_CADENCE_NS)
-    store.write_snapshots(str(tmp_path), sources.SOURCES["depth"].dataset,
+    store.write_snapshots(str(tmp_path), sources.DEPTH.dataset,
                           store.DEPTH_SNAPSHOT_SCHEMA, snaps)
-    back = store.read_snapshots(str(tmp_path), sources.SOURCES["depth"].dataset)
+    back = store.read_snapshots(str(tmp_path), sources.DEPTH.dataset)
     assert len(back) == 1
     assert back[0]["bid_l2_qty_mean"] == 3.5
     assert back[0]["bid_l20_qty_mean"] is None               # thin book null survives round-trip
 
 
-def test_depth_registered_as_a_source():
-    spec = sources.SOURCES["depth"]
+def test_depth_spec_wiring():
+    # depth is deferred OUT of the runner SOURCES (KI-159), but its SourceSpec stays
+    # defined (so the primitive still works and re-wiring is one line).
+    spec = sources.DEPTH
     assert spec.event_time_key == "event_time_ms"
     assert spec.read_fn is reader.read_new_depth_state
     assert spec.bucket_fn is depth.bucket_depth
@@ -187,7 +189,7 @@ def _write_capture(root, rows):
 
 
 def _run(tmp_path, now_ns=_HUGE_NOW):
-    return pipeline.run_once(sources.SOURCES["depth"], capture_root=str(tmp_path / "capture"),
+    return pipeline.run_once(sources.DEPTH, capture_root=str(tmp_path / "capture"),
                              store_root=str(tmp_path / "brain"),
                              registry_path=str(tmp_path / "brain" / "registry.sqlite"), now_ns=now_ns)
 

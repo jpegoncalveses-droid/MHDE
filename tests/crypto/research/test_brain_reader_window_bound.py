@@ -95,8 +95,8 @@ def test_bounded_read_threads_through_aggtrade_reader(tmp_path):
 
 @pytest.mark.parametrize("dataset", sorted(sources.SOURCES))
 def test_every_source_read_fn_accepts_before_recv_ts_ns(tmp_path, dataset):
-    """All 13 read_fns (incl. the as-of / klines closures) must accept the ceiling
-    kwarg, or the pipeline cannot bound them. An empty capture root -> [] proves the
+    """Every registered source read_fn (incl. the as-of / klines closures) must accept the
+    ceiling kwarg, or the pipeline cannot bound them. An empty capture root -> [] proves the
     signature threads through without opening anything."""
     spec = sources.SOURCES[dataset]
     rows = spec.read_fn(str(tmp_path), after_recv_ts_ns=_T0_NS,
