@@ -95,7 +95,7 @@ class BrainRunner:
         self._capture_root = capture_root
         self._store_root = store_root
         self._registry_path = registry_path
-        # default = the whole registered source universe (the 13 SOURCES specs).
+        # default = the whole registered source universe (the 12 SOURCES specs; depth deferred, KI-159).
         self._sources = list(sources if sources is not None else sources_module_values())
         self._cadence_ns = cadence_ns
         self._watermark_ns = watermark_ns
