@@ -98,8 +98,10 @@ def _fragment_recv_ceiling_ns(path: pathlib.Path) -> Optional[int]:
         into the name, so every row was flushed in ``[H, H+1)`` and (recv <= flush) has
         ``recv < (H+1)*3600s``. The FILENAME is authoritative — a compacted file's own mtime is
         the unrelated compaction time, so the name, not the stat, gives the bound.
-      * raw ``part-<uuid>`` / ``part-<shard>-*`` -> ``floor(st_mtime*1e9)``, the OS flush time AT
-        FULL PRECISION (not truncated to the hour): a row is received before its part is flushed,
+      * raw ``part-<uuid>`` / ``part-<shard>-*`` -> ``st_mtime_ns``, the OS flush time at full
+        integer-ns precision (``st_mtime_ns``, NOT ``st_mtime*1e9`` — float seconds × 1e9 exceeds
+        float64's 2^53 exact-integer range at epoch ~1.78e18 ns and quantizes to ~256 ns; harmless
+        under the 60s guard, but the integer primitive is exact): a row is received before its part is flushed,
         so ``recv <= flush mtime``. The full mtime is what lets the OPEN clock hour's already-
         flushed, below-cursor parts be skipped too — the hour-granular bound could not, since the
         open hour's hour IS the cursor's hour.
@@ -110,7 +112,7 @@ def _fragment_recv_ceiling_ns(path: pathlib.Path) -> Optional[int]:
     if m:
         return (int(m.group(1)) + 1) * _HOUR_NS - 1
     if name.startswith("part-"):
-        return int(path.stat().st_mtime * 1_000_000_000)
+        return path.stat().st_mtime_ns
     return None
 
 
