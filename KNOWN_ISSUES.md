@@ -163,6 +163,55 @@ The historical record of resolved bugs lives in
 
 ## Open
 
+### KI-160 — Brain tick-loop OPEN-HOUR fan-out floor: the dense reader must footer-open the current clock hour's ~120 part files/symbol every tick (the hour-granular skip cannot prune sub-cursor parts of the live hour)
+
+**Severity: medium — the binding THROUGHPUT limit after the Fix 1+2+3 throughput
+PR (`fix/brain-tick-throughput`). Memory / OOM / death-spiral are fully fixed
+(peak ~0.2–0.6 GiB under the 2G cap); this is wall-time only. Surfaced by that
+PR's live-tape gate.**
+
+**Symptom.** With Fix 3 (footer-free cursor/hour fragment skip) active, the
+markprice single-source read still costs ~80 s (43 min into the clock hour) →
+~104 s (54 min in) and the full FAST tick ~227 s at mid-to-late hour — opening
+~68k–86k current-hour fragments for ~0 newly-settled windows. The wall GROWS
+through the clock hour and resets at the top of the next hour (a sawtooth),
+exceeding the W−watermark keep-pace ceiling (210 s at W=300) in the last ~10–15
+min of each hour.
+
+**Root cause.** The firehose writer flushes each `(symbol,date)` partition every
+`CAPTURE_FIREHOSE_FLUSH_S` = 30 s, so the OPEN clock hour accumulates ~120 raw
+`part-*` files/symbol before the hourly `mhde-capture-firehose-compact` timer
+(`*:06`) seals it. Fix 3 skips a fragment only when its ENTIRE hour is provably
+below the cursor (`compact-h<H>` filename hour, or raw `part-*` `mtime//3600`),
+so the CURRENT hour — whose hour is the cursor's hour — is always opened in full,
+even though all but its last ~watermark of fragments are already below the
+forward-only cursor. The cursor advances ~`W−watermark` of tape per pass, so a
+FAST-tick wall above 210 s (W=300) means the cursor can momentarily fall behind
+the live tip at end-of-hour. (Compounded by `capture-firehose-compact-recent`
+being budget-limited, so markPrice's just-closed hour can stay raw past `:06`.)
+
+**Fix paths (one of):**
+  * **(a) full-mtime fragment skip (proposed, brain-side, measured in the PR's
+    gate).** A raw `part-*` carries the FULL flush mtime, not just its hour, and
+    `recv ≤ mtime`, so a current-hour part with `mtime + guard ≤ cursor` is
+    provably empty and skippable footer-free — leaving only the last
+    ~`watermark+guard` of fragments (markprice → ~single digits of seconds, FAST
+    tick well under 60 s, flat across the hour). Provably correct on the same
+    `recv ≤ mtime` basis with the same 60 s skew guard, but it CONTRADICTS the
+    PR's explicit "a raw part whose mtime-hour == cursor-hour must still be read"
+    boundary, so it is surfaced for operator ratification, not shipped silently.
+  * **(b) capture-side sub-hourly compaction** of the open hour (coordinated with
+    the firehose writer so it never races an in-flight flush), bounding the
+    open-hour fan-out directly.
+  * **(c) raise `BRAIN_MAX_TICK_WINDOW_S`** (operator-tunable) so `W−watermark`
+    comfortably exceeds the end-of-hour FAST-tick wall — keeps pace at a larger
+    bounded lag without a code change (memory rises with W; ~0.6 GiB at W=300
+    leaves headroom to ~W=700 under the 2G cap).
+
+Until one lands, the brain runs at a stable, bounded lag that sawtooths within
+each clock hour rather than truly real-time. Track alongside the brain-store
+fragmentation / capture compaction workstream.
+
 ### KI-122 — Universe builder reconciliation leaks stale extended-tier rows
 
 **Symptom.** `companies WHERE is_active=true` returns 678 rows
