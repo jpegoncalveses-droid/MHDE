@@ -192,3 +192,11 @@ SOURCES: dict[str, SourceSpec] = {
     s.dataset: s for s in (TRADES, BOOKTICKER, MARKPRICE, FORCEORDER, *ASOF_SOURCES,
                            KLINES)
 }
+
+#: SLOW sources for the runner's sub-cadence (Fix 1): klines_1h + the 7 REST as-of series.
+#: Sparse in rows but footer-scanned every tick — the runner runs them every
+#: ``BRAIN_SLOW_SOURCE_EVERY_N_TICKS`` ticks. The four dense recv-dated sources
+#: (trades, bookticker, markprice, forceorder) are deliberately ABSENT — they stay every-tick.
+#: Membership is by brain store dataset name (the runner classifies each spec by ``spec.dataset``;
+#: a spec whose dataset is not listed defaults to FAST, so an unknown source is never starved).
+SLOW_SOURCE_DATASETS: frozenset = frozenset(s.dataset for s in (*ASOF_SOURCES, KLINES))
