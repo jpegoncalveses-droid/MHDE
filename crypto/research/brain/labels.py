@@ -72,6 +72,16 @@ MARKPRICE_DATASET = "markprice"
 
 _MIN_NS = 60_000_000_000          # 60s grid == 1 window == 1 minute
 _MS_TO_NS = 1_000_000
+#: The 1-day margin the markprice DATE-prune already applies (``store._DATE_PRUNE_MARGIN_NS``).
+#: The window_end pushdown (Fix 2b) must subtract the SAME margin, so it never drops a window the
+#: date-prune keeps (a recv just over a UTC midnight sits in the prior day's partition — kept by
+#: the margin and still labelable on the run that first sees it). Pushing at the bare edge would
+#: drop those within-margin windows and lose their first-seen labels (the no-bias contract,
+#: test_brain_labels (f)). With the margin the pushdown is byte-identical to the date-prune in
+#: every regime the continuous runner operates — it only trims windows already >1 day below the
+#: floor (every horizon settled AND written on a prior tick), exactly the date-prune's documented
+#: steady-state bound.
+_READ_MARGIN_NS = 86_400 * 1_000_000_000
 
 #: Mark gaps are recorded under ``!markPrice@arr@<speed>``; match by this PREFIX so the
 #: speed suffix (MARKPRICE_SPEED, default "1s") never silently defeats the filter.
@@ -251,17 +261,28 @@ def run_once(
         read_floor_ns = 0
         if bound_reads and horizons_min:
             read_floor_ns = frontier - max(horizons_min) * _MIN_NS
+        # The window_end ROW pushdown floor: the date-prune edge minus the SAME 1-day margin, so
+        # it can never drop a window the date-prune keeps (see _READ_MARGIN_NS). 0 -> no pushdown.
+        window_end_floor_ns = max(0, read_floor_ns - _READ_MARGIN_NS) if read_floor_ns else 0
 
         if symbols is None:
-            symbols = sorted(
-                {r["symbol"]
-                 for r in store.read_snapshots(str(store_root), MARKPRICE_DATASET,
-                                               after_recv_ts_ns=read_floor_ns)})
+            # DISCOVERY (Fix 2a): enumerate the markprice symbol= dirs (a directory listing)
+            # instead of reading the WHOLE store to harvest the symbol set — the first
+            # UTC-midnight crossing would otherwise materialize all ~812 symbols × multi-day
+            # toward the 2G cap. A symbol with only below-floor data is listed but yields no new
+            # label (its per-symbol read below is floor-bounded -> empty), so the output is
+            # unchanged from the read-based discovery.
+            symbols = store.list_symbols(str(store_root), MARKPRICE_DATASET)
 
         written: list[dict] = []
         for symbol in symbols:
+            # (Fix 2b) push the same edge as a window_end >= floor ROW filter: a window below the
+            # floor has every horizon settled+written, and is never a forward window of a
+            # still-settling entry (those sit at window_end >= floor), so dropping it pre-python
+            # changes no label. read_floor_ns is 0 when bound_reads is off -> a no-op pushdown.
             snaps = store.read_snapshots(str(store_root), MARKPRICE_DATASET, symbol,
-                                         after_recv_ts_ns=read_floor_ns)
+                                         after_recv_ts_ns=read_floor_ns,
+                                         window_end_floor_ns=window_end_floor_ns)
             if not snaps:
                 continue
             mark_by_window = {int(s["window_start_ns"]): s for s in snaps}
