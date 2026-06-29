@@ -45,13 +45,12 @@ _HOUR_NS = 3600 * 1_000_000_000
 #: ``[H, H+1)`` and (recv <= flush) has ``recv < (H + 1) * 3600s``.
 _COMPACT_HOUR_RE = re.compile(r"^compact-h(\d+)-")
 
-#: Footer-free fragment-skip skew/boundary guard. A closed-hour fragment is skipped only once
-#: the cursor is at least this far past the fragment's hour-END, so the CURRENT hour and the
-#: just-closed hour (within the guard) are always opened. This absorbs any backward
-#: recv-vs-flush clock skew: ``recv_ts_ns <= flush mtime`` holds in normal operation (a row is
-#: received before its part is flushed), and the only violation is a sub-second NTP step, far
-#: inside this guard. Cost: re-opening the immediately-prior hour for the guard's first seconds
-#: of each clock hour — a single heavier tick at most, amortized to nothing.
+#: Footer-free fragment-skip skew/boundary guard. A fragment is skipped only once the cursor is at
+#: least this far past the fragment's provable recv ceiling, so any fragment flushed WITHIN the
+#: guard of the cursor is still opened. This absorbs any backward recv-vs-flush clock skew:
+#: ``recv_ts_ns <= flush mtime`` holds in normal operation (a row is received before its part is
+#: flushed), and the only violation is a sub-second NTP step, far inside this guard. Cost: opening
+#: the last ~guard of fragments that are in fact already below the cursor — a handful per symbol.
 _HOUR_SKIP_SKEW_GUARD_NS = 60 * 1_000_000_000
 #: One UTC day of slack subtracted from the recv cursor before deriving the lower-bound
 #: ``date=`` partition. The ``date=`` of a recv-aligned dataset is keyed on the live-WS
@@ -89,37 +88,41 @@ def _date_str_from_ns(ns: int) -> str:
     return datetime.fromtimestamp(day * 86_400, tz=timezone.utc).strftime("%Y-%m-%d")
 
 
-def _fragment_hour(path: pathlib.Path) -> Optional[int]:
-    """The epoch-hour ``h`` such that EVERY row in this capture fragment provably has
-    ``recv_ts_ns < (h + 1) * 3600s``, derived FOOTER-FREE — or ``None`` when no such bound is
-    available from the name/stat (the fragment must then be opened as today).
+def _fragment_recv_ceiling_ns(path: pathlib.Path) -> Optional[int]:
+    """A FOOTER-FREE upper bound on this fragment's max ``recv_ts_ns`` — every row provably has
+    ``recv_ts_ns <= `` the returned value — or ``None`` when no bound is derivable from the
+    name/stat (the fragment must then be opened as today). Two provable signals:
 
-    Two provable signals, both the capture compactor's OWN bucketing key (``maintenance.py``
-    buckets parts by ``int(mtime // 3600)`` and stamps that hour into the compacted name):
-      * ``compact-h<H>-*`` -> H, the flush-hour from the FILENAME (authoritative; a compacted
-        file's own mtime is the unrelated compaction time, so the name — not the stat — is used).
-      * raw ``part-<uuid>`` / ``part-<shard>-*`` -> ``floor(st_mtime / 3600)``, the OS flush
-        time; ``recv <= flush mtime`` (received before flushed), so the bound holds.
-    ``compact-migrated-*`` (a whole sealed DAY, many hours) and anything else -> ``None`` (never
-    a provable single-hour bound -> never skipped)."""
+      * ``compact-h<H>-*`` -> ``(H+1)*3600s - 1``: the capture closed-hour compactor buckets the
+        parts it merged by flush hour (``maintenance.py``: ``int(mtime // 3600)``) and stamps H
+        into the name, so every row was flushed in ``[H, H+1)`` and (recv <= flush) has
+        ``recv < (H+1)*3600s``. The FILENAME is authoritative — a compacted file's own mtime is
+        the unrelated compaction time, so the name, not the stat, gives the bound.
+      * raw ``part-<uuid>`` / ``part-<shard>-*`` -> ``floor(st_mtime*1e9)``, the OS flush time AT
+        FULL PRECISION (not truncated to the hour): a row is received before its part is flushed,
+        so ``recv <= flush mtime``. The full mtime is what lets the OPEN clock hour's already-
+        flushed, below-cursor parts be skipped too — the hour-granular bound could not, since the
+        open hour's hour IS the cursor's hour.
+    ``compact-migrated-*`` (a whole sealed DAY, no single flush instant) and any unrecognized name
+    -> ``None`` (no provable ceiling -> never skipped)."""
     name = path.name
     m = _COMPACT_HOUR_RE.match(name)
     if m:
-        return int(m.group(1))
+        return (int(m.group(1)) + 1) * _HOUR_NS - 1
     if name.startswith("part-"):
-        return int(path.stat().st_mtime // 3600)
+        return int(path.stat().st_mtime * 1_000_000_000)
     return None
 
 
-def _hour_below_cursor(path: pathlib.Path, cursor_ns: int) -> bool:
-    """True iff ``path``'s entire flush-hour is provably below the cursor (every row
-    ``recv <= cursor``), so it can be skipped WITHOUT opening its footer. Conservative: a
-    fragment with no hour bound, or whose hour is within the skew guard of the cursor, returns
-    False (open it)."""
-    h = _fragment_hour(path)
-    if h is None:
+def _fragment_below_cursor(path: pathlib.Path, cursor_ns: int) -> bool:
+    """True iff EVERY row in ``path`` is provably below the cursor (``recv <= cursor``), so it can
+    be skipped WITHOUT opening its footer. Skip iff the fragment's footer-free recv ceiling plus
+    the skew guard is still at-or-below the cursor. Conservative: a fragment with no derivable
+    ceiling, or one whose ceiling is within the guard of the cursor, returns False (open it)."""
+    ceiling = _fragment_recv_ceiling_ns(path)
+    if ceiling is None:
         return False
-    return (h + 1) * _HOUR_NS + _HOUR_SKIP_SKEW_GUARD_NS <= cursor_ns
+    return ceiling + _HOUR_SKIP_SKEW_GUARD_NS <= cursor_ns
 
 
 def _scoped_partition_files(
@@ -127,17 +130,17 @@ def _scoped_partition_files(
 ) -> list[pathlib.Path]:
     """The existing parquet FILE paths under the batch's ``symbol=S/date=D`` partitions with
     ``D >= lower_date`` (``lower_date is None`` keeps every date — the venue-time-decoupled
-    klines / as-of case), MINUS any fragment whose entire flush-hour is provably below the
-    recv cursor (:func:`_hour_below_cursor`, the Fix-3 footer-free skip). ``ds.dataset()`` only
+    klines / as-of case), MINUS any fragment whose provable max ``recv_ts_ns`` is below the recv
+    cursor (:func:`_fragment_below_cursor`, the Fix-3 footer-free skip). ``ds.dataset()`` only
     accepts files, not directories, for an explicit source list.
 
     Two prunes compound here, both before any footer opens: ``date=`` dir pruning (whole days
-    older than the cursor's prior day, for recv-dated datasets) and HOUR pruning (closed hours
-    below the cursor, for every dataset — the cost wall was the un-date-pruned klines/as-of and
-    the just-closed-but-uncompacted dense hours, neither of which date-pruning alone touches).
-    The downstream ``recv > cursor`` row filter still guards every fragment we DO open, so an
-    over-conservative keep is only slower, never wrong; an over-eager skip would drop data, so
-    a fragment is skipped ONLY when its filename/stat hour PROVES it holds no in-window row.
+    older than the cursor's prior day, for recv-dated datasets) and RECV-CEILING pruning (any
+    fragment — including the open clock hour's already-flushed parts and the un-date-pruned
+    klines/as-of — whose footer-free recv ceiling is below the cursor, which date-pruning alone
+    never touches). The downstream ``recv > cursor`` row filter still guards every fragment we DO
+    open, so an over-conservative keep is only slower, never wrong; an over-eager skip would drop
+    data, so a fragment is skipped ONLY when its filename/stat PROVES it holds no in-window row.
 
     This is what makes a batched construction CHEAP: ``ds.dataset()`` over this list lists only
     the batch's surviving fragments, never the whole ``symbol=*/date=*`` tree, so the in-memory
@@ -159,8 +162,8 @@ def _scoped_partition_files(
             if lower_date is not None and date_dir.name[len("date="):] < lower_date:
                 continue
             for f in sorted(date_dir.glob("*.parquet")):
-                if _hour_below_cursor(f, cursor_ns):
-                    continue                    # closed hour below cursor -> skip, no footer open
+                if _fragment_below_cursor(f, cursor_ns):
+                    continue                    # provably below cursor -> skip, no footer open
                 files.append(f)
     return files
 
