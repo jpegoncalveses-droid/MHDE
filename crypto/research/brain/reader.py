@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import pathlib
+import re
 from datetime import datetime, timezone
 from typing import Optional, Sequence
 
@@ -36,6 +37,22 @@ from crypto.research.brain import config as cfg
 logger = logging.getLogger("mhde.crypto.brain.reader")
 
 _MS_PER_DAY = 86_400_000
+_HOUR_NS = 3600 * 1_000_000_000
+
+#: ``compact-h<H>-<uuid>.parquet`` — the capture closed-hour compactor stamps H, the flush
+#: (mtime) hour it bucketed the constituent writer parts into (``maintenance.py``:
+#: ``int(mtime // 3600)``). H is the epoch-hour index, so every row it holds was flushed in
+#: ``[H, H+1)`` and (recv <= flush) has ``recv < (H + 1) * 3600s``.
+_COMPACT_HOUR_RE = re.compile(r"^compact-h(\d+)-")
+
+#: Footer-free fragment-skip skew/boundary guard. A closed-hour fragment is skipped only once
+#: the cursor is at least this far past the fragment's hour-END, so the CURRENT hour and the
+#: just-closed hour (within the guard) are always opened. This absorbs any backward
+#: recv-vs-flush clock skew: ``recv_ts_ns <= flush mtime`` holds in normal operation (a row is
+#: received before its part is flushed), and the only violation is a sub-second NTP step, far
+#: inside this guard. Cost: re-opening the immediately-prior hour for the guard's first seconds
+#: of each clock hour — a single heavier tick at most, amortized to nothing.
+_HOUR_SKIP_SKEW_GUARD_NS = 60 * 1_000_000_000
 #: One UTC day of slack subtracted from the recv cursor before deriving the lower-bound
 #: ``date=`` partition. The ``date=`` of a recv-aligned dataset is keyed on the live-WS
 #: event time E (which trails recv by sub-second) or on recv itself, so a row received
@@ -72,17 +89,59 @@ def _date_str_from_ns(ns: int) -> str:
     return datetime.fromtimestamp(day * 86_400, tz=timezone.utc).strftime("%Y-%m-%d")
 
 
+def _fragment_hour(path: pathlib.Path) -> Optional[int]:
+    """The epoch-hour ``h`` such that EVERY row in this capture fragment provably has
+    ``recv_ts_ns < (h + 1) * 3600s``, derived FOOTER-FREE — or ``None`` when no such bound is
+    available from the name/stat (the fragment must then be opened as today).
+
+    Two provable signals, both the capture compactor's OWN bucketing key (``maintenance.py``
+    buckets parts by ``int(mtime // 3600)`` and stamps that hour into the compacted name):
+      * ``compact-h<H>-*`` -> H, the flush-hour from the FILENAME (authoritative; a compacted
+        file's own mtime is the unrelated compaction time, so the name — not the stat — is used).
+      * raw ``part-<uuid>`` / ``part-<shard>-*`` -> ``floor(st_mtime / 3600)``, the OS flush
+        time; ``recv <= flush mtime`` (received before flushed), so the bound holds.
+    ``compact-migrated-*`` (a whole sealed DAY, many hours) and anything else -> ``None`` (never
+    a provable single-hour bound -> never skipped)."""
+    name = path.name
+    m = _COMPACT_HOUR_RE.match(name)
+    if m:
+        return int(m.group(1))
+    if name.startswith("part-"):
+        return int(path.stat().st_mtime // 3600)
+    return None
+
+
+def _hour_below_cursor(path: pathlib.Path, cursor_ns: int) -> bool:
+    """True iff ``path``'s entire flush-hour is provably below the cursor (every row
+    ``recv <= cursor``), so it can be skipped WITHOUT opening its footer. Conservative: a
+    fragment with no hour bound, or whose hour is within the skew guard of the cursor, returns
+    False (open it)."""
+    h = _fragment_hour(path)
+    if h is None:
+        return False
+    return (h + 1) * _HOUR_NS + _HOUR_SKIP_SKEW_GUARD_NS <= cursor_ns
+
+
 def _scoped_partition_files(
-    base: pathlib.Path, symbols: Sequence[str], lower_date: Optional[str],
+    base: pathlib.Path, symbols: Sequence[str], lower_date: Optional[str], cursor_ns: int,
 ) -> list[pathlib.Path]:
     """The existing parquet FILE paths under the batch's ``symbol=S/date=D`` partitions with
     ``D >= lower_date`` (``lower_date is None`` keeps every date — the venue-time-decoupled
-    klines / as-of case). ``ds.dataset()`` only accepts files, not directories, for an explicit
-    source list.
+    klines / as-of case), MINUS any fragment whose entire flush-hour is provably below the
+    recv cursor (:func:`_hour_below_cursor`, the Fix-3 footer-free skip). ``ds.dataset()`` only
+    accepts files, not directories, for an explicit source list.
+
+    Two prunes compound here, both before any footer opens: ``date=`` dir pruning (whole days
+    older than the cursor's prior day, for recv-dated datasets) and HOUR pruning (closed hours
+    below the cursor, for every dataset — the cost wall was the un-date-pruned klines/as-of and
+    the just-closed-but-uncompacted dense hours, neither of which date-pruning alone touches).
+    The downstream ``recv > cursor`` row filter still guards every fragment we DO open, so an
+    over-conservative keep is only slower, never wrong; an over-eager skip would drop data, so
+    a fragment is skipped ONLY when its filename/stat hour PROVES it holds no in-window row.
 
     This is what makes a batched construction CHEAP: ``ds.dataset()`` over this list lists only
-    the batch's fragments, never the whole ``symbol=*/date=*`` tree, so the in-memory fragment
-    list pyarrow builds before any filter scales with the BATCH, not the dataset total.
+    the batch's surviving fragments, never the whole ``symbol=*/date=*`` tree, so the in-memory
+    fragment list pyarrow builds before any filter scales with the BATCH, not the dataset total.
 
     Symbols are taken VERBATIM into the path (UTF-8 / CJK / digit-leading safe — never a regex)
     and DEDUPED preserving order — a repeated symbol must not list (and so read) its files twice
@@ -99,7 +158,10 @@ def _scoped_partition_files(
                 continue
             if lower_date is not None and date_dir.name[len("date="):] < lower_date:
                 continue
-            files.extend(sorted(date_dir.glob("*.parquet")))
+            for f in sorted(date_dir.glob("*.parquet")):
+                if _hour_below_cursor(f, cursor_ns):
+                    continue                    # closed hour below cursor -> skip, no footer open
+                files.append(f)
     return files
 
 
@@ -179,7 +241,7 @@ def _read_dataset_rows(
         # filter scales with the BATCH's fragment count, not the dataset total. The whole-tree
         # construction was the wall that pinned the runner at the 2G cgroup on the un-date-pruned
         # klines (226k frags) and OOM'd on depth_state (~3M) — a cost W/row-filter never touched.
-        scoped = _scoped_partition_files(base, symbols, lower_date)
+        scoped = _scoped_partition_files(base, symbols, lower_date, after_recv_ts_ns)
         if not scoped:
             return []
         dataset = _open_scoped_dataset([str(f) for f in scoped])
