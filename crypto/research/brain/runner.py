@@ -160,7 +160,10 @@ class BrainRunner:
             dataset = getattr(spec, "dataset", None)
             is_slow = dataset in self._slow_source_datasets
             if is_slow and tick_index % self._slow_source_every_n_ticks != 0:
-                results.append({"dataset": dataset, "ok": True, "ran": False})  # not its tick
+                # CONTRACT: every primitive result carries dataset/ok/ran; a ran=True result also
+                # carries "summary" (or "error" when ok is False). A skipped (ran=False) result has
+                # no pass, so "summary" is None — consumers must branch on "ran" before reading it.
+                results.append({"dataset": dataset, "ok": True, "ran": False, "summary": None})
                 continue
             window_ns = (self._slow_source_every_n_ticks * self._max_tick_window_ns
                          if is_slow else self._max_tick_window_ns)
