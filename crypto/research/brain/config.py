@@ -117,3 +117,17 @@ BRAIN_PASS_BATCH_SIZE = 25
 #: sub-W chunk cap for pathological-density tail-safety is a tracked follow-up (KI-158).
 BRAIN_MAX_TICK_WINDOW_S = 300.0
 BRAIN_MAX_TICK_WINDOW_NS = int(BRAIN_MAX_TICK_WINDOW_S * 1_000_000_000)
+
+#: SLOW-SOURCE SUB-CADENCE (Fix 1): run the slow sources (klines_1h + the 7 REST as-of series)
+#: every Nth tick instead of every tick — mirroring the label sub-cadence. They are sparse in
+#: ROWS but were footer-scanned every tick beside the dense firehose; the dense recv-dated
+#: sources (trades/bookticker/markprice/forceorder) stay every-tick. A slow run uses an
+#: ``N × BRAIN_MAX_TICK_WINDOW`` forward window so it reads its full cursor-forward span and
+#: advances ~N ticks of tape per run (gap-free + keeps pace).
+#:
+#: N=5 (~5 min): well under the 20-min (/futures/data ratio/basis) and 60-min (klines)
+#: production cadence of the bulk slow series. The two 60s series (open_interest, premium_index)
+#: incur ≤ N-tick added latency with NO data loss — a slow run reads every intervening 60s
+#: window — immaterial for forward-only research labels. Operator-tunable (also the runner's
+#: ``--slow-source-every-n-ticks``); revisit alongside the live-gate.
+BRAIN_SLOW_SOURCE_EVERY_N_TICKS = 5

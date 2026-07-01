@@ -163,6 +163,46 @@ The historical record of resolved bugs lives in
 
 ## Open
 
+### KI-160 — Brain HEAVY-tick residual: the 7 daily-compacted as-of series footer-open ~9.5k fragments each on the 1-in-N slow tick
+
+**Severity: low — a residual after the Fix 1+2+3 throughput PR
+(`fix/brain-tick-throughput`). Memory / OOM / death-spiral are fully fixed
+(peak ≤ 0.56 GiB under the 2G cap), and the DENSE every-tick path is now
+real-time (FAST tick 32.6 s). This is the remaining slow-tick wall-time only.**
+
+**Resolved by this PR (was the open-hour fan-out floor).** The firehose flushes
+each partition every `CAPTURE_FIREHOSE_FLUSH_S` = 30 s, so the OPEN clock hour
+holds ~120 raw `part-*`/symbol that an hour-granular skip could not prune (its
+hour == the cursor's hour) — leaving the FAST tick at ~227–243 s mid-to-late
+hour, over the W−watermark (210 s) keep-pace ceiling. The PR's **full-mtime
+recv-ceiling skip** fixes this: a raw `part-*` carries its full flush mtime and
+`recv ≤ mtime`, so a current-hour part with `mtime + 60 s guard ≤ cursor` is
+provably empty and skipped footer-free. Measured on the live tape: markPrice
+~80–105 s → **11.2 s**, FAST tick → **32.6 s** (flat across the hour), net
+catch-up ~0.88× → **~3.5×**. Real-time with margin.
+
+**The residual.** The 7 REST as-of series (`open_interest`, `premium_index`,
+`global_ls_account`, `top_ls_account`, `top_ls_position`, `taker_ls_ratio`,
+`basis`) are compacted only DAILY (`mhde-capture-asof-compact`, `01:30`), so they
+accumulate raw `part-*` all day; even with the full-mtime skip leaving only the
+last ~`window+guard` of flushes, each opens ~9.5k fragments (~12 s), so the
+slow-source group is ~110 s and the HEAVY tick (FAST + slow, run 1 in
+`BRAIN_SLOW_SOURCE_EVERY_N_TICKS`=5) is ~141 s. That is well under the 210 s
+keep-pace ceiling and amortizes to ~54 s (< the 60 s cadence), so it is NOT a
+keep-pace blocker — but it is the dominant remaining wall.
+
+**Fix paths (when worth it):**
+  * raise `BRAIN_SLOW_SOURCE_EVERY_N_TICKS` (operator-tunable) — fewer heavy
+    ticks → lower amortized, at higher as-of label latency.
+  * give the as-of series an hourly (not daily) closed-hour compaction so their
+    raw fan-out matches the dense sources'.
+  * a manifest / latest-snapshot read for the sparse as-of series (they are
+    present-state, so a window scan is overkill).
+
+Track alongside the brain-store fragmentation / capture compaction workstream.
+Re-open the open-hour concern only if the firehose flush cadence or the
+full-mtime guard changes.
+
 ### KI-122 — Universe builder reconciliation leaks stale extended-tier rows
 
 **Symptom.** `companies WHERE is_active=true` returns 678 rows

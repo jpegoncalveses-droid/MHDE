@@ -5,7 +5,10 @@ state. Each cadence tick (default ``BRAIN_BASE_CADENCE_S`` = 60s):
 
   1. PRIMITIVES — run :func:`pipeline.run_pass` once per registered source (``sources.SOURCES``).
      Each pass reads its own per-source registry cursor, summarizes newly-settled windows, writes
-     parquet, and advances the cursor + bookkeeping in ONE transaction.
+     parquet, and advances the cursor + bookkeeping in ONE transaction. The dense recv-dated
+     sources run EVERY tick; the SLOW sources (klines + the 7 as-of series, ``sources.
+     SLOW_SOURCE_DATASETS``) run every ``slow_source_every_n_ticks`` ticks with an ``N × window``
+     forward read (Fix 1 — they are sparse but were footer-scanned every tick beside the firehose).
   2. LABELS — every ``label_every_n_ticks`` ticks, run :func:`labels.run_once` (forward-path
      markprice labels), which reads the just-written markprice snapshots and the settlement
      frontier and appends newly-settled label rows.
@@ -81,6 +84,9 @@ class BrainRunner:
         label_store_root: Optional[str] = None,
         horizons_min: Optional[Sequence[int]] = None,
         label_every_n_ticks: int = DEFAULT_LABEL_EVERY_N_TICKS,
+        slow_source_every_n_ticks: int = cfg.BRAIN_SLOW_SOURCE_EVERY_N_TICKS,
+        slow_source_datasets: Optional[frozenset] = None,
+        max_tick_window_ns: int = cfg.BRAIN_MAX_TICK_WINDOW_NS,
         tick_interval_s: float = cfg.BRAIN_BASE_CADENCE_S,
         clock_ns: Optional[Callable[[], int]] = None,
         monotonic: Optional[Callable[[], float]] = None,
@@ -106,6 +112,14 @@ class BrainRunner:
         if label_every_n_ticks < 1:
             raise ValueError("label_every_n_ticks must be >= 1")
         self._label_every_n_ticks = label_every_n_ticks
+        if slow_source_every_n_ticks < 1:
+            raise ValueError("slow_source_every_n_ticks must be >= 1")
+        self._slow_source_every_n_ticks = slow_source_every_n_ticks
+        # default = the real slow set (klines + as-of); resolved via a module helper because the
+        # `sources` __init__ PARAM shadows the `sources` module name in this scope.
+        self._slow_source_datasets = (slow_source_datasets if slow_source_datasets is not None
+                                      else slow_source_datasets_default())
+        self._max_tick_window_ns = max_tick_window_ns
         self._tick_interval_s = tick_interval_s
         self._clock_ns = clock_ns if clock_ns is not None else time.time_ns
         self._monotonic = monotonic if monotonic is not None else time.monotonic
@@ -135,23 +149,35 @@ class BrainRunner:
 
     # -- one tick --
 
-    def _run_primitives(self, now_ns: int) -> list:
-        """Run one primitives pass per source. A per-source failure is isolated (logged, the
-        loop continues; that cursor simply doesn't advance, so it retries next tick)."""
+    def _run_primitives(self, now_ns: int, tick_index: int) -> list:
+        """Run one primitives pass per source. The DENSE recv-dated sources run every tick; the
+        SLOW sources (``self._slow_source_datasets``) run only every ``slow_source_every_n_ticks``
+        ticks (Fix 1) and, when they do, use an ``N × window`` forward read so they cover ~N
+        ticks of tape and stay gap-free + keep pace. A per-source failure is isolated (logged,
+        the loop continues; that cursor simply doesn't advance, so it retries next due tick)."""
         results = []
         for spec in self._sources:
             dataset = getattr(spec, "dataset", None)
+            is_slow = dataset in self._slow_source_datasets
+            if is_slow and tick_index % self._slow_source_every_n_ticks != 0:
+                # CONTRACT: every primitive result carries dataset/ok/ran; a ran=True result also
+                # carries "summary" (or "error" when ok is False). A skipped (ran=False) result has
+                # no pass, so "summary" is None — consumers must branch on "ran" before reading it.
+                results.append({"dataset": dataset, "ok": True, "ran": False, "summary": None})
+                continue
+            window_ns = (self._slow_source_every_n_ticks * self._max_tick_window_ns
+                         if is_slow else self._max_tick_window_ns)
             try:
                 summary = self._primitives_pass(
                     spec, capture_root=self._capture_root, store_root=self._store_root,
                     registry_path=self._registry_path, now_ns=now_ns,
                     cadence_ns=self._cadence_ns, watermark_ns=self._watermark_ns,
-                    symbols=self._symbols, batch_size=self._batch_size)
-                results.append({"dataset": dataset, "ok": True, "summary": summary})
+                    symbols=self._symbols, batch_size=self._batch_size, max_window_ns=window_ns)
+                results.append({"dataset": dataset, "ok": True, "ran": True, "summary": summary})
             except Exception as exc:                # noqa: BLE001 — one source must not wedge the loop
                 logger.warning("brain runner: primitives pass failed for %s; retry next tick",
                                dataset, exc_info=True)
-                results.append({"dataset": dataset, "ok": False, "error": str(exc)})
+                results.append({"dataset": dataset, "ok": False, "ran": True, "error": str(exc)})
         return results
 
     def _run_labels(self, now_ns: int) -> dict:
@@ -205,7 +231,7 @@ class BrainRunner:
         (on the label sub-cadence) labels. A single ``now_ns`` snapshot is shared by the tick."""
         now_ns = self._clock_ns()
         self._forward_seed_cold_cursors(now_ns)
-        primitives = self._run_primitives(now_ns)
+        primitives = self._run_primitives(now_ns, tick_index)
         labels_ran = (tick_index % self._label_every_n_ticks == 0)
         labels_result = self._run_labels(now_ns) if labels_ran else None
         summary = {"tick": tick_index, "now_ns": now_ns, "primitives": primitives,
@@ -252,6 +278,12 @@ def sources_module_values() -> list:
     return list(sources.SOURCES.values())
 
 
+def slow_source_datasets_default() -> frozenset:
+    """The default SLOW-source set (``sources.SLOW_SOURCE_DATASETS``). A module helper because
+    the ``sources`` constructor param shadows the module name inside ``__init__``."""
+    return sources.SLOW_SOURCE_DATASETS
+
+
 # -- entrypoint (NO systemd/timer wiring — that lands at the live-gate) ---------
 
 def build_runner(argv_namespace: argparse.Namespace, *, install_signals: bool) -> BrainRunner:
@@ -261,6 +293,7 @@ def build_runner(argv_namespace: argparse.Namespace, *, install_signals: bool) -
         registry_path=argv_namespace.registry_path,
         label_store_root=argv_namespace.label_store_root,
         label_every_n_ticks=argv_namespace.label_every_n_ticks,
+        slow_source_every_n_ticks=argv_namespace.slow_source_every_n_ticks,
         tick_interval_s=argv_namespace.tick_interval_s,
         forward_seed=argv_namespace.forward_seed,
         install_signals=install_signals,
@@ -278,6 +311,10 @@ def _parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
     p.add_argument("--label-store-root", default=None,
                    help="defaults to --store-root (labels land beside the primitives)")
     p.add_argument("--label-every-n-ticks", type=int, default=DEFAULT_LABEL_EVERY_N_TICKS)
+    p.add_argument("--slow-source-every-n-ticks", type=int,
+                   default=cfg.BRAIN_SLOW_SOURCE_EVERY_N_TICKS,
+                   help="run the slow sources (klines + as-of) every Nth tick (default 5); the "
+                        "dense recv-dated sources always run every tick")
     p.add_argument("--tick-interval-s", type=float, default=cfg.BRAIN_BASE_CADENCE_S)
     p.add_argument("--max-ticks", type=int, default=None,
                    help="stop after N ticks (default: run until SIGTERM/SIGINT)")

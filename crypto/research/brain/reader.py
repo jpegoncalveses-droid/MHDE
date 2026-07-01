@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import pathlib
+import re
 from datetime import datetime, timezone
 from typing import Optional, Sequence
 
@@ -36,6 +37,21 @@ from crypto.research.brain import config as cfg
 logger = logging.getLogger("mhde.crypto.brain.reader")
 
 _MS_PER_DAY = 86_400_000
+_HOUR_NS = 3600 * 1_000_000_000
+
+#: ``compact-h<H>-<uuid>.parquet`` — the capture closed-hour compactor stamps H, the flush
+#: (mtime) hour it bucketed the constituent writer parts into (``maintenance.py``:
+#: ``int(mtime // 3600)``). H is the epoch-hour index, so every row it holds was flushed in
+#: ``[H, H+1)`` and (recv <= flush) has ``recv < (H + 1) * 3600s``.
+_COMPACT_HOUR_RE = re.compile(r"^compact-h(\d+)-")
+
+#: Footer-free fragment-skip skew/boundary guard. A fragment is skipped only once the cursor is at
+#: least this far past the fragment's provable recv ceiling, so any fragment flushed WITHIN the
+#: guard of the cursor is still opened. This absorbs any backward recv-vs-flush clock skew:
+#: ``recv_ts_ns <= flush mtime`` holds in normal operation (a row is received before its part is
+#: flushed), and the only violation is a sub-second NTP step, far inside this guard. Cost: opening
+#: the last ~guard of fragments that are in fact already below the cursor — a handful per symbol.
+_HOUR_SKIP_SKEW_GUARD_NS = 60 * 1_000_000_000
 #: One UTC day of slack subtracted from the recv cursor before deriving the lower-bound
 #: ``date=`` partition. The ``date=`` of a recv-aligned dataset is keyed on the live-WS
 #: event time E (which trails recv by sub-second) or on recv itself, so a row received
@@ -72,17 +88,65 @@ def _date_str_from_ns(ns: int) -> str:
     return datetime.fromtimestamp(day * 86_400, tz=timezone.utc).strftime("%Y-%m-%d")
 
 
+def _fragment_recv_ceiling_ns(path: pathlib.Path) -> Optional[int]:
+    """A FOOTER-FREE upper bound on this fragment's max ``recv_ts_ns`` — every row provably has
+    ``recv_ts_ns <= `` the returned value — or ``None`` when no bound is derivable from the
+    name/stat (the fragment must then be opened as today). Two provable signals:
+
+      * ``compact-h<H>-*`` -> ``(H+1)*3600s - 1``: the capture closed-hour compactor buckets the
+        parts it merged by flush hour (``maintenance.py``: ``int(mtime // 3600)``) and stamps H
+        into the name, so every row was flushed in ``[H, H+1)`` and (recv <= flush) has
+        ``recv < (H+1)*3600s``. The FILENAME is authoritative — a compacted file's own mtime is
+        the unrelated compaction time, so the name, not the stat, gives the bound.
+      * raw ``part-<uuid>`` / ``part-<shard>-*`` -> ``st_mtime_ns``, the OS flush time at full
+        integer-ns precision (``st_mtime_ns``, NOT ``st_mtime*1e9`` — float seconds × 1e9 exceeds
+        float64's 2^53 exact-integer range at epoch ~1.78e18 ns and quantizes to ~256 ns; harmless
+        under the 60s guard, but the integer primitive is exact): a row is received before its part is flushed,
+        so ``recv <= flush mtime``. The full mtime is what lets the OPEN clock hour's already-
+        flushed, below-cursor parts be skipped too — the hour-granular bound could not, since the
+        open hour's hour IS the cursor's hour.
+    ``compact-migrated-*`` (a whole sealed DAY, no single flush instant) and any unrecognized name
+    -> ``None`` (no provable ceiling -> never skipped)."""
+    name = path.name
+    m = _COMPACT_HOUR_RE.match(name)
+    if m:
+        return (int(m.group(1)) + 1) * _HOUR_NS - 1
+    if name.startswith("part-"):
+        return path.stat().st_mtime_ns
+    return None
+
+
+def _fragment_below_cursor(path: pathlib.Path, cursor_ns: int) -> bool:
+    """True iff EVERY row in ``path`` is provably below the cursor (``recv <= cursor``), so it can
+    be skipped WITHOUT opening its footer. Skip iff the fragment's footer-free recv ceiling plus
+    the skew guard is still at-or-below the cursor. Conservative: a fragment with no derivable
+    ceiling, or one whose ceiling is within the guard of the cursor, returns False (open it)."""
+    ceiling = _fragment_recv_ceiling_ns(path)
+    if ceiling is None:
+        return False
+    return ceiling + _HOUR_SKIP_SKEW_GUARD_NS <= cursor_ns
+
+
 def _scoped_partition_files(
-    base: pathlib.Path, symbols: Sequence[str], lower_date: Optional[str],
+    base: pathlib.Path, symbols: Sequence[str], lower_date: Optional[str], cursor_ns: int,
 ) -> list[pathlib.Path]:
     """The existing parquet FILE paths under the batch's ``symbol=S/date=D`` partitions with
     ``D >= lower_date`` (``lower_date is None`` keeps every date — the venue-time-decoupled
-    klines / as-of case). ``ds.dataset()`` only accepts files, not directories, for an explicit
-    source list.
+    klines / as-of case), MINUS any fragment whose provable max ``recv_ts_ns`` is below the recv
+    cursor (:func:`_fragment_below_cursor`, the Fix-3 footer-free skip). ``ds.dataset()`` only
+    accepts files, not directories, for an explicit source list.
+
+    Two prunes compound here, both before any footer opens: ``date=`` dir pruning (whole days
+    older than the cursor's prior day, for recv-dated datasets) and RECV-CEILING pruning (any
+    fragment — including the open clock hour's already-flushed parts and the un-date-pruned
+    klines/as-of — whose footer-free recv ceiling is below the cursor, which date-pruning alone
+    never touches). The downstream ``recv > cursor`` row filter still guards every fragment we DO
+    open, so an over-conservative keep is only slower, never wrong; an over-eager skip would drop
+    data, so a fragment is skipped ONLY when its filename/stat PROVES it holds no in-window row.
 
     This is what makes a batched construction CHEAP: ``ds.dataset()`` over this list lists only
-    the batch's fragments, never the whole ``symbol=*/date=*`` tree, so the in-memory fragment
-    list pyarrow builds before any filter scales with the BATCH, not the dataset total.
+    the batch's surviving fragments, never the whole ``symbol=*/date=*`` tree, so the in-memory
+    fragment list pyarrow builds before any filter scales with the BATCH, not the dataset total.
 
     Symbols are taken VERBATIM into the path (UTF-8 / CJK / digit-leading safe — never a regex)
     and DEDUPED preserving order — a repeated symbol must not list (and so read) its files twice
@@ -99,7 +163,10 @@ def _scoped_partition_files(
                 continue
             if lower_date is not None and date_dir.name[len("date="):] < lower_date:
                 continue
-            files.extend(sorted(date_dir.glob("*.parquet")))
+            for f in sorted(date_dir.glob("*.parquet")):
+                if _fragment_below_cursor(f, cursor_ns):
+                    continue                    # provably below cursor -> skip, no footer open
+                files.append(f)
     return files
 
 
@@ -179,7 +246,7 @@ def _read_dataset_rows(
         # filter scales with the BATCH's fragment count, not the dataset total. The whole-tree
         # construction was the wall that pinned the runner at the 2G cgroup on the un-date-pruned
         # klines (226k frags) and OOM'd on depth_state (~3M) — a cost W/row-filter never touched.
-        scoped = _scoped_partition_files(base, symbols, lower_date)
+        scoped = _scoped_partition_files(base, symbols, lower_date, after_recv_ts_ns)
         if not scoped:
             return []
         dataset = _open_scoped_dataset([str(f) for f in scoped])

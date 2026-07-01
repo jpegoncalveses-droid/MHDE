@@ -26,6 +26,7 @@ from typing import Any, Iterable, Mapping, Optional
 from uuid import uuid4
 
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 # Common provenance / immutable bounds prefix shared by every snapshot schema.
@@ -265,8 +266,24 @@ def write_snapshots(
     return written
 
 
+def list_symbols(root: str, dataset: str) -> list[str]:
+    """The symbol universe present on disk for ``<root>/<dataset>`` — the values of the Hive
+    ``symbol=`` partition dirs (a directory listing, NO parquet opened). UTF-8 safe (CJK /
+    digit-leading symbols), returned sorted for deterministic iteration.
+
+    The cheap enumerate for a forward consumer: a caller that processes per-symbol gets the
+    symbol set from the directory tree instead of reading the WHOLE store to harvest it (the
+    label pass's first-midnight 2G risk). Mirrors ``pipeline._enumerate_universe`` on the brain
+    store side."""
+    base = pathlib.Path(root, dataset)
+    if not base.exists():
+        return []
+    prefix = "symbol="
+    return sorted(d.name[len(prefix):] for d in base.glob(f"{prefix}*") if d.is_dir())
+
+
 def read_snapshots(root: str, dataset: str, symbol: Optional[str] = None, *,
-                   after_recv_ts_ns: int = 0) -> list[dict]:
+                   after_recv_ts_ns: int = 0, window_end_floor_ns: int = 0) -> list[dict]:
     """Read persisted snapshots from ``<root>/<dataset>`` back as dicts.
 
     Used for round-trip fidelity and downstream consumption. Files are read by
@@ -279,6 +296,14 @@ def read_snapshots(root: str, dataset: str, symbol: Optional[str] = None, *,
     WITHOUT opening their files, so a forward read stops rescanning a symbol's entire
     history. It is an optimisation — partition-granular, not a row filter — and the
     structural fix for fan-out is the (separate) compactor, not this.
+
+    ``window_end_floor_ns`` (default 0 = no floor) is a finer, ROW-level prune layered on top:
+    rows with ``window_end_ns < floor`` are dropped from each opened file BEFORE materializing to
+    python, so a forward consumer that has already processed every window below the floor does not
+    re-materialize them (the label pass: a window below ``frontier - max_horizon`` has every
+    horizon settled+written, so it yields no new label). Date-pruning is day-granular; this trims
+    the surviving below-floor rows inside the kept ``date=`` dir. ``0`` is a no-op, so every
+    existing caller is unaffected.
 
     CAVEAT before wiring a real recv cursor: the 1-day margin assumes a snapshot's
     ``recv_ts_ns`` lags its ``window_start_ns`` (the partition date) by < 1 day. A
@@ -305,5 +330,8 @@ def read_snapshots(root: str, dataset: str, symbol: Optional[str] = None, *,
             files.extend(sorted(date_dir.glob("*.parquet")))
     rows: list[dict] = []
     for fp in files:
-        rows.extend(pq.ParquetFile(str(fp)).read().to_pylist())
+        table = pq.ParquetFile(str(fp)).read()
+        if window_end_floor_ns:                       # ROW prune: drop below-floor windows pre-python
+            table = table.filter(pc.field("window_end_ns") >= window_end_floor_ns)
+        rows.extend(table.to_pylist())
     return rows
