@@ -376,7 +376,8 @@ def test_chunked_subprocess_failure_surfaces_not_silent_zero(tmp_path):
     for m in range(2):
         _write_pass(tmp_path, "BTCUSDT", [_ns(10, m)])
 
-    def _failing_runner(root, paths, budget, now_ns, registry_path):
+    def _failing_runner(root, paths, budget, now_ns, registry_path,
+                        require_registry_coverage=False):
         return {"completed": 0, "compacted": 0, "merges": 0, "files_before": 0,
                 "files_after": 0, "mismatches": [], "registry_mismatches": [],
                 "corrupt_skipped": [], "failed": True}
