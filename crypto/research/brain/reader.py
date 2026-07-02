@@ -105,13 +105,23 @@ def _fragment_recv_ceiling_ns(path: pathlib.Path) -> Optional[int]:
         so ``recv <= flush mtime``. The full mtime is what lets the OPEN clock hour's already-
         flushed, below-cursor parts be skipped too — the hour-granular bound could not, since the
         open hour's hour IS the cursor's hour.
-    ``compact-migrated-*`` (a whole sealed DAY, no single flush instant) and any unrecognized name
-    -> ``None`` (no provable ceiling -> never skipped)."""
+      * ``compact-migrated-*`` -> ``st_mtime_ns`` likewise (the drift-fix extension): a compaction
+        output is written strictly AFTER every row it merged was received, so ``recv <= merge-write
+        mtime`` — the identical invariant, just a LOOSER bound (the as-of sealer runs at 01:30 the
+        NEXT day, so the ceiling trails the data by up to ~a day). Loose is enough: once the cursor
+        passes the merge instant + guard, the seal is provably empty of in-window rows. Without
+        this, every sealed day's output was opened on every heavy tick forever — a +3,985
+        footer-opens/day ratchet (KI-160). MTIME-TRUST CAVEAT (shared with the part-* rule): the
+        bound assumes the mtime is the instant THIS content was written. Preserving mtimes on a
+        faithful copy/restore keeps the invariant (the original write still postdates its rows);
+        what would break it is rewriting different content in place under an old mtime — no MHDE
+        workflow does that, and the 60s guard is a clock-skew absorber, not a forgery defense.
+    Any unrecognized name -> ``None`` (no provable ceiling -> never skipped)."""
     name = path.name
     m = _COMPACT_HOUR_RE.match(name)
     if m:
         return (int(m.group(1)) + 1) * _HOUR_NS - 1
-    if name.startswith("part-"):
+    if name.startswith("part-") or name.startswith("compact-migrated-"):
         return path.stat().st_mtime_ns
     return None
 
