@@ -519,6 +519,12 @@ def compact_partition_closed_hours(
         elif not existing_windows and single_wholly_in_h:
             noop_home.add(single)                     # one part wholly in h, no prior compact
         else:
+            # NOTE: a part SPANNING this (covered) hour and an UNCOVERED sibling hour is kept
+            # whole by ``uncovered_keep``, so this hour's rows transiently live in BOTH the
+            # compact-h file written here and that kept part — harmless (every reader dedups
+            # by ``(symbol, window_start_ns)``; labels' mark_by_window, engineered's
+            # base_vals) and self-healing (once the sibling gains coverage, the part is
+            # consumed and its already-compacted windows dedup against existing_windows).
             out_path = os.path.join(part_dir, f"compact-h{h}-{uuid4().hex}.parquet")
             _, rows_after = _merge_tables_to_file(
                 [pa.Table.from_pylist(new_rows, schema=schema)], out_path)

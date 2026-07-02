@@ -149,6 +149,48 @@ def test_closed_hours_guard_compacts_covered_hour(tmp_path):
     assert len(list(_part_dir(tmp_path, "AAAUSDT", today).glob("part-*.parquet"))) == 0
 
 
+def test_spanning_part_mixed_coverage_duplicates_benignly_then_self_heals(tmp_path):
+    # A single writer part SPANNING a covered hour h0 and an uncovered hour h1 (a catch-up
+    # pass writes multi-hour parts; a bookkeeping regression covers only h0). h0 merges,
+    # the part is kept whole for h1 -> h0's windows transiently live in BOTH files. Pin:
+    # (a) no window-keyed reader double-counts (dedup by window_start_ns), and (b) once h1
+    # gains coverage, a re-run consumes the part WITHOUT duplicating h0 in a new compact.
+    today = datetime.fromtimestamp(_NOW_MS / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+    part_dir = _part_dir(tmp_path, "AAAUSDT", today)
+    store.write_snapshots(str(tmp_path), _DATASET, _SCHEMA, [
+        _snap("AAAUSDT", _ns(today, 30)),        # hour 0 (covered)
+        _snap("AAAUSDT", _ns(today, 90)),        # hour 1 (uncovered) -> SAME part file
+    ])
+    assert len(list(part_dir.glob("part-*.parquet"))) == 1
+    reg = _reg_path(tmp_path)
+    _record(reg, "AAAUSDT", [30], date=today)    # cover ONLY hour 0
+
+    results = compaction.compact_partition_closed_hours(
+        str(part_dir), now_ns=_NOW_NS, registry_path=reg, require_registry_coverage=True)
+    merged = [r for r in results if r.out_path is not None]
+    skipped = [r for r in results if r.unverifiable_skipped]
+    assert len(merged) == 1 and len(skipped) == 1
+    assert len(list(part_dir.glob("part-*.parquet"))) == 1, \
+        "the spanning part must be KEPT whole for the uncovered hour"
+
+    # (a) transient duplication is dedup-safe for every window-keyed reader
+    rows = store.read_snapshots(str(tmp_path), _DATASET, "AAAUSDT")
+    by_window = {int(r["window_start_ns"]): r for r in rows}   # the labels/engineered pattern
+    assert len(by_window) == 2, "window-keyed consumers see each window exactly once"
+    assert sum(1 for r in rows if int(r["window_start_ns"]) == _ns(today, 30)) == 2, \
+        "the raw duplication exists (compact-h0 + kept part) — the dedup is what protects"
+
+    # (b) self-heal: cover h1, re-run -> part consumed, h0 NOT re-merged into a second file
+    _record(reg, "AAAUSDT", [90], date=today)
+    results2 = compaction.compact_partition_closed_hours(
+        str(part_dir), now_ns=_NOW_NS, registry_path=reg, require_registry_coverage=True)
+    assert not any(r.unverifiable_skipped for r in results2)
+    assert len(list(part_dir.glob("part-*.parquet"))) == 0, "the spanning part is consumed"
+    rows = store.read_snapshots(str(tmp_path), _DATASET, "AAAUSDT")
+    assert sorted(int(r["window_start_ns"]) for r in rows) == [_ns(today, 30), _ns(today, 90)], \
+        "post-heal the store holds each window exactly once"
+
+
 def test_unverifiable_marshalled_through_chunked_driver(tmp_path):
     _write_pass(tmp_path, "AAAUSDT", _ns(_SEALED, 1))
     _write_pass(tmp_path, "AAAUSDT", _ns(_SEALED, 2))
