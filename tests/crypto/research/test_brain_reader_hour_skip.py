@@ -12,9 +12,19 @@ opening it, using a footer-free, provable upper bound on the fragment's max ``re
     the OPEN clock hour's already-flushed, below-cursor parts be skipped too — the hour-granular
     bound could not, since the open hour's hour IS the cursor's hour.
 
-Skip iff ``ceiling + skew_guard <= cursor``. ``compact-migrated-*`` (a whole sealed DAY) and any
-unrecognized name carry no provable ceiling -> never skipped. A 60s skew guard keeps any fragment
-whose flush is within the guard of the cursor open, absorbing sub-second recv-vs-flush clock skew.
+Skip iff ``ceiling + skew_guard <= cursor``.
+
+  * ``compact-migrated-*`` -> ``st_mtime_ns`` (the drift-fix extension): a compaction output is
+    written strictly AFTER every row it merged was received, so ``recv <= merge-write mtime`` — the
+    same invariant as a raw part's flush. The bound is LOOSE (the merge can run a day+ after the
+    data) but VALID, and once the cursor passes it the file is provably empty of in-window rows.
+    Without this, the daily as-of sealer's output was permanently unskippable (+3,985 footer-opens
+    per heavy tick per sealed day, forever — the KI-160 ratchet).
+
+Any unrecognized name carries no provable ceiling -> never skipped. A 60s skew guard keeps any
+fragment whose flush is within the guard of the cursor open, absorbing sub-second recv-vs-flush
+clock skew (NOT an mtime-forgery guard: a tool that rewrites content in place under an old mtime
+would break every mtime rule here — no MHDE workflow does).
 
 THE LOAD-BEARING TESTS (``*_oracle`` / ``*_randomized_equivalence``): the scoped + skipped read
 returns BYTE-IDENTICAL rows to the ``recv > cursor`` whole-tree oracle — no in-window row dropped,
@@ -108,6 +118,22 @@ def _opened_names(calls) -> set:
     return {pathlib.Path(p).name for p in calls[0]}
 
 
+def _spy_md(monkeypatch):
+    """Record which files get an explicit footer-stats read (``pq.read_metadata``). With the
+    drift-Fix-3 stats cache, "not skipped footer-free" now means "footer-CONSULTED": the file
+    is either in the ds.dataset source list or had its footer stats read (and may then be
+    excluded by its exact recv bounds — a correct, tighter outcome than opening it)."""
+    calls = []
+    orig = reader.pq.read_metadata
+
+    def spy(path, *a, **k):
+        calls.append(pathlib.Path(str(path)).name)
+        return orig(path, *a, **k)
+
+    monkeypatch.setattr(reader.pq, "read_metadata", spy)
+    return calls
+
+
 # --- footer-free SKIP drivers (RED against the hour-granular reader) --------------------
 
 def test_current_hour_subcursor_raw_part_skipped(tmp_path, monkeypatch):
@@ -168,29 +194,57 @@ def test_compact_h_current_hour_still_read(tmp_path, monkeypatch):
     assert [r["recv_ts_ns"] for r in rows] == [_ns(3, 45)]
 
 
-def test_compact_migrated_never_skipped(tmp_path, monkeypatch):
+def test_compact_migrated_below_cursor_skipped_by_mtime(tmp_path, monkeypatch):
+    # THE ratchet fix: a compact-migrated seal whose merge-write mtime + guard is below the cursor
+    # is provably empty (every merged row was received before the merge wrote the file) -> skipped
+    # footer-free, exactly like a raw part. This is what stops the daily as-of sealer's output
+    # accumulating +3,985 permanently-opened files per day on every heavy tick.
     sym = "AAAUSDT"
     p = _write_part(tmp_path, sym, _ns(0, 10))
-    m = _make_compact_migrated(p); _set_mtime_ns(m, _ns(0, 10, 5))   # old name + old mtime -> still opened
+    m = _make_compact_migrated(p); _set_mtime_ns(m, _ns(1, 30))      # sealed at 01:30, data from 00:10
     keep = _write_part(tmp_path, sym, _ns(3, 45)); _set_mtime_ns(keep, _ns(3, 45, 5))
     cursor = _ns(3, 30)
     calls = _spy(monkeypatch)
+    rows = _read(tmp_path, sym, cursor)
+    names = _opened_names(calls)
+    assert m.name not in names, \
+        "compact-migrated with merge mtime + guard below the cursor is provably empty -> skipped"
+    assert keep.name in names
+    assert [r["recv_ts_ns"] for r in rows] == [_ns(3, 45)]
+
+
+def test_compact_migrated_recent_mtime_still_read(tmp_path, monkeypatch):
+    # The boundary: a seal merged moments ago (mtime at/after cursor-guard) may in principle hold
+    # rows the cursor has not passed -> NOT skipped footer-free (its footer must be consulted;
+    # the exact stats may then prove it empty — tighter, still correct). Content age is
+    # irrelevant; the MTIME is the footer-free bound.
+    sym = "AAAUSDT"
+    p = _write_part(tmp_path, sym, _ns(0, 10))
+    m = _make_compact_migrated(p); _set_mtime_ns(m, _ns(3, 49, 30))  # merged 30s ago (inside guard)
+    cursor = _ns(3, 50)
+    md = _spy_md(monkeypatch)
+    calls = _spy(monkeypatch)
     _read(tmp_path, sym, cursor)
-    assert m.name in _opened_names(calls), \
-        "compact-migrated-* spans a whole day (no single flush instant) -> never skipped"
+    ds_names = {pathlib.Path(p2).name for src in calls for p2 in src}
+    assert m.name in set(md) | ds_names, \
+        "a compact-migrated whose merge mtime is within the guard of the cursor must be footer-consulted"
 
 
 # --- the skew guard (mtime granularity) ------------------------------------------------
 
 def test_guard_keeps_recent_part_within_skew(tmp_path, monkeypatch):
-    # a raw part flushed within the guard of the cursor is KEPT (its rows could be cursor-or-newer
-    # under any backward recv-vs-flush clock skew).
+    # a raw part flushed within the guard of the cursor is NOT skipped footer-free (its rows
+    # could be cursor-or-newer under any backward recv-vs-flush clock skew) — its footer must
+    # be consulted; the exact stats may then prove it empty (tighter, still correct).
     sym = "AAAUSDT"
     p = _write_part(tmp_path, sym, _ns(3, 30)); _set_mtime_ns(p, _ns(3, 49, 30))   # 30s inside the 60s guard
     cursor = _ns(3, 50)
+    md = _spy_md(monkeypatch)
     calls = _spy(monkeypatch)
     _read(tmp_path, sym, cursor)
-    assert p.name in _opened_names(calls), "mtime within the 60s guard of the cursor -> still opened"
+    ds_names = {pathlib.Path(p2).name for src in calls for p2 in src}
+    assert p.name in set(md) | ds_names, \
+        "mtime within the 60s guard of the cursor -> footer-consulted, never skipped footer-free"
 
 
 def test_guard_skips_part_past_skew(tmp_path, monkeypatch):
@@ -228,8 +282,12 @@ def test_fullmtime_randomized_equivalence(tmp_path):
         rv = _ns(h, m, s)
         p = _write_part(tmp_path, sym, rv)
         _set_mtime_ns(p, rv + rng.randint(0, 30) * 1_000_000_000)   # flush 0-30s after recv (valid)
-        if rng.random() < 0.3:                                      # some -> compact-h<recv's flush hour>
+        shape = rng.random()
+        if shape < 0.3:                                             # some -> compact-h<recv's flush hour>
             _make_compact_h(p, _BASE_HOUR + h)
+        elif shape < 0.5:                                           # some -> compact-migrated seals whose
+            m = _make_compact_migrated(p)                           # merge ran 0-3h AFTER the data
+            _set_mtime_ns(m, rv + rng.randint(1, 3 * 3600) * 1_000_000_000)
         recvs.append(rv)
     for _ in range(24):
         cursor = _ns(rng.randint(0, 9), rng.randint(0, 59), rng.randint(0, 59))

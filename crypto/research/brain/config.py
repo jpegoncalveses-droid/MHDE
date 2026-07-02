@@ -131,3 +131,18 @@ BRAIN_MAX_TICK_WINDOW_NS = int(BRAIN_MAX_TICK_WINDOW_S * 1_000_000_000)
 #: window — immaterial for forward-only research labels. Operator-tunable (also the runner's
 #: ``--slow-source-every-n-ticks``); revisit alongside the live-gate.
 BRAIN_SLOW_SOURCE_EVERY_N_TICKS = 5
+
+#: FRAGMENT-STATS CACHE bound (drift Fix 3): max entries in the reader's process-lifetime LRU of
+#: exact per-fragment ``recv_ts_ns`` [min, max] (read once from the parquet footer statistics,
+#: keyed ``(path, mtime_ns, size)``). The cache is what makes the fast-tick fragment cost
+#: LAG-INDEPENDENT: without it, every raw part flushed between the cursor and ``now`` was
+#: footer-opened by pyarrow on EVERY tick (unskippable opens ~ write-rate × lag ≈ 24k markPrice
+#: opens/tick at 843s lag, ~52k at 30 min — the measured 2026-07-02 feedback runaway); with it,
+#: each fragment's bounds are read once and the per-tick footer cost is ~the NEW-file rate.
+#:
+#: Sizing: an entry is a ~120-char path key + 3 ints ≈ ~400 B with dict overhead, so 262,144
+#: entries ≈ ~100 MB — sized to hold the whole candidate set (post name/mtime skip) of all four
+#: dense sources at ~1 h of cursor lag (~220k fragments) inside the unit's memory budget. An
+#: evicted/missing entry only costs one footer re-read, never correctness (the row filter still
+#: guards every opened fragment).
+BRAIN_FRAGMENT_STATS_CACHE_MAX = 262_144

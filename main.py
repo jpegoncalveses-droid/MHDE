@@ -2329,6 +2329,68 @@ def crypto_capture_asof_compact(root, date):
             click.echo(f"  MISMATCH: {m}")
 
 
+@crypto.command("brain-compact")
+@click.option("--root", default=None,
+              help="Brain store root. Default: brain config BRAIN_STORE_ROOT.")
+@click.option("--registry", "registry_path", default=None,
+              help="Brain registry path. Default: brain config BRAIN_REGISTRY_PATH.")
+def crypto_brain_compact(root, registry_path):
+    """Brain-store compaction: sealed (date < today) whole-partition merges, then TODAY's
+    closed event-hours (drift Fix 2a — the runner writes 1 part per (symbol,date) PER PASS,
+    ~844 files/tick, and the label pass reads them all back every 5th tick).
+
+    Both passes are subprocess-chunked (PR #60 memory model) and REGISTRY-PARITY-CHECKED
+    with the coverage guard hard-ON: a partition/hour holding rows the registry has never
+    recorded is UNVERIFIABLE (the completeness oracle would vacuously pass) and is skipped +
+    surfaced, never silently merged — this also excludes the bookkeeping-dead as-of series
+    (the flush-lag KI). Scope = the 12 primitive datasets; the labels dataset is excluded
+    until it has its own oracle. Safe beside a RUNNING tick loop: merges are
+    replace-then-delete and the store reader retries once on a vanished file. Writes only
+    under the brain store root; opens the registry read-only; never touches DuckDB, the
+    engine DB, or the capture store.
+    """
+    import logging
+
+    from crypto.research.brain import compaction
+    from crypto.research.brain import config as brain_cfg
+    from crypto.research.brain import sources as brain_sources
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    root = root or brain_cfg.BRAIN_STORE_ROOT
+    registry_path = registry_path or brain_cfg.BRAIN_REGISTRY_PATH
+    datasets = sorted(brain_sources.SOURCES.keys())
+    sealed = compaction.compact_brain_chunked(
+        root, datasets=datasets, registry_path=registry_path,
+        require_registry_coverage=True)
+    click.echo(
+        f"brain sealed compaction (chunked): compacted {sealed.partitions_compacted} "
+        f"of {sealed.partitions_scanned} sealed partitions, "
+        f"files {sealed.files_before}->{sealed.files_after}, "
+        f"mismatches {len(sealed.mismatches)}, "
+        f"registry-mismatches {len(sealed.registry_mismatches)}, "
+        f"unverifiable-skipped {len(sealed.unverifiable_skipped)}")
+    hours = compaction.compact_brain_closed_hours_chunked(
+        root, datasets=datasets, registry_path=registry_path,
+        require_registry_coverage=True)
+    click.echo(
+        f"brain closed-hour compaction (chunked): compacted {hours.partitions_compacted} "
+        f"of {hours.partitions_scanned} today partitions, "
+        f"files {hours.files_before}->{hours.files_after}, "
+        f"registry-mismatches {len(hours.registry_mismatches)}, "
+        f"chunk-failures {len(hours.chunk_failures)}, "
+        f"unverifiable-skipped {len(hours.unverifiable_skipped)}")
+    for rep, tag in ((sealed, "sealed"), (hours, "closed-hour")):
+        for m in list(rep.mismatches) + list(rep.registry_mismatches):
+            click.echo(f"  MISMATCH [{tag}]: {m}")
+        for u in rep.unverifiable_skipped:
+            click.echo(f"  UNVERIFIABLE-SKIPPED [{tag}]: {u}")
+        for f in rep.chunk_failures:
+            click.echo(f"  CHUNK-FAILURE [{tag}]: {f}")
+
+
 @crypto.command("intraday-replay")
 @click.option("--start", "start_str", required=True,
               help="First prediction_date YYYY-MM-DD (inclusive).")

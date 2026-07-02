@@ -163,24 +163,16 @@ def _list_partitions(root: str, datasets: Sequence[str]) -> list[str]:
 
 # -- the registry parity oracle ------------------------------------------------
 
-def _registry_mismatches_in_range(registry_path: str, dataset: str, symbol: str,
-                                  start_ns: int, end_ns: int, rows: Sequence[dict],
-                                  *, scope: str) -> list[str]:
-    """Cross-check the merged ``rows`` against the registry roster for window-starts in
-    ``[start_ns, end_ns)`` (a whole day for :func:`compact_partition`, one hour for the
-    intra-day path). ``scope`` only labels the message.
-
-    Returns a list of mismatch strings (empty == clean):
-      * a registry-recorded window MISSING from the merged rows (completeness / truncation);
-      * a present window whose in-row ``count_fn`` count != the registry ``n_events``.
-    Runs registry -> store only (un-recorded store windows are legitimate; see module doc)."""
-    spec = sources.SOURCES.get(dataset)
-    if spec is None:
-        return []
-    count_fn = spec.count_fn
+def _registry_roster(registry_path: str, dataset: str, symbol: str,
+                     start_ns: int, end_ns: int) -> dict[int, int]:
+    """The registry's recorded ``{window_start_ns: n_events}`` roster for ``(dataset, symbol)``
+    with window-starts in ``[start_ns, end_ns)`` — the oracle's independent record, also the
+    COVERAGE signal: an EMPTY roster over a range that holds store rows means the range is
+    UNVERIFIABLE (the completeness check would vacuously pass), see
+    ``require_registry_coverage``."""
     conn = registry.connect(registry_path, read_only=True)
     try:
-        expected = {
+        return {
             int(ws): int(nev)
             for ws, nev in conn.execute(
                 "SELECT window_start_ns, n_events FROM snapshot_bookkeeping "
@@ -190,6 +182,27 @@ def _registry_mismatches_in_range(registry_path: str, dataset: str, symbol: str,
         }
     finally:
         conn.close()
+
+
+def _registry_mismatches_in_range(registry_path: str, dataset: str, symbol: str,
+                                  start_ns: int, end_ns: int, rows: Sequence[dict],
+                                  *, scope: str,
+                                  roster: Optional[dict] = None) -> list[str]:
+    """Cross-check the merged ``rows`` against the registry roster for window-starts in
+    ``[start_ns, end_ns)`` (a whole day for :func:`compact_partition`, one hour for the
+    intra-day path). ``scope`` only labels the message. ``roster`` (optional) is a
+    pre-fetched :func:`_registry_roster` so a caller that already read it never queries twice.
+
+    Returns a list of mismatch strings (empty == clean):
+      * a registry-recorded window MISSING from the merged rows (completeness / truncation);
+      * a present window whose in-row ``count_fn`` count != the registry ``n_events``.
+    Runs registry -> store only (un-recorded store windows are legitimate; see module doc)."""
+    spec = sources.SOURCES.get(dataset)
+    if spec is None:
+        return []
+    count_fn = spec.count_fn
+    expected = roster if roster is not None else _registry_roster(
+        registry_path, dataset, symbol, start_ns, end_ns)
     by_window: dict[int, dict] = {int(r["window_start_ns"]): r for r in rows}
     mismatches: list[str] = []
     for ws, n_exp in sorted(expected.items()):
@@ -227,6 +240,10 @@ class BrainCompactionResult:
     out_path: Optional[str] = None
     corrupt_skipped: list = field(default_factory=list)   # quarantined unreadable fragments
     registry_mismatches: list = field(default_factory=list)
+    #: non-empty message == the partition held rows the registry has NEVER recorded, so the
+    #: parity oracle could not verify it and (under ``require_registry_coverage``) the merge
+    #: was SKIPPED with every original left in place. Surfaced, never silent (PR #60 lesson).
+    unverifiable_skipped: str = ""
 
 
 def _merge_tables_to_file(tables: Sequence["pa.Table"], out_path: str) -> tuple[int, int]:
@@ -255,8 +272,8 @@ def _merge_tables_to_file(tables: Sequence["pa.Table"], out_path: str) -> tuple[
     return rows_before, rows_after
 
 
-def compact_partition(part_dir: str, *, registry_path: Optional[str] = None
-                      ) -> BrainCompactionResult:
+def compact_partition(part_dir: str, *, registry_path: Optional[str] = None,
+                      require_registry_coverage: bool = False) -> BrainCompactionResult:
     """Merge all writer ``part-*`` of one ``(symbol,date)`` partition into one verified file.
 
     Corruption-tolerant (skip + quarantine an unreadable fragment), crash-safe (write a
@@ -266,7 +283,18 @@ def compact_partition(part_dir: str, *, registry_path: Optional[str] = None
     the merged rows are cross-checked against the registry (completeness + ``n_events``); any
     mismatch is RECORDED on the result, not raised — the inputs were already short before us.
     A mechanical row-count mismatch (the merge itself losing rows) still raises ``ValueError``
-    with the originals intact, exactly as capture does."""
+    with the originals intact, exactly as capture does.
+
+    ``require_registry_coverage=True`` (the wiring constraint: NO partition compacts without a
+    VALID parity check) additionally demands the registry KNOW the partition: a partition
+    holding rows over a range with a completely EMPTY roster is unverifiable — the
+    completeness oracle would vacuously pass on it — so the merge is SKIPPED with every
+    original left untouched and the skip surfaced on ``unverifiable_skipped``. This
+    automatically excludes the bookkeeping-dead datasets (the as-of flush-lag KI) and any
+    future bookkeeping regression. Requires ``registry_path``."""
+    if require_registry_coverage and registry_path is None:
+        raise ValueError("require_registry_coverage needs a registry_path — coverage cannot "
+                         "be checked without the registry")
     files = _writer_parts(part_dir)
     if not files:
         return BrainCompactionResult(0, 0, 0, 0, None)
@@ -291,7 +319,19 @@ def compact_partition(part_dir: str, *, registry_path: Optional[str] = None
     dataset, symbol, date = _parse_part_dir(part_dir)
     registry_mismatches: list[str] = []
     if registry_path is not None:
-        registry_mismatches = _registry_mismatches(registry_path, dataset, symbol, date, rows)
+        start_ns, end_ns = _day_bounds_ns(date)
+        roster = _registry_roster(registry_path, dataset, symbol, start_ns, end_ns)
+        if require_registry_coverage and rows and not roster:
+            msg = (f"{dataset}/{symbol}/{date}: {rows_before} row(s) in {len(files)} part "
+                   f"file(s) but ZERO registry-recorded windows — unverifiable, merge skipped, "
+                   f"originals untouched")
+            logger.warning("brain compaction: %s", msg)
+            return BrainCompactionResult(
+                rows_before=rows_before, rows_after=rows_before,
+                files_before=len(files), files_after=len(files), out_path=None,
+                corrupt_skipped=[], registry_mismatches=[], unverifiable_skipped=msg)
+        registry_mismatches = _registry_mismatches_in_range(
+            registry_path, dataset, symbol, start_ns, end_ns, rows, scope=date, roster=roster)
 
     out_path: Optional[str] = None
     rows_after = rows_before
@@ -349,6 +389,9 @@ class ClosedHourResult:
     out_path: Optional[str] = None
     corrupt_skipped: list = field(default_factory=list)
     registry_mismatches: list = field(default_factory=list)
+    #: non-empty message == the hour held rows with an EMPTY registry roster (unverifiable);
+    #: under ``require_registry_coverage`` its merge was skipped and its parts kept in place.
+    unverifiable_skipped: str = ""
 
 
 def compact_partition_closed_hours(
@@ -357,6 +400,7 @@ def compact_partition_closed_hours(
     now_ns: int,
     registry_path: Optional[str] = None,
     watermark_ns: int = cfg.BRAIN_WATERMARK_NS,
+    require_registry_coverage: bool = False,
 ) -> list[ClosedHourResult]:
     """Compact every CLOSED, fully-resolvable event-hour of one ``(symbol,date)`` partition.
 
@@ -365,7 +409,15 @@ def compact_partition_closed_hours(
     one ``compact-h<hour_ns>-<uuid>.parquet`` (a single part wholly within the hour with no prior
     compact is a no-op merge, still audited), then run the per-hour registry oracle if a
     ``registry_path`` is given. Corruption-tolerant, crash-safe (replace-then-delete), and
-    idempotent (a re-run finds no fresh part rows for an already-compacted hour)."""
+    idempotent (a re-run finds no fresh part rows for an already-compacted hour).
+
+    ``require_registry_coverage=True``: an hour holding rows over an EMPTY registry roster is
+    unverifiable — its merge is SKIPPED, the skip surfaced on ``unverifiable_skipped``, and
+    every part contributing to it is KEPT (a part shared with a covered hour self-heals later:
+    the covered hour's windows dedup against its landed compact file on the next run)."""
+    if require_registry_coverage and registry_path is None:
+        raise ValueError("require_registry_coverage needs a registry_path — coverage cannot "
+                         "be checked without the registry")
     part_paths = _writer_parts(part_dir)
     if not part_paths:
         return []
@@ -411,6 +463,7 @@ def compact_partition_closed_hours(
 
     results: list[ClosedHourResult] = []
     noop_home: set = set()                            # files kept as a no-op hour's canonical home
+    uncovered_keep: set = set()                       # files kept because their hour is unverifiable
     schema = spec.schema if spec is not None else None
     for h in sorted(hour_files):
         if not _is_hour_closed(h, now_ns, watermark_ns):
@@ -437,6 +490,25 @@ def compact_partition_closed_hours(
                 new_rows.extend(fresh)
                 contributing.add(p)
 
+        roster: Optional[dict] = None
+        if registry_path is not None:
+            roster = _registry_roster(registry_path, dataset, symbol, h, h + HOUR_NS)
+        if (require_registry_coverage and (existing_rows or new_rows) and not roster):
+            # Unverifiable hour: rows exist, the registry has never heard of any of them.
+            # Skip the merge, KEEP every contributing part (shared covered hours self-heal
+            # later via the existing-windows dedup), surface the skip.
+            uncovered_keep |= set(src_paths)
+            msg = (f"{dataset}/{symbol}/{date} h{h}: {total_hour_rows + len(existing_rows)} "
+                   f"row(s) but ZERO registry-recorded windows — unverifiable, hour skipped, "
+                   f"parts kept")
+            logger.warning("brain closed-hour compaction: %s", msg)
+            results.append(ClosedHourResult(
+                hour_ns=h, rows_before=total_hour_rows, rows_after=total_hour_rows,
+                files_before=len(src_paths), files_after=len(src_paths), out_path=None,
+                corrupt_skipped=list(corrupt), registry_mismatches=[],
+                unverifiable_skipped=msg))
+            continue
+
         single = next(iter(contributing)) if len(contributing) == 1 else None
         single_wholly_in_h = single is not None and len(by_path[single][1]) == 1
 
@@ -447,6 +519,12 @@ def compact_partition_closed_hours(
         elif not existing_windows and single_wholly_in_h:
             noop_home.add(single)                     # one part wholly in h, no prior compact
         else:
+            # NOTE: a part SPANNING this (covered) hour and an UNCOVERED sibling hour is kept
+            # whole by ``uncovered_keep``, so this hour's rows transiently live in BOTH the
+            # compact-h file written here and that kept part — harmless (every reader dedups
+            # by ``(symbol, window_start_ns)``; labels' mark_by_window, engineered's
+            # base_vals) and self-healing (once the sibling gains coverage, the part is
+            # consumed and its already-compacted windows dedup against existing_windows).
             out_path = os.path.join(part_dir, f"compact-h{h}-{uuid4().hex}.parquet")
             _, rows_after = _merge_tables_to_file(
                 [pa.Table.from_pylist(new_rows, schema=schema)], out_path)
@@ -455,7 +533,7 @@ def compact_partition_closed_hours(
         if registry_path is not None:
             registry_mismatches = _registry_mismatches_in_range(
                 registry_path, dataset, symbol, h, h + HOUR_NS, existing_rows + new_rows,
-                scope=f"{date} h{h}")
+                scope=f"{date} h{h}", roster=roster)
         results.append(ClosedHourResult(
             hour_ns=h, rows_before=total_hour_rows, rows_after=rows_after,
             files_before=len(src_paths),
@@ -463,10 +541,11 @@ def compact_partition_closed_hours(
             out_path=out_path, corrupt_skipped=list(corrupt),
             registry_mismatches=registry_mismatches))
 
-    # 4. Delete consumed parts (every consumable file except a no-op hour's home), then
-    #    quarantine corrupt fragments (only after the merges have landed).
+    # 4. Delete consumed parts (every consumable file except a no-op hour's home and any file
+    #    an UNVERIFIABLE hour still needs), then quarantine corrupt fragments (only after the
+    #    merges have landed).
     for p in consumable:
-        if p not in noop_home:
+        if p not in noop_home and p not in uncovered_keep:
             try:
                 os.remove(p)
             except FileNotFoundError:
@@ -489,24 +568,30 @@ class BrainCompactionReport:
     corrupt_skipped: list[str] = field(default_factory=list)
     #: chunk-level failures (e.g. an OOM-killed subprocess) — surfaced, never a silent "0".
     chunk_failures: list[str] = field(default_factory=list)
+    #: partitions/hours skipped UNVERIFIED under ``require_registry_coverage`` (rows present,
+    #: registry roster empty) — surfaced, never silent.
+    unverifiable_skipped: list[str] = field(default_factory=list)
 
 
 def _compact_chunk(root: str, paths: Sequence[str], budget: int,
-                   registry_path: Optional[str]) -> dict:
+                   registry_path: Optional[str],
+                   require_registry_coverage: bool = False) -> dict:
     """Compact partitions until ~``budget`` merges are done; marshal the chunk summary.
 
     ``completed`` is the count of partitions FULLY processed (the caller advances past them).
     The shared unit run by both the subprocess worker and the in-process test runner. EVERY
-    finding (mechanical mismatch, registry mismatch, corrupt skip, counts) is returned — the
-    PR #60 lesson: the subprocess exit drops anything not marshalled, so an un-marshalled
-    registry mismatch would surface as a silent "0"."""
+    finding (mechanical mismatch, registry mismatch, corrupt skip, unverifiable skip, counts)
+    is returned — the PR #60 lesson: the subprocess exit drops anything not marshalled, so an
+    un-marshalled finding would surface as a silent "0"."""
     merges = files_before = files_after = compacted = completed = 0
     mismatches: list[str] = []
     registry_mismatches: list[str] = []
     corrupt_skipped: list[str] = []
+    unverifiable_skipped: list[str] = []
     for path in paths:
         try:
-            res = compact_partition(path, registry_path=registry_path)
+            res = compact_partition(path, registry_path=registry_path,
+                                    require_registry_coverage=require_registry_coverage)
         except ValueError as exc:        # mechanical row-count mismatch (originals intact)
             mismatches.append(str(exc))
             completed += 1
@@ -517,6 +602,8 @@ def _compact_chunk(root: str, paths: Sequence[str], budget: int,
         files_after += res.files_after
         registry_mismatches.extend(res.registry_mismatches)
         corrupt_skipped.extend(res.corrupt_skipped)
+        if res.unverifiable_skipped:
+            unverifiable_skipped.append(res.unverifiable_skipped)
         if res.out_path is not None:
             merges += 1
             compacted += 1
@@ -526,31 +613,35 @@ def _compact_chunk(root: str, paths: Sequence[str], budget: int,
     return {"completed": completed, "compacted": compacted, "merges": merges,
             "files_before": files_before, "files_after": files_after,
             "mismatches": mismatches, "registry_mismatches": registry_mismatches,
-            "corrupt_skipped": corrupt_skipped}
+            "corrupt_skipped": corrupt_skipped,
+            "unverifiable_skipped": unverifiable_skipped}
 
 
 def _inprocess_chunk_runner():
     """A ``chunk_runner`` that runs :func:`_compact_chunk` IN-PROCESS (tests; no subprocess)."""
-    def _run(root, paths, budget, registry_path):
-        return _compact_chunk(root, list(paths), budget, registry_path)
+    def _run(root, paths, budget, registry_path, require_registry_coverage=False):
+        return _compact_chunk(root, list(paths), budget, registry_path,
+                              require_registry_coverage)
     return _run
 
 
 def _run_chunk_subprocess(root: str, paths: Sequence[str], budget: int,
-                          registry_path: Optional[str]) -> dict:
+                          registry_path: Optional[str],
+                          require_registry_coverage: bool = False) -> dict:
     """Run one chunk in a FRESH subprocess (the memory reset). Partition paths go over stdin
     (no argv length limit). A failed chunk (e.g. an OOM-killed subprocess) returns
     completed=0; the driver still advances by 1 so a single bad partition cannot wedge it."""
     proc = subprocess.run(
         [sys.executable, "-m", "crypto.research.brain._compact_chunk_worker",
-         root, str(int(budget)), registry_path or ""],
+         root, str(int(budget)), registry_path or "",
+         "1" if require_registry_coverage else "0"],
         input="\n".join(paths), capture_output=True, text=True)
     if proc.returncode != 0 or not proc.stdout.strip():
         logger.error("brain compaction chunk subprocess failed (rc=%s): %s",
                      proc.returncode, (proc.stderr or "")[-500:])
         return {"completed": 0, "compacted": 0, "merges": 0, "files_before": 0,
                 "files_after": 0, "mismatches": [], "registry_mismatches": [],
-                "corrupt_skipped": []}
+                "corrupt_skipped": [], "unverifiable_skipped": []}
     return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
@@ -561,14 +652,16 @@ def compact_brain_chunked(
     merges_per_chunk: int = cfg.BRAIN_PASS_BATCH_SIZE,
     registry_path: Optional[str] = None,
     now_ms: Optional[int] = None,
+    require_registry_coverage: bool = False,
     chunk_runner=None,
 ) -> BrainCompactionReport:
     """Compact every SEALED ``(symbol,date)`` brain partition (``date < today``) in
     subprocess-bounded chunks of ~``merges_per_chunk`` merges (peak RSS bounded by RUN SIZE).
 
-    ``chunk_runner(root, paths, budget, registry_path) -> dict`` runs one chunk; the default
-    isolates each in a subprocess. Today's partition is never touched (never race the live
-    writer). Registry mismatches are marshalled through every chunk into the report."""
+    ``chunk_runner(root, paths, budget, registry_path, require_registry_coverage) -> dict``
+    runs one chunk; the default isolates each in a subprocess. Today's partition is never
+    touched (never race the live writer). Registry mismatches AND unverifiable skips are
+    marshalled through every chunk into the report."""
     chunk_runner = chunk_runner or _run_chunk_subprocess
     today = _date_str(now_ms if now_ms is not None else int(time.time() * 1000))
     paths = [p for p in _list_partitions(root, datasets)
@@ -577,7 +670,8 @@ def compact_brain_chunked(
     i = 0
     chunks = 0
     while i < len(paths):
-        res = chunk_runner(root, paths[i:], merges_per_chunk, registry_path)
+        res = chunk_runner(root, paths[i:], merges_per_chunk, registry_path,
+                           require_registry_coverage)
         report.partitions_scanned += int(res["completed"])
         report.partitions_compacted += int(res.get("compacted", 0))
         report.files_before += int(res["files_before"])
@@ -585,22 +679,25 @@ def compact_brain_chunked(
         report.mismatches.extend(res.get("mismatches", []))
         report.registry_mismatches.extend(res.get("registry_mismatches", []))
         report.corrupt_skipped.extend(res.get("corrupt_skipped", []))
+        report.unverifiable_skipped.extend(res.get("unverifiable_skipped", []))
         i += max(int(res["completed"]), 1)               # always advance -> no infinite loop
         chunks += 1
     logger.info(
         "brain compaction: scanned %d sealed partitions, compacted %d over %d subprocess "
         "chunks (budget %d), files %d -> %d, mismatches %d, registry-mismatches %d, "
-        "corrupt-skipped %d",
+        "corrupt-skipped %d, unverifiable-skipped %d",
         report.partitions_scanned, report.partitions_compacted, chunks, merges_per_chunk,
         report.files_before, report.files_after, len(report.mismatches),
-        len(report.registry_mismatches), len(report.corrupt_skipped))
+        len(report.registry_mismatches), len(report.corrupt_skipped),
+        len(report.unverifiable_skipped))
     return report
 
 
 # -- chunked driver for the intra-day CLOSED-HOUR compactor --------------------
 
 def _compact_closed_hours_chunk(root: str, paths: Sequence[str], budget: int, now_ns: int,
-                                registry_path: Optional[str], *,
+                                registry_path: Optional[str],
+                                require_registry_coverage: bool = False, *,
                                 watermark_ns: int = cfg.BRAIN_WATERMARK_NS) -> dict:
     """Closed-hour compact partitions until ~``budget`` hour-merges are done; marshal the
     summary. ``compacted`` counts PARTITIONS with >=1 compacted hour (mirrors #62), ``merges``
@@ -611,10 +708,12 @@ def _compact_closed_hours_chunk(root: str, paths: Sequence[str], budget: int, no
     mismatches: list[str] = []
     registry_mismatches: list[str] = []
     corrupt_skipped: list[str] = []
+    unverifiable_skipped: list[str] = []
     for path in paths:
         try:
             hour_results = compact_partition_closed_hours(
-                path, now_ns=now_ns, registry_path=registry_path, watermark_ns=watermark_ns)
+                path, now_ns=now_ns, registry_path=registry_path, watermark_ns=watermark_ns,
+                require_registry_coverage=require_registry_coverage)
         except ValueError as exc:        # mechanical row-count mismatch (originals intact)
             mismatches.append(str(exc))
             completed += 1
@@ -627,6 +726,8 @@ def _compact_closed_hours_chunk(root: str, paths: Sequence[str], budget: int, no
             files_before += hr.files_before
             files_after += hr.files_after
             registry_mismatches.extend(hr.registry_mismatches)
+            if hr.unverifiable_skipped:
+                unverifiable_skipped.append(hr.unverifiable_skipped)
             for c in hr.corrupt_skipped:                 # repeated across this partition's hours
                 if c not in seen_corrupt:
                     seen_corrupt.add(c)
@@ -642,18 +743,21 @@ def _compact_closed_hours_chunk(root: str, paths: Sequence[str], budget: int, no
     return {"completed": completed, "compacted": compacted, "merges": merges,
             "files_before": files_before, "files_after": files_after,
             "mismatches": mismatches, "registry_mismatches": registry_mismatches,
-            "corrupt_skipped": corrupt_skipped, "failed": False}
+            "corrupt_skipped": corrupt_skipped,
+            "unverifiable_skipped": unverifiable_skipped, "failed": False}
 
 
 def _inprocess_closed_hours_chunk_runner():
     """A ``chunk_runner`` that runs :func:`_compact_closed_hours_chunk` IN-PROCESS (tests)."""
-    def _run(root, paths, budget, now_ns, registry_path):
-        return _compact_closed_hours_chunk(root, list(paths), budget, now_ns, registry_path)
+    def _run(root, paths, budget, now_ns, registry_path, require_registry_coverage=False):
+        return _compact_closed_hours_chunk(root, list(paths), budget, now_ns, registry_path,
+                                           require_registry_coverage)
     return _run
 
 
 def _run_closed_hours_chunk_subprocess(root: str, paths: Sequence[str], budget: int,
-                                       now_ns: int, registry_path: Optional[str], *,
+                                       now_ns: int, registry_path: Optional[str],
+                                       require_registry_coverage: bool = False, *,
                                        watermark_ns: int = cfg.BRAIN_WATERMARK_NS) -> dict:
     """Run one closed-hour chunk in a FRESH subprocess (the memory reset). Partition paths go
     over stdin. Unlike the sealed driver, a failed chunk returns ``failed=True`` (not a silent
@@ -661,14 +765,15 @@ def _run_closed_hours_chunk_subprocess(root: str, paths: Sequence[str], budget: 
     partition cannot wedge the run."""
     proc = subprocess.run(
         [sys.executable, "-m", "crypto.research.brain._compact_closed_hours_chunk_worker",
-         root, str(int(budget)), str(int(now_ns)), str(int(watermark_ns)), registry_path or ""],
+         root, str(int(budget)), str(int(now_ns)), str(int(watermark_ns)), registry_path or "",
+         "1" if require_registry_coverage else "0"],
         input="\n".join(paths), capture_output=True, text=True)
     if proc.returncode != 0 or not proc.stdout.strip():
         logger.error("brain closed-hour compaction chunk subprocess failed (rc=%s): %s",
                      proc.returncode, (proc.stderr or "")[-500:])
         return {"completed": 0, "compacted": 0, "merges": 0, "files_before": 0,
                 "files_after": 0, "mismatches": [], "registry_mismatches": [],
-                "corrupt_skipped": [], "failed": True}
+                "corrupt_skipped": [], "unverifiable_skipped": [], "failed": True}
     return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
@@ -680,6 +785,7 @@ def compact_brain_closed_hours_chunked(
     now_ns: Optional[int] = None,
     registry_path: Optional[str] = None,
     watermark_ns: int = cfg.BRAIN_WATERMARK_NS,
+    require_registry_coverage: bool = False,
     chunk_runner=None,
 ) -> BrainCompactionReport:
     """Closed-hour-compact every TODAY-dated ``(symbol,date)`` brain partition in
@@ -688,13 +794,16 @@ def compact_brain_closed_hours_chunked(
     Scans ``date == today`` only: the closed-hour gate already bounds correctness, and
     ``date < today`` is the SEALED compactor's (:func:`compact_brain_chunked`) domain — keeping
     the two scans disjoint enforces the never-run-both-on-one-partition rule. ``chunk_runner``
-    has the fixed signature ``(root, paths, budget, now_ns, registry_path) -> dict``; the
-    default isolates each chunk in a subprocess (with ``watermark_ns`` baked in). Registry
-    mismatches AND chunk failures are marshalled through every chunk into the report."""
+    has the fixed signature ``(root, paths, budget, now_ns, registry_path,
+    require_registry_coverage) -> dict``; the default isolates each chunk in a subprocess
+    (with ``watermark_ns`` baked in). Registry mismatches, unverifiable skips AND chunk
+    failures are marshalled through every chunk into the report."""
     if chunk_runner is None:
-        def chunk_runner(root, paths, budget, now_ns, registry_path):
+        def chunk_runner(root, paths, budget, now_ns, registry_path,
+                         require_registry_coverage=False):
             return _run_closed_hours_chunk_subprocess(
-                root, paths, budget, now_ns, registry_path, watermark_ns=watermark_ns)
+                root, paths, budget, now_ns, registry_path, require_registry_coverage,
+                watermark_ns=watermark_ns)
     now_ns = now_ns if now_ns is not None else int(time.time() * 1_000_000_000)
     today = _date_str(now_ns // 1_000_000)
     paths = [p for p in _list_partitions(root, datasets)
@@ -702,7 +811,8 @@ def compact_brain_closed_hours_chunked(
     report = BrainCompactionReport()
     i = chunks = 0
     while i < len(paths):
-        res = chunk_runner(root, paths[i:], merges_per_chunk, now_ns, registry_path)
+        res = chunk_runner(root, paths[i:], merges_per_chunk, now_ns, registry_path,
+                           require_registry_coverage)
         report.partitions_scanned += int(res["completed"])
         report.partitions_compacted += int(res.get("compacted", 0))
         report.files_before += int(res["files_before"])
@@ -710,6 +820,7 @@ def compact_brain_closed_hours_chunked(
         report.mismatches.extend(res.get("mismatches", []))
         report.registry_mismatches.extend(res.get("registry_mismatches", []))
         report.corrupt_skipped.extend(res.get("corrupt_skipped", []))
+        report.unverifiable_skipped.extend(res.get("unverifiable_skipped", []))
         if res.get("failed"):
             report.chunk_failures.append(
                 f"closed-hour compaction chunk failed at partition index {i} (advanced 1 to "
@@ -719,8 +830,9 @@ def compact_brain_closed_hours_chunked(
     logger.info(
         "brain closed-hour compaction: scanned %d today partitions, compacted %d over %d "
         "subprocess chunks (budget %d), files %d -> %d, registry-mismatches %d, "
-        "corrupt-skipped %d, chunk-failures %d",
+        "corrupt-skipped %d, chunk-failures %d, unverifiable-skipped %d",
         report.partitions_scanned, report.partitions_compacted, chunks, merges_per_chunk,
         report.files_before, report.files_after, len(report.registry_mismatches),
-        len(report.corrupt_skipped), len(report.chunk_failures))
+        len(report.corrupt_skipped), len(report.chunk_failures),
+        len(report.unverifiable_skipped))
     return report

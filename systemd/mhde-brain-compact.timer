@@ -1,0 +1,14 @@
+# /home/jpcg/.config/systemd/user/mhde-brain-compact.timer
+[Unit]
+Description=MHDE brain-store compaction — hourly
+
+[Timer]
+# Hourly at :36 — offset from the capture firehose compactor's :06–:10 window (and the
+# 01:30 as-of seal) so the two compaction passes never stack IO on the shared spindle.
+# The closed-hour gate seals an hour only a full watermark past its end, so exact timing
+# is not safety-critical; Persistent catches up a missed run.
+OnCalendar=*-*-* *:36:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

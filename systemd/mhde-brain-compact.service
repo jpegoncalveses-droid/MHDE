@@ -1,0 +1,32 @@
+# /home/jpcg/.config/systemd/user/mhde-brain-compact.service
+[Unit]
+Description=MHDE brain-store compaction — sealed partitions + today's closed hours, registry-parity-checked
+After=network-online.target
+
+[Service]
+# Hourly oneshot (drift Fix 2a): the brain tick loop writes ONE part file per (symbol,date)
+# PER PASS (~844 files/tick), and the label pass reads them all back every 5th tick — an
+# uncompacted store grew to 229k in-scope full reads per label pass in one 10.5h run (the
+# 2026-07-02 drift). This unit merges sealed (date < today) partitions to ~1 file each, then
+# today's CLOSED event-hours to ~1 file per hour, both subprocess-chunked and registry-
+# parity-checked with the coverage guard hard-ON (a partition/hour the registry has never
+# recorded is skipped + surfaced, never silently merged). Safe beside the RUNNING tick loop:
+# merges are replace-then-delete and the brain store reader retries once on a vanished file.
+# Writes only under data/research/brain; opens the registry read-only; never opens DuckDB,
+# the engine DB, or the capture store.
+#
+# BUILT-NOT-DEPLOYED: tracked but not installed/enabled. Enabling is the operator's deploy.
+Type=oneshot
+WorkingDirectory=/home/jpcg/MHDE
+ExecStartPre=/usr/bin/test -x /home/jpcg/MHDE/venv/bin/python
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto brain-compact
+# Shared-host invariant (ADR-036/038): idle CPU+IO and OOM-first, so compaction never
+# disturbs the engine's 1s cycle even though it reads+rewrites while the brain loop is live.
+Nice=19
+IOSchedulingClass=idle
+MemoryMax=1G
+CPUWeight=20
+IOWeight=20
+OOMScoreAdjust=800
+StandardOutput=journal
+StandardError=journal

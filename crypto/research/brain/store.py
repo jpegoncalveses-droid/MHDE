@@ -19,6 +19,7 @@ engine DB, or capture's store.
 """
 from __future__ import annotations
 
+import logging
 import os
 import pathlib
 from datetime import datetime, timezone
@@ -28,6 +29,8 @@ from uuid import uuid4
 import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
+
+logger = logging.getLogger("mhde.crypto.brain.store")
 
 # Common provenance / immutable bounds prefix shared by every snapshot schema.
 _PROVENANCE = [
@@ -227,6 +230,10 @@ _MS_PER_DAY = 86_400_000
 #: caller's cursor is a recv stamp, so prune a day below the cursor's date to never drop a
 #: window whose recv just crossed midnight (mirrors the capture reader's PR #55 margin).
 _DATE_PRUNE_MARGIN_NS = 86_400 * 1_000_000_000
+#: mtime FILE-skip skew guard (drift Fix 2b): a file is skipped only once the window_end
+#: floor is at least this far past its write mtime, absorbing filesystem-vs-window clock
+#: skew (sub-second in practice; mirrors the capture reader's 60s guard).
+_MTIME_SKIP_GUARD_NS = 60 * 1_000_000_000
 
 
 def _date_str_from_ns(ns: int) -> str:
@@ -305,6 +312,21 @@ def read_snapshots(root: str, dataset: str, symbol: Optional[str] = None, *,
     the surviving below-floor rows inside the kept ``date=`` dir. ``0`` is a no-op, so every
     existing caller is unaffected.
 
+    ``window_end_floor_ns > 0`` additionally enables the mtime FILE-skip (drift Fix 2b): a
+    brain-store row is written strictly AFTER its window settles, so every row satisfies
+    ``window_end_ns < write-time (the file's mtime)``; a file with ``st_mtime_ns +
+    _MTIME_SKIP_GUARD_NS <= window_end_floor_ns`` therefore holds ONLY rows the row filter
+    below would drop and is skipped WITHOUT opening — the label pass stops paying a full
+    decode per historical file (~229k full reads/pass on the 2026-07-02 store). Compaction
+    output is written later (newer mtime), so it is never wrongly skipped; byte-identical
+    output is pinned by test_brain_store_read_skip.
+
+    COMPACTOR-RACE TOLERANCE: the brain compactor's replace-then-delete can unlink a file
+    between this function's glob and its open. On ``FileNotFoundError`` the whole listing +
+    read is rebuilt ONCE from scratch (the fresh glob picks up the merged compact file, so
+    nothing is lost and nothing duplicates); a second miss propagates — persistent absence
+    is a real error, not a race.
+
     CAVEAT before wiring a real recv cursor: the 1-day margin assumes a snapshot's
     ``recv_ts_ns`` lags its ``window_start_ns`` (the partition date) by < 1 day. A
     late/replayed write with > 1-day lag could be pruned while a recv-cursor caller still
@@ -317,21 +339,39 @@ def read_snapshots(root: str, dataset: str, symbol: Optional[str] = None, *,
         return []
     lower_date = (_date_str_from_ns(after_recv_ts_ns - _DATE_PRUNE_MARGIN_NS)
                   if after_recv_ts_ns > _DATE_PRUNE_MARGIN_NS else None)
-    if symbol is None:
-        sym_dirs = sorted(base.glob("symbol=*"))
-    else:
-        sym_dir = base / f"symbol={symbol}"
-        sym_dirs = [sym_dir] if sym_dir.exists() else []
-    files: list[pathlib.Path] = []
-    for sym_dir in sym_dirs:
-        for date_dir in sorted(sym_dir.glob("date=*")):
-            if lower_date is not None and date_dir.name[len("date="):] < lower_date:
-                continue                              # pruned: older than the cursor window
-            files.extend(sorted(date_dir.glob("*.parquet")))
-    rows: list[dict] = []
-    for fp in files:
-        table = pq.ParquetFile(str(fp)).read()
-        if window_end_floor_ns:                       # ROW prune: drop below-floor windows pre-python
-            table = table.filter(pc.field("window_end_ns") >= window_end_floor_ns)
-        rows.extend(table.to_pylist())
-    return rows
+
+    def _attempt() -> list[dict]:
+        if symbol is None:
+            sym_dirs = sorted(base.glob("symbol=*"))
+        else:
+            sym_dir = base / f"symbol={symbol}"
+            sym_dirs = [sym_dir] if sym_dir.exists() else []
+        files: list[pathlib.Path] = []
+        for sym_dir in sym_dirs:
+            for date_dir in sorted(sym_dir.glob("date=*")):
+                if lower_date is not None and date_dir.name[len("date="):] < lower_date:
+                    continue                          # pruned: older than the cursor window
+                for fp in sorted(date_dir.glob("*.parquet")):
+                    if window_end_floor_ns:
+                        try:
+                            mtime_ns = fp.stat().st_mtime_ns
+                        except OSError as exc:        # vanished post-glob: the compactor race
+                            raise FileNotFoundError(str(fp)) from exc
+                        if mtime_ns + _MTIME_SKIP_GUARD_NS <= window_end_floor_ns:
+                            continue                  # provably all-below-floor: skip unopened
+                    files.append(fp)
+        rows: list[dict] = []
+        for fp in files:
+            table = pq.ParquetFile(str(fp)).read()
+            if window_end_floor_ns:                   # ROW prune: drop below-floor windows pre-python
+                table = table.filter(pc.field("window_end_ns") >= window_end_floor_ns)
+            rows.extend(table.to_pylist())
+        return rows
+
+    try:
+        return _attempt()
+    except FileNotFoundError as exc:
+        logger.warning("brain store read: fragment vanished mid-read (compactor replace-then-"
+                       "delete race), rebuilding the read once: %s/%s (%s)",
+                       dataset, symbol if symbol is not None else "*", exc)
+        return _attempt()
