@@ -51,8 +51,21 @@ def test_carries_shared_host_resource_caps():
     assert int(svc.get("Service", "CPUWeight")) <= 20
     assert int(svc.get("Service", "IOWeight")) <= 20
     assert svc.get("Service", "Nice") == "19"
-    assert svc.get("Service", "IOSchedulingClass") == "idle"
-    assert svc.has_option("Service", "MemoryMax")
+    # drift Fix 4: BEST-EFFORT at the LOWEST priority (7), no longer class-idle. Idle-class
+    # IO is starved indefinitely while ANY best-effort IO runs anywhere on the host — with 8
+    # capture shards writing continuously the brain's reads queued behind everything (the
+    # measured live-vs-gate fast-tick gap), and every refault re-read paid that queue. BE-7
+    # still yields to every higher-priority BE task (engine, capture at the BE default) but
+    # is never starved outright. IOWeight=20 keeps the cgroup-level ceiling.
+    assert svc.get("Service", "IOSchedulingClass") == "best-effort"
+    assert svc.get("Service", "IOSchedulingPriority") == "7"
+    # drift Fix 4: 3G, was 2G. Measured at 2G over one night: the cap was hit 316,958 times,
+    # 21.9M direct-reclaim scans, 9.87M file refaults ~= 37.6 GiB re-read from disk — the
+    # tape+store working set (~1.0G anon + cache) cannot live in 2G beside itself. 3G leaves
+    # the host ~4.9G available worst-case (15.6G total; capture ~2.7G live-critical aggregate,
+    # streamlit ~2G) — the host aggregate stays the binding limit, and OOMScoreAdjust=800
+    # still sacrifices the brain first.
+    assert svc.get("Service", "MemoryMax") == "3G"
 
 
 def test_built_not_deployed_and_never_touches_the_production_db():

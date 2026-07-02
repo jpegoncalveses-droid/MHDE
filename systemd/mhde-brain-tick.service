@@ -15,13 +15,24 @@ StartLimitBurst=5
 # (NO ~19GB/275K-file backlog replay). Writes ONLY data/research/brain (primitives + labels +
 # registry); reads the capture tape READ-ONLY; never opens the production DuckDB or engine DB.
 #
-# Steady-state work is bounded (25-symbol batches per source per minute). MemoryMax=2G:
-# steady-state primitives are a few hundred MB; the label pass reads at most the
-# max-horizon-bounded (~12h) markprice window for the universe (a few hundred MB once mature);
-# 2G is ~2x headroom for pyarrow buffers/growth while staying far below the host budget.
-# OOM-first (OOMScoreAdjust=800) + Restart=on-failure means an occasional OOM self-heals
-# (cursor unmoved -> retried) and never disturbs the 1s engine cycle. Validate against live
-# RSS once running and lower if warranted.
+# Steady-state work is bounded (25-symbol batches per source per minute). MemoryMax=3G
+# (drift Fix 4, was 2G): measured over the 2026-07-01/02 night at 2G, the cgroup hit its cap
+# 316,958 times with 21.9M direct-reclaim scans and 9.87M file refaults (~37.6 GiB re-read
+# from disk) — anon is only ~1.0G but the capture-tape + brain-store working set cannot stay
+# page-cached beside it in 2G, so every tick re-read footers from disk. 3G lets the hot set
+# actually cache while leaving the host ~4.9G available worst-case (15.6G total; capture
+# ~2.7G live-critical aggregate, streamlit ~2G) — the HOST aggregate stays the binding
+# limit. OOM-first (OOMScoreAdjust=800) + Restart=on-failure means an occasional OOM
+# self-heals (cursor unmoved -> retried) and never disturbs the 1s engine cycle.
+#
+# IO (drift Fix 4): BEST-EFFORT at the LOWEST priority (7), no longer class-idle. Idle-class
+# IO is starved indefinitely while ANY best-effort IO runs anywhere on the host — with 8
+# capture shards writing continuously plus hourly compactors, the brain's reads queued
+# behind everything (the measured live-vs-gate fast-tick gap), and each of the 37.6 GiB of
+# refault re-reads paid that queue. BE-7 still yields to every higher-priority BE task (the
+# engine and capture run at the BE default, 4) but is never starved outright; IOWeight=20
+# keeps the cgroup-level ceiling, Nice=19 + CPUWeight=20 keep CPU deference unchanged (CPU
+# was never the starved resource — ~1.1 cores used all night).
 #
 # BUILT-NOT-DEPLOYED: tracked but not installed/enabled. Enabling is the operator's deploy.
 Type=simple
@@ -31,8 +42,9 @@ ExecStart=/home/jpcg/MHDE/venv/bin/python -m crypto.research.brain.runner --tick
 Restart=on-failure
 RestartSec=10
 Nice=19
-IOSchedulingClass=idle
-MemoryMax=2G
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+MemoryMax=3G
 CPUWeight=20
 IOWeight=20
 OOMScoreAdjust=800
