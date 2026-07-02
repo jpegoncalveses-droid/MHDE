@@ -67,6 +67,31 @@ logger = logging.getLogger("mhde.crypto.brain.runner")
 DEFAULT_LABEL_EVERY_N_TICKS = 5
 
 
+def _tick_log_line(summary: dict, wall_s: float) -> str:
+    """The one-per-tick INFO line (drift Fix 5): tick index, wall seconds, sources ok/ran,
+    snapshots written, labels written, max cursor lag — built purely from the tick summary
+    already in hand (no extra registry read; cheap string work, no cadence impact). The
+    runner previously logged NOTHING per tick, so diagnosing the 2026-07-02 drift needed
+    external cursor sampling; this line is that telemetry, in-band. Tolerant of arbitrary
+    test-double summaries: every field is ``.get``-guarded, absent data prints ``-``."""
+    prims = summary.get("primitives") or []
+    ran = [p for p in prims if p.get("ran")]
+    ok = [p for p in ran if p.get("ok")]
+    snapshots = sum(int((p.get("summary") or {}).get("snapshots_written", 0)) for p in ok)
+    now_ns = summary.get("now_ns", 0)
+    lags = [(now_ns - int((p.get("summary") or {}).get("cursor_after", 0))) / 1e9
+            for p in ok if (p.get("summary") or {}).get("cursor_after")]
+    max_lag = f"{max(lags):.0f}s" if lags else "-"
+    labels_part = "-"
+    if summary.get("labels_ran"):
+        labels_result = summary.get("labels") or {}
+        labels_part = (str(labels_result.get("written", 0)) if labels_result.get("ok")
+                       else "ERROR")
+    return (f"brain tick {summary.get('tick')}: wall={wall_s:.1f}s "
+            f"sources={len(ok)}/{len(ran)} ok, snapshots={snapshots}, "
+            f"labels={labels_part}, max_lag={max_lag}")
+
+
 class BrainRunner:
     """A continuous loop wrapping the existing brain passes; owns no durable state of its own."""
 
@@ -256,6 +281,8 @@ class BrainRunner:
                 break
             start = self._monotonic()
             summary = self.tick(ticks)
+            elapsed = self._monotonic() - start
+            logger.info("%s", _tick_log_line(summary, elapsed))      # drift Fix 5: per-tick telemetry
             if summary["labels_ran"]:
                 label_runs += 1
             ticks += 1
@@ -265,7 +292,6 @@ class BrainRunner:
             # it, including one whose passes all errored (errors are isolated in tick(), never
             # raised here). That is what bounds a total-failure tick to one-per-cadence instead
             # of a hot CPU spin; never add an early continue/skip-sleep on error above this line.
-            elapsed = self._monotonic() - start
             sleep_s = max(0.0, self._tick_interval_s - elapsed)
             if self._sleep(sleep_s):                # True == stop requested during the sleep
                 break
