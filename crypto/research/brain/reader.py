@@ -22,8 +22,10 @@ Strictly read-only: these never write anything, anywhere.
 from __future__ import annotations
 
 import logging
+import os
 import pathlib
 import re
+from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Optional, Sequence
 
@@ -88,7 +90,86 @@ def _date_str_from_ns(ns: int) -> str:
     return datetime.fromtimestamp(day * 86_400, tz=timezone.utc).strftime("%Y-%m-%d")
 
 
-def _fragment_recv_ceiling_ns(path: pathlib.Path) -> Optional[int]:
+# -- the fragment-stats cache (drift Fix 3) --------------------------------------
+
+#: Sentinel distinguishing "never cached" from a cached ``None`` ("footer has no usable
+#: recv statistics — corrupt, empty, or stats-less; keep the fragment, downstream decides").
+_CACHE_MISS = object()
+
+
+class _FragmentStatsCache:
+    """Process-lifetime LRU of exact per-fragment ``recv_ts_ns`` ``(min, max)`` bounds, read
+    ONCE from the parquet footer statistics and keyed ``(path, st_mtime_ns, st_size)``.
+
+    Capture fragments are IMMUTABLE once flushed (writers only ever create new files; the
+    compactors replace-then-delete under new names), so the key is a content identity: any
+    replaced/rewritten file changes mtime/size and misses. The cached value is either an exact
+    ``(min_recv, max_recv)`` int pair or ``None`` (no usable stats — the fragment is then always
+    kept and the ``recv`` row filter guards it as before). Bounded LRU: an evicted entry only
+    costs one footer re-read, never correctness. Single-threaded by design (the runner is a
+    synchronous loop); no locking."""
+
+    def __init__(self, maxsize: int) -> None:
+        self.maxsize = maxsize
+        self._entries: "OrderedDict[tuple, Optional[tuple]]" = OrderedDict()
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def get(self, key: tuple):
+        try:
+            self._entries.move_to_end(key)
+            return self._entries[key]
+        except KeyError:
+            return _CACHE_MISS
+
+    def put(self, key: tuple, value: Optional[tuple]) -> None:
+        self._entries[key] = value
+        self._entries.move_to_end(key)
+        while len(self._entries) > self.maxsize:
+            self._entries.popitem(last=False)
+
+
+_FRAGMENT_STATS_CACHE = _FragmentStatsCache(cfg.BRAIN_FRAGMENT_STATS_CACHE_MAX)
+
+
+def _read_recv_stats_from_footer(path: pathlib.Path) -> Optional[tuple]:
+    """Exact ``(min, max)`` of the ``recv_ts_ns`` column from the parquet FOOTER row-group
+    statistics — no row data decoded. int64 stats are exact (never truncated the way string
+    stats can be). ``None`` when unusable: unreadable/corrupt footer, no ``recv_ts_ns``
+    column, zero row groups, or absent min/max — the caller then keeps the fragment and the
+    ordinary ``recv`` row filter (with its corrupt-fragment tolerance) decides downstream."""
+    try:
+        md = pq.read_metadata(str(path))
+        idx = md.schema.to_arrow_schema().get_field_index("recv_ts_ns")
+        if idx < 0 or md.num_row_groups == 0:
+            return None
+        mins, maxs = [], []
+        for rg in range(md.num_row_groups):
+            stats = md.row_group(rg).column(idx).statistics
+            if stats is None or not stats.has_min_max:
+                return None
+            mins.append(stats.min)
+            maxs.append(stats.max)
+        return (int(min(mins)), int(max(maxs)))
+    except (pa.ArrowInvalid, OSError):
+        return None
+
+
+def _fragment_recv_stats(path: pathlib.Path, st: os.stat_result) -> Optional[tuple]:
+    """The fragment's exact recv bounds via :data:`_FRAGMENT_STATS_CACHE` (footer read once
+    per ``(path, mtime, size)`` per process). Failures are cached too — a corrupt fragment
+    is not re-probed every tick; a repaired/replaced file changes the key and re-reads."""
+    key = (str(path), st.st_mtime_ns, st.st_size)
+    val = _FRAGMENT_STATS_CACHE.get(key)
+    if val is _CACHE_MISS:
+        val = _read_recv_stats_from_footer(path)
+        _FRAGMENT_STATS_CACHE.put(key, val)
+    return val
+
+
+def _fragment_recv_ceiling_ns(path: pathlib.Path,
+                              st: Optional[os.stat_result] = None) -> Optional[int]:
     """A FOOTER-FREE upper bound on this fragment's max ``recv_ts_ns`` — every row provably has
     ``recv_ts_ns <= `` the returned value — or ``None`` when no bound is derivable from the
     name/stat (the fragment must then be opened as today). Two provable signals:
@@ -116,22 +197,26 @@ def _fragment_recv_ceiling_ns(path: pathlib.Path) -> Optional[int]:
         faithful copy/restore keeps the invariant (the original write still postdates its rows);
         what would break it is rewriting different content in place under an old mtime — no MHDE
         workflow does that, and the 60s guard is a clock-skew absorber, not a forgery defense.
-    Any unrecognized name -> ``None`` (no provable ceiling -> never skipped)."""
+    Any unrecognized name -> ``None`` (no provable ceiling -> never skipped).
+
+    ``st`` (optional) is a pre-fetched ``os.stat_result`` so a caller that already statted the
+    file (the scoped-listing loop stats once for the stats-cache key) never stats twice."""
     name = path.name
     m = _COMPACT_HOUR_RE.match(name)
     if m:
         return (int(m.group(1)) + 1) * _HOUR_NS - 1
     if name.startswith("part-") or name.startswith("compact-migrated-"):
-        return path.stat().st_mtime_ns
+        return (st if st is not None else path.stat()).st_mtime_ns
     return None
 
 
-def _fragment_below_cursor(path: pathlib.Path, cursor_ns: int) -> bool:
+def _fragment_below_cursor(path: pathlib.Path, cursor_ns: int,
+                           st: Optional[os.stat_result] = None) -> bool:
     """True iff EVERY row in ``path`` is provably below the cursor (``recv <= cursor``), so it can
     be skipped WITHOUT opening its footer. Skip iff the fragment's footer-free recv ceiling plus
     the skew guard is still at-or-below the cursor. Conservative: a fragment with no derivable
     ceiling, or one whose ceiling is within the guard of the cursor, returns False (open it)."""
-    ceiling = _fragment_recv_ceiling_ns(path)
+    ceiling = _fragment_recv_ceiling_ns(path, st)
     if ceiling is None:
         return False
     return ceiling + _HOUR_SKIP_SKEW_GUARD_NS <= cursor_ns
@@ -139,20 +224,34 @@ def _fragment_below_cursor(path: pathlib.Path, cursor_ns: int) -> bool:
 
 def _scoped_partition_files(
     base: pathlib.Path, symbols: Sequence[str], lower_date: Optional[str], cursor_ns: int,
+    before_recv_ts_ns: Optional[int] = None,
 ) -> list[pathlib.Path]:
     """The existing parquet FILE paths under the batch's ``symbol=S/date=D`` partitions with
     ``D >= lower_date`` (``lower_date is None`` keeps every date — the venue-time-decoupled
-    klines / as-of case), MINUS any fragment whose provable max ``recv_ts_ns`` is below the recv
-    cursor (:func:`_fragment_below_cursor`, the Fix-3 footer-free skip). ``ds.dataset()`` only
-    accepts files, not directories, for an explicit source list.
+    klines / as-of case), MINUS every fragment PROVABLY holding no in-window row.
+    ``ds.dataset()`` only accepts files, not directories, for an explicit source list.
 
-    Two prunes compound here, both before any footer opens: ``date=`` dir pruning (whole days
-    older than the cursor's prior day, for recv-dated datasets) and RECV-CEILING pruning (any
-    fragment — including the open clock hour's already-flushed parts and the un-date-pruned
-    klines/as-of — whose footer-free recv ceiling is below the cursor, which date-pruning alone
-    never touches). The downstream ``recv > cursor`` row filter still guards every fragment we DO
-    open, so an over-conservative keep is only slower, never wrong; an over-eager skip would drop
-    data, so a fragment is skipped ONLY when its filename/stat PROVES it holds no in-window row.
+    Three prunes compound here, cheapest first, all before pyarrow ever sees the list:
+
+      1. ``date=`` dir pruning — whole days older than the cursor's prior day (recv-dated
+         datasets only), no per-file work at all.
+      2. RECV-CEILING pruning (:func:`_fragment_below_cursor`) — footer-FREE: the filename /
+         flush-mtime proves every row is below the cursor. This is what keeps historical
+         fragments from ever paying even one footer read.
+      3. EXACT-STATS pruning (:func:`_fragment_recv_stats`, the drift-Fix-3 cache) — footer
+         read ONCE per fragment per process, then served from the LRU: drop a fragment whose
+         exact ``max(recv) <= cursor`` (mirrors the strict ``recv > cursor`` row filter, so no
+         skew guard is needed on exact row values) or whose exact ``min(recv) >
+         before_recv_ts_ns`` (wholly AHEAD of the read ceiling). The AHEAD skip is what makes
+         a behind cursor read O(window) fragments instead of O(lag): without it every part
+         flushed between the cursor and ``now`` was footer-opened by pyarrow on EVERY tick —
+         the measured lag-proportional feedback loop of the 2026-07-02 drift runaway.
+         ``before_recv_ts_ns is None`` (an unbounded read) disables only the AHEAD half.
+
+    The downstream ``recv > cursor`` (and ``<= before``) row filter still guards every fragment
+    we DO open, so an over-conservative keep is only slower, never wrong; an over-eager skip
+    would drop data, so a fragment is skipped ONLY when its filename/stat/footer-stats PROVE it
+    holds no in-window row.
 
     This is what makes a batched construction CHEAP: ``ds.dataset()`` over this list lists only
     the batch's surviving fragments, never the whole ``symbol=*/date=*`` tree, so the in-memory
@@ -162,7 +261,9 @@ def _scoped_partition_files(
     and DEDUPED preserving order — a repeated symbol must not list (and so read) its files twice
     (the whole-tree path used ``symbol.isin([...])``, i.e. set membership, so each file once).
     A missing ``symbol=`` or ``date=`` dir is skipped, not an error: a sparse source or an empty
-    in-window batch member simply contributes no files."""
+    in-window batch member simply contributes no files. A file that vanishes between glob and
+    stat (a compactor replace-then-delete race) is logged exactly like an unreadable fragment —
+    data absent for this partition this pass — and skipped, matching the downstream tolerance."""
     files: list[pathlib.Path] = []
     for sym in dict.fromkeys(symbols):          # dedup, order-preserving (no double-count)
         sym_dir = base / f"symbol={sym}"
@@ -174,8 +275,22 @@ def _scoped_partition_files(
             if lower_date is not None and date_dir.name[len("date="):] < lower_date:
                 continue
             for f in sorted(date_dir.glob("*.parquet")):
-                if _fragment_below_cursor(f, cursor_ns):
+                try:
+                    st = f.stat()
+                except OSError as exc:          # vanished between glob and stat (compactor race)
+                    logger.warning(
+                        "brain reader: skipping unreadable capture fragment (data absent for "
+                        "this partition): %s (%s: %s)", f, type(exc).__name__, exc)
+                    continue
+                if _fragment_below_cursor(f, cursor_ns, st):
                     continue                    # provably below cursor -> skip, no footer open
+                stats = _fragment_recv_stats(f, st)
+                if stats is not None:
+                    recv_min, recv_max = stats
+                    if recv_max <= cursor_ns:
+                        continue                # exact: no row passes recv > cursor
+                    if before_recv_ts_ns is not None and recv_min > before_recv_ts_ns:
+                        continue                # exact: wholly ahead of the read ceiling
                 files.append(f)
     return files
 
@@ -256,7 +371,8 @@ def _read_dataset_rows(
         # filter scales with the BATCH's fragment count, not the dataset total. The whole-tree
         # construction was the wall that pinned the runner at the 2G cgroup on the un-date-pruned
         # klines (226k frags) and OOM'd on depth_state (~3M) — a cost W/row-filter never touched.
-        scoped = _scoped_partition_files(base, symbols, lower_date, after_recv_ts_ns)
+        scoped = _scoped_partition_files(base, symbols, lower_date, after_recv_ts_ns,
+                                         before_recv_ts_ns)
         if not scoped:
             return []
         dataset = _open_scoped_dataset([str(f) for f in scoped])

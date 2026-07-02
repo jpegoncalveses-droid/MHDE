@@ -118,6 +118,22 @@ def _opened_names(calls) -> set:
     return {pathlib.Path(p).name for p in calls[0]}
 
 
+def _spy_md(monkeypatch):
+    """Record which files get an explicit footer-stats read (``pq.read_metadata``). With the
+    drift-Fix-3 stats cache, "not skipped footer-free" now means "footer-CONSULTED": the file
+    is either in the ds.dataset source list or had its footer stats read (and may then be
+    excluded by its exact recv bounds — a correct, tighter outcome than opening it)."""
+    calls = []
+    orig = reader.pq.read_metadata
+
+    def spy(path, *a, **k):
+        calls.append(pathlib.Path(str(path)).name)
+        return orig(path, *a, **k)
+
+    monkeypatch.setattr(reader.pq, "read_metadata", spy)
+    return calls
+
+
 # --- footer-free SKIP drivers (RED against the hour-granular reader) --------------------
 
 def test_current_hour_subcursor_raw_part_skipped(tmp_path, monkeypatch):
@@ -199,28 +215,36 @@ def test_compact_migrated_below_cursor_skipped_by_mtime(tmp_path, monkeypatch):
 
 def test_compact_migrated_recent_mtime_still_read(tmp_path, monkeypatch):
     # The boundary: a seal merged moments ago (mtime at/after cursor-guard) may in principle hold
-    # rows the cursor has not passed -> READ. Content age is irrelevant; the MTIME is the bound.
+    # rows the cursor has not passed -> NOT skipped footer-free (its footer must be consulted;
+    # the exact stats may then prove it empty — tighter, still correct). Content age is
+    # irrelevant; the MTIME is the footer-free bound.
     sym = "AAAUSDT"
     p = _write_part(tmp_path, sym, _ns(0, 10))
     m = _make_compact_migrated(p); _set_mtime_ns(m, _ns(3, 49, 30))  # merged 30s ago (inside guard)
     cursor = _ns(3, 50)
+    md = _spy_md(monkeypatch)
     calls = _spy(monkeypatch)
     _read(tmp_path, sym, cursor)
-    assert m.name in _opened_names(calls), \
-        "a compact-migrated whose merge mtime is within the guard of the cursor must be read"
+    ds_names = {pathlib.Path(p2).name for src in calls for p2 in src}
+    assert m.name in set(md) | ds_names, \
+        "a compact-migrated whose merge mtime is within the guard of the cursor must be footer-consulted"
 
 
 # --- the skew guard (mtime granularity) ------------------------------------------------
 
 def test_guard_keeps_recent_part_within_skew(tmp_path, monkeypatch):
-    # a raw part flushed within the guard of the cursor is KEPT (its rows could be cursor-or-newer
-    # under any backward recv-vs-flush clock skew).
+    # a raw part flushed within the guard of the cursor is NOT skipped footer-free (its rows
+    # could be cursor-or-newer under any backward recv-vs-flush clock skew) — its footer must
+    # be consulted; the exact stats may then prove it empty (tighter, still correct).
     sym = "AAAUSDT"
     p = _write_part(tmp_path, sym, _ns(3, 30)); _set_mtime_ns(p, _ns(3, 49, 30))   # 30s inside the 60s guard
     cursor = _ns(3, 50)
+    md = _spy_md(monkeypatch)
     calls = _spy(monkeypatch)
     _read(tmp_path, sym, cursor)
-    assert p.name in _opened_names(calls), "mtime within the 60s guard of the cursor -> still opened"
+    ds_names = {pathlib.Path(p2).name for src in calls for p2 in src}
+    assert p.name in set(md) | ds_names, \
+        "mtime within the 60s guard of the cursor -> footer-consulted, never skipped footer-free"
 
 
 def test_guard_skips_part_past_skew(tmp_path, monkeypatch):
