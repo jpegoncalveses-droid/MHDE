@@ -163,6 +163,119 @@ The historical record of resolved bugs lives in
 
 ## Open
 
+### KI-161 — As-of REST tiers flush up to ~30 min after recv; the brain's 90s watermark silently and permanently skips their rows (3 sources fully dead, 2 degraded)
+
+**Severity: HIGH — silent data loss on 5 of the 8 slow sources, no error, no
+warning, cursors advancing normally. Discovered during the 2026-07-02 drift
+forensics; NOT fixed by `fix/brain-tick-drift` (scoped out — it is an
+ingestion-correctness workstream, possibly cross-repo with the collector).**
+
+**Symptom.** During the 2026-07-01 20:17 → 07-02 ~07:00 run, `open_interest`,
+`premium_index` and `global_ls_account` wrote ZERO brain rows and ZERO
+`snapshot_bookkeeping` — while the capture tape received 6,348 / 9,732 / 6,268
+part files for them in that window and their `reader_cursor` advanced on every
+slow tick. `top_ls_account` was degraded (212 store files vs sibling
+`top_ls_position`'s 4,088), `basis` half-alive (2,031).
+
+**Root cause (measured).** The REST collector buffers a tier's rows and
+flushes them long after their `recv_ts_ns` stamps. Flush lag = part `mtime` −
+max in-file `recv`, sampled n=300/dataset overnight:
+
+| dataset | p50 | p90 | max |
+|---|---|---|---|
+| open_interest | **1,784s** | 1,975s | 2,099s |
+| premium_index | **1,669s** | 1,858s | 1,923s |
+| global_ls_account | **1,494s** | 1,725s | 1,917s |
+| top_ls_account | **1,079s** | 1,339s | 1,561s |
+| taker_ls_ratio | 272s | 534s | 738s |
+| basis | 135s | **1,848s** | 2,069s |
+
+The brain's settle watermark is `BRAIN_WATERMARK_S` = flush(30) + 60 = **90s**,
+which assumes rows are on disk ≤ 30s after recv. When a pass covers a window
+whose rows have not yet been flushed, it reads EMPTY and the bounded-pass
+quiet-gap skip advances the cursor past it; when the file lands minutes later,
+every row in it is below the cursor — **never read again, no log line**. A
+series survives only while its flush lag is LESS than the brain cursor's own
+lag (~700–950s that night) — which reproduces the observed death gradient
+exactly. This is [[KI-158]]'s precondition (`skew < watermark`) violated
+wholesale by the as-of writer, on the flush side rather than the recv side.
+
+**Verified** by replaying identical windows against the (now-complete) tape:
+`run_pass` with a temp registry at historical `now` values (22:00 / 05:00)
+returns 529–3,984 rows for the same series the live loop wrote nothing for
+(probe scripts: `probe_dead_sources.py` / `probe_dead_pass.py` /
+`probe_dead_replay.py` / `probe_flush_lag.py`, session scratchpad).
+
+**Insidious restart shape.** On any restart with hours of backlog the cursor
+lag ≫ flush lag, so all as-of series WORK during catch-up — then die again one
+by one as the loop closes on the live edge. Historical (June) store files for
+the dead series exist for exactly this reason.
+
+**Interim guards in `fix/brain-tick-drift`:** the brain-compactor coverage
+guard refuses to compact these datasets' unverifiable partitions (surfaced as
+`UNVERIFIABLE-SKIPPED`), and the per-tick INFO line makes rows-written=0
+visible per tick.
+
+**Fix path:** a PER-SOURCE settle watermark (as-of watermark ≥ worst-case
+flush lag + margin, e.g. 45 min — as-of latency is immaterial to forward-only
+labels), or collector-side prompt per-fetch flushing so the 30s premise holds;
+either way, add a regression check that per-dataset flush lag < watermark.
+
+### KI-162 — Reader-skipped capture fragments are logged but NOT gap-flagged: 52 silent label-validity gaps during the 2026-07-02 drift
+
+**Severity: medium — a no-bias violation ("a skipped fragment is a gap"), rate
+tied to cursor lag; largely dormant once the drift fixes hold the loop at the
+live edge.**
+
+**Symptom.** 52 `WARNING ... skipping unreadable capture fragment
+(FileNotFoundError)` overnight — bookTicker ×19 @03:08, aggTrade ×29 @04:06,
+×4 @05:06 — every cluster inside a `mhde-capture-firehose-compact` window
+(:06–:10). The reader was reading hours the compactor was deleting: the races
+began only once cursor lag grew past ~1h. Each skip = rows genuinely missing
+from that pass, logged but **not** recorded in any gap manifest, so label
+validity treats the window as quiet rather than gapped (the no-bias rule says
+missing data must never look like a quiet window).
+
+**Why it mostly stops:** with the drift fixes the cursor stays near the live
+edge, where the hourly compactor never touches fragments the reader wants; the
+fragment-stats cache also removes most repeat opens of historical fragments.
+The capture-side replace-then-delete race window itself remains.
+
+**Fix path:** the brain reader records each skipped fragment (dataset, symbol,
+date, recv-range if known) into a brain-side gap manifest; `labels.run_once`
+consumes it exactly like the `_gaps` markPrice manifest to invalidate
+overlapping horizons. Track with the gap-handling workstream ("skipped
+fragment is a gap").
+
+### KI-163 — Monitoring plane red: mhde-health-check + 7 system-scope monitors exiting status=1 (observed 2026-07-02)
+
+**Severity: medium — no load impact (~1s runs), but the alerting layer is
+currently blind while substantive incidents (KI-161, the drift) are live.**
+
+Observed during the drift forensics: `mhde-health-check` failed at 06:00
+(status=1, <1s, both attempts, no output captured) and these system-scope
+units are exiting 1: continuous-monitor, monitor-pipeline, monitor-smoke,
+monitor-data-quality (02:00), monitor-dashboard (03:30), paper-trading-drift,
+streamlit-freshness, dashboard-synthetic. Needs triage: common-cause (env/DB
+path/permission) vs per-monitor. Not investigated further in the drift
+workstream.
+
+### KI-164 — Capture disk pinned at the 50 GiB disk-guard soft floor: retention being consumed continuously (662 partition prunes in one night)
+
+**Severity: medium — the guard is doing its job, but "steady state" is now
+oldest-tape deletion every few minutes plus constant unlink churn on the
+shared spindle.**
+
+`/dev/sda1`: 150G, 94G used, ~51G available — exactly at the capture
+disk-guard soft floor. Overnight 2026-07-01→02 the guard pruned the oldest
+firehose partition **662 times** (22h=119, 23h=217, 00h=11, 03h=50, 04h=128,
+05h=137; every capture-shard journal line that night was this message).
+Implications: (a) effective tape retention is shrinking and no longer
+policy-driven; (b) any new disk consumer (e.g. a several-GB store copy) would
+eat tape immediately — measurement/copies must never land on this filesystem.
+Ops decision needed: grow the volume, lower retention explicitly, or raise the
+floor + alert instead of silently pruning.
+
 ### KI-160 — Brain HEAVY-tick residual: the 7 daily-compacted as-of series footer-open ~9.5k fragments each on the 1-in-N slow tick
 
 **Severity: low — a residual after the Fix 1+2+3 throughput PR
@@ -198,6 +311,18 @@ keep-pace blocker — but it is the dominant remaining wall.
     raw fan-out matches the dense sources'.
   * a manifest / latest-snapshot read for the sparse as-of series (they are
     present-state, so a window scan is overkill).
+
+**UPDATE (`fix/brain-tick-drift`, 2026-07-02): resolved by drift Fix 1, gate
+to confirm.** The ~9.5k unskippable fragments per as-of series were the daily
+sealer's `compact-migrated-*` output, which the reader treated as having no
+provable recv ceiling — a ratchet growing +3,985 permanently-opened files/day
+(measured +22.1% over the throughput gate after only three sealed days:
+86,775 vs 71,055, reconciling EXACTLY with seals through 06-28). Drift Fix 1
+extends the `recv <= write-mtime` skip to `compact-migrated-*` (a merge is
+written after every row it holds was received), so a sealed day's output is
+skippable the moment the cursor passes its 01:30 merge instant. The remaining
+as-of heavy-tick cost is the recent unskippable tail plus [[KI-161]]'s
+flush-lagged parts.
 
 Track alongside the brain-store fragmentation / capture compaction workstream.
 Re-open the open-hour concern only if the firehose flush cadence or the
