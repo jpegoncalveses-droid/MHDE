@@ -1,0 +1,31 @@
+# /home/jpcg/.config/systemd/user/mhde-capture-okx-klines.service
+[Unit]
+Description=MHDE capture-okx 1h klines maintenance (read-only, OKX public)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Hourly forward maintenance of closed 1h bars from OKX /market/candles
+# (confirm-gated; the in-progress bar is never persisted), written under the
+# OKX root data/research/capture_core_okx/. trades/takerBuy* have no OKX
+# source and are persisted as honest NULLs (the brain klines reader is
+# null-tolerant). Run `capture-okx-klines-seed` once first for the ~90d
+# backfill. Keyless public REST; never opens the production database.
+#
+# BUILT-NOT-DEPLOYED: tracked but not installed/enabled.
+Type=simple
+WorkingDirectory=/home/jpcg/MHDE
+ExecStartPre=/usr/bin/test -x /home/jpcg/MHDE/venv/bin/python
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto capture-okx-klines-run
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+MemoryMax=1G
+CPUWeight=20
+IOWeight=20
+OOMScoreAdjust=800
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

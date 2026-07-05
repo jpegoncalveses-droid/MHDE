@@ -665,9 +665,12 @@ def read_new_klines(
             "close": float(r["close"]),
             "volume": float(r["volume"]),
             "quote_volume": float(r["quoteVolume"]),
-            "trades": int(r["trades"]),
-            "taker_buy_base": float(r["takerBuyBase"]),
-            "taker_buy_quote": float(r["takerBuyQuote"]),
+            # Nullable: OKX candles carry no trade count / taker-buy split, so the
+            # OKX collector persists honest NULLs (missing != 0). None propagates
+            # through bucket_asof and the snapshot write (nullable arrow columns).
+            "trades": None if r["trades"] is None else int(r["trades"]),
+            "taker_buy_base": _safe_float(r["takerBuyBase"]),
+            "taker_buy_quote": _safe_float(r["takerBuyQuote"]),
             "open_time": int(r["openTime"]),
             "close_time": int(r["closeTime"]),
         })

@@ -1,0 +1,37 @@
+# /home/jpcg/.config/systemd/user/mhde-capture-okx-rest.service
+[Unit]
+Description=MHDE capture-okx REST as-of collector (read-only, OKX public)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# systemd --user unit: runs as the logging-in user, persistence via linger.
+# Stage A of the OKX migration (data/processed/okx_migration_recon.md): polls
+# the 7 as-of series (open interest, premium join, 3 long/short ratios, taker
+# ratio, derived basis) against OKX public REST and writes Binance-shaped
+# parquet under data/research/capture_core_okx/ — a SEPARATE root; the live
+# Binance capture is untouched. Keyless public data; never opens the
+# production database. Pacing is a fixed inter-request delay (OKX buckets are
+# per-endpoint / per-instId; no shared weight pool exists to coexist with).
+#
+# BUILT-NOT-DEPLOYED: this file is tracked but not installed/enabled. Stage A
+# ships parked; the operator enables it deliberately.
+Type=simple
+WorkingDirectory=/home/jpcg/MHDE
+ExecStartPre=/usr/bin/test -x /home/jpcg/MHDE/venv/bin/python
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto capture-okx-rest-run
+Restart=on-failure
+RestartSec=5
+# Give writers time to flush open parquet buffers on SIGTERM before SIGKILL.
+TimeoutStopSec=30
+# Resource caps: a small REST poller, same envelope as the Binance twin;
+# OOM-first, below the system.slice CPU/IO defaults so the engine always wins.
+MemoryMax=1G
+CPUWeight=20
+IOWeight=20
+OOMScoreAdjust=800
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

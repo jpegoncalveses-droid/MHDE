@@ -1,0 +1,12 @@
+# /home/jpcg/.config/systemd/user/mhde-capture-okx-klines-expire.timer
+[Unit]
+Description=MHDE capture-okx klines retention — daily expiry of old partitions
+
+[Timer]
+# Daily at 00:20 — offset from the Binance twin (00:10) so the two sweeps
+# never run concurrently. Cheap and idempotent; exact timing is not critical.
+OnCalendar=*-*-* 00:20:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

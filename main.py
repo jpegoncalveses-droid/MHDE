@@ -2329,6 +2329,114 @@ def crypto_capture_asof_compact(root, date):
             click.echo(f"  MISMATCH: {m}")
 
 
+@crypto.command("capture-okx-rest-run")
+@click.option("--root", default=None,
+              help="OKX raw capture dir. Default: capture_core_okx.config.RAW_DIR.")
+@click.option("--once", is_flag=True, default=False,
+              help="Resolve the universe, run ONE collection pass, flush, exit "
+                   "(the reader-parity gate / operator smoke path).")
+def crypto_capture_okx_rest_run(root, once):
+    """Run the OKX REST as-of collector — Stage A of the OKX migration (BLOCKS
+    unless --once).
+
+    Polls the 7 as-of series against OKX public REST (open interest, the
+    premium 3-call join, per-instId long-short ratios, taker ratio with
+    unit=0, derived basis) and writes Binance-shaped zstd parquet under the
+    SEPARATE OKX root. Keyless; NEVER opens mhde.duckdb or the engine DB; the
+    live Binance capture is untouched.
+    """
+    import asyncio
+    import logging
+
+    from crypto.research.capture_core_okx import config as okx_cfg
+    from crypto.research.capture_core_okx.client import OkxRestClient
+    from crypto.research.capture_core_okx.collector import (
+        build_okx_asof_collector, collect_once_and_flush,
+    )
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    client = OkxRestClient()
+    if once:
+        universe = client.fetch_okx_linear_usdt_universe()
+        collector = build_okx_asof_collector(
+            root or okx_cfg.RAW_DIR, client=client, universe=universe)
+        asyncio.run(collect_once_and_flush(collector))
+        click.echo(f"okx as-of once: {len(universe)} instruments, "
+                   f"{client.requests_made} HTTP requests")
+    else:
+        collector = build_okx_asof_collector(root or okx_cfg.RAW_DIR, client=client)
+        asyncio.run(collector.run())
+
+
+@crypto.command("capture-okx-klines-run")
+@click.option("--root", default=None,
+              help="OKX raw capture dir. Default: capture_core_okx.config.RAW_DIR.")
+@click.option("--once", is_flag=True, default=False,
+              help="Resolve the universe, run ONE maintenance pass, flush, exit.")
+def crypto_capture_okx_klines_run(root, once):
+    """Run the OKX 1h klines forward maintenance (BLOCKS unless --once).
+
+    Hourly, fetches the latest few CLOSED 1h bars per instrument (confirm-gated)
+    and dedup-appends them under the OKX root. trades/takerBuy* are persisted
+    as honest NULLs (no OKX source; the brain reader is null-tolerant). Run
+    `capture-okx-klines-seed` once first for the ~90d backfill.
+    """
+    import asyncio
+    import logging
+
+    from crypto.research.capture_core_okx import config as okx_cfg
+    from crypto.research.capture_core_okx.client import OkxRestClient
+    from crypto.research.capture_core_okx.collector import (
+        build_okx_klines_collector, collect_once_and_flush,
+    )
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    client = OkxRestClient()
+    if once:
+        universe = client.fetch_okx_linear_usdt_universe()
+        collector = build_okx_klines_collector(
+            root or okx_cfg.RAW_DIR, client=client, universe=universe)
+        asyncio.run(collect_once_and_flush(collector))
+        click.echo(f"okx klines once: {len(universe)} instruments, "
+                   f"{client.requests_made} HTTP requests")
+    else:
+        collector = build_okx_klines_collector(root or okx_cfg.RAW_DIR, client=client)
+        asyncio.run(collector.run())
+
+
+@crypto.command("capture-okx-klines-seed")
+@click.option("--root", default=None,
+              help="OKX raw capture dir. Default: capture_core_okx.config.RAW_DIR.")
+@click.option("--days", default=None, type=int,
+              help="Backfill horizon in days. Default: config.KLINES_SEED_DAYS (90).")
+def crypto_capture_okx_klines_seed(root, days):
+    """One-time ~90d backfill of closed 1h bars from OKX history-candles.
+
+    Pages backward (newest-first, `after` cursor), ~22 requests/instrument at
+    90d, paced by the client's fixed delay. Re-runnable (the brain dedups
+    read-side on bar identity).
+    """
+    import logging
+
+    from crypto.research.capture_core import config as cc_cfg
+    from crypto.research.capture_core_okx import config as okx_cfg
+    from crypto.research.capture_core_okx.collector import seed_klines
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    written = seed_klines(root or okx_cfg.RAW_DIR,
+                          days=days or cc_cfg.KLINES_SEED_DAYS)
+    click.echo(f"okx klines seed: {written} closed bars written")
+
+
 @crypto.command("brain-compact")
 @click.option("--root", default=None,
               help="Brain store root. Default: brain config BRAIN_STORE_ROOT.")
