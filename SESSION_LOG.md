@@ -6,6 +6,30 @@ are at the top.
 
 ---
 
+## 2026-07-05 — OKX capture Stage A: 7 as-of REST collectors + klines_1h, reader-parity gate PASSED
+
+**Branch:** `feat/capture-okx-stage-a` (off `master`; draft PR opened; **awaiting operator
+merge — do NOT auto-merge**). Deploy is operator-gated: the 6 systemd units are staged, **NOT
+installed**. Live Binance capture untouched; keyless OKX public REST; never opens `mhde.duckdb`/engine DB.
+
+**What.** New `crypto/research/capture_core_okx/` (client/config/symbols/series/collector) driving the
+7 as-of series (open_interest, premium_index, global_ls_account, top_ls_account, top_ls_position,
+taker_ls_ratio, basis) + `klines_1h` forward maintenance into a **separate OKX root**, same capture-core
+store schema so the **brain readers consume them unchanged**. CLI: `capture-okx-rest-run`,
+`capture-okx-klines-seed`, `capture-okx-klines-run` (main.py). `reader.py` klines path is null-tolerant.
+
+**Gate (live, 2026-07-05).** Fresh scratch root, 273-instrument universe, 6-symbol slice for rate-safety.
+45/45 tests pass. POLL1 (30 reqs) wrote all 7 datasets; POLL2 advanced every cursor (rows 6→12/48→96,
+`recv_ts_ns` strictly up). Joins sane (mark≈index; basis ~0.05%). **OKX rubik LS is FRESH** (venue-age
+1–6 min) — the KI-161 contrast holds. klines-null **option 1** verified end-to-end: `trades`/`takerBuy*`
+= `None` on 12,984/12,984 bars, `KLINES_1H_SCHEMA` columns `nullable=True`, `bucket_asof` preserves `None`.
+Request budget: ~1,098/cycle at N=273 ≈ 0.9 req/s over the 20-min cadence (429 backoff covers rubik bursts).
+Full report: `docs/OKX_STAGE_A_GATE.md`.
+
+**Pending.** Operator merge; then operator-gated deploy (install the 6 units, run full-universe seed).
+
+---
+
 ## 2026-06-20 — Telegram creds migrated off ATSRP/.env (ATSRP-shelving step 1; creds-only)
 
 **Branch:** `feat/telegram-creds-to-mhde` (off `master`, draft PR; **awaiting

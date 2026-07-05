@@ -1,0 +1,14 @@
+# /home/jpcg/.config/systemd/user/mhde-capture-okx-asof-compact.timer
+[Unit]
+Description=MHDE capture-okx as-of seal-yesterday compaction — daily
+
+[Timer]
+# Daily at 02:00 — DELIBERATELY offset from the Binance twin (01:30) so the
+# two roots never compact concurrently on the shared disk. Same safety
+# properties: yesterday's as-of date= has long sealed by then, and the
+# compactor skips today's partition in code regardless.
+OnCalendar=*-*-* 02:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

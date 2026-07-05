@@ -1,0 +1,26 @@
+# /home/jpcg/.config/systemd/user/mhde-capture-okx-asof-compact.service
+[Unit]
+Description=MHDE capture-okx as-of seal-yesterday whole-partition compaction
+After=network-online.target
+
+[Service]
+# Daily oneshot for the OKX root: REUSES the existing capture_core CLI and
+# compaction machinery verbatim via --root (the maintenance layer is
+# venue-agnostic; the OKX collectors write the same dataset names/schemas).
+# Collapses each sealed as-of symbol=/date= partition to ~1 file, row-count
+# verified before delete; today is never touched. Filesystem-only.
+#
+# BUILT-NOT-DEPLOYED: tracked but not installed/enabled.
+Type=oneshot
+WorkingDirectory=/home/jpcg/MHDE
+ExecStartPre=/usr/bin/test -x /home/jpcg/MHDE/venv/bin/python
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto capture-asof-compact --root data/research/capture_core_okx
+# Shared-host invariant: idle CPU+IO and OOM-first, never disturbs the engine.
+Nice=19
+IOSchedulingClass=idle
+MemoryMax=1G
+CPUWeight=20
+IOWeight=20
+OOMScoreAdjust=800
+StandardOutput=journal
+StandardError=journal
