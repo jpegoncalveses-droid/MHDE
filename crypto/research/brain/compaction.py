@@ -128,11 +128,12 @@ def _date_str(ms: int) -> str:
 def write_heartbeat(path: str, payload: dict, *, now_ns: int) -> None:
     """Atomically write the compactor SUCCESS heartbeat (KI-165): ``{last_success_ns, **payload}``.
 
-    Written by ``main.py crypto brain-compact`` ONLY on full completion of both passes. The
-    continuous monitor reads it; a stale/absent heartbeat is how an OOM-kill or nonzero exit of
-    the (SIGKILL-unhandleable) compactor surfaces on the Telegram health path instead of failing
-    silently. tmp+replace so a reader never sees a torn file; a write failure is logged, never
-    fatal (the compaction it records already succeeded)."""
+    Written by ``main.py crypto brain-compact`` only on a CLEAN run (both passes completed with
+    no chunk-subprocess failure and no mechanical merge mismatch — the gate lives in the CLI).
+    The continuous monitor reads it; a stale/absent heartbeat is how an OOM-kill or nonzero exit
+    of the (SIGKILL-unhandleable) compactor surfaces on the Telegram health path instead of
+    failing silently. tmp+replace so a reader never sees a torn file; a write failure is logged,
+    never fatal (the compaction it records already succeeded)."""
     record = {"last_success_ns": int(now_ns), **payload}
     try:
         p = pathlib.Path(path)
@@ -140,7 +141,7 @@ def write_heartbeat(path: str, payload: dict, *, now_ns: int) -> None:
         tmp = p.with_name(p.name + ".tmp")
         tmp.write_text(json.dumps(record))
         tmp.replace(p)
-    except OSError as exc:                             # never let heartbeat I/O fail the run
+    except (OSError, TypeError, ValueError) as exc:    # never let heartbeat I/O fail the run
         logger.warning("brain compaction: heartbeat write failed (%s): %s", path, exc)
 
 

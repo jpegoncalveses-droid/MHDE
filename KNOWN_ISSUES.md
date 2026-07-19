@@ -225,6 +225,13 @@ is flat at ~75 MiB RSS, per-partition data is sub-MiB.)
 the accumulated fan-out — the prune-feasibility analysis workstream. The disk
 soft-floor race itself is [[KI-164]].
 
+**Follow-up — same pattern in the capture compactor.** The capture firehose
+compactor (`crypto/research/capture_core/maintenance.py`, the chunked drivers at
+~L430/L664) has the identical unbounded-tail shape: it hands each subprocess
+`paths[i:]` (the whole remaining tail) bounded only by `merges_per_chunk`. It is
+one long single-part run from the same OOM and should get the same partition-
+slice bound. Left out of this PR to keep the change brain-scoped; mirror it next.
+
 ### KI-161 — As-of REST tiers flush up to ~30 min after recv; the brain's 90s watermark silently and permanently skips their rows (3 sources fully dead, 2 degraded)
 
 **Severity: HIGH — silent data loss on 5 of the 8 slow sources, no error, no

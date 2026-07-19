@@ -209,8 +209,20 @@ def test_unverifiable_marshalled_through_chunked_driver(tmp_path):
 
 # --- the CLI verb ------------------------------------------------------------------------
 
-def test_cli_brain_compact_runs_both_modes_with_guard(monkeypatch):
+@pytest.fixture(autouse=True)
+def _heartbeat_to_tmp(tmp_path, monkeypatch):
+    # KI-165: the CLI writes a success heartbeat. Redirect it to a tmp file for EVERY test in
+    # this module so an invocation never writes a false-fresh heartbeat into the live store dir
+    # (which would make the real continuous monitor report a false green). Returns the tmp path
+    # so heartbeat-asserting tests can read it back.
+    hb = tmp_path / ".compact_heartbeat.json"
+    monkeypatch.setattr(cfg, "BRAIN_COMPACT_HEARTBEAT_PATH", str(hb))
+    return hb
+
+
+def test_cli_brain_compact_runs_both_modes_with_guard(monkeypatch, _heartbeat_to_tmp):
     from click.testing import CliRunner
+    import json
     import main as main_mod
 
     calls = {}
@@ -239,6 +251,29 @@ def test_cli_brain_compact_runs_both_modes_with_guard(monkeypatch):
         assert sorted(calls[mode]["datasets"]) == sorted(sources.SOURCES.keys()), \
             "scope = the 12 primitive datasets (labels excluded until it has an oracle)"
     assert "sealed" in result.output and "closed-hour" in result.output
+    # KI-165: a clean run refreshes the heartbeat with the run summary.
+    assert "heartbeat ->" in result.output
+    hb = json.loads(_heartbeat_to_tmp.read_text())
+    assert isinstance(hb["last_success_ns"], int) and hb["sealed_compacted"] == 2
+    assert hb["chunk_failures"] == 0
+
+
+def test_cli_brain_compact_skips_heartbeat_on_chunk_failure(monkeypatch, _heartbeat_to_tmp):
+    # KI-165: a partial failure (a chunk subprocess died, partitions unprocessed) must NOT
+    # refresh the heartbeat — the freshness monitor then goes RED instead of a false green.
+    from click.testing import CliRunner
+    import main as main_mod
+
+    failed = compaction.BrainCompactionReport(partitions_scanned=3, partitions_compacted=1)
+    failed.chunk_failures.append("closed-hour compaction chunk failed at index 2")
+    monkeypatch.setattr(compaction, "compact_brain_chunked",
+                        lambda root, **kw: compaction.BrainCompactionReport())
+    monkeypatch.setattr(compaction, "compact_brain_closed_hours_chunked",
+                        lambda root, **kw: failed)
+    result = CliRunner().invoke(main_mod.cli, ["crypto", "brain-compact"])
+    assert result.exit_code == 0, result.output
+    assert "heartbeat NOT refreshed" in result.output
+    assert not _heartbeat_to_tmp.exists(), "a degraded run must leave the heartbeat stale"
 
 
 def test_cli_brain_compact_surfaces_mismatches_and_unverifiable(monkeypatch):

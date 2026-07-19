@@ -2498,28 +2498,35 @@ def crypto_brain_compact(root, registry_path):
         for f in rep.chunk_failures:
             click.echo(f"  CHUNK-FAILURE [{tag}]: {f}")
 
-    # Success heartbeat (KI-165): both passes completed, so record it. An OOM-kill / nonzero
-    # exit never reaches here, leaving the heartbeat stale — which the continuous monitor turns
-    # into a Telegram RED instead of the failure going silent for days (the compactor is
-    # SIGKILL-unhandleable, so detection must be external + filesystem-based).
+    # Success heartbeat (KI-165) — refreshed ONLY on a CLEAN run: no chunk-subprocess failure
+    # and no mechanical (row-losing) merge mismatch. A partial failure deliberately leaves the
+    # heartbeat stale so the continuous monitor goes RED instead of reporting a false green; a
+    # whole-unit OOM-kill never reaches here at all (also stale -> RED). registry mismatches and
+    # unverifiable skips are EXPECTED on the current store (the as-of/dense KIs) and do NOT gate —
+    # they are surfaced above and recorded in the payload for visibility only.
     import time
 
-    compaction.write_heartbeat(
-        brain_cfg.BRAIN_COMPACT_HEARTBEAT_PATH,
-        {
-            "sealed_compacted": sealed.partitions_compacted,
-            "sealed_scanned": sealed.partitions_scanned,
-            "hours_compacted": hours.partitions_compacted,
-            "hours_scanned": hours.partitions_scanned,
-            "files_after": sealed.files_after + hours.files_after,
-            "registry_mismatches": (len(sealed.registry_mismatches)
-                                    + len(hours.registry_mismatches)),
-            "unverifiable_skipped": (len(sealed.unverifiable_skipped)
-                                     + len(hours.unverifiable_skipped)),
-        },
-        now_ns=time.time_ns(),
-    )
-    click.echo(f"brain compaction: heartbeat -> {brain_cfg.BRAIN_COMPACT_HEARTBEAT_PATH}")
+    degraded = (len(sealed.mismatches) + len(hours.mismatches)
+                + len(sealed.chunk_failures) + len(hours.chunk_failures))
+    payload = {
+        "sealed_compacted": sealed.partitions_compacted,
+        "sealed_scanned": sealed.partitions_scanned,
+        "hours_compacted": hours.partitions_compacted,
+        "hours_scanned": hours.partitions_scanned,
+        "files_after": sealed.files_after + hours.files_after,
+        "mechanical_mismatches": len(sealed.mismatches) + len(hours.mismatches),
+        "chunk_failures": len(sealed.chunk_failures) + len(hours.chunk_failures),
+        "registry_mismatches": len(sealed.registry_mismatches) + len(hours.registry_mismatches),
+        "unverifiable_skipped": (len(sealed.unverifiable_skipped)
+                                 + len(hours.unverifiable_skipped)),
+    }
+    if degraded:
+        click.echo(f"brain compaction: {degraded} chunk-failure/mechanical-mismatch(es) — "
+                   f"heartbeat NOT refreshed (KI-165 freshness monitor will surface it)")
+    else:
+        compaction.write_heartbeat(brain_cfg.BRAIN_COMPACT_HEARTBEAT_PATH, payload,
+                                   now_ns=time.time_ns())
+        click.echo(f"brain compaction: heartbeat -> {brain_cfg.BRAIN_COMPACT_HEARTBEAT_PATH}")
 
 
 @crypto.command("intraday-replay")
