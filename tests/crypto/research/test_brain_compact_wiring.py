@@ -286,7 +286,7 @@ def test_service_is_oneshot_invoking_brain_compact_with_family_caps():
     assert svc.get("Service", "WorkingDirectory") == "/home/jpcg/MHDE"
     assert svc.get("Service", "Nice") == "19"
     assert svc.get("Service", "IOSchedulingClass") == "idle"
-    assert svc.get("Service", "MemoryMax") == "1G"
+    assert svc.get("Service", "MemoryMax") == "2G"        # KI-165: raised 1G->2G (backstop)
     assert svc.get("Service", "CPUWeight") == "20"
     assert svc.get("Service", "IOWeight") == "20"
     assert svc.get("Service", "OOMScoreAdjust") == "800"

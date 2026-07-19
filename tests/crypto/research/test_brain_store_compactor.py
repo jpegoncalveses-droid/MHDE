@@ -210,3 +210,50 @@ def test_chunked_real_subprocess_isolation(tmp_path):
     assert rep.registry_mismatches == []
     for k in range(2):
         assert len(_compact_files(tmp_path, f"SYM{k}USDT")) == 1
+
+
+def test_chunked_bounds_partition_slice_per_subprocess(tmp_path):
+    # KI-165: the load-bearing memory bound is that each subprocess is handed AT MOST
+    # partitions_per_chunk partitions, so it always exits + resets within bounded work — even
+    # across a run of partitions that NEVER merge (the pre-fix driver handed one subprocess the
+    # entire remaining tail and only counted merges, so a long singleton run OOM-looped).
+    for i in range(5):                                     # 5 sealed partitions, 1 part each
+        _write_pass(tmp_path, f"SYM{i}USDT", _ns(_SEALED, 0))
+    slice_sizes: list[int] = []
+    seen_paths: list[str] = []
+
+    def recording_runner(root, paths, budget, registry_path, require_registry_coverage=False):
+        slice_sizes.append(len(paths))
+        seen_paths.extend(paths)
+        return {"completed": len(paths), "compacted": 0, "merges": 0, "files_before": 0,
+                "files_after": 0, "mismatches": [], "registry_mismatches": [],
+                "corrupt_skipped": [], "unverifiable_skipped": []}
+
+    compaction.compact_brain_chunked(
+        str(tmp_path), datasets=[_DATASET], partitions_per_chunk=2, merges_per_chunk=99,
+        now_ms=_NOW_MS, chunk_runner=recording_runner)
+
+    assert slice_sizes, "chunk_runner was never called"
+    assert max(slice_sizes) <= 2                           # never exceeds the partition cap
+    assert slice_sizes == [2, 2, 1]                        # 5 partitions -> 3 bounded chunks
+    assert len(seen_paths) == 5 and len(set(seen_paths)) == 5   # every partition once, no gaps
+
+
+def test_write_heartbeat_roundtrip(tmp_path):
+    # KI-165: a SUCCESS heartbeat the freshness monitor reads; atomic (no torn read, no .tmp).
+    import json
+    path = str(tmp_path / ".compact_heartbeat.json")
+    compaction.write_heartbeat(path, {"sealed_compacted": 7}, now_ns=123_456_789)
+    data = json.loads(pathlib.Path(path).read_text())
+    assert data["last_success_ns"] == 123_456_789 and data["sealed_compacted"] == 7
+    assert not (tmp_path / ".compact_heartbeat.json.tmp").exists()
+
+
+def test_chunked_defaults_decoupled_from_tick_batch_size():
+    # KI-165: the compactor budgets must NOT be the tick loop's symbol-batch size (unrelated
+    # concerns; the old coupling `merges_per_chunk = BRAIN_PASS_BATCH_SIZE` is what made a
+    # too-large merge budget silently track a tick-loop tuning knob).
+    import inspect
+    sig = inspect.signature(compaction.compact_brain_chunked)
+    assert sig.parameters["merges_per_chunk"].default == cfg.BRAIN_COMPACT_MERGES_PER_CHUNK
+    assert sig.parameters["partitions_per_chunk"].default == cfg.BRAIN_COMPACT_PARTITIONS_PER_CHUNK

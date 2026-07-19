@@ -146,3 +146,34 @@ BRAIN_SLOW_SOURCE_EVERY_N_TICKS = 5
 #: evicted/missing entry only costs one footer re-read, never correctness (the row filter still
 #: guards every opened fragment).
 BRAIN_FRAGMENT_STATS_CACHE_MAX = 262_144
+
+# -- Compaction chunking (KI-165: the sealed/closed-hour compactor OOM) --------
+#: The compactor runs each chunk in its OWN subprocess so the exit returns pyarrow pool +
+#: SQLite state to the OS (the PR #60 memory model). The chunk's memory-relevant work is the
+#: number of PARTITIONS a subprocess touches (each does a registry roster query + reads that
+#: partition's parts), NOT the number of MERGES it performs. The pre-KI-165 driver bounded a
+#: chunk by MERGES only and handed the subprocess the ENTIRE remaining partition tail, so a
+#: subprocess that landed in a long run of single-part / coverage-skipped partitions (e.g. the
+#: ~2040 consecutive singleton `global_ls_account` partitions — none of which counts as a
+#: merge) iterated thousands of partitions in ONE never-resetting process and drifted onto the
+#: 1 GiB unit cap (OOM-killed hourly, silently, for ~4 days). This bounds the slice: a
+#: subprocess is handed at most this many partitions, so it ALWAYS exits (and resets) within a
+#: bounded amount of work regardless of how few of them merge. Measured working set per
+#: partition is sub-MiB and reading ~8k small part files is flat at ~75 MiB RSS, so 1000
+#: partitions/subprocess stays far under the (raised) 2 GiB ceiling; smaller = safer memory +
+#: more subprocess spawn overhead. The MemoryMax on the unit is the BACKSTOP, not the sizing
+#: mechanism — if a future partition-size regime pushes this too high the compactor-freshness
+#: monitor (KI-165) surfaces the OOM within ~3 h instead of failing silently.
+BRAIN_COMPACT_PARTITIONS_PER_CHUNK = 1000
+#: Merge (output-file) budget per subprocess — decoupled from the tick loop's
+#: ``BRAIN_PASS_BATCH_SIZE`` (they are unrelated concerns; the coupling was incidental). The
+#: partition cap above is the real memory bound; this just caps merges so a merge-dense stretch
+#: also resets often. Whichever cap (partitions OR merges) is hit first ends the subprocess.
+BRAIN_COMPACT_MERGES_PER_CHUNK = 12
+
+#: Success-heartbeat the ``brain-compact`` command writes (atomically) on FULL completion of
+#: both passes. The continuous monitor reads it and goes RED when it is missing or older than
+#: its staleness window — so an OOM-kill / nonzero exit surfaces on the Telegram health path
+#: (KI-165) instead of failing silently. Under the brain store root (gitignored), beside the
+#: registry; a leading dot keeps it out of the ``symbol=``/``date=`` dataset tree.
+BRAIN_COMPACT_HEARTBEAT_PATH = "data/research/brain/.compact_heartbeat.json"

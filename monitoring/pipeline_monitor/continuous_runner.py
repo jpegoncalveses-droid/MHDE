@@ -1,6 +1,6 @@
 """Continuous monitor (every 30 min): alert only on red, silent when green.
 
-Two independent checks (no cascade):
+Three independent checks (no cascade):
 
 * **FX hourly bar freshness** — the newest ``fx_prices_hourly`` bar is within
   the live 2-hour threshold (or, during the Fri 22:00 → Sun 22:00 UTC forex
@@ -10,6 +10,10 @@ Two independent checks (no cascade):
   of the engine DuckDB — ADR-020). The engine ``reconcile`` timer is disabled
   pending RECONCILE-001, so it is not checked; flip ``CHECK_ENGINE_RECONCILE``
   when it is re-enabled.
+* **Brain-store compactor freshness** — the hourly ``mhde-brain-compact`` oneshot
+  wrote a success heartbeat within the last few hours (KI-165). An OOM-kill /
+  nonzero exit leaves the heartbeat stale, which is the ONLY external trace of a
+  SIGKILL-unhandleable failure — filesystem-based, no DB / systemd dependency.
 
 If any check is RED a single Telegram message (showing all checks) is sent;
 if all green nothing is sent. Exit status: 0 when silent, 1 when an alert
@@ -25,6 +29,7 @@ from typing import Optional
 
 from monitoring import alert
 from monitoring.engine_db import ENGINE_DB_UNREADABLE_MSG
+from monitoring.pipeline_monitor.checks import brain as B
 from monitoring.pipeline_monitor.checks import crypto as C
 from monitoring.pipeline_monitor.checks import fx as F
 from monitoring.pipeline_monitor.core import (
@@ -125,6 +130,11 @@ def check_engine_reconcile_timer(engine_conn, now: datetime) -> StepResult:
     return StepResult(CONT_ENGINE_RECONCILE, Status.GREEN, f"engine 'reconcile' ran {age_h:.0f}h ago")
 
 
+def check_brain_compact_step(now: datetime) -> StepResult:
+    # Filesystem-only (heartbeat freshness); no DB / systemd handle needed. KI-165.
+    return B.check_brain_compact_freshness(now)
+
+
 # ── runner ────────────────────────────────────────────────────────────
 def run_continuous(*, mhde_conn=None, engine_conn=None, now: Optional[datetime] = None) -> PipelineResult:
     now = now or datetime.now(timezone.utc)
@@ -148,6 +158,7 @@ def run_continuous(*, mhde_conn=None, engine_conn=None, now: Optional[datetime] 
             (CONT_FX_FRESHNESS, lambda: check_fx_freshness_step(mhde_conn, now)),
             (CONT_ENGINE_MONITOR, lambda: check_engine_monitor_timer(engine_conn, now)),
             (CONT_ENGINE_ENTRY, lambda: check_engine_entry_timer(engine_conn, now)),
+            (B.BRAIN_COMPACT_FRESHNESS, lambda: check_brain_compact_step(now)),
         ]
         if CHECK_ENGINE_RECONCILE:
             steps.append((CONT_ENGINE_RECONCILE, lambda: check_engine_reconcile_timer(engine_conn, now)))
