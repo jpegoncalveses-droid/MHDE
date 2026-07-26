@@ -24,7 +24,18 @@ ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto brain-compact
 # disturbs the engine's 1s cycle even though it reads+rewrites while the brain loop is live.
 Nice=19
 IOSchedulingClass=idle
-MemoryMax=1G
+# MemoryMax is the BACKSTOP, not the sizing mechanism (KI-165). The real bound is the
+# subprocess partition-slice cap (BRAIN_COMPACT_PARTITIONS_PER_CHUNK): each chunk subprocess
+# touches ≤1000 partitions then exits, returning its pyarrow pool + SQLite state to the OS.
+# Measured working set is small — worker import ~106 MiB, and reading ~8k small part files is
+# flat at ~75 MiB RSS (per-partition data is sub-MiB) — so steady state is <~250 MiB. Raised
+# 1G→2G (~8× headroom over the measured working set) to absorb parent+subprocess coexistence
+# and any SQLite/page-cache spike against the (oversized, pending-prune) 9.5 GiB registry,
+# while staying well under the tick loop's 3G and leaving the engine host headroom. The old 1G
+# was hit only because the pre-fix driver handed ONE subprocess the entire remaining partition
+# tail — it OOM-looped hourly for ~4 days (the KI-165 incident). If 2G is ever hit again the
+# compactor-freshness monitor now surfaces it within ~3 h instead of failing silently.
+MemoryMax=2G
 CPUWeight=20
 IOWeight=20
 OOMScoreAdjust=800

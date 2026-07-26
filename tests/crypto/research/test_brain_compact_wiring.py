@@ -209,8 +209,20 @@ def test_unverifiable_marshalled_through_chunked_driver(tmp_path):
 
 # --- the CLI verb ------------------------------------------------------------------------
 
-def test_cli_brain_compact_runs_both_modes_with_guard(monkeypatch):
+@pytest.fixture(autouse=True)
+def _heartbeat_to_tmp(tmp_path, monkeypatch):
+    # KI-165: the CLI writes a success heartbeat. Redirect it to a tmp file for EVERY test in
+    # this module so an invocation never writes a false-fresh heartbeat into the live store dir
+    # (which would make the real continuous monitor report a false green). Returns the tmp path
+    # so heartbeat-asserting tests can read it back.
+    hb = tmp_path / ".compact_heartbeat.json"
+    monkeypatch.setattr(cfg, "BRAIN_COMPACT_HEARTBEAT_PATH", str(hb))
+    return hb
+
+
+def test_cli_brain_compact_runs_both_modes_with_guard(monkeypatch, _heartbeat_to_tmp):
     from click.testing import CliRunner
+    import json
     import main as main_mod
 
     calls = {}
@@ -239,6 +251,29 @@ def test_cli_brain_compact_runs_both_modes_with_guard(monkeypatch):
         assert sorted(calls[mode]["datasets"]) == sorted(sources.SOURCES.keys()), \
             "scope = the 12 primitive datasets (labels excluded until it has an oracle)"
     assert "sealed" in result.output and "closed-hour" in result.output
+    # KI-165: a clean run refreshes the heartbeat with the run summary.
+    assert "heartbeat ->" in result.output
+    hb = json.loads(_heartbeat_to_tmp.read_text())
+    assert isinstance(hb["last_success_ns"], int) and hb["sealed_compacted"] == 2
+    assert hb["chunk_failures"] == 0
+
+
+def test_cli_brain_compact_skips_heartbeat_on_chunk_failure(monkeypatch, _heartbeat_to_tmp):
+    # KI-165: a partial failure (a chunk subprocess died, partitions unprocessed) must NOT
+    # refresh the heartbeat — the freshness monitor then goes RED instead of a false green.
+    from click.testing import CliRunner
+    import main as main_mod
+
+    failed = compaction.BrainCompactionReport(partitions_scanned=3, partitions_compacted=1)
+    failed.chunk_failures.append("closed-hour compaction chunk failed at index 2")
+    monkeypatch.setattr(compaction, "compact_brain_chunked",
+                        lambda root, **kw: compaction.BrainCompactionReport())
+    monkeypatch.setattr(compaction, "compact_brain_closed_hours_chunked",
+                        lambda root, **kw: failed)
+    result = CliRunner().invoke(main_mod.cli, ["crypto", "brain-compact"])
+    assert result.exit_code == 0, result.output
+    assert "heartbeat NOT refreshed" in result.output
+    assert not _heartbeat_to_tmp.exists(), "a degraded run must leave the heartbeat stale"
 
 
 def test_cli_brain_compact_surfaces_mismatches_and_unverifiable(monkeypatch):
@@ -254,6 +289,27 @@ def test_cli_brain_compact_surfaces_mismatches_and_unverifiable(monkeypatch):
     result = CliRunner().invoke(main_mod.cli, ["crypto", "brain-compact"])
     assert result.exit_code == 0
     assert "MISSING" in result.output and "UNVERIFIABLE" in result.output.upper()
+
+
+def test_cli_brain_compact_caps_mismatch_echo_flood(monkeypatch):
+    # KI-165: the per-line mismatch echo MUST be capped. Steady-state this store carries ~1.8M
+    # registry mismatches (dense-stall); uncapped, that emitted ~1.8M lines/run which rsyslog
+    # mirrored into an uncapped /var/log/syslog (~51 GiB) and filled the root disk to 100%.
+    from click.testing import CliRunner
+    import main as main_mod
+
+    flood = compaction.BrainCompactionReport(partitions_scanned=1)
+    flood.registry_mismatches.extend(
+        f"markprice/SYM{i}USDT/2026-06-17: window {i} MISSING" for i in range(1000))
+    monkeypatch.setattr(compaction, "compact_brain_chunked", lambda root, **kw: flood)
+    monkeypatch.setattr(compaction, "compact_brain_closed_hours_chunked",
+                        lambda root, **kw: compaction.BrainCompactionReport())
+    result = CliRunner().invoke(main_mod.cli, ["crypto", "brain-compact"])
+    assert result.exit_code == 0, result.output
+    sealed_lines = [ln for ln in result.output.splitlines() if "MISMATCH [sealed]:" in ln]
+    # capped at 20 examples + 1 "... and N more" summary — NOT 1000 lines
+    assert len(sealed_lines) == 21, f"echo not capped: {len(sealed_lines)} MISMATCH lines"
+    assert "... and 980 more" in result.output          # 1000 - 20 cap
 
 
 # --- systemd unit + timer (BUILT-NOT-DEPLOYED, capture-family caps) ----------------------
@@ -286,7 +342,7 @@ def test_service_is_oneshot_invoking_brain_compact_with_family_caps():
     assert svc.get("Service", "WorkingDirectory") == "/home/jpcg/MHDE"
     assert svc.get("Service", "Nice") == "19"
     assert svc.get("Service", "IOSchedulingClass") == "idle"
-    assert svc.get("Service", "MemoryMax") == "1G"
+    assert svc.get("Service", "MemoryMax") == "2G"        # KI-165: raised 1G->2G (backstop)
     assert svc.get("Service", "CPUWeight") == "20"
     assert svc.get("Service", "IOWeight") == "20"
     assert svc.get("Service", "OOMScoreAdjust") == "800"

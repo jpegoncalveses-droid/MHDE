@@ -125,6 +125,26 @@ def _date_str(ms: int) -> str:
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
 
 
+def write_heartbeat(path: str, payload: dict, *, now_ns: int) -> None:
+    """Atomically write the compactor SUCCESS heartbeat (KI-165): ``{last_success_ns, **payload}``.
+
+    Written by ``main.py crypto brain-compact`` only on a CLEAN run (both passes completed with
+    no chunk-subprocess failure and no mechanical merge mismatch — the gate lives in the CLI).
+    The continuous monitor reads it; a stale/absent heartbeat is how an OOM-kill or nonzero exit
+    of the (SIGKILL-unhandleable) compactor surfaces on the Telegram health path instead of
+    failing silently. tmp+replace so a reader never sees a torn file; a write failure is logged,
+    never fatal (the compaction it records already succeeded)."""
+    record = {"last_success_ns": int(now_ns), **payload}
+    try:
+        p = pathlib.Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_name(p.name + ".tmp")
+        tmp.write_text(json.dumps(record))
+        tmp.replace(p)
+    except (OSError, TypeError, ValueError) as exc:    # never let heartbeat I/O fail the run
+        logger.warning("brain compaction: heartbeat write failed (%s): %s", path, exc)
+
+
 def _hour_floor(window_start_ns: int) -> int:
     """The event-time hour ``window_start_ns`` falls in (a multiple of :data:`HOUR_NS`)."""
     return (window_start_ns // HOUR_NS) * HOUR_NS
@@ -649,14 +669,23 @@ def compact_brain_chunked(
     root: str,
     *,
     datasets: Sequence[str],
-    merges_per_chunk: int = cfg.BRAIN_PASS_BATCH_SIZE,
+    merges_per_chunk: int = cfg.BRAIN_COMPACT_MERGES_PER_CHUNK,
+    partitions_per_chunk: int = cfg.BRAIN_COMPACT_PARTITIONS_PER_CHUNK,
     registry_path: Optional[str] = None,
     now_ms: Optional[int] = None,
     require_registry_coverage: bool = False,
     chunk_runner=None,
 ) -> BrainCompactionReport:
     """Compact every SEALED ``(symbol,date)`` brain partition (``date < today``) in
-    subprocess-bounded chunks of ~``merges_per_chunk`` merges (peak RSS bounded by RUN SIZE).
+    subprocess-bounded chunks (peak RSS bounded by RUN SIZE).
+
+    Each subprocess is handed at most ``partitions_per_chunk`` partitions and stops at
+    ``merges_per_chunk`` merges — whichever comes first — then EXITS, returning its pyarrow
+    pool + SQLite state to the OS. The partition cap (not the merge cap) is the load-bearing
+    memory bound: it guarantees a subprocess resets within bounded WORK even across a long run
+    of single-part / coverage-skipped partitions that produce no merges (the KI-165 OOM — the
+    pre-fix driver handed the whole remaining tail to one subprocess and only counted merges,
+    so such a run iterated thousands of partitions in one never-resetting process).
 
     ``chunk_runner(root, paths, budget, registry_path, require_registry_coverage) -> dict``
     runs one chunk; the default isolates each in a subprocess. Today's partition is never
@@ -670,8 +699,10 @@ def compact_brain_chunked(
     i = 0
     chunks = 0
     while i < len(paths):
-        res = chunk_runner(root, paths[i:], merges_per_chunk, registry_path,
-                           require_registry_coverage)
+        # Hand the subprocess a BOUNDED slice (KI-165): at most partitions_per_chunk paths, so it
+        # always exits + resets within bounded work no matter how few of them merge.
+        res = chunk_runner(root, paths[i:i + partitions_per_chunk], merges_per_chunk,
+                           registry_path, require_registry_coverage)
         report.partitions_scanned += int(res["completed"])
         report.partitions_compacted += int(res.get("compacted", 0))
         report.files_before += int(res["files_before"])
@@ -781,7 +812,8 @@ def compact_brain_closed_hours_chunked(
     root: str,
     *,
     datasets: Sequence[str],
-    merges_per_chunk: int = cfg.BRAIN_PASS_BATCH_SIZE,
+    merges_per_chunk: int = cfg.BRAIN_COMPACT_MERGES_PER_CHUNK,
+    partitions_per_chunk: int = cfg.BRAIN_COMPACT_PARTITIONS_PER_CHUNK,
     now_ns: Optional[int] = None,
     registry_path: Optional[str] = None,
     watermark_ns: int = cfg.BRAIN_WATERMARK_NS,
@@ -791,13 +823,15 @@ def compact_brain_closed_hours_chunked(
     """Closed-hour-compact every TODAY-dated ``(symbol,date)`` brain partition in
     subprocess-bounded chunks (peak RSS bounded by RUN SIZE).
 
-    Scans ``date == today`` only: the closed-hour gate already bounds correctness, and
-    ``date < today`` is the SEALED compactor's (:func:`compact_brain_chunked`) domain — keeping
-    the two scans disjoint enforces the never-run-both-on-one-partition rule. ``chunk_runner``
-    has the fixed signature ``(root, paths, budget, now_ns, registry_path,
-    require_registry_coverage) -> dict``; the default isolates each chunk in a subprocess
-    (with ``watermark_ns`` baked in). Registry mismatches, unverifiable skips AND chunk
-    failures are marshalled through every chunk into the report."""
+    Each subprocess is handed at most ``partitions_per_chunk`` partitions and stops at
+    ``merges_per_chunk`` merges — whichever first — then exits + resets (the KI-165 bound; see
+    :func:`compact_brain_chunked`). Scans ``date == today`` only: the closed-hour gate already
+    bounds correctness, and ``date < today`` is the SEALED compactor's
+    (:func:`compact_brain_chunked`) domain — keeping the two scans disjoint enforces the
+    never-run-both-on-one-partition rule. ``chunk_runner`` has the fixed signature ``(root,
+    paths, budget, now_ns, registry_path, require_registry_coverage) -> dict``; the default
+    isolates each chunk in a subprocess (with ``watermark_ns`` baked in). Registry mismatches,
+    unverifiable skips AND chunk failures are marshalled through every chunk into the report."""
     if chunk_runner is None:
         def chunk_runner(root, paths, budget, now_ns, registry_path,
                          require_registry_coverage=False):
@@ -811,8 +845,9 @@ def compact_brain_closed_hours_chunked(
     report = BrainCompactionReport()
     i = chunks = 0
     while i < len(paths):
-        res = chunk_runner(root, paths[i:], merges_per_chunk, now_ns, registry_path,
-                           require_registry_coverage)
+        # Bounded slice per subprocess (KI-165): reset within bounded work regardless of merges.
+        res = chunk_runner(root, paths[i:i + partitions_per_chunk], merges_per_chunk, now_ns,
+                           registry_path, require_registry_coverage)
         report.partitions_scanned += int(res["completed"])
         report.partitions_compacted += int(res.get("compacted", 0))
         report.files_before += int(res["files_before"])

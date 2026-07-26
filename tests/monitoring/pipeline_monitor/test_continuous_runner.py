@@ -10,7 +10,7 @@ import duckdb
 import pytest
 
 from monitoring.pipeline_monitor import continuous_runner as CR
-from monitoring.pipeline_monitor.core import Status
+from monitoring.pipeline_monitor.core import Status, StepResult
 
 
 NOW = datetime(2026, 5, 12, 10, 0, 0, tzinfo=timezone.utc)  # Tuesday, past the 08:00 entry cutoff, forex open
@@ -20,6 +20,16 @@ TODAY = NOW.date()
 @pytest.fixture(autouse=True)
 def _dry_run(monkeypatch):
     monkeypatch.setenv("MONITORING_DRY_RUN", "true")
+
+
+@pytest.fixture(autouse=True)
+def _fresh_brain_compact(monkeypatch):
+    # KI-165 added a 4th step (brain-compact freshness) that reads a heartbeat file absent in the
+    # test env. Default it GREEN so the pre-existing FX/engine checks stay isolated; the brain
+    # RED path is covered by test_stale_brain_compact_triggers_alert + test_brain_compact_check.py.
+    monkeypatch.setattr(
+        CR, "check_brain_compact_step",
+        lambda now: StepResult(CR.B.BRAIN_COMPACT_FRESHNESS, Status.GREEN, "test: fresh"))
 
 
 def _mhde_with_fresh_fx(temp_db, bar_dt=None):
@@ -48,7 +58,7 @@ def test_all_green_is_silent(temp_db, mocker):
     sent = mocker.patch.object(CR.alert, "send_text", return_value=False)
     res = CR.run_continuous(mhde_conn=temp_db, engine_conn=_engine(), now=NOW)
     assert not res.has_red
-    assert [s.status for s in res.steps] == [Status.GREEN, Status.GREEN, Status.GREEN]
+    assert [s.status for s in res.steps] == [Status.GREEN, Status.GREEN, Status.GREEN, Status.GREEN]
     # main() must not send
     mocker.patch.object(CR, "run_continuous", return_value=res)
     rc = CR.main()
@@ -102,3 +112,17 @@ def test_engine_db_unreachable_is_red(temp_db, mocker):
     assert res.has_red
     assert res.steps[1].status is Status.RED and "unreadable after retries" in res.steps[1].detail
     assert res.steps[2].status is Status.RED
+
+
+def test_stale_brain_compact_triggers_alert(temp_db, monkeypatch):
+    # KI-165: a stale/absent compactor heartbeat (OOM-kill / nonzero exit) turns the 4th step RED
+    # so the silent-for-days failure surfaces on the Telegram health path. Overrides the autouse
+    # green default (same function-scoped monkeypatch → later setattr wins).
+    _mhde_with_fresh_fx(temp_db)
+    monkeypatch.setattr(
+        CR, "check_brain_compact_step",
+        lambda now: StepResult(CR.B.BRAIN_COMPACT_FRESHNESS, Status.RED,
+                               "last successful brain compaction 96.0h ago — KI-165"))
+    res = CR.run_continuous(mhde_conn=temp_db, engine_conn=_engine(), now=NOW)
+    assert res.has_red
+    assert res.steps[3].status is Status.RED and "KI-165" in res.steps[3].detail

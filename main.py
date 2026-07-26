@@ -2490,13 +2490,58 @@ def crypto_brain_compact(root, registry_path):
         f"registry-mismatches {len(hours.registry_mismatches)}, "
         f"chunk-failures {len(hours.chunk_failures)}, "
         f"unverifiable-skipped {len(hours.unverifiable_skipped)}")
+    # Cap the per-line surfacing (KI-165). Now that the compactor actually COMPLETES (before the
+    # slice-bound fix it OOM'd before reaching here), the steady-state ~1.8M registry mismatches
+    # from the dense stall would emit ~1.8M click.echo lines PER HOURLY RUN. StandardOutput=journal
+    # sends them to journald (capped) but rsyslog ALSO mirrors them to an UNCAPPED /var/log/syslog,
+    # which filled the root disk to 100% (syslog reached ~51 GiB — the KI-165 disk incident). The
+    # full counts are in the summary lines above and the heartbeat payload; here we print the first
+    # N examples + a "... and M more". chunk_failures are rare + actionable, so are never capped.
+    _ECHO_CAP = 20
     for rep, tag in ((sealed, "sealed"), (hours, "closed-hour")):
-        for m in list(rep.mismatches) + list(rep.registry_mismatches):
+        mismatches = list(rep.mismatches) + list(rep.registry_mismatches)
+        for m in mismatches[:_ECHO_CAP]:
             click.echo(f"  MISMATCH [{tag}]: {m}")
-        for u in rep.unverifiable_skipped:
+        if len(mismatches) > _ECHO_CAP:
+            click.echo(f"  MISMATCH [{tag}]: ... and {len(mismatches) - _ECHO_CAP} more "
+                       f"(steady-state on this store; total in the summary line above)")
+        for u in rep.unverifiable_skipped[:_ECHO_CAP]:
             click.echo(f"  UNVERIFIABLE-SKIPPED [{tag}]: {u}")
-        for f in rep.chunk_failures:
+        if len(rep.unverifiable_skipped) > _ECHO_CAP:
+            click.echo(f"  UNVERIFIABLE-SKIPPED [{tag}]: ... and "
+                       f"{len(rep.unverifiable_skipped) - _ECHO_CAP} more")
+        for f in rep.chunk_failures:                      # rare + actionable — never capped
             click.echo(f"  CHUNK-FAILURE [{tag}]: {f}")
+
+    # Success heartbeat (KI-165) — refreshed ONLY on a CLEAN run: no chunk-subprocess failure
+    # and no mechanical (row-losing) merge mismatch. A partial failure deliberately leaves the
+    # heartbeat stale so the continuous monitor goes RED instead of reporting a false green; a
+    # whole-unit OOM-kill never reaches here at all (also stale -> RED). registry mismatches and
+    # unverifiable skips are EXPECTED on the current store (the as-of/dense KIs) and do NOT gate —
+    # they are surfaced above and recorded in the payload for visibility only.
+    import time
+
+    degraded = (len(sealed.mismatches) + len(hours.mismatches)
+                + len(sealed.chunk_failures) + len(hours.chunk_failures))
+    payload = {
+        "sealed_compacted": sealed.partitions_compacted,
+        "sealed_scanned": sealed.partitions_scanned,
+        "hours_compacted": hours.partitions_compacted,
+        "hours_scanned": hours.partitions_scanned,
+        "files_after": sealed.files_after + hours.files_after,
+        "mechanical_mismatches": len(sealed.mismatches) + len(hours.mismatches),
+        "chunk_failures": len(sealed.chunk_failures) + len(hours.chunk_failures),
+        "registry_mismatches": len(sealed.registry_mismatches) + len(hours.registry_mismatches),
+        "unverifiable_skipped": (len(sealed.unverifiable_skipped)
+                                 + len(hours.unverifiable_skipped)),
+    }
+    if degraded:
+        click.echo(f"brain compaction: {degraded} chunk-failure/mechanical-mismatch(es) — "
+                   f"heartbeat NOT refreshed (KI-165 freshness monitor will surface it)")
+    else:
+        compaction.write_heartbeat(brain_cfg.BRAIN_COMPACT_HEARTBEAT_PATH, payload,
+                                   now_ns=time.time_ns())
+        click.echo(f"brain compaction: heartbeat -> {brain_cfg.BRAIN_COMPACT_HEARTBEAT_PATH}")
 
 
 @crypto.command("intraday-replay")

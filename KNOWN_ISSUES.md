@@ -163,6 +163,75 @@ The historical record of resolved bugs lives in
 
 ## Open
 
+### KI-165 — Brain-store compactor OOM-looped hourly for ~4 days, silently, driving a fan-out → disk-soft-floor → capture-buffer-shrink → dense-cursor-starvation chain
+
+**Severity: HIGH — a silent hourly OOM-kill (no alert on the monitoring plane)
+that was the ROOT of a 4-day dense-primitive data gap. Mitigated by this change
+(partition-slice bound + raised backstop + a freshness monitor); the deploy is
+the operator's step.**
+
+`mhde-brain-compact.service` (hourly oneshot, `MemoryMax=1G`) was being
+**OOM-killed on every run** — confirmed hourly 2026-07-19 07:37→13:37 UTC, each
+run ~1 min CPU then `Result: oom-kill`. Because a SIGKILL is unhandleable and no
+monitor watched the unit, it failed **silently for ~4 days**.
+
+**The incident chain (why one OOM mattered):**
+
+1. **Compactor OOM → fan-out.** With the compactor dead, the tick loop's
+   `part-*` fan-out (one file per `(symbol,date)` per pass) was never bounded:
+   the store reached **2.08M files** (`labels/` 1.46M — excluded from
+   compaction by design; primitives ~619k) and the registry-adjacent parquet
+   grew unchecked.
+2. **Fan-out → disk soft floor.** The brain footprint (~28 G store + 9.5 G
+   registry) pushed free space under the capture **50 GiB disk soft floor**
+   ([[KI-164]]), so the free-space guard began expiring firehose raw partitions
+   down to a **~14 h buffer** — far short of the design's "~31 h ≥ brain's 24 h
+   need".
+3. **Buffer shrink → dense-cursor starvation.** The brain's dense cursors
+   (bookticker/trades/markprice/forceorder) were ~24 h behind; the shrunk buffer
+   deleted the raw partitions they still needed to read, so they produced **zero
+   dense snapshots since 2026-07-15** — a genuine stall, not the `max_lag ~24 h`
+   "daily source" it looked like. This is the same silent-loss class as
+   [[KI-161]] (as-of flush-lag) and [[KI-162]] (reader-skip gaps) — a behind
+   consumer racing retention, losing, unflagged.
+
+**Root cause of the OOM.** The compactor runs each chunk in its own subprocess
+so the exit returns the pyarrow pool + SQLite state to the OS (the PR #60 memory
+model). But the chunk was bounded by **merges** (25) while the memory-relevant
+work is **partitions touched** (each does a registry roster query + reads that
+partition's parts), and the driver handed each subprocess the **entire remaining
+partition tail**. A subprocess landing in a long run of single-part /
+coverage-skipped partitions (measured: the ~2040 consecutive singleton
+`global_ls_account` partitions, plus premium_index 1644, open_interest 1068 —
+none counts as a merge) iterated **thousands of partitions in one
+never-resetting process** and drifted onto the 1 G cap. (Measurements ruled out
+the per-merge working set: worker import ~106 MiB, reading ~8k small part files
+is flat at ~75 MiB RSS, per-partition data is sub-MiB.)
+
+**Fix (this change, code + unit + monitor only — no deploy):**
+
+- **Partition-slice bound** (`BRAIN_COMPACT_PARTITIONS_PER_CHUNK=1000`): each
+  subprocess is handed ≤1000 partitions and exits/resets within bounded work
+  regardless of how few merge. Merge budget decoupled from the tick loop's
+  `BRAIN_PASS_BATCH_SIZE` (`BRAIN_COMPACT_MERGES_PER_CHUNK=12`).
+- **Ceiling raised 1G→2G** as a BACKSTOP (~8× the measured working set), not the
+  sizing mechanism.
+- **Freshness monitor**: `brain-compact` writes a success heartbeat on full
+  completion; the continuous monitor goes RED (Telegram) when it is missing or
+  >3 h stale — so a future OOM/nonzero exit surfaces in ~3 h instead of ~4 days.
+
+**Not addressed here (tracked separately):** the registry/label-store prune
+(9.5 G registry, `labels/` 1.46M inodes) and re-running compaction to reclaim
+the accumulated fan-out — the prune-feasibility analysis workstream. The disk
+soft-floor race itself is [[KI-164]].
+
+**Follow-up — same pattern in the capture compactor.** The capture firehose
+compactor (`crypto/research/capture_core/maintenance.py`, the chunked drivers at
+~L430/L664) has the identical unbounded-tail shape: it hands each subprocess
+`paths[i:]` (the whole remaining tail) bounded only by `merges_per_chunk`. It is
+one long single-part run from the same OOM and should get the same partition-
+slice bound. Left out of this PR to keep the change brain-scoped; mirror it next.
+
 ### KI-161 — As-of REST tiers flush up to ~30 min after recv; the brain's 90s watermark silently and permanently skips their rows (3 sources fully dead, 2 degraded)
 
 **Severity: HIGH — silent data loss on 5 of the 8 slow sources, no error, no
