@@ -291,6 +291,27 @@ def test_cli_brain_compact_surfaces_mismatches_and_unverifiable(monkeypatch):
     assert "MISSING" in result.output and "UNVERIFIABLE" in result.output.upper()
 
 
+def test_cli_brain_compact_caps_mismatch_echo_flood(monkeypatch):
+    # KI-165: the per-line mismatch echo MUST be capped. Steady-state this store carries ~1.8M
+    # registry mismatches (dense-stall); uncapped, that emitted ~1.8M lines/run which rsyslog
+    # mirrored into an uncapped /var/log/syslog (~51 GiB) and filled the root disk to 100%.
+    from click.testing import CliRunner
+    import main as main_mod
+
+    flood = compaction.BrainCompactionReport(partitions_scanned=1)
+    flood.registry_mismatches.extend(
+        f"markprice/SYM{i}USDT/2026-06-17: window {i} MISSING" for i in range(1000))
+    monkeypatch.setattr(compaction, "compact_brain_chunked", lambda root, **kw: flood)
+    monkeypatch.setattr(compaction, "compact_brain_closed_hours_chunked",
+                        lambda root, **kw: compaction.BrainCompactionReport())
+    result = CliRunner().invoke(main_mod.cli, ["crypto", "brain-compact"])
+    assert result.exit_code == 0, result.output
+    sealed_lines = [ln for ln in result.output.splitlines() if "MISMATCH [sealed]:" in ln]
+    # capped at 20 examples + 1 "... and N more" summary — NOT 1000 lines
+    assert len(sealed_lines) == 21, f"echo not capped: {len(sealed_lines)} MISMATCH lines"
+    assert "... and 980 more" in result.output          # 1000 - 20 cap
+
+
 # --- systemd unit + timer (BUILT-NOT-DEPLOYED, capture-family caps) ----------------------
 
 def _parse(unit_path: pathlib.Path) -> configparser.ConfigParser:
