@@ -1,0 +1,13 @@
+# /home/jpcg/.config/systemd/user/mhde-capture-okx-firehose-expire.timer
+[Unit]
+Description=MHDE capture-okx WS firehose retention sweep — daily
+
+[Timer]
+# Daily at 00:25 — DELIBERATELY offset from the Binance firehose-expire twin
+# (00:15) AND the OKX Stage-A klines-expire (00:20) so the roots never sweep
+# concurrently on the shared disk. BUILT-NOT-DEPLOYED: tracked, not enabled.
+OnCalendar=*-*-* 00:25:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

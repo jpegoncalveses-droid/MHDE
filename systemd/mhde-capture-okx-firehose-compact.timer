@@ -1,0 +1,14 @@
+# /home/jpcg/.config/systemd/user/mhde-capture-okx-firehose-compact.timer
+[Unit]
+Description=MHDE capture-okx WS firehose closed-hour compaction — hourly
+
+[Timer]
+# Hourly at :26 — DELIBERATELY offset from the Binance firehose-compact twin
+# (:06) so the two roots never compact concurrently on the shared disk. The
+# closed-hour compactor skips the open hour in code regardless.
+# BUILT-NOT-DEPLOYED: tracked, not enabled.
+OnCalendar=*-*-* *:26:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -2371,6 +2371,42 @@ def crypto_capture_okx_rest_run(root, once):
         asyncio.run(collector.run())
 
 
+@crypto.command("capture-okx-ws-run")
+@click.option("--root", default=None,
+              help="OKX raw capture dir. Default: capture_core_okx.config.RAW_DIR.")
+@click.option("--duration-s", default=0.0, type=float,
+              help="Run for N seconds then stop+flush (the live-gate window); "
+                   "0 = never-exiting daemon.")
+def crypto_capture_okx_ws_run(root, duration_s):
+    """Run the OKX WS firehose collector — Stage B (trades / bookticker / markprice /
+    forceorder). BUILT-NOT-DEPLOYED (no unit enables this).
+
+    Subscribes the four fast public-WS channels (keyless single plane), normalizes each
+    frame to a row BYTE-IDENTICAL to the Binance WS dataset schemas, and writes zstd parquet
+    under the SEPARATE OKX root. Arg-routing (incl. the instId that bbo-tbt omits) stays in
+    the WS client. NEVER opens mhde.duckdb or the engine DB; the live Binance capture and OKX
+    Stage-A capture are untouched.
+    """
+    import asyncio
+    import logging
+
+    from crypto.research.capture_core_okx import config as okx_cfg
+    from crypto.research.capture_core_okx.ws_collector import (
+        build_okx_ws_collector, run_for_window,
+    )
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    collector = build_okx_ws_collector(root or okx_cfg.RAW_DIR)
+    if duration_s and duration_s > 0:
+        asyncio.run(run_for_window(collector, duration_s))
+        click.echo(f"okx ws window: ran {duration_s:.0f}s, buffers flushed")
+    else:
+        asyncio.run(collector.run())
+
+
 @crypto.command("capture-okx-klines-run")
 @click.option("--root", default=None,
               help="OKX raw capture dir. Default: capture_core_okx.config.RAW_DIR.")
