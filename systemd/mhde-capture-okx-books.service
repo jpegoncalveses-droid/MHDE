@@ -1,0 +1,38 @@
+# /home/jpcg/.config/systemd/user/mhde-capture-okx-books.service
+[Unit]
+Description=MHDE capture-okx depth (books) collector (read-only, OKX public WS)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# systemd --user unit: runs as the logging-in user, persistence via linger.
+# Stage C of the OKX migration (docs/OKX_STAGE_C_DEPTH.md): subscribes the per-instId `books`
+# channel (400-level, in-band snapshots — no REST snapshot broker), maintains each book by
+# seqId/prevSeqId, and every 5s writes a top-20 `depth_state` row BYTE-IDENTICAL to the Binance
+# depth_state schema into data/research/capture_core_okx/. Depth is its OWN daemon (NOT folded
+# into mhde-capture-okx-ws.service) so it stays parked while Stage B runs live.
+#
+# MAINTAINER-ONLY BY DEFAULT: the raw 400-level `depth` tape (~26 GB/day at full universe,
+# gate-measured) is the byte monster the brain never reads and is NOT persisted unless
+# --persist-raw-depth is added (which then needs --depth-days 1 retention + a disk headroom
+# check). The brain reads only depth_state.
+#
+# BUILT-NOT-DEPLOYED: tracked but not installed/enabled. NOT wired into any target. Enable only
+# after the OKX firehose expire+compact timers (incl. --depth-days / --include-depth-state) are
+# active, so depth_state cannot fragment the disk.
+Type=simple
+WorkingDirectory=/home/jpcg/MHDE
+ExecStartPre=/usr/bin/test -x /home/jpcg/MHDE/venv/bin/python
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto capture-okx-books-run
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+MemoryMax=1G
+CPUWeight=20
+IOWeight=20
+OOMScoreAdjust=800
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

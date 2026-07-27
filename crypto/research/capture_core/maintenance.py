@@ -501,6 +501,34 @@ def expire_depth_state_partitions(
     return removed
 
 
+def expire_depth_partitions(
+    root: str,
+    *,
+    days: int = cfg.DEPTH_RAW_RETENTION_DAYS,
+    now_ms: Optional[int] = None,
+) -> list[str]:
+    """Delete raw ``depth`` ``date=`` partitions older than ``days`` (oldest-first).
+
+    The raw 400-level depth tape is the byte monster (~26 GB/day at full universe, gate-measured)
+    that the brain never reads. When it is persisted at all, it prunes on its OWN tight window
+    (OKX Stage C), separate from the shared 7-day firehose tape, so it cannot blow the disk. Only
+    the ``depth`` dataset is touched — depth_state / aggTrade / bookTicker / klines / _gaps are
+    left intact. Filesystem-only; never opens the production DB.
+    """
+    now_ms = now_ms if now_ms is not None else int(time.time() * 1000)
+    cutoff = _date_str(now_ms - days * 86_400_000)
+    parts = dg.list_firehose_partitions(root, ("depth",), with_size=False)
+    removed: list[str] = []
+    for p in sorted(parts, key=lambda x: (x.date, x.path)):  # oldest-first, ISO dates sort lexically
+        if p.date < cutoff:
+            shutil.rmtree(p.path)
+            removed.append(p.path)
+    if removed:
+        logger.info("depth raw retention: expired %d partitions older than %s",
+                    len(removed), cutoff)
+    return removed
+
+
 # -- one-shot migration -------------------------------------------------------
 
 @dataclass

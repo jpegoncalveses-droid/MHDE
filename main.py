@@ -2189,7 +2189,11 @@ def crypto_capture_klines_expire(root, days):
               help="Raw capture dir. Default: capture_core.config.RAW_DIR.")
 @click.option("--days", default=None, type=int,
               help="Retention window in days. Default: config.CAPTURE_RAW_RETENTION_DAYS (14).")
-def crypto_capture_firehose_expire(root, days):
+@click.option("--depth-days", default=None, type=int,
+              help="If set, prune raw `depth` partitions to this TIGHTER window (OKX Stage C byte "
+                   "monster, ~26 GB/day). Only the OKX expire unit passes it; Binance keeps depth "
+                   "at --days.")
+def crypto_capture_firehose_expire(root, days, depth_days):
     """Expire raw FIREHOSE date partitions older than the rolling window.
 
     Whole date= partitions, oldest-first, never today's, firehose datasets only
@@ -2212,6 +2216,10 @@ def crypto_capture_firehose_expire(root, days):
     # depth_state is a short consumption buffer with its OWN (shorter) retention.
     ds_removed = mt.expire_depth_state_partitions(root or cc_cfg.RAW_DIR)
     click.echo(f"depth_state retention: {len(ds_removed)} partitions expired")
+    # OKX Stage C: the raw depth tape prunes on an even tighter window when persisted.
+    if depth_days is not None:
+        d_removed = mt.expire_depth_partitions(root or cc_cfg.RAW_DIR, days=depth_days)
+        click.echo(f"depth raw retention: {len(d_removed)} partitions expired")
 
 
 @crypto.command("capture-firehose-compact")
@@ -2256,7 +2264,11 @@ def crypto_capture_firehose_compact(root, dates, dry_run):
 @crypto.command("capture-firehose-compact-recent")
 @click.option("--root", default=None,
               help="Raw capture dir. Default: capture_core.config.RAW_DIR.")
-def crypto_capture_firehose_compact_recent(root):
+@click.option("--include-depth-state", is_flag=True, default=False,
+              help="Also compact the depth_state dataset (OKX Stage C inode-monster fix; folds "
+                   "~0.8M files/day to ~1/partition-hour). Only the OKX compact unit passes it; "
+                   "Binance's KI-159 status quo is untouched.")
+def crypto_capture_firehose_compact_recent(root, include_depth_state):
     """Hourly closed-hour compaction of the live firehose (ADR-038 write-then-compact).
 
     Merges the writer's small part-*.parquet of each CLOSED clock-hour into one
@@ -2278,8 +2290,11 @@ def crypto_capture_firehose_compact_recent(root):
     # size so a busy hour or a downtime catch-up never OOMs the 1G-capped unit. Coverage =
     # the WS firehose set PLUS klines_1h (CAPTURE_CLOSED_HOUR_COMPACT_DATASETS); klines is
     # compacted here but keeps its own 90d retention (never firehose-expired).
+    datasets = cc_cfg.CAPTURE_CLOSED_HOUR_COMPACT_DATASETS
+    if include_depth_state:
+        datasets = datasets + (cc_cfg.DEPTH_STATE_DATASET,)
     report = mt.compact_firehose_chunked(
-        root or cc_cfg.RAW_DIR, datasets=cc_cfg.CAPTURE_CLOSED_HOUR_COMPACT_DATASETS)
+        root or cc_cfg.RAW_DIR, datasets=datasets)
     click.echo(
         f"firehose closed-hour compaction (chunked): compacted "
         f"{report.hours_compacted} hours across {report.partitions_scanned} partitions, "
@@ -2403,6 +2418,49 @@ def crypto_capture_okx_ws_run(root, duration_s):
     if duration_s and duration_s > 0:
         asyncio.run(run_for_window(collector, duration_s))
         click.echo(f"okx ws window: ran {duration_s:.0f}s, buffers flushed")
+    else:
+        asyncio.run(collector.run())
+
+
+@crypto.command("capture-okx-books-run")
+@click.option("--root", default=None,
+              help="OKX raw capture dir. Default: capture_core_okx.config.RAW_DIR.")
+@click.option("--duration-s", default=0.0, type=float,
+              help="Run for N seconds then stop+flush (the live-gate window); 0 = daemon.")
+@click.option("--persist-raw-depth", is_flag=True, default=False,
+              help="Also write the raw 400-level depth ladder tape (the ~22-33 GB/day byte "
+                   "monster). Default OFF = maintainer-only: the brain reads only depth_state.")
+@click.option("--universe", default=None,
+              help="Comma-separated instId list to scope the run (default: full universe). "
+                   "Use a handful first at the gate so a bad estimate never floods the disk.")
+def crypto_capture_okx_books_run(root, duration_s, persist_raw_depth, universe):
+    """Run the OKX depth (books) collector — Stage C. BUILT-NOT-DEPLOYED (no unit enables this).
+
+    Subscribes the per-instId `books` channel (in-band snapshots, self-seeding — no REST snapshot
+    broker), maintains each book by seqId/prevSeqId, and every 5s writes a top-20 `depth_state`
+    row BYTE-IDENTICAL to the Binance depth_state schema. The raw 400-level `depth` tape is written
+    only with --persist-raw-depth (default off: the brain reads only depth_state, and the raw tape
+    is the byte monster). NEVER opens the production DB; the live Binance/OKX-A/B capture untouched.
+    """
+    import asyncio
+    import logging
+
+    from crypto.research.capture_core_okx import config as okx_cfg
+    from crypto.research.capture_core_okx.ws_collector import (
+        build_okx_books_collector, run_for_window,
+    )
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    uni = [s.strip() for s in universe.split(",")] if universe else None
+    collector = build_okx_books_collector(
+        root or okx_cfg.RAW_DIR, universe=uni, persist_raw_depth=persist_raw_depth)
+    if duration_s and duration_s > 0:
+        asyncio.run(run_for_window(collector, duration_s))
+        click.echo(f"okx books window: ran {duration_s:.0f}s, "
+                   f"persist_raw_depth={persist_raw_depth}, buffers flushed")
     else:
         asyncio.run(collector.run())
 

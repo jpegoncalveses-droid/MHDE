@@ -25,15 +25,24 @@ from crypto.research.capture_core_okx.ctval import parse_ctval_table
 from crypto.research.capture_core_okx.symbols import (
     SymbolMap, filter_universe, instid_to_symbol,
 )
+from crypto.research.capture_core_okx.book_okx import OkxBookMaintainer
 from crypto.research.capture_core_okx.ws_client import WS_PUBLIC_BASE, OkxWsClient
 from crypto.research.capture_core_okx.ws_normalize import (
-    okx_bbo_row, okx_liquidation_rows, okx_markprice_merge_row, okx_trades_row,
+    okx_bbo_row, okx_book_state_row, okx_books_row, okx_liquidation_rows,
+    okx_markprice_merge_row, okx_trades_row,
 )
 
 logger = logging.getLogger("mhde.crypto.capture_core_okx.ws_collector")
 
 _SWAP_SUFFIX = "-USDT-SWAP"
 MARKPRICE_EMIT_INTERVAL_S = 1.0                 # D5: 1s per symbol, mirroring Binance @1s
+DEPTH_STATE_CADENCE_S = 5.0                     # Stage C: sample the maintained book every 5s
+DEPTH_STATE_TOP_N = 20                          # brain depth primitive reads through level 20
+
+
+def build_books_sub_args(universe: Sequence[str]) -> list[dict]:
+    """OKX subscribe args for the depth daemon: the per-instId `books` (400-level) channel."""
+    return [{"channel": "books", "instId": inst_id} for inst_id in universe]
 
 
 def index_pair_to_symbol(index_inst_id: str) -> Optional[str]:
@@ -112,6 +121,10 @@ class OkxWsCollector:
         connect_fn: Optional[Callable[[str], Any]] = None,
         emit_interval_s: float = MARKPRICE_EMIT_INTERVAL_S,
         recv_clock: Callable[[], int] = time.time_ns,
+        sub_args: Optional[Sequence[dict]] = None,
+        persist_raw_depth: bool = False,
+        depth_top_n: int = DEPTH_STATE_TOP_N,
+        depth_state_cadence_s: float = DEPTH_STATE_CADENCE_S,
     ) -> None:
         if writers is None:
             if root is None:
@@ -121,20 +134,27 @@ class OkxWsCollector:
                 "bookTicker": store.bookticker_writer(root),
                 "markPrice": store.markprice_writer(root),
                 "forceOrder": store.forceorder_writer(root),
+                "depth": store.depth_writer(root),
+                "depth_state": store.depth_state_writer(root),
                 "_gaps": store.gap_writer(root),
             }
         self._writers = writers
         self._symbol_map = symbol_map
         self._ctval = dict(ctval_table)
         self._merge = MarkPriceMergeState()
+        self._books: dict[str, OkxBookMaintainer] = {}      # Stage C: per-instId book maintainers
+        self._persist_raw_depth = persist_raw_depth
+        self._depth_top_n = depth_top_n
         self._url = url
         self._client_factory_client = client
         self._connect_fn = connect_fn
         self._emit_interval_s = emit_interval_s
+        self._depth_sample_ticks = max(1, round(depth_state_cadence_s / emit_interval_s))
         self._recv_clock = recv_clock
         self._stop = asyncio.Event()
         self._client: Optional[OkxWsClient] = None
-        self._sub_args: list[dict] = build_sub_args(symbol_map.inst_ids)
+        self._sub_args: list[dict] = (
+            list(sub_args) if sub_args is not None else build_sub_args(symbol_map.inst_ids))
 
     # -- routing -------------------------------------------------------------
 
@@ -143,6 +163,8 @@ class OkxWsCollector:
             self._append_per_instid(inst_id, data, "aggTrade", okx_trades_row, recv_ns)
         elif channel == "bbo-tbt":
             self._append_per_instid(inst_id, data, "bookTicker", okx_bbo_row, recv_ns)
+        elif channel == "books":
+            self._handle_books(inst_id, data, recv_ns)
         elif channel == "mark-price":
             for el in data:
                 symbol = self._symbol_map.symbol_for(el["instId"])
@@ -175,6 +197,48 @@ class OkxWsCollector:
             return
         for el in data:
             self._writers[dataset].append(row_fn(el, symbol=symbol, ct_val=ct, recv_ns=recv_ns))
+
+    def _handle_books(self, inst_id, data, recv_ns):
+        """Stage C: feed the per-instId book maintainer (depth_state) and, only when enabled,
+        write the raw depth ladder tape. Snapshot vs update is prevSeqId==-1 inside the element."""
+        symbol = self._symbol_map.symbol_for(inst_id) if inst_id else None
+        ct = self._ctval.get(inst_id) if inst_id else None
+        if symbol is None or ct is None:
+            return
+        maintainer = self._books.get(inst_id)
+        if maintainer is None:
+            maintainer = self._books[inst_id] = OkxBookMaintainer(symbol)
+        for el in data:
+            if self._persist_raw_depth:
+                self._writers["depth"].append(
+                    okx_books_row(el, symbol=symbol, ct_val=ct, recv_ns=recv_ns))
+            bids = [[lvl[0], lvl[1]] for lvl in el["bids"]]     # drop OKX liqOrders/numOrders
+            asks = [[lvl[0], lvl[1]] for lvl in el["asks"]]
+            if int(el["prevSeqId"]) == -1:
+                maintainer.on_snapshot(int(el["seqId"]), bids, asks)
+            else:
+                maintainer.on_update(int(el["seqId"]), int(el["prevSeqId"]), bids, asks)
+
+    def sample_depth_state(self, recv_ns: int) -> None:
+        """Append one depth_state row per synced non-empty book (the 5s sample loop)."""
+        writer = self._writers.get("depth_state")
+        if writer is None:
+            return
+        for inst_id, maintainer in self._books.items():
+            if not maintainer.synced:
+                continue
+            ct = self._ctval.get(inst_id)
+            if ct is None:
+                continue
+            bids, asks = maintainer.top_levels(self._depth_top_n)
+            if not bids or not asks:
+                continue                                        # skip one-sided / empty books
+            try:
+                writer.append(okx_book_state_row(
+                    maintainer, symbol=maintainer.symbol, ct_val=ct,
+                    recv_ns=recv_ns, top_n=self._depth_top_n))
+            except Exception:                                   # noqa: BLE001 — per-symbol isolation
+                logger.exception("okx depth_state sample failed for %s", inst_id)
 
     def emit_markprice(self, recv_ns: int) -> None:
         for row in self._merge.emit(recv_ns):
@@ -221,19 +285,25 @@ class OkxWsCollector:
             logger.info("capture-okx-ws: stopped, buffers flushed")
 
     def _on_socket_gap(self, reason: str) -> None:
-        """On a socket break: record the gap AND invalidate the merge state so the 1s emitter
-        does not stale-fill markPrice across the outage."""
+        """On a socket break: record the gap, invalidate the merge state (no markPrice stale-fill),
+        and drop every book maintainer to unsynced (never apply a book across the outage)."""
         self._record_gap(reason)
         self._merge.invalidate()
+        for maintainer in self._books.values():
+            maintainer.reset()
 
     async def _emit_loop(self) -> None:
-        """1s tick: emit markPrice + flush ALL writers. Resilient — a transient writer error
-        (e.g. ENOSPC) is logged and the loop continues, so the fast-writer flush contract is
-        never silently lost; only stop/cancel ends it."""
+        """1s tick: emit markPrice + (every DEPTH_STATE_CADENCE_S) sample depth_state + flush ALL
+        writers. Resilient — a transient writer error (e.g. ENOSPC) is logged and the loop
+        continues, so the fast-writer flush contract is never silently lost; only stop/cancel ends it."""
+        ticks = 0
         while not self._stop.is_set():
             try:
                 await asyncio.sleep(self._emit_interval_s)
+                ticks += 1
                 self.emit_markprice(self._recv_clock())
+                if ticks % self._depth_sample_ticks == 0:
+                    self.sample_depth_state(self._recv_clock())
                 self.flush_due()
             except asyncio.CancelledError:
                 raise
@@ -274,3 +344,21 @@ def build_okx_ws_collector(
     return OkxWsCollector(
         symbol_map=SymbolMap(inst_ids), ctval_table=parse_ctval_table(raw),
         root=root, url=url, client=client)
+
+
+def build_okx_books_collector(
+    root: str, *,
+    client: Optional[OkxRestClient] = None,
+    universe: Optional[Sequence[str]] = None,
+    url: str = WS_PUBLIC_BASE,
+    persist_raw_depth: bool = False,
+) -> OkxWsCollector:
+    """Stage C: a books-only depth collector (separate daemon). Subscribes only the `books`
+    channel; feeds depth_state (always) + the raw depth tape (only when persist_raw_depth)."""
+    client = client or OkxRestClient()
+    raw, _ = client.get_with_weight("/api/v5/public/instruments", {"instType": "SWAP"})
+    inst_ids = list(universe) if universe is not None else filter_universe(raw)
+    return OkxWsCollector(
+        symbol_map=SymbolMap(inst_ids), ctval_table=parse_ctval_table(raw),
+        root=root, url=url, client=client,
+        sub_args=build_books_sub_args(inst_ids), persist_raw_depth=persist_raw_depth)
