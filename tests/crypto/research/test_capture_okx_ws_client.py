@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 
 from crypto.research.capture_core_okx import ws_client as wc
 
@@ -142,3 +143,93 @@ def test_client_sends_subscribe_on_connect_and_routes_frames():
 
 async def _noop_sleep(_):
     return None
+
+
+# ---- fix #1: chunk the subscribe below OKX's 64 KiB WS frame limit --------
+
+def test_chunk_subscribe_args_keeps_each_frame_under_limit():
+    # The full production universe (273 x 5 + 1 = 1366 args) is a 71 KiB frame; OKX closes the
+    # socket with 1009 "Request message exceeds the maximum frame length". Chunk it.
+    args = [{"channel": "trades", "instId": f"SYM{i}-USDT-SWAP"} for i in range(1000)]
+    chunks = wc.chunk_subscribe_args(args, max_bytes=2000)
+    assert len(chunks) > 1                                  # actually split
+    for ch in chunks:
+        assert ch                                          # no empty batch
+        assert len(wc.build_subscribe_frame(ch)) <= 2000   # every frame under the limit
+    flat = [a for ch in chunks for a in ch]
+    assert flat == args                                    # all args, order preserved
+
+
+def test_full_universe_subscribe_is_chunked_under_okx_limit():
+    # the real default limit must keep a 1366-arg universe's frames each under 64 KiB
+    from crypto.research.capture_core_okx.ws_collector import build_sub_args
+    args = build_sub_args([f"SYM{i}-USDT-SWAP" for i in range(273)])
+    for ch in wc.chunk_subscribe_args(args):
+        assert len(wc.build_subscribe_frame(ch)) < 65536
+
+
+def test_client_sends_multiple_subscribe_frames_when_over_limit():
+    args = [{"channel": "trades", "instId": f"S{i}-USDT-SWAP"} for i in range(50)]
+    conn = _FakeConn([])                                    # closes right after subscribe
+    client = wc.OkxWsClient(sub_args=args, on_frame=lambda *a: None,
+                            connect_fn=lambda url: conn, sleep_fn=_noop_sleep,
+                            max_reconnects=0, subscribe_max_bytes=500)
+    asyncio.run(client.run())
+
+    subs = [json.loads(s) for s in conn.sent]
+    assert len(subs) > 1                                    # chunked into several frames
+    for s in subs:
+        assert s["op"] == "subscribe"
+        assert len(json.dumps(s)) <= 500
+    sent_args = [a for s in subs for a in s["args"]]
+    assert sent_args == args                                # all args subscribed exactly once
+
+
+# ---- fix #2: surface OKX errors + reconnect reasons loudly ----------------
+
+def test_error_frame_is_logged_loudly(caplog):
+    client = wc.OkxWsClient(sub_args=[], on_frame=lambda *a: None)
+    with caplog.at_level(logging.WARNING):
+        client.handle_raw(json.dumps(
+            {"event": "error", "code": "60012",
+             "msg": "Invalid request: the total args exceed the maximum"}), recv_ns=1)
+    blob = " ".join(r.getMessage() for r in caplog.records)
+    assert "60012" in blob and "Invalid request" in blob    # not silently dropped
+
+
+def test_malformed_frame_log_is_rate_limited(caplog):
+    # KI-165 guard: a persistently-malformed channel at firehose rate must NOT log per-frame
+    # (journal -> rsyslog -> uncapped /var/log/syslog is the exact disk-fill mechanism).
+    clock = [1000.0]
+
+    def raise_always(ch, inst, data, recv_ns):
+        raise KeyError("markPx")
+
+    bad = json.dumps({"arg": {"channel": "bbo-tbt", "instId": "BTC-USDT-SWAP"},
+                      "data": [{"ts": "1"}]})
+    client = wc.OkxWsClient(sub_args=[], on_frame=raise_always,
+                            monotonic_fn=lambda: clock[0], log_throttle_s=60.0)
+    with caplog.at_level(logging.WARNING):
+        for _ in range(500):
+            client.handle_raw(bad, recv_ns=1)
+    malformed = [r for r in caplog.records if "malformed" in r.getMessage()]
+    assert len(malformed) == 1                              # only the first, not 500 tracebacks
+    assert client.frame_errors == 500                      # metric still counts every drop
+
+    clock[0] += 61.0                                        # past the throttle window
+    client.handle_raw(bad, recv_ns=1)
+    malformed = [r for r in caplog.records if "malformed" in r.getMessage()]
+    assert len(malformed) == 2                              # logs again, with an aggregate
+    assert "suppressed" in malformed[1].getMessage()
+
+
+def test_reconnect_reason_is_logged(caplog):
+    def connect_fn(url):
+        raise ConnectionError("1009 frame too large")
+
+    client = wc.OkxWsClient(sub_args=[], on_frame=lambda *a: None,
+                            connect_fn=connect_fn, sleep_fn=_noop_sleep, max_reconnects=0)
+    with caplog.at_level(logging.WARNING):
+        asyncio.run(client.run())
+    blob = " ".join(r.getMessage() for r in caplog.records).lower()
+    assert "reconnect" in blob and "1009" in blob           # the break reason is visible
