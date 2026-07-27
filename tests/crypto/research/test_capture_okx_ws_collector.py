@@ -21,9 +21,17 @@ _CTVAL = {"BTC-USDT-SWAP": Decimal("0.01"), "ETH-USDT-SWAP": Decimal("0.1")}
 class _FakeWriter:
     def __init__(self):
         self.rows = []
+        self.flush_due_calls = 0
+        self.flush_all_calls = 0
 
     def append(self, row):
         self.rows.append(row)
+
+    def flush_due(self):
+        self.flush_due_calls += 1
+
+    def flush_all(self):
+        self.flush_all_calls += 1
 
 
 def _collector():
@@ -93,6 +101,38 @@ def test_router_liquidation_fans_out_and_filters_universe():
     assert len(w["forceOrder"].rows) == 1
     r = w["forceOrder"].rows[0]
     assert r["s"] == "ETHUSDT" and r["S"] == "SELL" and r["q"] == "0.2"   # 2 x 0.1 (ETH ctVal)
+
+
+def test_flush_due_flushes_all_writers_not_just_markprice():
+    # BLOCKING regression: the fast writers (aggTrade/bookTicker/forceOrder) must be flushed
+    # periodically too, else they buffer to RAM until MemoryMax SIGKILLs the daemon.
+    c, w = _collector()
+    c.flush_due()
+    for name in ("aggTrade", "bookTicker", "markPrice", "forceOrder"):
+        assert w[name].flush_due_calls == 1, f"{name} writer was not flushed"
+
+
+def test_markprice_merge_skips_symbols_without_a_new_mark():
+    # Stale-fill regression: a symbol must NOT re-emit from frozen last-seen state (advancing
+    # recv_ts_ns over a gap / for a delisted-quiet symbol). Emit only when a NEW mark arrived.
+    m = col.MarkPriceMergeState()
+    m.update_mark("BTCUSDT", "42310.6", _TS)
+    m.update_index("BTCUSDT", "42309.1")
+    m.update_funding("BTCUSDT", "0.00012", "1700000800000")
+    assert len(m.emit(1)) == 1                             # first tick: fresh mark -> emit
+    assert m.emit(2) == []                                 # no new mark -> NO stale re-emit
+    m.update_mark("BTCUSDT", "42311.0", "1700000009999")   # a new mark arrives
+    assert len(m.emit(3)) == 1                             # emits again
+
+
+def test_markprice_merge_invalidate_drops_state():
+    # on socket break the merge state is invalidated so nothing is emitted until fresh frames.
+    m = col.MarkPriceMergeState()
+    m.update_mark("BTCUSDT", "1", _TS)
+    m.update_index("BTCUSDT", "2")
+    m.update_funding("BTCUSDT", "0.0001", "1700000800000")
+    m.invalidate()
+    assert m.emit(1) == []                                 # cleared
 
 
 def test_router_markprice_channels_feed_merge_then_emit():

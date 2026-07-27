@@ -90,3 +90,27 @@ forceorder}`):
 All four readers parsed non-empty, correctly-typed rows and advanced their per-source cursors →
 **GATE PASS**. The temp root was discarded; the live OKX root and every running service were
 untouched.
+
+## Post-review hardening (adversarial review, 15 agents)
+
+A multi-lens review found four real defects in the **daemon runtime path** — untested until then
+because the unit tests drove `on_frame` directly and the gate used the windowed (stop+flush) path.
+All fixed TDD-first (6 new tests, incl. `test_capture_okx_ws_daemon.py` exercising `run()`):
+
+- **BLOCKING — flush every writer, not just markPrice.** `_emit_loop` now calls `flush_due()` on
+  ALL writers (mirroring Binance `service.py`), so the fast trades/bbo firehose can't buffer to
+  RAM until `MemoryMax` SIGKILLs the daemon and loses 3/4 datasets in a crash loop.
+- **MAJOR — markPrice honesty.** `MarkPriceMergeState.emit` gates on a *new mark since last emit*,
+  so a reconnect gap or a delisted/quiet symbol no longer stale-fills a row per second with an
+  advancing `recv_ts_ns`; the merge state is also invalidated on socket break (`[[skipped_fragment_is_a_gap]]`).
+- **MAJOR — frame isolation.** A malformed frame is caught + counted (`frame_errors`) inside
+  `ws_client.handle_raw`, so one bad payload can't be misread as a socket break and tear down the
+  single universe-wide connection (mirrors Binance `conn_manager._dispatch`).
+- **MAJOR — supervised emit task.** `_emit_loop` logs+continues on a transient writer error (e.g.
+  ENOSPC) instead of dying silently; `run()` gathers the task on shutdown (no orphan).
+
+Remaining pre-deploy follow-up (minor, blast radius contained — OKX writes a separate root the
+brain is not wired to): the socket-break gap manifest row is recorded zero-width (detection
+instant) rather than spanning the real outage window; adopt the Binance pending/close-on-reconnect
+pattern before OKX feeds the brain. Plus the deploy refinements already noted (subscribe-arg
+chunking for the full universe; re-subscribe newly-added instruments on the hourly re-resolve).

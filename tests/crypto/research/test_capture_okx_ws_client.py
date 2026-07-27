@@ -60,6 +60,30 @@ def test_bbo_arg_routing_injects_instid():
     assert "instId" not in data[0]             # confirms the data element itself omits it
 
 
+def test_malformed_frame_is_isolated_not_treated_as_socket_break():
+    # A raising on_frame (e.g. one-sided bbo bids:[] -> d['bids'][0] IndexError) must be
+    # isolated inside handle_raw, NOT propagate to the client's socket-break handler and
+    # tear down the whole (single, universe-wide) connection.
+    calls = {"n": 0}
+
+    def boom(ch, inst, data, recv_ns):
+        calls["n"] += 1
+        raise IndexError("one-sided book")
+
+    client = wc.OkxWsClient(sub_args=[], on_frame=boom)
+    raw = json.dumps({"arg": {"channel": "bbo-tbt", "instId": "BTC-USDT-SWAP"},
+                      "data": [{"asks": [["1", "1", "0", "1"]], "bids": [], "ts": "1", "seqId": 1}]})
+    client.handle_raw(raw, recv_ns=1)                      # must NOT raise
+    assert calls["n"] == 1
+    assert client.frame_errors == 1                        # counted, connection intact
+
+    # a subsequent good frame still routes (the client was not torn down)
+    good = []
+    client2 = wc.OkxWsClient(sub_args=[], on_frame=lambda *a: good.append(a))
+    client2.handle_raw(raw.replace('"bids": []', '"bids": [["1","1","0","1"]]'), recv_ns=2)
+    assert len(good) == 1
+
+
 def test_ack_and_error_frames_do_not_reach_on_frame():
     seen = []
     client = wc.OkxWsClient(sub_args=[], on_frame=lambda *a: seen.append(a))

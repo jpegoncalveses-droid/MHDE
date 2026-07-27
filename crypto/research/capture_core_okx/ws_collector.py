@@ -60,6 +60,7 @@ class MarkPriceMergeState:
         self._mark: dict[str, dict] = {}
         self._index: dict[str, str] = {}
         self._funding: dict[str, dict] = {}
+        self._last_emit_ts: dict[str, str] = {}
 
     def update_mark(self, symbol: str, mark_px: str, ts: str) -> None:
         self._mark[symbol] = {"markPx": mark_px, "ts": ts}
@@ -70,13 +71,30 @@ class MarkPriceMergeState:
     def update_funding(self, symbol: str, funding_rate: str, funding_time: str) -> None:
         self._funding[symbol] = {"fundingRate": funding_rate, "fundingTime": funding_time}
 
+    def invalidate(self) -> None:
+        """Drop all last-seen state (called on socket break — never stale-fill across a gap)."""
+        self._mark.clear()
+        self._index.clear()
+        self._funding.clear()
+        self._last_emit_ts.clear()
+
     def emit(self, recv_ns: int) -> list[dict]:
+        """One row per symbol that has all three channels AND a NEW mark since its last emit.
+
+        Gating on mark-advanced is what makes the 1s emitter honest: over a reconnect gap or
+        for a delisted/quiet symbol no fresh mark arrives, so nothing is emitted with an
+        advancing recv_ts_ns (which would defeat the gap manifest / freshness checks).
+        """
         rows = []
         for symbol, mark in self._mark.items():
-            if symbol in self._index and symbol in self._funding:
-                rows.append(okx_markprice_merge_row(
-                    symbol=symbol, mark=mark, index={"idxPx": self._index[symbol]},
-                    funding=self._funding[symbol], recv_ns=recv_ns))
+            if symbol not in self._index or symbol not in self._funding:
+                continue
+            if self._last_emit_ts.get(symbol) == mark["ts"]:
+                continue                                   # no new mark -> no stale re-emit
+            rows.append(okx_markprice_merge_row(
+                symbol=symbol, mark=mark, index={"idxPx": self._index[symbol]},
+                funding=self._funding[symbol], recv_ns=recv_ns))
+            self._last_emit_ts[symbol] = mark["ts"]
         return rows
 
 
@@ -91,6 +109,8 @@ class OkxWsCollector:
         root: Optional[str] = None,
         url: str = WS_PUBLIC_BASE,
         client: Optional[OkxRestClient] = None,
+        connect_fn: Optional[Callable[[str], Any]] = None,
+        emit_interval_s: float = MARKPRICE_EMIT_INTERVAL_S,
         recv_clock: Callable[[], int] = time.time_ns,
     ) -> None:
         if writers is None:
@@ -109,6 +129,8 @@ class OkxWsCollector:
         self._merge = MarkPriceMergeState()
         self._url = url
         self._client_factory_client = client
+        self._connect_fn = connect_fn
+        self._emit_interval_s = emit_interval_s
         self._recv_clock = recv_clock
         self._stop = asyncio.Event()
         self._client: Optional[OkxWsClient] = None
@@ -158,6 +180,13 @@ class OkxWsCollector:
         for row in self._merge.emit(recv_ns):
             self._writers["markPrice"].append(row)
 
+    def flush_due(self) -> None:
+        """Age/size-driven flush of EVERY writer (not just markPrice) — the fast trades/bbo
+        firehose buffers to RAM otherwise and OOM-SIGKILLs the daemon, losing its buffer."""
+        for w in self._writers.values():
+            if hasattr(w, "flush_due"):
+                w.flush_due()
+
     def flush_all(self) -> None:
         for w in self._writers.values():
             if hasattr(w, "flush_all"):
@@ -180,25 +209,36 @@ class OkxWsCollector:
                 pass
         self._client = OkxWsClient(
             sub_args=self._sub_args, on_frame=self.on_frame, url=self._url,
-            on_gap=lambda reason: self._record_gap(reason))
+            connect_fn=self._connect_fn, on_gap=self._on_socket_gap)
         emit_task = asyncio.create_task(self._emit_loop())
         try:
             await self._client.run()
         finally:
             self._stop.set()
             emit_task.cancel()
+            await asyncio.gather(emit_task, return_exceptions=True)   # supervise: no orphan task
             self.flush_all()
             logger.info("capture-okx-ws: stopped, buffers flushed")
 
+    def _on_socket_gap(self, reason: str) -> None:
+        """On a socket break: record the gap AND invalidate the merge state so the 1s emitter
+        does not stale-fill markPrice across the outage."""
+        self._record_gap(reason)
+        self._merge.invalidate()
+
     async def _emit_loop(self) -> None:
-        try:
-            while not self._stop.is_set():
-                await asyncio.sleep(MARKPRICE_EMIT_INTERVAL_S)
+        """1s tick: emit markPrice + flush ALL writers. Resilient — a transient writer error
+        (e.g. ENOSPC) is logged and the loop continues, so the fast-writer flush contract is
+        never silently lost; only stop/cancel ends it."""
+        while not self._stop.is_set():
+            try:
+                await asyncio.sleep(self._emit_interval_s)
                 self.emit_markprice(self._recv_clock())
-                if hasattr(self._writers["markPrice"], "flush_due"):
-                    self._writers["markPrice"].flush_due()
-        except asyncio.CancelledError:
-            pass
+                self.flush_due()
+            except asyncio.CancelledError:
+                raise
+            except Exception:                              # noqa: BLE001 — never die silently
+                logger.exception("okx ws emit/flush loop iteration failed; continuing")
 
     def _record_gap(self, reason: str) -> None:
         gap_writer = self._writers.get("_gaps")

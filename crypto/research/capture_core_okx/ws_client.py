@@ -15,12 +15,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import random
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, Sequence
 
 from crypto.research.capture_core.conn_manager import compute_backoff
+
+logger = logging.getLogger("mhde.crypto.capture_core_okx.ws_client")
 
 WS_PUBLIC_BASE = "wss://ws.okx.com:8443/ws/v5/public"   # keyless single plane
 PING_INTERVAL_S = 20.0                                   # app-level ping well under OKX's 30s idle
@@ -104,18 +107,29 @@ class OkxWsClient:
         self._max_reconnects = max_reconnects
         self._stop = asyncio.Event()
         self.frames_routed = 0
+        self.frame_errors = 0
         self.reconnects = 0
 
     def stop(self) -> None:
         self._stop.set()
 
     def handle_raw(self, raw: Any, recv_ns: int) -> None:
-        """Decode one raw message and forward data frames to ``on_frame`` (ack/error dropped)."""
+        """Decode one raw message and forward data frames to ``on_frame`` (ack/error dropped).
+
+        A malformed payload (KeyError/IndexError from a one-sided book, a field OKX renamed,
+        etc.) is ISOLATED here — dropped and counted — so it can never propagate to ``run``'s
+        socket-break handler and tear down the single universe-wide connection (mirrors the
+        Binance ``conn_manager._dispatch`` isolation).
+        """
         frame = decode_envelope(raw)
         if frame.kind != "data":
             return
         self.frames_routed += 1
-        self._on_frame(frame.channel, frame.inst_id, frame.data or [], recv_ns)
+        try:
+            self._on_frame(frame.channel, frame.inst_id, frame.data or [], recv_ns)
+        except Exception:                              # noqa: BLE001 — isolate one bad frame
+            self.frame_errors += 1
+            logger.warning("okx ws: dropped malformed %s frame", frame.channel, exc_info=True)
 
     async def run(self) -> None:
         reconnects = 0
