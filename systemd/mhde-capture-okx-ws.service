@@ -1,0 +1,37 @@
+# /home/jpcg/.config/systemd/user/mhde-capture-okx-ws.service
+[Unit]
+Description=MHDE capture-okx WS firehose collector (read-only, OKX public WS)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# systemd --user unit: runs as the logging-in user, persistence via linger.
+# Stage B of the OKX migration (docs/OKX_STAGE_B_WS.md): subscribes the four
+# fast public-WS channels (trades / bbo-tbt / mark-price+index-tickers+funding-
+# rate / liquidation-orders) on the keyless single public plane and writes rows
+# BYTE-IDENTICAL to the Binance WS dataset schemas under data/research/
+# capture_core_okx/ — a SEPARATE root; the live Binance capture and the OKX
+# Stage-A REST capture are untouched. Depth is excluded (Stage C). Never opens
+# the production database.
+#
+# BUILT-NOT-DEPLOYED: this file is tracked but not installed/enabled. Stage B
+# ships parked; the operator enables it deliberately. NOT wired into any target.
+Type=simple
+WorkingDirectory=/home/jpcg/MHDE
+ExecStartPre=/usr/bin/test -x /home/jpcg/MHDE/venv/bin/python
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto capture-okx-ws-run
+Restart=on-failure
+RestartSec=5
+# Give writers time to flush open parquet buffers on SIGTERM before SIGKILL.
+TimeoutStopSec=30
+# Resource caps: a trades/bbo firehose, same envelope as the Stage-A twin;
+# OOM-first, below the system.slice CPU/IO defaults so the engine always wins.
+MemoryMax=1G
+CPUWeight=20
+IOWeight=20
+OOMScoreAdjust=800
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

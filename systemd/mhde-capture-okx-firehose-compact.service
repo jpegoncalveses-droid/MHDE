@@ -1,0 +1,25 @@
+# /home/jpcg/.config/systemd/user/mhde-capture-okx-firehose-compact.service
+[Unit]
+Description=MHDE capture-okx WS firehose closed-hour compaction (OKX root)
+After=network-online.target
+
+[Service]
+# Hourly oneshot for the OKX root: REUSES the shared capture_core firehose
+# closed-hour compactor verbatim via --root (ADR-038 write-then-compact).
+# Merges each CLOSED clock-hour's small part-*.parquet into one file per
+# symbol=/date= partition, row-count verified before delete; the open hour is
+# never touched. Filesystem-only; idle CPU+IO so the engine always wins.
+#
+# BUILT-NOT-DEPLOYED: tracked but not installed/enabled.
+Type=oneshot
+WorkingDirectory=/home/jpcg/MHDE
+ExecStartPre=/usr/bin/test -x /home/jpcg/MHDE/venv/bin/python
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto capture-firehose-compact-recent --root data/research/capture_core_okx
+Nice=19
+IOSchedulingClass=idle
+MemoryMax=1G
+CPUWeight=20
+IOWeight=20
+OOMScoreAdjust=800
+StandardOutput=journal
+StandardError=journal
