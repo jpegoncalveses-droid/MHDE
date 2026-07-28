@@ -230,14 +230,14 @@ class OkxWsCollector:
             ct = self._ctval.get(inst_id)
             if ct is None:
                 continue
-            bids, asks = maintainer.top_levels(self._depth_top_n)
-            if not bids or not asks:
-                continue                                        # skip one-sided / empty books
-            try:
+            try:                                                # per-symbol isolation: one bad
+                bids, asks = maintainer.top_levels(self._depth_top_n)   # book can't abort the tick
+                if not bids or not asks:
+                    continue                                    # skip one-sided / empty books
                 writer.append(okx_book_state_row(
                     maintainer, symbol=maintainer.symbol, ct_val=ct,
                     recv_ns=recv_ns, top_n=self._depth_top_n))
-            except Exception:                                   # noqa: BLE001 — per-symbol isolation
+            except Exception:                                   # noqa: BLE001
                 logger.exception("okx depth_state sample failed for %s", inst_id)
 
     def emit_markprice(self, recv_ns: int) -> None:

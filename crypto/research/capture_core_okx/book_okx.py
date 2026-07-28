@@ -25,8 +25,10 @@ class OkxBookMaintainer:
 
     def on_snapshot(self, seq_id: int, bids: list, asks: list) -> None:
         """Wholesale rebuild from an ``action:snapshot`` (``prevSeqId == -1``)."""
-        self._bids = {px: sz for px, sz in bids}
-        self._asks = {px: sz for px, sz in asks}
+        vbids = self._validate(bids)                # parse BOTH sides before mutating anything
+        vasks = self._validate(asks)
+        self._bids = {px: sz for px, sz in vbids}
+        self._asks = {px: sz for px, sz in vasks}
         self.last_seq_id = seq_id
         self.synced = True
 
@@ -39,9 +41,26 @@ class OkxBookMaintainer:
             return
         if seq_id == prev_seq_id:
             return                                  # heartbeat: no book change
-        self._apply(self._bids, bids)
-        self._apply(self._asks, asks)
+        # Validate BOTH sides fully BEFORE mutating either: a non-numeric price/size raises here,
+        # leaving the book untouched and the seq NOT advanced (atomic-on-failure), so the dropped
+        # frame can never leave a partial book that the 5s sampler would emit as valid=True.
+        vbids = self._validate(bids)
+        vasks = self._validate(asks)
+        self._apply(self._bids, vbids)
+        self._apply(self._asks, vasks)
         self.last_seq_id = seq_id
+
+    @staticmethod
+    def _validate(levels: list) -> list:
+        """Confirm every level's price AND size parse as float (mirrors Binance _validate); raise
+        on any bad level BEFORE the caller mutates the book."""
+        validated = []
+        for lvl in levels:
+            px, sz = lvl[0], lvl[1]
+            float(px)                               # raises ValueError on a non-numeric price
+            float(sz)                               # raises ValueError on a non-numeric size
+            validated.append((px, sz))
+        return validated
 
     @staticmethod
     def _apply(side: dict, levels: list) -> None:

@@ -8,6 +8,8 @@ maintainer stores raw contract-size venue strings; ctVal->coin conversion is the
 """
 from __future__ import annotations
 
+import pytest
+
 from crypto.research.capture_core_okx.book_okx import OkxBookMaintainer
 
 
@@ -67,6 +69,33 @@ def test_update_before_snapshot_is_ignored():
     m = OkxBookMaintainer("BTCUSDT")
     m.on_update(101, 100, bids=[["1", "1"]], asks=[])       # never snapshotted
     assert m.synced is False and m.top_levels(10) == ([], [])
+
+
+def test_on_update_bad_size_leaves_book_unchanged_and_synced():
+    # atomic-on-failure: a non-numeric size must NOT partially mutate the book and must NOT
+    # advance the seq — else a book mixing old+partial state would be sampled as valid depth_state.
+    m = _mk()
+    before = m.top_levels(10)
+    with pytest.raises(ValueError):
+        m.on_update(101, 100, bids=[["100.0", "7"], ["98.0", "notanumber"]], asks=[])
+    assert m.top_levels(10) == before        # no partial apply (100.0 was NOT set to 7)
+    assert m.last_seq_id == 100 and m.synced is True
+
+
+def test_on_update_bad_price_leaves_book_unchanged():
+    m = _mk()
+    before = m.top_levels(10)
+    with pytest.raises(ValueError):
+        m.on_update(101, 100, bids=[["notaprice", "5"]], asks=[])
+    assert m.top_levels(10) == before        # bad price never entered the book
+    assert m.last_seq_id == 100
+
+
+def test_on_snapshot_bad_level_does_not_seed_a_corrupt_book():
+    m = OkxBookMaintainer("BTCUSDT")
+    with pytest.raises(ValueError):
+        m.on_snapshot(1, bids=[["100.0", "3"], ["99.0", "x"]], asks=[])
+    assert m.synced is False and m.top_levels(10) == ([], [])   # nothing seeded
 
 
 def test_top_levels_limited_and_best_first():
