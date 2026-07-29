@@ -234,6 +234,15 @@ _DATE_PRUNE_MARGIN_NS = 86_400 * 1_000_000_000
 #: floor is at least this far past its write mtime, absorbing filesystem-vs-window clock
 #: skew (sub-second in practice; mirrors the capture reader's 60s guard).
 _MTIME_SKIP_GUARD_NS = 60 * 1_000_000_000
+#: Rows decoded per batch in read_snapshots — bounds peak memory to one batch of the projected
+#: columns (not a whole file / whole store), the discovery-OOM fix.
+_READ_BATCH_ROWS = 65_536
+#: Bounded re-list retries when a fragment vanishes mid-read (the compactor's replace-then-delete
+#: race). One retry sufficed for the tick loop's short windowed read, but discovery's long
+#: whole-store read overlaps the ~12-min hourly compaction and can race repeatedly; each retry
+#: re-globs (picking up the merged compact-* file), and downstream key-dedup makes a race-window
+#: overlap harmless. Bounded so a persistent absence (a real error) still propagates.
+_READ_RACE_RETRIES = 8
 
 
 def _date_str_from_ns(ns: int) -> str:
@@ -290,7 +299,9 @@ def list_symbols(root: str, dataset: str) -> list[str]:
 
 
 def read_snapshots(root: str, dataset: str, symbol: Optional[str] = None, *,
-                   after_recv_ts_ns: int = 0, window_end_floor_ns: int = 0) -> list[dict]:
+                   after_recv_ts_ns: int = 0, window_end_floor_ns: int = 0,
+                   columns: Optional[list] = None,
+                   row_filter: Optional["pc.Expression"] = None) -> list[dict]:
     """Read persisted snapshots from ``<root>/<dataset>`` back as dicts.
 
     Used for round-trip fidelity and downstream consumption. Files are read by
@@ -362,16 +373,30 @@ def read_snapshots(root: str, dataset: str, symbol: Optional[str] = None, *,
                     files.append(fp)
         rows: list[dict] = []
         for fp in files:
-            table = pq.ParquetFile(str(fp)).read()
-            if window_end_floor_ns:                   # ROW prune: drop below-floor windows pre-python
-                table = table.filter(pc.field("window_end_ns") >= window_end_floor_ns)
-            rows.extend(table.to_pylist())
+            # BATCHED decode (discovery-OOM fix): iterate row-group batches of ONLY the projected
+            # ``columns`` instead of materializing the whole file, so peak memory is one batch, not
+            # the file/store. ``row_filter`` (e.g. horizon_min==60 for labels) drops rows pre-python.
+            # Batch/file order is preserved, so the accumulated list is identical to the old
+            # whole-file read filtered the same way. Callers that set a floor/row_filter must keep
+            # the referenced fields (window_end_ns, the predicate's fields) in ``columns``.
+            pf = pq.ParquetFile(str(fp))
+            for batch in pf.iter_batches(batch_size=_READ_BATCH_ROWS, columns=columns):
+                table = pa.Table.from_batches([batch])
+                if window_end_floor_ns:               # ROW prune: drop below-floor windows pre-python
+                    table = table.filter(pc.field("window_end_ns") >= window_end_floor_ns)
+                if row_filter is not None:
+                    table = table.filter(row_filter)
+                rows.extend(table.to_pylist())
         return rows
 
-    try:
-        return _attempt()
-    except FileNotFoundError as exc:
-        logger.warning("brain store read: fragment vanished mid-read (compactor replace-then-"
-                       "delete race), rebuilding the read once: %s/%s (%s)",
-                       dataset, symbol if symbol is not None else "*", exc)
-        return _attempt()
+    last_exc: Optional[FileNotFoundError] = None
+    for attempt in range(1, _READ_RACE_RETRIES + 1):
+        try:
+            return _attempt()
+        except FileNotFoundError as exc:         # compactor unlinked a fragment mid-read: re-list
+            last_exc = exc
+            logger.warning("brain store read: fragment vanished mid-read (compactor replace-then-"
+                           "delete race), re-listing (attempt %d/%d): %s/%s (%s)",
+                           attempt, _READ_RACE_RETRIES, dataset,
+                           symbol if symbol is not None else "*", exc)
+    raise last_exc                               # persistent absence is a real error, not a race

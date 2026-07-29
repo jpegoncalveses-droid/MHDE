@@ -22,6 +22,8 @@ from __future__ import annotations
 import statistics
 from typing import Mapping, Optional, Sequence
 
+import pyarrow.compute as pc
+
 from crypto.research.brain import labels as brain_labels
 from crypto.research.brain import registry as brain_registry
 from crypto.research.brain import store as brain_store
@@ -37,6 +39,12 @@ from crypto.research.brain.discovery import tradelog as TL
 
 def needed_datasets(base_features=E.BASE_FEATURES) -> list[str]:
     return sorted({bf.dataset for bf in base_features})
+
+
+#: Label columns compute_instance_lifts actually consumes (+ window_end_ns for the floor filter).
+#: Projecting to these drops fwd_return + recv_ts_ns, cutting the dominant label memory term.
+_LABEL_LOAD_COLUMNS = ["symbol", "window_start_ns", "window_end_ns",
+                       "horizon_min", "valid", "mfe", "mae"]
 
 
 def build_price_index(markprice_rows: Sequence[Mapping]) -> dict:
@@ -165,21 +173,39 @@ def run_discovery_pass(conn, engineered, lifts, price_index, coin_vols, *, featu
 def run_discovery(*, store_root=dcfg.BRAIN_STORE_ROOT, label_store_root=dcfg.LABEL_STORE_ROOT,
                   registry_path=dcfg.BRAIN_REGISTRY_PATH, discovery_db_path=dcfg.DISCOVERY_DB_PATH,
                   now_ns: int, score_horizon_min=dcfg.SCORE_HORIZON_MIN, seed=0, **pass_kw) -> dict:
-    """Load the brain store + labels + registry frontier and run one discovery pass."""
-    raw = {ds: brain_store.read_snapshots(store_root, ds) for ds in needed_datasets()}
-    engineered = E.compute_engineered(raw)
-    label_rows = brain_store.read_snapshots(label_store_root, brain_labels.LABEL_DATASET)
-    lifts = S.compute_instance_lifts(label_rows, horizon_min=score_horizon_min,
-                                     side=dcfg.SCORE_SIDE)
-    markprice_rows = raw.get(brain_labels.MARKPRICE_DATASET) or []
-    price_index = build_price_index(markprice_rows)
-    coin_vols = coin_volatilities(price_index)
+    """Load the RECENT WINDOW of the brain store + labels + registry frontier and run one pass.
 
+    Reads only the last ``DISCOVERY_HISTORY_DAYS`` of horizon-``score_horizon_min`` labels and a
+    slightly wider primitive window (``+DISCOVERY_PRIMITIVE_LOOKBACK_DAYS`` for full-fidelity
+    z-score), streamed + column-projected so peak memory is the window + one batch, not the whole
+    ~22G store (the discovery-OOM fix). ALL symbols are kept — the cross-universe rank needs them;
+    only TIME is bounded, and both raw + labels are freed before the heavy null pass.
+    """
+    # Frontier first -> the two windowing floors (labels vs the z-lookback-widened primitive floor).
     reg = brain_registry.connect(registry_path)
     try:
         frontier = brain_labels._markprice_frontier_ns(reg) or 0
     finally:
         reg.close()
+    label_floor = max(0, frontier - dcfg.DISCOVERY_HISTORY_NS)
+    primitive_floor = max(0, frontier - (dcfg.DISCOVERY_HISTORY_NS + dcfg.DISCOVERY_PRIMITIVE_LOOKBACK_NS))
+
+    raw = {ds: brain_store.read_snapshots(store_root, ds, after_recv_ts_ns=primitive_floor,
+                                          window_end_floor_ns=primitive_floor)
+           for ds in needed_datasets()}
+    engineered = E.compute_engineered(raw)
+    markprice_rows = raw.get(brain_labels.MARKPRICE_DATASET) or []
+    price_index = build_price_index(markprice_rows)
+    coin_vols = coin_volatilities(price_index)
+    del raw, markprice_rows                    # free the primitive load before the heavy null pass
+
+    label_rows = brain_store.read_snapshots(
+        label_store_root, brain_labels.LABEL_DATASET,
+        after_recv_ts_ns=label_floor, window_end_floor_ns=label_floor,
+        columns=_LABEL_LOAD_COLUMNS, row_filter=pc.field("horizon_min") == score_horizon_min)
+    lifts = S.compute_instance_lifts(label_rows, horizon_min=score_horizon_min,
+                                     side=dcfg.SCORE_SIDE)
+    del label_rows                             # free the label load before the heavy null pass
 
     conn = RS.connect(discovery_db_path)
     TL.ensure_schema(conn)
