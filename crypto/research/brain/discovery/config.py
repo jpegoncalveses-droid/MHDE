@@ -69,6 +69,22 @@ assert SCORE_HORIZON_MIN in brain_labels.HORIZONS_MIN
 #: framed long. Short side is the symmetric negation (extension point, not Stage-1 default).
 SCORE_SIDE = "long"
 
+# -- bounded substrate window (memory scaling) --------------------------------
+#: A pass reads only the last N days of labels, NOT the whole (unbounded, growing) store — the
+#: fix for the whole-store OOM (~22G materialized-as-dicts vs a 15G box). N must give the in-sample
+#: search enough valid horizon-60 instances for the null (>> MIN_FIRING_INSTANCES) AND leave the
+#: trailing post-frontier days for even floor-rate rules to reach CONFIRM_M fresh instances before
+#: they scroll out of the window. 14d is a conservative starting point (a single day already powers
+#: the depth-3 null); lower it once the real-substrate peak-RSS is profiled. Operator-tunable.
+DISCOVERY_HISTORY_DAYS = 14
+DISCOVERY_HISTORY_NS = DISCOVERY_HISTORY_DAYS * 86_400 * 1_000_000_000
+#: Primitives are read back an EXTRA lookback beyond the label window so the oldest SCORED
+#: instances get full-fidelity trailing features (the 1440-window / 24h z-score + its 60-window
+#: min history) instead of a cold start. 2d covers 1440+60 windows with margin. These extra days
+#: are UNLABELED lookback (they feed z-score + threshold population), not extra scored instances.
+DISCOVERY_PRIMITIVE_LOOKBACK_DAYS = 2
+DISCOVERY_PRIMITIVE_LOOKBACK_NS = DISCOVERY_PRIMITIVE_LOOKBACK_DAYS * 86_400 * 1_000_000_000
+
 # -- §6.1 permutation null (the heaviest compute) -----------------------------
 #: Permutations to characterise the null distribution AT EACH DEPTH. 200 resolves the
 #: ~99th percentile of best-on-noise; the whole search is re-run this many times per
