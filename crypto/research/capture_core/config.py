@@ -314,6 +314,13 @@ CAPTURE_INODE_CRITICAL_FRACTION = 0.90
 #: write-then-compact layout (ADR-038). Filesystem-only; never opens the production DB.
 CAPTURE_RAW_RETENTION_DAYS = 7
 
+#: OKX Stage C: the raw `depth` (400-level ladder) tape is the byte monster (~26 GB/day at full
+#: universe, gate-measured) that the brain never reads — only depth_state. When it IS persisted
+#: (opt-in --persist-raw-depth), it prunes on this tight window instead of the shared 7d, so it
+#: cannot blow the disk. The OKX firehose-expire unit passes --depth-days; Binance keeps depth at
+#: the 7d CAPTURE_RAW_RETENTION_DAYS.
+DEPTH_RAW_RETENTION_DAYS = 1
+
 # -- Stream cadences --
 DEPTH_UPDATE_SPEED = "100ms"   # rawest diff cadence (operator GO: no pre-coarsen)
 MARKPRICE_SPEED = "1s"

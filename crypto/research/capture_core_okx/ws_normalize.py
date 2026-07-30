@@ -111,3 +111,44 @@ def okx_liquidation_rows(d: Mapping[str, Any], *, symbol: str, ct_val: Decimal,
             "T": ts,
         })
     return rows
+
+
+def _coin_levels(levels, ct_val: Decimal) -> list:
+    """OKX book levels [px, sz_contracts, liqOrders, numOrders] -> [[px, coin_sz]] (drop trailing)."""
+    return [[lvl[0], contracts_to_coin(lvl[1], ct_val)] for lvl in levels]
+
+
+def okx_books_row(d: Mapping[str, Any], *, symbol: str, ct_val: Decimal, recv_ns: int) -> dict:
+    """OKX `books` frame element -> raw DEPTH_SCHEMA row (the full-ladder tape; brain never reads it).
+
+    OKX has one sequence per message, so U == u == seqId; pu == prevSeqId (-1 on the snapshot).
+    Zero-size levels are kept verbatim (raw diff tape); sizes are contracts->coin.
+    """
+    ts = int(d["ts"])
+    seq = int(d["seqId"])
+    return {
+        "recv_ts_ns": recv_ns,
+        "e": "depthUpdate",
+        "E": ts,
+        "T": ts,
+        "s": symbol,
+        "U": seq,
+        "u": seq,
+        "pu": int(d["prevSeqId"]),
+        "b": _coin_levels(d["bids"], ct_val),
+        "a": _coin_levels(d["asks"], ct_val),
+    }
+
+
+def okx_book_state_row(maintainer, *, symbol: str, ct_val: Decimal, recv_ns: int,
+                       top_n: int = 20) -> dict:
+    """Maintained OKX book -> DEPTH_STATE_SCHEMA row (top-N, ctVal-normalized) — the brain's need."""
+    bids, asks = maintainer.top_levels(top_n)
+    return {
+        "recv_ts_ns": recv_ns,
+        "s": symbol,
+        "update_id": int(maintainer.last_seq_id),
+        "valid": bool(maintainer.synced),
+        "b": _coin_levels(bids, ct_val),
+        "a": _coin_levels(asks, ct_val),
+    }
