@@ -32,6 +32,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Mapping, Optional, Sequence
 
+import numpy as np
+
 from crypto.research.brain.discovery import config as dcfg
 from crypto.research.brain.discovery import rules as R
 
@@ -102,6 +104,69 @@ def _quantile(xs: Sequence[float], q: float) -> float:
     return s[min(len(s) - 1, int(round(q * (len(s) - 1))))]
 
 
+# -- packed-bitset firing representation (§ memory: O(N/8) per atom, not O(firing) ints) --
+# A firing SET over the N labeled instances is a packed uint8 bit-array (np.packbits); rule
+# firing is a bitwise AND of its atoms' bit-arrays; the firing COUNT is a hardware popcount.
+# This replaces the old ``frozenset``-of-ints atom index (whose size grew with the firing
+# rate x instance count -> the discovery OOM). Absent features map to NaN, and NaN compares
+# False under both ``>`` and ``<`` -> EXACTLY the old "absent feature never holds" rule.
+
+
+def _labeled_feature_columns(engineered: Mapping, feature_ids: Sequence[str],
+                             keys: Sequence[tuple]) -> dict:
+    """``feature_id -> float64 column over ``keys`` (NaN where the feature is absent).
+
+    Uses a tape's columnar fast path (``labeled_columns``) when the engineered layer
+    provides one; otherwise reads the Mapping generically (dict inputs, tests). NaN is the
+    absent sentinel — engineered values (z-scores, ranks, bounded ratios) are always finite.
+    """
+    fast = getattr(engineered, "labeled_columns", None)
+    if fast is not None:
+        return fast(feature_ids, keys)
+    n = len(keys)
+    cols = {fid: np.full(n, np.nan, dtype=np.float64) for fid in feature_ids}
+    for i, k in enumerate(keys):
+        fv = engineered.get(k)
+        if fv is None:
+            continue
+        for fid in feature_ids:
+            v = fv.get(fid)
+            if v is not None:
+                cols[fid][i] = v
+    return cols
+
+
+def _atom_bits(col: np.ndarray, op: str, threshold: float) -> np.ndarray:
+    """Packed bit-array (uint8, len ceil(N/8)) of the instances where ``feature op threshold``
+    holds. NaN (absent) compares False under both ops -> never fires (the §4 no-silent-fill rule)."""
+    mask = col > threshold if op == ">" else col < threshold
+    return np.packbits(mask)
+
+
+def _bits_and(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Firing set of a conjunction: bitwise AND of the two operands' packed bit-arrays."""
+    return a & b
+
+
+#: per-byte set-bit count, so ``_popcount`` needs no ``np.bitwise_count`` (numpy>=2.0 only) and
+#: runs on any numpy: a 256-entry gather + sum over the packed bytes.
+_POPCOUNT8 = np.array([bin(b).count("1") for b in range(256)], dtype=np.int64)
+
+
+def _popcount(bits: np.ndarray) -> int:
+    """Firing count = total set bits, via a 256-entry per-byte lookup (numpy-version-agnostic)."""
+    return int(_POPCOUNT8[bits].sum())
+
+
+def _rule_bits(rule: R.Rule, atom_bits: Mapping) -> Optional[np.ndarray]:
+    """AND the packed bit-arrays of a rule's conditions (None for the empty rule)."""
+    bits = None
+    for c in rule.conditions:
+        cb = atom_bits[c]
+        bits = cb if bits is None else (bits & cb)
+    return bits
+
+
 def discover_entries(
     engineered: Mapping[tuple, Mapping[str, float]],
     lifts: Mapping[tuple, float],
@@ -120,47 +185,64 @@ def discover_entries(
     candidate that beat its depth's null bar), diagnostics a per-depth dict
     (n_candidates, n_scorable, null_bar, n_passed) — the activity the dashboard surfaces
     (huge candidate counts, almost all dying at the null, is correct, §11).
-    """
-    keys = sorted(lifts.keys())                      # labeled instances, deterministic
-    values = [lifts[k] for k in keys]
-    atoms = R.build_atoms(engineered, feature_ids, n_bins)
-    # firing is label-INDEPENDENT -> precompute each atom's index set over labeled keys ONCE
-    atom_idx: dict = {
-        a: frozenset(i for i, k in enumerate(keys) if a.holds(engineered[k]))
-        for a in atoms
-    }
 
-    def _rule_idx(rule: R.Rule) -> frozenset:
-        sets = [atom_idx[c] for c in rule.conditions]
-        return frozenset.intersection(*sets) if sets else frozenset()
+    Firing is carried as PACKED BITSETS over the N labeled instances (not frozensets of
+    ints) and the engineered layer is read columnar, so peak memory is ~N/8 per atom + one
+    float column, not O(firing-rate x instances) Python objects. The search order, the
+    permutation-null RNG draws, and every promotion decision are byte-for-byte the scalar
+    path's (edges differ only in float summation order — sub-ULP, decision-preserving);
+    ``_discovery_scalar_oracle`` pins that equivalence.
+    """
+    # Searchable instances = labeled AND present in the engineered tape. A labeled instance with
+    # no engineered features (e.g. a skipped/corrupt primitive fragment at discovery-read time)
+    # can fire no rule; excluding it keeps it out of BOTH the firing sets and the permutation-null
+    # value pool (a never-firing lift must not shift the noise bar). The scalar path CRASHED on
+    # such a key (engineered[k] KeyError); this graceful exclusion is a deliberate robustness
+    # improvement, a no-op whenever lifts.keys() ⊆ engineered (the steady-state case).
+    keys = sorted(k for k in lifts.keys() if k in engineered)  # deterministic
+    n = len(keys)
+    values = np.array([lifts[k] for k in keys], dtype=np.float64)
+    atoms = R.build_atoms(engineered, feature_ids, n_bins)
+    # firing is label-INDEPENDENT -> precompute each atom's packed firing bitset over keys ONCE
+    cols = _labeled_feature_columns(engineered, feature_ids, keys)
+    atom_bits: dict = {a: _atom_bits(cols[a.feature], a.op, a.threshold) for a in atoms}
+    del cols                                          # free the float columns before the null pass
 
     rng = random.Random(seed)
     survivors: list = []
     diagnostics: list = []
     current = R.depth1_rules(atoms)
     depth = 1
+    base_idx = list(range(n))
     while current and depth <= max_depth:
-        scorable = []                                # (rule, idx_tuple)
+        scorable = []                                # (rule, count)
+        masks = []                                   # bool firing mask per scorable, aligned
         for rule in current:
-            idx = _rule_idx(rule)
-            if len(idx) >= min_firing:
-                scorable.append((rule, tuple(idx)))
-        real = [(rule, _mean_at(values, idx)) for rule, idx in scorable]
+            bits = _rule_bits(rule, atom_bits)
+            count = _popcount(bits) if bits is not None else 0
+            if count >= min_firing:
+                scorable.append((rule, count))
+                masks.append(np.unpackbits(bits)[:n].view(bool))
+        real = [(rule, float(values[m].sum()) / count)
+                for (rule, count), m in zip(scorable, masks)]
 
         null_bests = []                              # one best-on-noise edge per permutation
         for _ in range(n_permutations):
-            shuffled = values[:]
-            rng.shuffle(shuffled)
-            best = max((_mean_at(shuffled, idx) for _, idx in scorable), default=float("-inf"))
+            perm = base_idx[:]
+            rng.shuffle(perm)                        # SAME draws as scalar ``shuffle(values)``
+            shuffled = values[perm]
+            best = max((float(shuffled[m].sum()) / count
+                        for (_, count), m in zip(scorable, masks)), default=float("-inf"))
             null_bests.append(best)
         bar = _quantile(null_bests, null_quantile) if scorable else float("inf")
 
-        passed = [(rule, edge, idx) for (rule, edge), (_, idx) in zip(real, scorable) if edge > bar]
+        passed = [(rule, edge, count) for (rule, edge), (_, count) in zip(real, scorable)
+                  if edge > bar]
         diagnostics.append({"depth": depth, "n_candidates": len(current),
                             "n_scorable": len(scorable), "null_bar": bar,
                             "n_passed": len(passed)})
-        for rule, edge, idx in passed:
-            survivors.append(EntryResult(rule=rule, edge=edge, n_fires=len(idx),
+        for rule, edge, count in passed:
+            survivors.append(EntryResult(rule=rule, edge=edge, n_fires=count,
                                          depth=depth, null_bar=bar, margin=edge - bar))
         # extend only the survivors (a small set) to the next depth
         nxt: dict = {}

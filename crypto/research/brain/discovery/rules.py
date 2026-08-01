@@ -100,10 +100,16 @@ def build_atoms(engineered: Mapping[tuple, Mapping[str, float]],
     """Every depth-1 condition: for each feature present on the tape, each quantile
     threshold crossed both ways (> and <). Features absent from the tape contribute none.
     """
-    by_feature: dict[str, list[float]] = {}
-    for fv in engineered.values():
-        for fid, v in fv.items():
-            by_feature.setdefault(fid, []).append(v)
+    # columnar fast path (EngineeredTape) reads present values per feature vectorially; the
+    # generic path scans the Mapping. Both feed the SAME quantile_thresholds -> identical atoms.
+    present = getattr(engineered, "feature_present_values", None)
+    if present is not None:
+        by_feature = present(feature_ids)
+    else:
+        by_feature = {}
+        for fv in engineered.values():
+            for fid, v in fv.items():
+                by_feature.setdefault(fid, []).append(v)
     atoms: list[Condition] = []
     for fid in feature_ids:
         for thr in quantile_thresholds(by_feature.get(fid, []), n_bins):
@@ -132,4 +138,7 @@ def extend_rule(rule: Rule, atoms: Sequence[Condition]) -> list[Rule]:
 
 def fires(rule: Rule, engineered: Mapping[tuple, Mapping[str, float]]) -> set:
     """The set of ``(symbol, window)`` keys where ``rule`` holds."""
+    fast = getattr(engineered, "fires_keys", None)   # EngineeredTape columnar fast path
+    if fast is not None:
+        return fast(rule)
     return {key for key, fv in engineered.items() if rule.holds(fv)}

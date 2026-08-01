@@ -28,14 +28,127 @@ migration; the batch already reads the whole tape). NOTHING here looks forward.
 from __future__ import annotations
 
 import statistics
+from collections.abc import Mapping as AbcMapping
 from dataclasses import dataclass
 from typing import Callable, Mapping, Optional, Sequence
+
+import numpy as np
 
 from crypto.research.brain.discovery import config as dcfg
 
 RAW = "raw"
 Z = "z"
 XRANK = "xrank"
+
+
+class _RowView(AbcMapping):
+    """A read-only Mapping view of one instance's present features, over the tape's columnar
+    store. Absent (NaN) features are simply not present — no key, exactly like the old sparse
+    per-instance dict. Cheap: holds a row index, materialises nothing until asked."""
+    __slots__ = ("_tape", "_row")
+
+    def __init__(self, tape: "EngineeredTape", row: int):
+        self._tape = tape
+        self._row = row
+
+    def __getitem__(self, fid):
+        col = self._tape._feat_to_col.get(fid)
+        if col is None:
+            raise KeyError(fid)
+        v = self._tape._values[self._row, col]
+        if np.isnan(v):
+            raise KeyError(fid)
+        return float(v)
+
+    def __iter__(self):
+        row = self._tape._values[self._row]
+        for fid, col in self._tape._feat_to_col.items():
+            if not np.isnan(row[col]):
+                yield fid
+
+    def __len__(self):
+        return int(np.count_nonzero(~np.isnan(self._tape._values[self._row])))
+
+
+class EngineeredTape(AbcMapping):
+    """Columnar engineered layer: a dense ``float64`` matrix (n_keys x n_features), NaN where a
+    feature is absent, plus the key<->row and feature<->column maps. It IS a
+    ``Mapping[(symbol, window_ns) -> Mapping[str, float]]`` (``eng[key][fid]``, ``.get``, ``in``,
+    ``==``, iteration all work), so every consumer — the rule search, ``R.fires``, forward
+    confirmation, continuations — reads it unchanged, while storage is ~8 bytes/value instead of
+    the dict-of-dicts' per-entry Python overhead (the discovery memory-floor fix). The scorer
+    takes the ``labeled_columns`` fast path for vectorised firing."""
+    __slots__ = ("_keys", "_key_to_row", "_feature_ids", "_feat_to_col", "_values")
+
+    def __init__(self, keys, key_to_row, feature_ids, feat_to_col, values):
+        self._keys = keys
+        self._key_to_row = key_to_row
+        self._feature_ids = feature_ids
+        self._feat_to_col = feat_to_col
+        self._values = values
+
+    def __getitem__(self, key):
+        row = self._key_to_row.get(key)
+        if row is None:
+            raise KeyError(key)
+        return _RowView(self, row)
+
+    def __iter__(self):
+        return iter(self._keys)
+
+    def __len__(self):
+        return len(self._keys)
+
+    def __contains__(self, key):
+        # fast membership straight off the row index (avoids minting a _RowView per probe)
+        return key in self._key_to_row
+
+    def feature_present_values(self, feature_ids: Sequence[str]) -> dict:
+        """``feature_id -> array of its present (non-NaN) values`` over the whole tape — the
+        columnar fast path for ``rules.build_atoms``' threshold discretisation."""
+        out: dict = {}
+        for fid in feature_ids:
+            col_i = self._feat_to_col.get(fid)
+            if col_i is None:
+                out[fid] = []
+                continue
+            col = self._values[:, col_i]
+            out[fid] = col[~np.isnan(col)]
+        return out
+
+    def fires_keys(self, rule) -> set:
+        """Keys where ``rule`` holds — columnar AND of the conditions' masks (NaN compares False,
+        so an absent feature never holds). The fast path for ``rules.fires``."""
+        conds = rule.conditions
+        if not conds:
+            return set(self._keys)          # empty conjunction holds everywhere (all([]) is True)
+        mask = None
+        for c in conds:
+            col_i = self._feat_to_col.get(c.feature)
+            if col_i is None:
+                return set()                # feature absent from the tape -> never holds
+            col = self._values[:, col_i]
+            m = col > c.threshold if c.op == ">" else col < c.threshold
+            mask = m if mask is None else (mask & m)
+        return {self._keys[i] for i in np.flatnonzero(mask).tolist()}
+
+    def labeled_columns(self, feature_ids: Sequence[str], keys: Sequence[tuple]) -> dict:
+        """``feature_id -> float64 column over ``keys`` (NaN where the key or feature is absent).
+
+        The scorer's vectorised firing path — a pure columnar gather, no per-key Python dicts."""
+        n = len(keys)
+        rows = np.fromiter((self._key_to_row.get(k, -1) for k in keys), dtype=np.int64, count=n)
+        present = rows >= 0
+        safe = np.where(present, rows, 0)
+        out: dict = {}
+        for fid in feature_ids:
+            col_i = self._feat_to_col.get(fid)
+            if col_i is None:
+                out[fid] = np.full(n, np.nan, dtype=np.float64)
+                continue
+            vals = self._values[safe, col_i]
+            out[fid] = np.where(present, vals, np.nan)
+        return out
 
 
 @dataclass(frozen=True)
@@ -157,21 +270,34 @@ def compute_engineered(
     zscore_min_history: int = dcfg.ZSCORE_MIN_HISTORY,
     xuniv_min_coins: int = dcfg.XUNIV_MIN_COINS,
     base_features: Sequence[BaseFeature] = BASE_FEATURES,
-) -> dict[tuple[str, int], dict[str, float]]:
-    """Engineered features keyed by ``(symbol, window_start_ns)``.
+) -> EngineeredTape:
+    """Engineered features keyed by ``(symbol, window_start_ns)``, as an :class:`EngineeredTape`
+    (a columnar float64 matrix behind the Mapping interface).
 
     ``raw_by_dataset`` maps a brain store dataset name -> its raw snapshot dicts (as
     returned by ``store.read_snapshots``). Only the datasets a feature needs are read;
     a dataset absent from the map contributes nothing. Values that cannot be computed
     (None inputs, sub-min-history z, zero-variance prior, sub-min-coins window) are
-    omitted rather than faked.
+    absent (NaN in the matrix / not a key in the row view), never faked; an instance with
+    no computable feature is dropped entirely (exact parity with the old sparse dict).
     """
-    out: dict[tuple[str, int], dict[str, float]] = {}
+    feature_ids = engineered_feature_ids(base_features, zscore_windows=zscore_windows)
+    feat_to_col = {fid: i for i, fid in enumerate(feature_ids)}
 
-    def _put(symbol, window_ns, fid, value):
+    # row axis: every (symbol, window) seen in any needed dataset, in first-seen order.
+    key_to_row: dict[tuple[str, int], int] = {}
+    for bf in base_features:
+        for s in raw_by_dataset.get(bf.dataset) or []:
+            k = (s["symbol"], int(s["window_start_ns"]))
+            if k not in key_to_row:
+                key_to_row[k] = len(key_to_row)
+
+    matrix = np.full((len(key_to_row), len(feature_ids)), np.nan, dtype=np.float64)
+
+    def _scatter(symbol, window_ns, fid, value):
         if value is None:
             return
-        out.setdefault((symbol, int(window_ns)), {})[fid] = float(value)
+        matrix[key_to_row[(symbol, int(window_ns))], feat_to_col[fid]] = float(value)
 
     for bf in base_features:
         rows = raw_by_dataset.get(bf.dataset) or []
@@ -185,7 +311,7 @@ def compute_engineered(
         # RAW passthrough (bounded features only)
         if RAW in bf.transforms:
             for (sym, w), v in base_vals.items():
-                _put(sym, w, f"{bf.feature_id}.raw", v)
+                _scatter(sym, w, f"{bf.feature_id}.raw", v)
 
         # per-coin z over each coin's strictly-prior trailing window
         if Z in bf.transforms:
@@ -205,7 +331,7 @@ def compute_engineered(
                         if sd == 0:
                             continue
                         z = (v - statistics.fmean(prior)) / sd
-                        _put(sym, w, f"{bf.feature_id}.z{win}", z)
+                        _scatter(sym, w, f"{bf.feature_id}.z{win}", z)
 
         # cross-universe mid-rank percentile, per window
         if XRANK in bf.transforms:
@@ -217,6 +343,15 @@ def compute_engineered(
                     continue
                 pop = [v for _, v in members]
                 for sym, v in members:
-                    _put(sym, w, f"{bf.feature_id}.xrank", _mid_rank_percentile(v, pop))
+                    _scatter(sym, w, f"{bf.feature_id}.xrank", _mid_rank_percentile(v, pop))
 
-    return out
+    # drop instances with no computable feature -> exact key-set parity with the old sparse dict
+    keys_list = list(key_to_row)
+    if keys_list:
+        keep = ~np.all(np.isnan(matrix), axis=1)
+        if not keep.all():
+            keep_idx = np.flatnonzero(keep)
+            matrix = matrix[keep_idx]
+            keys_list = [keys_list[i] for i in keep_idx]
+            key_to_row = {k: i for i, k in enumerate(keys_list)}
+    return EngineeredTape(keys_list, key_to_row, feature_ids, feat_to_col, matrix)
