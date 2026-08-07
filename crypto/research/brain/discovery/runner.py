@@ -56,6 +56,23 @@ def build_price_index(markprice_rows: Sequence[Mapping]) -> dict:
     return idx
 
 
+def build_price_index_columnar(markprice_table) -> dict:
+    """``build_price_index`` from a columnar markprice ``pyarrow.Table`` (option-B read) instead
+    of a list-of-dicts — same output (``to_pylist`` maps a parquet NULL to None exactly as the
+    dict path did), without materializing the markprice rows as Python dicts."""
+    idx: dict = {}
+    if markprice_table.num_rows == 0:
+        return idx
+    syms = markprice_table.column("symbol").to_pylist()
+    wins = markprice_table.column("window_start_ns").to_pylist()
+    close = markprice_table.column("mark_close").to_pylist()
+    high = markprice_table.column("mark_high").to_pylist()
+    low = markprice_table.column("mark_low").to_pylist()
+    for s, w, c, h, l in zip(syms, wins, close, high, low):
+        idx.setdefault(s, {})[int(w)] = (c, h, l)
+    return idx
+
+
 def coin_volatilities(price_index: Mapping[str, Mapping[int, tuple]]) -> dict:
     """Per-coin volatility = population std of consecutive-window simple returns (the scale
     for the vol-multiple exit barriers). None when too few windows."""
@@ -190,14 +207,24 @@ def run_discovery(*, store_root=dcfg.BRAIN_STORE_ROOT, label_store_root=dcfg.LAB
     label_floor = max(0, frontier - dcfg.DISCOVERY_HISTORY_NS)
     primitive_floor = max(0, frontier - (dcfg.DISCOVERY_HISTORY_NS + dcfg.DISCOVERY_PRIMITIVE_LOOKBACK_NS))
 
-    raw = {ds: brain_store.read_snapshots(store_root, ds, after_recv_ts_ns=primitive_floor,
-                                          window_end_floor_ns=primitive_floor)
-           for ds in needed_datasets()}
-    engineered = E.compute_engineered(raw)
-    markprice_rows = raw.get(brain_labels.MARKPRICE_DATASET) or []
-    price_index = build_price_index(markprice_rows)
+    def _read_ds(dataset, columns):
+        cols = list(columns)
+        if "window_end_ns" not in cols:
+            cols.append("window_end_ns")           # the window_end floor filter needs this column
+        return brain_store.read_snapshots_columnar(
+            store_root, dataset, after_recv_ts_ns=primitive_floor,
+            window_end_floor_ns=primitive_floor, columns=cols)
+
+    # Columnar streaming primitive read (option B): each dataset read ONCE as a projected columnar
+    # table, so peak is one dataset's needed columns + the output matrix, NOT the ~12-13G summed
+    # list-of-dicts that OOMed the read. Engineered output is byte-identical to the scalar path
+    # (compute_engineered oracle test). ALL symbols kept (cross-universe rank); only TIME is bounded.
+    engineered = E.compute_engineered_columnar(_read_ds)
+    mp_tbl = _read_ds(brain_labels.MARKPRICE_DATASET,
+                      ["symbol", "window_start_ns", "mark_close", "mark_high", "mark_low"])
+    price_index = build_price_index_columnar(mp_tbl)
     coin_vols = coin_volatilities(price_index)
-    del raw, markprice_rows                    # free the primitive load before the heavy null pass
+    del mp_tbl                                  # free the markprice read before the heavy null pass
 
     label_rows = brain_store.read_snapshots(
         label_store_root, brain_labels.LABEL_DATASET,
