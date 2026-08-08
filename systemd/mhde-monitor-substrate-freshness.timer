@@ -1,0 +1,11 @@
+[Unit]
+Description=MHDE monitor: substrate freshness — every 5 minutes
+
+[Timer]
+# Every 5 min: catches a write-stall within a few minutes of crossing the shortest
+# (10 min WS) threshold; the alert throttle (cooldown 4h / heartbeat 24h) prevents spam.
+OnCalendar=*:0/5
+Persistent=true
+
+[Install]
+WantedBy=timers.target

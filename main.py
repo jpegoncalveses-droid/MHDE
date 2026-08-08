@@ -3577,6 +3577,14 @@ def monitor_streamlit_freshness():
     raise SystemExit(streamlit_freshness.main())
 
 
+@monitor.command("substrate-freshness")
+def monitor_substrate_freshness():
+    """Alert when the brain or any Binance capture dataset stops being written
+    (write recency, not process-liveness — the 2026-08-08 silent-outage gap)."""
+    from monitoring import substrate_freshness
+    raise SystemExit(substrate_freshness.main())
+
+
 @monitor.command("dashboard-synthetic")
 def monitor_dashboard_synthetic():
     from monitoring import dashboard_synthetic

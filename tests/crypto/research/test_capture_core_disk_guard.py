@@ -35,12 +35,12 @@ def test_disk_state_tiers():
 
 def test_next_halt_state_hysteresis():
     # below critical -> halt
-    assert dg.next_halt_state(9, soft=30, critical=10, halted=False) is True
-    # at/above soft -> resume
-    assert dg.next_halt_state(30, soft=30, critical=10, halted=True) is False
+    assert dg.next_halt_state(9, resume=30, critical=10, halted=False) is True
+    # at/above the resume floor -> resume
+    assert dg.next_halt_state(30, resume=30, critical=10, halted=True) is False
     # in the band: hold the prior state (no flapping)
-    assert dg.next_halt_state(20, soft=30, critical=10, halted=True) is True
-    assert dg.next_halt_state(20, soft=30, critical=10, halted=False) is False
+    assert dg.next_halt_state(20, resume=30, critical=10, halted=True) is True
+    assert dg.next_halt_state(20, resume=30, critical=10, halted=False) is False
 
 
 # -- oldest-first selection (pure) --
@@ -59,7 +59,11 @@ def test_select_returns_all_when_deficit_exceeds_total_and_none_when_satisfied()
 
 # -- DiskGuard.enforce (injected free/list/prune) --
 
-def _guard(free_value, parts, *, soft=30, critical=10, pruned_sink=None):
+def _guard(free_value, parts, *, soft=30, critical=10, resume=None, pruned_sink=None):
+    # resume defaults to soft so the pre-existing enforce tests keep their original
+    # resume-at-soft behaviour; the resume-floor decoupling is covered separately in
+    # test_capture_core_guard_resume_floor.py.
+    resume = soft if resume is None else resume
     pruned_sink = pruned_sink if pruned_sink is not None else []
 
     def fake_prune(paths):
@@ -68,7 +72,7 @@ def _guard(free_value, parts, *, soft=30, critical=10, pruned_sink=None):
         return sum(by_path.get(p, 0) for p in paths)
 
     g = dg.DiskGuard(
-        "/d", soft_floor=soft, critical_floor=critical,
+        "/d", soft_floor=soft, critical_floor=critical, resume_floor=resume,
         free_fn=lambda _root: free_value,
         list_fn=lambda _root, _ds: list(parts),
         prune_fn=fake_prune,
