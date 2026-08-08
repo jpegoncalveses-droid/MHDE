@@ -396,6 +396,10 @@ def _columnar_xrank(symbols: np.ndarray, windows: np.ndarray, vals: np.ndarray, 
     return out
 
 
+# RETAINED, NOT DEAD: production reads via compute_engineered_columnar (option B, the
+# ~12-13G list-of-dicts floor fix). This scalar per-row implementation is deliberately kept
+# as the load-bearing equivalence ORACLE — the columnar path is proven byte-identical
+# against it, in-memory and through the parquet seam (test_brain_discovery_engineered_columnar).
 def compute_engineered(
     raw_by_dataset: Mapping[str, Sequence[Mapping]],
     *,

@@ -48,7 +48,11 @@ _LABEL_LOAD_COLUMNS = ["symbol", "window_start_ns", "window_end_ns",
 
 
 def build_price_index(markprice_rows: Sequence[Mapping]) -> dict:
-    """``symbol -> {window_start_ns: (close, high, low)}`` from markprice snapshots."""
+    """``symbol -> {window_start_ns: (close, high, low)}`` from markprice snapshots.
+
+    RETAINED, NOT DEAD: production uses ``build_price_index_columnar`` (reads the markprice
+    arrow Table directly, no list-of-dicts); this version is kept as its equivalence ORACLE
+    (test_brain_store_columnar)."""
     idx: dict = {}
     for s in markprice_rows:
         idx.setdefault(s["symbol"], {})[int(s["window_start_ns"])] = (

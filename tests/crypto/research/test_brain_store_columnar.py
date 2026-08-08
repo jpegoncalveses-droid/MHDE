@@ -5,11 +5,21 @@ logic. ``read_snapshots`` itself must stay byte-identical (the live tick loop sh
 """
 from __future__ import annotations
 
+import pyarrow as pa
 import pyarrow.compute as pc
 
 from crypto.research.brain import store
+from crypto.research.brain.discovery import runner as R
 
 _W = 60_000_000_000
+
+
+def _mark_snap(sym, i, close, high, low):
+    ws = i * _W
+    row = {name: 0 for name in store.MARKPRICE_SNAPSHOT_SCHEMA.names}
+    row.update(symbol=sym, window_start_ns=ws, window_end_ns=ws + _W, recv_ts_ns=ws + _W,
+               mark_close=close, mark_high=high, mark_low=low)
+    return row
 
 
 def _trade_snap(sym, i, buy, sell):
@@ -64,3 +74,37 @@ def test_read_snapshots_still_returns_list_of_dicts(tmp_path):
     out = store.read_snapshots(str(tmp_path), "trades")
     assert isinstance(out, list) and all(isinstance(r, dict) for r in out)
     assert out[0]["taker_buy_vol"] == 1.0 and out[0]["symbol"] == "BTCUSDT"
+
+
+# -- build_price_index_columnar: the runner's markprice-Table consumer of the read -----
+
+_MARK_COLS = ["symbol", "window_start_ns", "mark_close", "mark_high", "mark_low", "window_end_ns"]
+
+
+def test_build_price_index_columnar_matches_scalar_through_parquet(tmp_path):
+    snaps = [_mark_snap("BTCUSDT", 0, 100.5, 101.0, 99.0),
+             _mark_snap("ETHUSDT", 0, 50.2, 50.5, 49.8),
+             _mark_snap("BTCUSDT", 1, 100.8, 101.2, 100.0)]
+    store.write_snapshots(str(tmp_path), "markprice", store.MARKPRICE_SNAPSHOT_SCHEMA, snaps)
+    scalar = R.build_price_index(store.read_snapshots(str(tmp_path), "markprice"))
+    tbl = store.read_snapshots_columnar(str(tmp_path), "markprice", columns=_MARK_COLS)
+    columnar = R.build_price_index_columnar(tbl)
+    assert columnar == scalar
+    assert columnar["BTCUSDT"][0] == (100.5, 101.0, 99.0)
+    assert columnar["BTCUSDT"][_W] == (100.8, 101.2, 100.0)
+
+
+def test_build_price_index_columnar_empty_table_is_empty_dict():
+    assert R.build_price_index_columnar(pa.table({})) == {}
+
+
+def test_build_price_index_columnar_preserves_null_mark(tmp_path):
+    # a NULL mark maps to None exactly as the list-of-dicts path — never a silent 0.0.
+    snap = _mark_snap("BTCUSDT", 0, 100.0, 101.0, 99.0)
+    snap["mark_close"] = None
+    store.write_snapshots(str(tmp_path), "markprice", store.MARKPRICE_SNAPSHOT_SCHEMA, [snap])
+    tbl = store.read_snapshots_columnar(str(tmp_path), "markprice", columns=_MARK_COLS)
+    columnar = R.build_price_index_columnar(tbl)
+    scalar = R.build_price_index(store.read_snapshots(str(tmp_path), "markprice"))
+    assert columnar == scalar
+    assert columnar["BTCUSDT"][0][0] is None

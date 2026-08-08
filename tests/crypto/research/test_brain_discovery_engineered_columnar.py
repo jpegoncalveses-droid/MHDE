@@ -15,7 +15,16 @@ import random
 import numpy as np
 import pyarrow as pa
 
+from crypto.research.brain import store
 from crypto.research.brain.discovery import engineered as E
+
+_DATASET_SCHEMAS = {
+    "trades": store.TRADES_SNAPSHOT_SCHEMA,
+    "bookticker": store.BOOKTICKER_SNAPSHOT_SCHEMA,
+    "markprice": store.MARKPRICE_SNAPSHOT_SCHEMA,
+    "depth": store.DEPTH_SNAPSHOT_SCHEMA,
+    "forceorder": store.FORCEORDER_SNAPSHOT_SCHEMA,
+}
 
 
 def _table(fields: dict) -> pa.Table:
@@ -228,4 +237,44 @@ def test_compute_engineered_columnar_equals_scalar_oracle():
             assert math.isclose(fs[fid], fc[fid], rel_tol=1e-9, abs_tol=1e-12), \
                 f"{key} {fid}: scalar {fs[fid]} != columnar {fc[fid]}"
     assert max_delta < 1e-9, f"max feature delta {max_delta:g}"
+
+
+# -- (5) THE COMPOSED PRODUCTION SEAM: parquet -> read_snapshots_columnar ------
+#        -> _read_ds (window_end_ns appended) -> compute_engineered_columnar.
+# The oracle above feeds in-memory tables via a lambda, bypassing the real read layer.
+# This exercises the whole runner seam end-to-end from parquet on disk and proves it
+# byte-identical to the scalar read_snapshots -> compute_engineered path.
+
+def test_composed_seam_columnar_equals_scalar_through_parquet(tmp_path):
+    raw = _substrate(seed=3)
+    root = str(tmp_path)
+    for ds, rows in raw.items():
+        store.write_snapshots(root, ds, _DATASET_SCHEMAS[ds], rows)
+
+    kw = dict(zscore_windows=(10,), zscore_min_history=5, xuniv_min_coins=5)
+
+    # scalar path: read_snapshots (list-of-dicts) -> compute_engineered
+    scalar_raw = {ds: store.read_snapshots(root, ds, after_recv_ts_ns=0,
+                                           window_end_floor_ns=0) for ds in raw}
+    scalar = E.compute_engineered(scalar_raw, **kw)
+
+    # columnar path: the PRODUCTION _read_ds closure (runner.py) — appends window_end_ns,
+    # reads via read_snapshots_columnar — driving compute_engineered_columnar.
+    def _read_ds(dataset, columns):
+        cols = list(columns)
+        if "window_end_ns" not in cols:
+            cols.append("window_end_ns")
+        return store.read_snapshots_columnar(root, dataset, after_recv_ts_ns=0,
+                                             window_end_floor_ns=0, columns=cols)
+
+    columnar = E.compute_engineered_columnar(_read_ds, **kw)
+
+    ms, mc = _tape_to_map(scalar), _tape_to_map(columnar)
+    assert ms, "substrate must produce a non-empty tape (guards a vacuous pass)"
+    assert set(ms) == set(mc), "instance key set must match through the parquet seam"
+    for key in ms:
+        assert set(ms[key]) == set(mc[key]), f"feature set for {key} must match"
+        for fid in ms[key]:
+            assert math.isclose(ms[key][fid], mc[key][fid], rel_tol=1e-9, abs_tol=1e-12), \
+                f"{key} {fid}: scalar {ms[key][fid]} != columnar {mc[key][fid]}"
 
