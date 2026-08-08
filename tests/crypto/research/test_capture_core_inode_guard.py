@@ -38,11 +38,11 @@ def test_inode_state_tiers():
 
 
 def test_inode_halt_hysteresis():
-    assert dg.next_inode_halt_state(0.92, warn=0.80, critical=0.90, halted=False) is True
-    assert dg.next_inode_halt_state(0.79, warn=0.80, critical=0.90, halted=True) is False
+    assert dg.next_inode_halt_state(0.92, resume=0.80, critical=0.90, halted=False) is True
+    assert dg.next_inode_halt_state(0.79, resume=0.80, critical=0.90, halted=True) is False
     # in the band: hold the prior state (no flapping)
-    assert dg.next_inode_halt_state(0.85, warn=0.80, critical=0.90, halted=True) is True
-    assert dg.next_inode_halt_state(0.85, warn=0.80, critical=0.90, halted=False) is False
+    assert dg.next_inode_halt_state(0.85, resume=0.80, critical=0.90, halted=True) is True
+    assert dg.next_inode_halt_state(0.85, resume=0.80, critical=0.90, halted=False) is False
 
 
 # -- InodeGuard.enforce (injected usage + notifier) ----------------------------

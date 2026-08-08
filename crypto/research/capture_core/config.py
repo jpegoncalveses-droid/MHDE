@@ -284,9 +284,16 @@ CAPTURE_CLOSED_HOUR_COMPACT_DATASETS = FIREHOSE_PRUNABLE_DATASETS + (KLINES_DATA
 #: never below ~20 GB free).
 CAPTURE_DISK_SOFT_FLOOR_BYTES = 50 * 1024 ** 3   # 50 GiB
 #: CRITICAL floor: below this, HALT firehose writes (forward-only — dropped, never
-#: backfilled) and emit a CRITICAL log; resume once free recovers above the SOFT
-#: floor (hysteresis, so it does not flap at the boundary).
+#: backfilled) and emit a CRITICAL log.
 CAPTURE_DISK_CRITICAL_FLOOR_BYTES = 10 * 1024 ** 3   # 10 GiB
+#: RESUME floor: writes resume once free recovers to/above this — DECOUPLED from the
+#: SOFT prune target. The 2026-08-08 outage latched writes off for ~14h because resume
+#: waited for the 50 GiB SOFT floor while retention could free only INTO the [10,50)
+#: band (the guard never prunes today's data and the old partitions were already
+#: expired). A resume floor just above CRITICAL lets retention/compaction self-recover
+#: writes with no operator restart; the small [CRITICAL, RESUME) band still holds state
+#: so it cannot flap. Pruning toward SOFT is unchanged.
+CAPTURE_DISK_RESUME_FLOOR_BYTES = 15 * 1024 ** 3   # 15 GiB
 #: How often the firehose flush loop runs the guard. statvfs is cheap; the prune
 #: scan only runs when under the soft floor.
 CAPTURE_DISK_CHECK_INTERVAL_S = 10.0
@@ -301,9 +308,13 @@ CAPTURE_DISK_CHECK_INTERVAL_S = 10.0
 #: Inode usage fraction at which to WARN via Telegram (edge-triggered).
 CAPTURE_INODE_WARN_FRACTION = 0.80
 #: Inode usage fraction at which to go CRITICAL: HALT firehose writes (forward-only,
-#: dropped never backfilled) + Telegram. Resume once usage falls below the WARN
-#: fraction (hysteresis). Recovery of inodes is by retention/compaction, not the halt.
+#: dropped never backfilled) + Telegram. Recovery of inodes is by retention/compaction,
+#: not the halt.
 CAPTURE_INODE_CRITICAL_FRACTION = 0.90
+#: RESUME fraction: writes resume once inode usage falls BELOW this — decoupled from the
+#: WARN alert tier (same latch fix as the byte guard). Sits just below CRITICAL so the
+#: [RESUME, CRITICAL) hold band is small; retention self-recovers without a restart.
+CAPTURE_INODE_RESUME_FRACTION = 0.88
 
 # -- Capture firehose retention (Phase 0) -------------------------------------
 #: Rolling on-host raw window for the FIREHOSE datasets. Whole ``date=`` partitions

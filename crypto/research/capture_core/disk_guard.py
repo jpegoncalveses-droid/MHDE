@@ -4,9 +4,11 @@ Two tiers protect the volume without starving the small, long-lived stores:
 
   * **SOFT floor** — prune the OLDEST firehose date-partitions first, across the
     firehose datasets, until free space is back above the floor.
-  * **CRITICAL floor** — HALT firehose writes and emit a CRITICAL log; resume once
-    free recovers above the SOFT floor (hysteresis). Data dropped during a halt is
-    acceptable: the substrate is forward-only (skip, never backfill).
+  * **CRITICAL floor** — HALT firehose writes and emit a CRITICAL log.
+  * **RESUME floor** — writes resume once free recovers above this (a small band above
+    CRITICAL, DECOUPLED from the SOFT prune target so retention can self-recover writes
+    without an operator restart — the 2026-08-08 latch fix). Data dropped during a halt
+    is acceptable: the substrate is forward-only (skip, never backfill).
 
 Only the firehose datasets (:data:`config.FIREHOSE_PRUNABLE_DATASETS`) are ever
 scanned or pruned — ``klines_1h``, the REST present-state series, and the ``_gaps``
@@ -42,12 +44,17 @@ def disk_state(free: int, *, soft: int, critical: int) -> str:
     return "ok"
 
 
-def next_halt_state(free: int, *, soft: int, critical: int, halted: bool) -> bool:
-    """Hysteresis for the firehose write halt: halt below CRITICAL, resume at/above
-    SOFT, hold the prior state in the band between (so it does not flap)."""
+def next_halt_state(free: int, *, resume: int, critical: int, halted: bool) -> bool:
+    """Hysteresis for the firehose write halt: halt below CRITICAL, resume at/above the
+    RESUME floor, hold the prior state in the small band between (so it does not flap).
+
+    ``resume`` is DECOUPLED from the SOFT prune target and sits just above CRITICAL, so
+    retention/compaction — which can free only INTO the old wide [CRITICAL, SOFT) band
+    (the guard never prunes today's data, and old partitions are already expired) — can
+    self-recover writes without an operator restart (2026-08-08 ~14h latch fix)."""
     if free < critical:
         return True
-    if free >= soft:
+    if free >= resume:
         return False
     return halted
 
@@ -178,6 +185,7 @@ class DiskGuard:
         datasets: Sequence[str] = cfg.FIREHOSE_PRUNABLE_DATASETS,
         soft_floor: int = cfg.CAPTURE_DISK_SOFT_FLOOR_BYTES,
         critical_floor: int = cfg.CAPTURE_DISK_CRITICAL_FLOOR_BYTES,
+        resume_floor: int = cfg.CAPTURE_DISK_RESUME_FLOOR_BYTES,
         free_fn: Callable[[str], int] = free_bytes,
         prune_fn: Callable[[Sequence[str]], int] = prune_paths,
         list_fn: Callable[[str, Sequence[str]], list[Partition]] = list_firehose_partitions,
@@ -188,6 +196,7 @@ class DiskGuard:
         self._datasets = tuple(datasets)
         self._soft = soft_floor
         self._critical = critical_floor
+        self._resume = resume_floor
         self._free_fn = free_fn
         self._prune_fn = prune_fn
         self._list_fn = list_fn
@@ -208,7 +217,7 @@ class DiskGuard:
                 pruned = [v.path for v in victims]
                 free += reclaimed
         prev = self.halted
-        self.halted = next_halt_state(free, soft=self._soft,
+        self.halted = next_halt_state(free, resume=self._resume,
                                       critical=self._critical, halted=prev)
         self._log_transition(prev, free, pruned)
         return DiskGuardResult(
@@ -223,8 +232,8 @@ class DiskGuard:
                 free / _GIB, self._critical / _GIB)
         elif prev_halted and not self.halted:
             self._log.warning(
-                "capture disk guard: free recovered to %.1fGiB (>= soft %.1fGiB) — "
-                "RESUMING firehose writes", free / _GIB, self._soft / _GIB)
+                "capture disk guard: free recovered to %.1fGiB (>= resume %.1fGiB) — "
+                "RESUMING firehose writes", free / _GIB, self._resume / _GIB)
         elif pruned:
             self._log.warning(
                 "capture disk guard: free below soft %.1fGiB — pruned %d oldest "
@@ -268,13 +277,15 @@ def inode_state(used: float, *, warn: float, critical: float) -> str:
     return "ok"
 
 
-def next_inode_halt_state(used: float, *, warn: float, critical: float,
+def next_inode_halt_state(used: float, *, resume: float, critical: float,
                           halted: bool) -> bool:
-    """Hysteresis for the inode write-halt: halt at/above CRITICAL, resume below WARN,
-    hold the prior state in the band between (so it does not flap)."""
+    """Hysteresis for the inode write-halt: halt at/above CRITICAL, resume BELOW the
+    RESUME fraction, hold the prior state in the small band between (so it does not
+    flap). ``resume`` is decoupled from the WARN alert tier so retention/compaction
+    self-recover writes without an operator restart (2026-08-08 latch fix)."""
     if used >= critical:
         return True
-    if used < warn:
+    if used < resume:
         return False
     return halted
 
@@ -308,6 +319,7 @@ class InodeGuard:
         *,
         warn_fraction: float = cfg.CAPTURE_INODE_WARN_FRACTION,
         critical_fraction: float = cfg.CAPTURE_INODE_CRITICAL_FRACTION,
+        resume_fraction: float = cfg.CAPTURE_INODE_RESUME_FRACTION,
         used_fn: Callable[[str], float] = inode_used_fraction,
         notify_fn: Callable[[str], None] = _default_inode_notify,
         log: logging.Logger = logger,
@@ -315,6 +327,7 @@ class InodeGuard:
         self._root = root
         self._warn = warn_fraction
         self._critical = critical_fraction
+        self._resume = resume_fraction
         self._used_fn = used_fn
         self._notify_fn = notify_fn
         self._log = log
@@ -324,11 +337,20 @@ class InodeGuard:
     def enforce(self) -> InodeGuardResult:
         used = self._used_fn(self._root)
         state = inode_state(used, warn=self._warn, critical=self._critical)
+        prev_halted = self.halted
         self.halted = next_inode_halt_state(
-            used, warn=self._warn, critical=self._critical, halted=self.halted)
+            used, resume=self._resume, critical=self._critical, halted=prev_halted)
         prev = self._state
         if state != prev:
             self._on_transition(prev, state, used)
+        if prev_halted and not self.halted:
+            # Announce resume on the TRUE halt->resume edge (used < RESUME), decoupled
+            # from the WARN alert tier — so writes resuming in the [WARN, RESUME) band
+            # are reported honestly instead of waiting for the < WARN drop.
+            msg = (f"✅ capture inode guard: root inodes {used * 100:.1f}% used "
+                   f"(< resume {self._resume * 100:.0f}%) — RESUMING firehose writes.")
+            self._log.warning(msg)
+            self._notify_fn(msg)
         self._state = state
         return InodeGuardResult(state=state, used=used, halted=self.halted)
 
@@ -347,7 +369,10 @@ class InodeGuard:
             self._log.warning(msg)
             self._notify_fn(msg)
         elif state == "ok" and prev != "ok":
+            # Tier all-clear (inodes back below WARN). The write RESUME itself is
+            # announced separately on the halt->resume edge (which happens earlier, at
+            # the RESUME fraction), so this message no longer claims "RESUMING".
             msg = (f"✅ capture inode guard: root inodes recovered to {pct:.1f}% used "
-                   f"(< {self._warn * 100:.0f}%) — RESUMING firehose writes.")
+                   f"(< {self._warn * 100:.0f}%) — inode pressure cleared.")
             self._log.warning(msg)
             self._notify_fn(msg)

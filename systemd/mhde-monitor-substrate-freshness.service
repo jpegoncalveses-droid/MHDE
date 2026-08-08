@@ -1,0 +1,12 @@
+[Unit]
+Description=MHDE monitor: brain + Binance capture substrate write-freshness (silent-outage guard)
+After=network.target
+
+[Service]
+Type=oneshot
+User=jpcg
+WorkingDirectory=/home/jpcg/MHDE
+Environment=MHDE_DB_PATH=/home/jpcg/MHDE/data/mhde.duckdb
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py monitor substrate-freshness
+StandardOutput=append:/home/jpcg/MHDE/data/logs/monitor_substrate_freshness.log
+StandardError=append:/home/jpcg/MHDE/data/logs/monitor_substrate_freshness.log
