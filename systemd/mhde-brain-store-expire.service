@@ -1,0 +1,34 @@
+# /home/jpcg/.config/systemd/user/mhde-brain-store-expire.service
+[Unit]
+Description=MHDE brain-store retention — expire parquet partitions + prune/VACUUM registry
+After=network-online.target
+
+[Service]
+# Daily oneshot: the brain store had NO time bound while every capture dataset does (it grew
+# to 35G+ parquet and a ~9.5G registry). Expires whole date= partitions older than
+# BRAIN_STORE_RETENTION_DAYS (labels + 12 primitives), prunes registry snapshot_bookkeeping
+# older than the shorter BRAIN_REGISTRY_RETENTION_DAYS, then VACUUMs the registry ONLY if the
+# volume has ~1x the DB size free (skipped + logged otherwise, so a tight disk never fails the
+# run). Filesystem + registry only; never opens DuckDB, the engine DB, or the capture store.
+# Safe beside the RUNNING tick loop: rmtree targets only sealed (date < today) partitions, and
+# the registry DELETE/VACUUM hold the WAL writer lock only briefly (the tick tolerates a
+# transient busy via its one-transaction retry).
+#
+# Shared-host invariant (ADR-036/038): idle CPU+IO and OOM-first, so retention never disturbs
+# the engine's 1s cycle even though it rmtrees + rewrites while the brain loop is live. The 2G
+# MemoryMax is a BACKSTOP; a full VACUUM of the (pending-prune) registry is the only real spike
+# and is space-guarded before it runs.
+#
+# BUILT-NOT-DEPLOYED: tracked but not installed/enabled. Enabling is the operator's deploy.
+Type=oneshot
+WorkingDirectory=/home/jpcg/MHDE
+ExecStartPre=/usr/bin/test -x /home/jpcg/MHDE/venv/bin/python
+ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto brain-store-expire
+Nice=19
+IOSchedulingClass=idle
+MemoryMax=2G
+CPUWeight=20
+IOWeight=20
+OOMScoreAdjust=800
+StandardOutput=journal
+StandardError=journal

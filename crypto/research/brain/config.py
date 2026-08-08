@@ -34,6 +34,23 @@ BRAIN_STORE_ROOT = "data/research/brain"
 #: never contend with the writer (DuckDB allows a single writer at a time).
 BRAIN_REGISTRY_PATH = "data/research/brain/registry.sqlite"
 
+#: Brain-store retention (the store had NO time bound while every capture dataset does;
+#: it grew to 35G+ parquet and a ~9.5G registry). Two windows, distinct on purpose:
+#:
+#: PARQUET (labels + primitive datasets): 21d = DISCOVERY_HISTORY_DAYS (14) + the max
+#: label horizon (720 min ≈ 0.5d, so the newest labels in the read window have their
+#: forward data) + ~6.5d margin (a discovery run must never race a partition being
+#: pruned). Whole date= partitions older than this expire, oldest-first, never today's.
+BRAIN_STORE_RETENTION_DAYS = 21
+#: REGISTRY snapshot_bookkeeping: 10d — SHORTER than the parquet, because the bookkeeping
+#: is NOT read by discovery (which reads parquet); its only consumer is the tick's
+#: write-dedup (seen_windows), checked only for windows near each MONOTONIC cursor. A
+#: cursor can lag at most ~the capture raw retention (7d) before the raw expires and the
+#: tick forward-seeds past it, so 10d (7d + 3d margin) guarantees no bookkeeping a live
+#: tick could still consult is ever pruned. Rows older than this are DELETEd + VACUUMed
+#: (VACUUM guarded on free space so it never fails a tight volume).
+BRAIN_REGISTRY_RETENTION_DAYS = 10
+
 #: Per-source datasets. For each: the capture dir we read (READ-ONLY), the brain
 #: store dataset we write, and the registry reader/cursor name. Each source has
 #: its OWN cursor so they advance independently.
