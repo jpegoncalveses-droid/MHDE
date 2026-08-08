@@ -38,6 +38,10 @@ _NS = 1_000_000_000
 _WS_DATASETS = ("aggTrade", "depth", "bookTicker", "markPrice", "forceOrder")
 _REST_DATASETS = ("open_interest", "premium_index", "global_ls_account",
                   "top_ls_account", "top_ls_position", "taker_ls_ratio", "basis")
+# `depth_snapshot` is intentionally NOT monitored: it is the snapshot-owner's periodic
+# full-book REST snapshot, written on an irregular, budget-gated cadence that a fixed
+# freshness threshold would false-positive on. Write-liveness for the order book is
+# already covered by the `depth` diff stream above (if diffs stop, capture stopped).
 WS_THRESHOLD_S = 600.0
 REST_THRESHOLD_S = 3600.0
 BRAIN_THRESHOLD_S = 900.0

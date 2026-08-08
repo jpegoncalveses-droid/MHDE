@@ -86,6 +86,27 @@ def test_enforce_still_prunes_toward_soft_after_writes_resume():
     assert pruned == ["/d/date=2026-01-01"]          # still pruned toward soft
 
 
+def test_inode_guard_resume_notice_fires_at_resume_threshold_not_warn():
+    # used 0.95 (halt) -> 0.87: writes resume (< resume 0.88) while still in the WARN
+    # tier (>= 0.80). The RESUMING notice must fire HERE and reference the resume
+    # threshold — otherwise the operator is told writes are halted while they resumed.
+    used = [0.95]
+    sent: list[str] = []
+    g = dg.InodeGuard(
+        "/x", warn_fraction=0.80, resume_fraction=0.88, critical_fraction=0.90,
+        used_fn=lambda _r: used[0], notify_fn=sent.append,
+    )
+    g.enforce()                                      # 0.95 -> halt (HALTING notice)
+    assert g.halted is True
+    sent.clear()
+    used[0] = 0.87
+    res = g.enforce()                                # 0.87 -> resume, still warn tier
+    assert res.halted is False
+    resume_msgs = [m for m in sent if "RESUMING" in m]
+    assert len(resume_msgs) == 1                     # announced once, at the true resume
+    assert "88%" in resume_msgs[0]                   # the resume threshold, not 80%
+
+
 def test_inode_guard_resumes_in_old_deadband_but_still_warns():
     # used 0.85: below resume 0.88 -> writes resume; still >= warn 0.80 -> "warn".
     used = [0.95]

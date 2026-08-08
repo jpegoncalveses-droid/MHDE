@@ -4,9 +4,11 @@ Two tiers protect the volume without starving the small, long-lived stores:
 
   * **SOFT floor** — prune the OLDEST firehose date-partitions first, across the
     firehose datasets, until free space is back above the floor.
-  * **CRITICAL floor** — HALT firehose writes and emit a CRITICAL log; resume once
-    free recovers above the SOFT floor (hysteresis). Data dropped during a halt is
-    acceptable: the substrate is forward-only (skip, never backfill).
+  * **CRITICAL floor** — HALT firehose writes and emit a CRITICAL log.
+  * **RESUME floor** — writes resume once free recovers above this (a small band above
+    CRITICAL, DECOUPLED from the SOFT prune target so retention can self-recover writes
+    without an operator restart — the 2026-08-08 latch fix). Data dropped during a halt
+    is acceptable: the substrate is forward-only (skip, never backfill).
 
 Only the firehose datasets (:data:`config.FIREHOSE_PRUNABLE_DATASETS`) are ever
 scanned or pruned — ``klines_1h``, the REST present-state series, and the ``_gaps``
@@ -335,11 +337,20 @@ class InodeGuard:
     def enforce(self) -> InodeGuardResult:
         used = self._used_fn(self._root)
         state = inode_state(used, warn=self._warn, critical=self._critical)
+        prev_halted = self.halted
         self.halted = next_inode_halt_state(
-            used, resume=self._resume, critical=self._critical, halted=self.halted)
+            used, resume=self._resume, critical=self._critical, halted=prev_halted)
         prev = self._state
         if state != prev:
             self._on_transition(prev, state, used)
+        if prev_halted and not self.halted:
+            # Announce resume on the TRUE halt->resume edge (used < RESUME), decoupled
+            # from the WARN alert tier — so writes resuming in the [WARN, RESUME) band
+            # are reported honestly instead of waiting for the < WARN drop.
+            msg = (f"✅ capture inode guard: root inodes {used * 100:.1f}% used "
+                   f"(< resume {self._resume * 100:.0f}%) — RESUMING firehose writes.")
+            self._log.warning(msg)
+            self._notify_fn(msg)
         self._state = state
         return InodeGuardResult(state=state, used=used, halted=self.halted)
 
@@ -358,7 +369,10 @@ class InodeGuard:
             self._log.warning(msg)
             self._notify_fn(msg)
         elif state == "ok" and prev != "ok":
+            # Tier all-clear (inodes back below WARN). The write RESUME itself is
+            # announced separately on the halt->resume edge (which happens earlier, at
+            # the RESUME fraction), so this message no longer claims "RESUMING".
             msg = (f"✅ capture inode guard: root inodes recovered to {pct:.1f}% used "
-                   f"(< {self._warn * 100:.0f}%) — RESUMING firehose writes.")
+                   f"(< {self._warn * 100:.0f}%) — inode pressure cleared.")
             self._log.warning(msg)
             self._notify_fn(msg)
