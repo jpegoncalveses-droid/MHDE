@@ -1,0 +1,14 @@
+# /home/jpcg/.config/systemd/user/mhde-brain-store-expire.timer
+[Unit]
+Description=MHDE brain-store retention — daily
+
+[Timer]
+# Daily at 00:45 UTC — after the capture retention sweeps (00:10–00:36) and the hourly brain
+# compactor (:36), so retention runs on an already-compacted store and the passes never stack
+# IO on the shared spindle. Exact timing is not safety-critical (whole sealed partitions only);
+# Persistent catches up a missed run.
+OnCalendar=*-*-* 00:45:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

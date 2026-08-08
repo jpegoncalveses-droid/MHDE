@@ -2473,6 +2473,42 @@ def crypto_capture_okx_klines_seed(root, days):
     click.echo(f"okx klines seed: {written} closed bars written")
 
 
+@crypto.command("brain-store-expire")
+@click.option("--root", default=None,
+              help="Brain store root. Default: brain config BRAIN_STORE_ROOT.")
+@click.option("--registry", "registry_path", default=None,
+              help="Brain registry path. Default: brain config BRAIN_REGISTRY_PATH.")
+@click.option("--store-days", default=None, type=int,
+              help="Parquet retention window. Default: config.BRAIN_STORE_RETENTION_DAYS.")
+@click.option("--registry-days", default=None, type=int,
+              help="Registry bookkeeping window. Default: config.BRAIN_REGISTRY_RETENTION_DAYS.")
+def crypto_brain_store_expire(root, registry_path, store_days, registry_days):
+    """Bound the brain store (it had NO retention while every capture dataset does).
+
+    Expires whole ``date=`` partitions older than the discovery window across the labels
+    + 12 primitive datasets, prunes registry ``snapshot_bookkeeping`` older than the
+    shorter cursor-lag window, then VACUUMs the registry IF the volume has room (a full
+    VACUUM needs ~1x the DB size free; it is skipped and logged otherwise). Filesystem +
+    registry only; never opens DuckDB, the engine DB, or the capture store. Intended for
+    a daily timer, complementing the hourly brain-compact.
+    """
+    import logging
+
+    from crypto.research.brain import retention as brain_ret
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    summary = brain_ret.run_retention(
+        store_root=root, registry_path=registry_path,
+        store_days=store_days, registry_days=registry_days)
+    click.echo(
+        f"brain retention: expired {summary['partitions_expired']} partitions, "
+        f"pruned {summary['bookkeeping_pruned']} bookkeeping rows, "
+        f"vacuumed={summary['vacuumed']} ({summary['vacuum_reason']})")
+
+
 @crypto.command("brain-compact")
 @click.option("--root", default=None,
               help="Brain store root. Default: brain config BRAIN_STORE_ROOT.")
