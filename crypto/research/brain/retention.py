@@ -29,6 +29,17 @@ logger = logging.getLogger("mhde.crypto.brain.retention")
 
 _DAY_MS = 86_400_000
 _DAY_NS = 86_400 * 1_000_000_000
+_BUSY_TIMEOUT_MS = 30_000
+
+
+def _connect(path: str) -> sqlite3.Connection:
+    """Connect with a busy_timeout so a DELETE/VACUUM racing the live tick's brief
+    sub-second registry write WAITS for it to clear instead of erroring the daily sweep
+    on 'database is locked'. The sweep is idempotent + Persistent so a miss self-heals,
+    but waiting out a sub-second write is cleaner than skipping a day."""
+    conn = sqlite3.connect(path)
+    conn.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
+    return conn
 
 
 def brain_datasets() -> list[str]:
@@ -88,7 +99,7 @@ def prune_registry_bookkeeping(registry_path: str, *, days: int,
         return 0
     now_ns = now_ns if now_ns is not None else time.time_ns()
     cutoff_ns = now_ns - days * _DAY_NS
-    conn = sqlite3.connect(registry_path)
+    conn = _connect(registry_path)
     try:
         cur = conn.execute(
             "DELETE FROM snapshot_bookkeeping WHERE window_start_ns < ?", (cutoff_ns,))
@@ -126,7 +137,7 @@ def vacuum_registry_if_space(registry_path: str, *, headroom_factor: float = 1.2
     Returns ``(vacuumed, reason)``."""
     if not os.path.exists(registry_path):
         return False, "registry missing"
-    conn = sqlite3.connect(registry_path)
+    conn = _connect(registry_path)
     try:
         page_count = conn.execute("PRAGMA page_count").fetchone()[0]
         freelist = conn.execute("PRAGMA freelist_count").fetchone()[0]

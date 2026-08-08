@@ -42,13 +42,18 @@ BRAIN_REGISTRY_PATH = "data/research/brain/registry.sqlite"
 #: forward data) + ~6.5d margin (a discovery run must never race a partition being
 #: pruned). Whole date= partitions older than this expire, oldest-first, never today's.
 BRAIN_STORE_RETENTION_DAYS = 21
-#: REGISTRY snapshot_bookkeeping: 10d — SHORTER than the parquet, because the bookkeeping
-#: is NOT read by discovery (which reads parquet); its only consumer is the tick's
-#: write-dedup (seen_windows), checked only for windows near each MONOTONIC cursor. A
-#: cursor can lag at most ~the capture raw retention (7d) before the raw expires and the
-#: tick forward-seeds past it, so 10d (7d + 3d margin) guarantees no bookkeeping a live
-#: tick could still consult is ever pruned. Rows older than this are DELETEd + VACUUMed
-#: (VACUUM guarded on free space so it never fails a tight volume).
+#: REGISTRY snapshot_bookkeeping: 10d — SHORTER than the parquet. The bookkeeping is NOT
+#: read by discovery (which reads parquet). Its three consumers are all safe against
+#: pruning OLD rows: (1) the tick's write-dedup (seen_windows), checked only for windows
+#: near each MONOTONIC cursor — a cursor lags at most ~the capture raw retention (7d)
+#: before the raw expires and the tick forward-seeds past it, so 10d (7d + 3d margin)
+#: never prunes a window a live tick could still process; (2) the label frontier
+#: MAX(window_end_ns), unaffected by deleting old rows; (3) the compactor's parity
+#: roster, reached only for a partition still holding UN-compacted writer parts — only
+#: possible in the 10–21d band after a >10-day compactor outage, and then it merely
+#: skips + re-warns until 21d parquet expiry removes the partition (log noise, never
+#: corruption). Rows older than 10d are DELETEd, then VACUUMed only when the registry is
+#: bloated AND the volume has room.
 BRAIN_REGISTRY_RETENTION_DAYS = 10
 
 #: Per-source datasets. For each: the capture dir we read (READ-ONLY), the brain

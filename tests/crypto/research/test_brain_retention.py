@@ -111,6 +111,19 @@ def test_prune_deletes_bookkeeping_older_than_window_only(tmp_path):
         conn.close()
 
 
+def test_retention_connect_sets_busy_timeout(tmp_path):
+    # The DELETE/VACUUM can collide with the live tick's brief sub-second registry write;
+    # a busy_timeout makes the sweep WAIT for it to clear instead of erroring the daily
+    # run on 'database is locked'.
+    db = tmp_path / "registry.sqlite"
+    _seed_registry(db, [("markprice", "BTCUSDT", 1, 2, 1, 1, 1)])
+    conn = ret._connect(str(db))
+    try:
+        assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 30000
+    finally:
+        conn.close()
+
+
 # -- vacuum_registry_if_space --------------------------------------------------
 
 def test_vacuum_runs_when_space_and_bloat_ok(tmp_path):
