@@ -37,10 +37,6 @@ from crypto.research.brain.discovery import scoring as S
 from crypto.research.brain.discovery import tradelog as TL
 
 
-def needed_datasets(base_features=E.BASE_FEATURES) -> list[str]:
-    return sorted({bf.dataset for bf in base_features})
-
-
 #: Label columns compute_instance_lifts actually consumes (+ window_end_ns for the floor filter).
 #: Projecting to these drops fwd_return + recv_ts_ns, cutting the dominant label memory term.
 _LABEL_LOAD_COLUMNS = ["symbol", "window_start_ns", "window_end_ns",
