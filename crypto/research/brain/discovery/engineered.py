@@ -570,8 +570,19 @@ def compute_engineered_columnar(
             continue
         syms = np.asarray(tbl.column("symbol").to_pylist(), dtype=object)
         wins = tbl.column("window_start_ns").to_numpy(zero_copy_only=False).astype(np.int64)
-        rows = np.fromiter((key_to_row[(s, int(w))] for s, w in zip(syms.tolist(), wins.tolist())),
+        rows = np.fromiter((key_to_row.get((s, int(w)), -1)
+                            for s, w in zip(syms.tolist(), wins.tolist())),
                            dtype=np.int64, count=len(syms))
+        # A row whose (symbol, window) is absent from PASS 1's key universe was written by the
+        # live tick BETWEEN the two reads (a concurrent-write TOCTOU — the 2026-08-08 gate
+        # KeyError). Drop it here, forward-only (it lands in the next discovery run), BEFORE the
+        # vectorized z / cross-universe rank — so a concurrent write can never perturb a
+        # processed row's per-coin z or its rank population. On a static store nothing is
+        # dropped and this is a no-op.
+        if not (rows >= 0).all():
+            keep = rows >= 0
+            tbl = tbl.filter(pa.array(keep))
+            syms, wins, rows = syms[keep], wins[keep], rows[keep]
         for bf in bfs:
             base = _columnar_base_values(bf, tbl)
             if RAW in bf.transforms:

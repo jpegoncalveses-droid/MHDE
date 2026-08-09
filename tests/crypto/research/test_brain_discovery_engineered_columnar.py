@@ -278,3 +278,44 @@ def test_composed_seam_columnar_equals_scalar_through_parquet(tmp_path):
             assert math.isclose(ms[key][fid], mc[key][fid], rel_tol=1e-9, abs_tol=1e-12), \
                 f"{key} {fid}: scalar {ms[key][fid]} != columnar {mc[key][fid]}"
 
+
+# -- (6) CONCURRENT-WRITE consistency: a live tick write between PASS 1 and PASS 2 --------
+# The 2026-08-08 real-store gate crashed here: compute_engineered_columnar reads each dataset
+# TWICE (PASS 1 = key universe, PASS 2 = scatter). The live tick writes new rows between the
+# two reads, so PASS 2 returns a (symbol, window) absent from key_to_row -> KeyError. A static
+# store reads identically across both passes, so the in-memory/parquet oracle tests CANNOT
+# reproduce it. This drives a read that returns an EXTRA row only on the second read.
+
+def test_columnar_tolerates_concurrent_write_between_passes():
+    raw = _substrate(seed=5)
+    tables = _tables(raw)
+    kw = dict(zscore_windows=(10,), zscore_min_history=5, xuniv_min_coins=5)
+
+    # the correct answer: a consistent (no concurrent write) read.
+    clean = E.compute_engineered_columnar(
+        lambda ds, cols=None: tables.get(ds, pa.table({})), **kw)
+
+    # A NEW coin landing on an EXISTING window (window 20 already has 6 coins) — the strong
+    # case: if the fix only masked the extra row at scatter-time, this 7th coin would still
+    # enter the cross-universe rank population for window 20 and CORRUPT the 6 processed
+    # coins' xrank. Correct behaviour drops it BEFORE the vectorized compute.
+    base_mp = tables["markprice"].slice(0, 1).to_pylist()[0]
+    extra = dict(base_mp); extra["symbol"] = "ZZZZUSDT"; extra["window_start_ns"] = 20 * _W
+    mp_with_extra = pa.Table.from_pylist(tables["markprice"].to_pylist() + [extra])
+
+    seen: dict = {}
+
+    def racy_read(ds, cols=None):
+        seen[ds] = seen.get(ds, 0) + 1
+        if ds == "markprice" and seen[ds] >= 2:      # the write lands before PASS 2's read
+            return mp_with_extra
+        return tables.get(ds, pa.table({}))
+
+    racy = E.compute_engineered_columnar(racy_read, **kw)   # must NOT raise KeyError
+
+    mc, mr = _tape_to_map(clean), _tape_to_map(racy)
+    assert ("ZZZZUSDT", 20 * _W) not in mr, "the concurrent-write row must be excluded (forward-only)"
+    assert set(mr) == set(mc), "processed key set must equal the clean run"
+    for key in mc:
+        assert mr[key] == mc[key], f"processed row {key} corrupted by the concurrent write"
+
