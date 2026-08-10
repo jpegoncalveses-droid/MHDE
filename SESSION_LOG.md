@@ -6,6 +6,82 @@ are at the top.
 
 ---
 
+## 2026-08-10 — Emergency capture/brain recovery + 3-PR hardening (guard latch, brain retention, Option B columnar); discovery-scale deferred
+
+**Merged to master:** PR1 `fix/capture-diskguard-latch` (`f3d457c`), PR2 `fix/brain-store-retention`
+(`5404b10`), PR3 `feat/brain-discovery-columnar-primitive-read` (`fe51170`). All branches retained.
+
+**The outage.** The brain store had NO retention while every capture dataset does, so it grew
+unbounded → root disk 95% / inodes 98%. Capture's disk-guard HALTS firehose writes below the
+10 GiB CRITICAL floor but only RESUMES at the 50 GiB SOFT floor; the retention timers freed disk
+only INTO the [10,50) GiB hysteresis **dead band**, so the guard **latched WS writes off silently
+for ~14h** and could not self-clear (its prune protects the live date and can't reclaim to 50 GiB).
+It was invisible because the freshness monitors were dead on a schema rename and only checked
+process-liveness — every unit stayed "active." **~2.5 days of Binance WS tape permanently lost,
+unflagged.** Separately, the ENOSPC storm killed the brain tick: `sqlite3.OperationalError: disk
+I/O error` on the registry WAL, and it tripped `StartLimitBurst` → **failed/dead ~10h** (NOT
+OOM-looping as first assumed), producing zero labels.
+
+**Recovery (done this session, operator-gated).** Restarted the capture shards + owner explicitly
+to clear the stuck seal-writers — note `restart mhde-capture.target` is a NO-OP (instances are
+`WantedBy=`, not `PartOf=`; restart the `@` instances + `mhde-capture-owner` directly). Raised
+brain-tick `MemoryMax` 3G→6G to drain the post-ENOSPC backlog (real page-cache pressure per the
+unit's documented refault history), drained to the ~150 s floor, reverted to the designed 3G.
+Retention timers + hourly compaction had already pulled disk to 80% / inodes 62%.
+
+**PR1 — guard self-recovery + freshness alert.** Decoupled a RESUME floor from the prune/warn
+target: disk resume ≥15 GiB (band shrinks to [10,15)), inode resume <0.88. A fresh guard
+self-recovers writes with no operator restart; the [10,50) latch cannot recur. Added
+`monitoring/substrate_freshness.py` — FRESHNESS-not-liveness (newest parquet mtime per Binance
+capture dataset + `MAX(reader_cursor.updated_at_ns)` for the brain), `fail` → throttled Telegram,
+never opens DuckDB or calls `systemctl`. Wired `main.py monitor substrate-freshness` + a 5-min
+system timer.
+
+**PR2 — brain-store retention.** `crypto/research/brain/retention.py`: parquet `date=` expiry at
+`BRAIN_STORE_RETENTION_DAYS=21` (14 discovery + 720-min max horizon + margin) across labels + 12
+primitives; registry `snapshot_bookkeeping` prune at `BRAIN_REGISTRY_RETENTION_DAYS=10`
+(cursor-lag-sized, shorter — bookkeeping isn't read by discovery); free-space-AND-bloat-gated
+VACUUM (runs only when the file is fragmented, so it is not a daily exclusive-lock rewrite that
+stalls the tick). CLI + daily user timer. Read-only projection on the live store: 21d would expire
+~103k/213k partitions (~48%); 10d would prune ~8.6M/17M bookkeeping rows.
+
+**PR3 — Option B columnar read + gate-exposed fixes.** Columnar primitive read
+(`read_snapshots_columnar` → `_read_ds` → `compute_engineered_columnar`) — kills the 12–13 GB
+list-of-dicts read floor; the read is now window-bounded and store-independent. Plus the
+concurrent-write TOCTOU fix, the firing hybrid (packed / int32-indices), coverage-gap tests, and
+(operator's review) dropping the now-dead `needed_datasets()`. Oracle-preserving; 39 discovery/
+columnar tests green.
+
+**DEFERRED blocker — discovery does NOT complete at designed settings.** A full pass
+(`MAX_DEPTH=4, QUANTILE_BINS=10, N_PERMUTATIONS=200, DISCOVERY_HISTORY_DAYS=14`) OOMs on the real
+14d × all-symbols tape: **>12 GiB / ~50 min**. The driver is stage1's **unbounded-breadth candidate
+search** (no beam/top-K cap; `NULL_QUANTILE=0.95`, `MIN_FIRING=20`) — NOT the columnar read or the
+firing storage (both fixes left the RSS curve unchanged). Measured RSS (12G cap, tick at 3G): tape
+build ~6.7 GiB, then a monotonic climb to ~11.7 GiB over ~23 min → OOM. **No discovery `MemoryMax`
+set** (no completing run to base one on). Three levers, from data not guesses: (1) **candidate-
+breadth cap** — bounds the search but **changes semantics** (operator decision pending; breadth-cap
+work NOT started); (2) per-permutation churn reduction (mechanical — pass a numpy perm array, reuse
+buffers); (3) float32 tape (halves the ~6.5 G base but breaks the float64 byte-identical oracle —
+needs a documented tolerance).
+
+**Pattern worth remembering — three bugs the real-store gate caught, all invisible to synthetic
+small-store tests:** (a) whole-store load (the 12–13 GB list-of-dicts, fixed by Option B); (b)
+live-write TOCTOU (`compute_engineered_columnar`'s two-pass read racing the tick → `KeyError`,
+fixed); (c) mask materialization (stage1's held N-byte bool mask per candidate, made compact). None
+reproduced on static synthetic tapes — only gating against the live, concurrently-written,
+full-scale store surfaced them.
+
+**Outstanding deploy items (operator-gated):** install+enable the freshness monitor
+(`mhde-monitor-substrate-freshness.{service,timer}`); the guard self-recovery is picked up on the
+next capture-shard restart; install+enable the brain-store-expire timer
+(`mhde-brain-store-expire.{service,timer}`).
+
+**Still open, out of scope this session:** monitor SQL fixes (13 dead), KI-161 as-of flush-lag,
+KI-162 gap-flagging, registry parity (181,970 mismatches), Stage C depth (PR #82 unmerged), the OKX
+cutover, trajectory cap review.
+
+---
+
 ## 2026-07-05 — OKX capture Stage A: 7 as-of REST collectors + klines_1h, reader-parity gate PASSED
 
 **Branch:** `feat/capture-okx-stage-a` (off `master`; draft PR opened; **awaiting operator
