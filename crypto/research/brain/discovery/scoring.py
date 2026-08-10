@@ -167,6 +167,39 @@ def _rule_bits(rule: R.Rule, atom_bits: Mapping) -> Optional[np.ndarray]:
     return bits
 
 
+def _scorable_firing(rules: Sequence, atom_bits: Mapping, n: int, min_firing: int):
+    """For each rule firing ``>= min_firing`` times: ``(rule, count)`` and a COMPACT firing set —
+    per candidate, whichever is SMALLER: the packed bitset (uint8, ceil(N/8)) or an int32 index
+    array of the set positions.
+
+    The 2026-08-09 gate held a full N-byte bool mask per candidate — O(n_scorable x N), >12 GiB.
+    Dense rules (the depth-1 quantile atoms, firing on ~half the tape) keep PACKED (int32 indices
+    would be larger); the many sparse deep conjunctions use INDICES (packed would be N/8 EACH and
+    would need a transient unpack per null permutation — the per-perm-unpack churn). Storage is
+    thus <= N/8 per candidate, and the sparse majority need no unpack in the null loop at all."""
+    scorable: list = []
+    firing: list = []
+    for rule in rules:
+        bits = _rule_bits(rule, atom_bits)
+        count = _popcount(bits) if bits is not None else 0
+        if count >= min_firing:
+            scorable.append((rule, count))
+            if count * 4 < bits.nbytes:              # int32 indices smaller than the packed bitset
+                firing.append(np.flatnonzero(np.unpackbits(bits)[:n]).astype(np.int32))
+            else:
+                firing.append(bits)                  # dense -> keep packed (indices would be larger)
+    return scorable, firing
+
+
+def _fired_sum(values: np.ndarray, firing: np.ndarray, n: int) -> float:
+    """Sum of ``values`` at a candidate's fired instances. ``firing`` is either an int32 INDEX
+    array (fancy-index — no unpack) or a packed uint8 bitset (unpacked transiently). Byte-identical
+    to ``values[bool_mask].sum()`` either way — the same elements in the same ascending order."""
+    if firing.dtype == np.int32:
+        return float(values[firing].sum())
+    return float(values[np.unpackbits(firing)[:n].view(bool)].sum())
+
+
 def discover_entries(
     engineered: Mapping[tuple, Mapping[str, float]],
     lifts: Mapping[tuple, float],
@@ -186,9 +219,11 @@ def discover_entries(
     (n_candidates, n_scorable, null_bar, n_passed) — the activity the dashboard surfaces
     (huge candidate counts, almost all dying at the null, is correct, §11).
 
-    Firing is carried as PACKED BITSETS over the N labeled instances (not frozensets of
-    ints) and the engineered layer is read columnar, so peak memory is ~N/8 per atom + one
-    float column, not O(firing-rate x instances) Python objects. The search order, the
+    Atom firing is precomputed as PACKED BITSETS (N/8 each, ~one per atom), and each depth's
+    scorable candidates carry their firing as compact int32 INDEX arrays (total ~ number of
+    fires) via :func:`_scorable_firing` — never a held N-byte bool mask per candidate (that
+    O(n_scorable x N) form OOM-killed the 2026-08-09 gate at >12 GiB). The engineered layer is
+    read columnar. The search order, the
     permutation-null RNG draws, and every promotion decision are byte-for-byte the scalar
     path's (edges differ only in float summation order — sub-ULP, decision-preserving);
     ``_discovery_scalar_oracle`` pins that equivalence.
@@ -215,24 +250,20 @@ def discover_entries(
     depth = 1
     base_idx = list(range(n))
     while current and depth <= max_depth:
-        scorable = []                                # (rule, count)
-        masks = []                                   # bool firing mask per scorable, aligned
-        for rule in current:
-            bits = _rule_bits(rule, atom_bits)
-            count = _popcount(bits) if bits is not None else 0
-            if count >= min_firing:
-                scorable.append((rule, count))
-                masks.append(np.unpackbits(bits)[:n].view(bool))
-        real = [(rule, float(values[m].sum()) / count)
-                for (rule, count), m in zip(scorable, masks)]
+        # Firing carried COMPACT per candidate (packed bitset or int32 indices, whichever is
+        # smaller), NOT a held N-byte bool mask (the >12G 2026-08-09 stage1 OOM). Each sum is
+        # byte-identical to the old ``values[bool_mask].sum()``.
+        scorable, firing = _scorable_firing(current, atom_bits, n, min_firing)
+        real = [(rule, _fired_sum(values, f, n) / count)
+                for (rule, count), f in zip(scorable, firing)]
 
         null_bests = []                              # one best-on-noise edge per permutation
         for _ in range(n_permutations):
             perm = base_idx[:]
             rng.shuffle(perm)                        # SAME draws as scalar ``shuffle(values)``
             shuffled = values[perm]
-            best = max((float(shuffled[m].sum()) / count
-                        for (_, count), m in zip(scorable, masks)), default=float("-inf"))
+            best = max((_fired_sum(shuffled, f, n) / count
+                        for (_, count), f in zip(scorable, firing)), default=float("-inf"))
             null_bests.append(best)
         bar = _quantile(null_bests, null_quantile) if scorable else float("inf")
 

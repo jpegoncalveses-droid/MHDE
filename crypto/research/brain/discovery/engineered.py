@@ -33,6 +33,8 @@ from dataclasses import dataclass
 from typing import Callable, Mapping, Optional, Sequence
 
 import numpy as np
+import pandas as pd
+import pyarrow as pa
 
 from crypto.research.brain.discovery import config as dcfg
 
@@ -263,6 +265,141 @@ def _mid_rank_percentile(value: float, population: Sequence[float]) -> float:
     return (less + 0.5 * equal) / n
 
 
+# -- columnar (vectorized) extract path (§ option B: primitive-read floor) --------------
+# The scalar ``bf.extract`` reads one snapshot dict at a time; these compute the SAME base
+# scalar over a whole arrow column at once. None (a null cell) maps to NaN; every helper
+# propagates NaN so an absent input yields an absent (NaN) output, exactly like the scalar
+# None-guards. Zero denominators -> NaN (== the scalar ``den == 0 -> None``).
+
+
+def _col(table: "pa.Table", field: str) -> np.ndarray:
+    """One field as a float64 numpy column (nulls -> NaN); all-NaN if the field is absent."""
+    if field not in table.column_names:
+        return np.full(table.num_rows, np.nan, dtype=np.float64)
+    return table.column(field).cast(pa.float64()).to_numpy(zero_copy_only=False)
+
+
+def _rsum(*arrs: np.ndarray) -> np.ndarray:
+    """``_safe_sum`` vectorized: NaN in any operand -> NaN (numpy add propagates it)."""
+    out = np.asarray(arrs[0], dtype=np.float64).copy()
+    for a in arrs[1:]:
+        out = out + np.asarray(a, dtype=np.float64)
+    return out
+
+
+def _rratio(num: np.ndarray, den) -> np.ndarray:
+    """``_safe_ratio`` vectorized: NaN if either side NaN or ``den == 0``, else ``num/den``."""
+    num, den = np.broadcast_arrays(np.asarray(num, np.float64), np.asarray(den, np.float64))
+    out = np.full(num.shape, np.nan, dtype=np.float64)
+    ok = ~np.isnan(num) & ~np.isnan(den) & (den != 0.0)
+    out[ok] = num[ok] / den[ok]
+    return out
+
+
+def _rrel(close: np.ndarray, open_: np.ndarray) -> np.ndarray:
+    """``_rel_change`` vectorized: NaN if either side NaN or ``open == 0``, else ``close/open - 1``."""
+    close, open_ = np.broadcast_arrays(np.asarray(close, np.float64), np.asarray(open_, np.float64))
+    out = np.full(close.shape, np.nan, dtype=np.float64)
+    ok = ~np.isnan(close) & ~np.isnan(open_) & (open_ != 0.0)
+    out[ok] = close[ok] / open_[ok] - 1.0
+    return out
+
+
+#: feature_id -> vectorized base-value extractor over a columns dict; mirrors each scalar
+#: ``BaseFeature.extract`` in BASE_FEATURES one-for-one (pinned by test_...engineered_columnar).
+_VEC_EXTRACT = {
+    "trades.total_vol": lambda c: _rsum(c["taker_buy_vol"], c["taker_sell_vol"]),
+    "trades.taker_buy_ratio": lambda c: _rratio(c["taker_buy_vol"],
+                                                _rsum(c["taker_buy_vol"], c["taker_sell_vol"])),
+    "trades.trade_count": lambda c: c["trade_count"],
+    "trades.notional": lambda c: _rsum(c["taker_buy_quote_vol"], c["taker_sell_quote_vol"]),
+    "trades.price_range": lambda c: _rratio(c["price_high"] - c["price_low"], c["price_open"]),
+    "trades.ret_co": lambda c: _rrel(c["price_close"], c["price_open"]),
+    "bookticker.rel_spread": lambda c: _rratio(c["spread_mean"],
+                                               _rratio(_rsum(c["bid_close"], c["ask_close"]), 2.0)),
+    "bookticker.book_imbalance": lambda c: _rratio(c["bid_qty_mean"],
+                                                   _rsum(c["bid_qty_mean"], c["ask_qty_mean"])),
+    "markprice.funding": lambda c: c["funding_last"],
+    "markprice.mark_ret": lambda c: _rrel(c["mark_close"], c["mark_open"]),
+    "depth.notional_imbalance": lambda c: _rratio(c["bid_total_notional_mean"],
+                                                  _rsum(c["bid_total_notional_mean"],
+                                                        c["ask_total_notional_mean"])),
+    "forceorder.liq_total": lambda c: _rsum(c["liq_buy_vol"], c["liq_sell_vol"]),
+    "forceorder.liq_buy_ratio": lambda c: _rratio(c["liq_buy_vol"],
+                                                  _rsum(c["liq_buy_vol"], c["liq_sell_vol"])),
+}
+
+
+def _columnar_base_values(bf: "BaseFeature", table: "pa.Table") -> np.ndarray:
+    """The base scalar per row (NaN where absent), vectorized — equivalent to
+    ``[bf.extract(s) for s in table.to_pylist()]`` but with no per-row Python dicts. Only the
+    (numeric) input fields the feature needs are decoded (never the string key columns)."""
+    cols = {f: _col(table, f) for f in _FEATURE_FIELDS[bf.feature_id]}
+    return _VEC_EXTRACT[bf.feature_id](cols)
+
+
+def _columnar_zscore(symbols: np.ndarray, windows: np.ndarray, vals: np.ndarray, *,
+                     window: int, min_history: int) -> np.ndarray:
+    """Per-coin trailing z-score, vectorized, matching the scalar ``statistics.pstdev``/``fmean``
+    z to float-summation tolerance and lookahead-free by construction.
+
+    For each coin, over its PRESENT base values (NaN = absent, excluded from the series, exactly
+    like the scalar dict) sorted by window, the z at window i uses only that coin's STRICTLY-PRIOR
+    up-to-``window`` values (``shift(1).rolling(window, min_periods=min_history)``); a sub-min-history
+    or zero-std prior yields no z (NaN). Returns z per input row (NaN where absent)."""
+    n = len(vals)
+    out = np.full(n, np.nan, dtype=np.float64)
+    finite = ~np.isnan(vals)
+    idx = np.flatnonzero(finite)
+    if idx.size == 0:
+        return out
+    codes = pd.factorize(symbols[idx])[0]                 # coin -> int code (fast grouping)
+    order = np.lexsort((windows[idx], codes))             # sort by (coin, window)
+    sidx = idx[order]
+    scodes = codes[order]
+    svals = vals[sidx]
+    bnd = np.flatnonzero(np.concatenate(([True], scodes[1:] != scodes[:-1], [True])))
+    for b in range(len(bnd) - 1):
+        sl = slice(bnd[b], bnd[b + 1])
+        v = svals[sl]
+        roll = pd.Series(v).shift(1).rolling(window, min_periods=min_history)  # STRICTLY prior
+        mean = roll.mean().to_numpy()
+        std = roll.std(ddof=0).to_numpy()                 # ddof=0 == population == pstdev
+        with np.errstate(divide="ignore", invalid="ignore"):
+            z = (v - mean) / std
+        z[~(std > 0.0) | np.isnan(mean)] = np.nan         # sub-min-history or zero-std -> absent
+        out[sidx[sl]] = z
+    return out
+
+
+def _columnar_xrank(symbols: np.ndarray, windows: np.ndarray, vals: np.ndarray, *,
+                    min_coins: int) -> np.ndarray:
+    """Cross-universe mid-rank percentile per window, vectorized, matching the scalar
+    ``_mid_rank_percentile`` exactly. Over each window's PRESENT base values (all coins), the
+    mid-rank percentile ``(strictly_less + 0.5*equal)/n`` equals ``(avg_rank - 0.5)/n`` with the
+    1-based average tie rank; windows with fewer than ``min_coins`` members yield no rank (NaN).
+    Cross-sectional within a single window -> lookahead-free by construction. Returns rank per
+    input row (NaN where absent)."""
+    n = len(vals)
+    out = np.full(n, np.nan, dtype=np.float64)
+    finite = ~np.isnan(vals)
+    idx = np.flatnonzero(finite)
+    if idx.size == 0:
+        return out
+    df = pd.DataFrame({"w": windows[idx], "v": vals[idx]})
+    grp = df.groupby("w", sort=False)["v"]
+    avg_rank = grp.rank(method="average").to_numpy()     # 1-based average tie rank within window
+    size = grp.transform("size").to_numpy()
+    pct = (avg_rank - 0.5) / size
+    pct[size < min_coins] = np.nan                        # window below min coins -> no rank
+    out[idx] = pct
+    return out
+
+
+# RETAINED, NOT DEAD: production reads via compute_engineered_columnar (option B, the
+# ~12-13G list-of-dicts floor fix). This scalar per-row implementation is deliberately kept
+# as the load-bearing equivalence ORACLE — the columnar path is proven byte-identical
+# against it, in-memory and through the parquet seam (test_brain_discovery_engineered_columnar).
 def compute_engineered(
     raw_by_dataset: Mapping[str, Sequence[Mapping]],
     *,
@@ -346,6 +483,119 @@ def compute_engineered(
                     _scatter(sym, w, f"{bf.feature_id}.xrank", _mid_rank_percentile(v, pop))
 
     # drop instances with no computable feature -> exact key-set parity with the old sparse dict
+    keys_list = list(key_to_row)
+    if keys_list:
+        keep = ~np.all(np.isnan(matrix), axis=1)
+        if not keep.all():
+            keep_idx = np.flatnonzero(keep)
+            matrix = matrix[keep_idx]
+            keys_list = [keys_list[i] for i in keep_idx]
+            key_to_row = {k: i for i, k in enumerate(keys_list)}
+    return EngineeredTape(keys_list, key_to_row, feature_ids, feat_to_col, matrix)
+
+
+#: feature_id -> the raw snapshot fields its vectorized extract reads. The columnar reader
+#: projects to these (plus the key columns), so e.g. the depth dataset's ~300-column ladder is
+#: NEVER materialized — only the 2 notional-mean columns it needs. Must mirror _VEC_EXTRACT
+#: (the oracle test catches any missing field: a feature would go silently NaN).
+_FEATURE_FIELDS = {
+    "trades.total_vol": ["taker_buy_vol", "taker_sell_vol"],
+    "trades.taker_buy_ratio": ["taker_buy_vol", "taker_sell_vol"],
+    "trades.trade_count": ["trade_count"],
+    "trades.notional": ["taker_buy_quote_vol", "taker_sell_quote_vol"],
+    "trades.price_range": ["price_high", "price_low", "price_open"],
+    "trades.ret_co": ["price_close", "price_open"],
+    "bookticker.rel_spread": ["spread_mean", "bid_close", "ask_close"],
+    "bookticker.book_imbalance": ["bid_qty_mean", "ask_qty_mean"],
+    "markprice.funding": ["funding_last"],
+    "markprice.mark_ret": ["mark_close", "mark_open"],
+    "depth.notional_imbalance": ["bid_total_notional_mean", "ask_total_notional_mean"],
+    "forceorder.liq_total": ["liq_buy_vol", "liq_sell_vol"],
+    "forceorder.liq_buy_ratio": ["liq_buy_vol", "liq_sell_vol"],
+}
+
+
+def columnar_needed_columns(base_features: Sequence[BaseFeature] = BASE_FEATURES) -> dict:
+    """``dataset -> sorted list of raw fields`` the columnar path must read (feature inputs +
+    the key columns). The projection that keeps the primitive read small."""
+    out: dict = {}
+    for bf in base_features:
+        cols = out.setdefault(bf.dataset, {"symbol", "window_start_ns"})
+        cols.update(_FEATURE_FIELDS[bf.feature_id])
+    return {ds: sorted(cols) for ds, cols in out.items()}
+
+
+def compute_engineered_columnar(
+    read_dataset,
+    *,
+    zscore_windows: Sequence[int] = dcfg.ZSCORE_WINDOWS,
+    zscore_min_history: int = dcfg.ZSCORE_MIN_HISTORY,
+    xuniv_min_coins: int = dcfg.XUNIV_MIN_COINS,
+    base_features: Sequence[BaseFeature] = BASE_FEATURES,
+) -> EngineeredTape:
+    """Columnar (option-B) build of the engineered tape — identical output to
+    :func:`compute_engineered` (proven per-feature/-symbol/-window by the oracle test), but each
+    dataset is read ONCE as a projected columnar arrow ``Table`` via
+    ``read_dataset(dataset, columns) -> pa.Table`` and the extracts + per-coin z + cross-universe
+    rank are vectorized, so NO list-of-dicts is ever materialized (the ~12-13G primitive-read
+    floor fix). Peak ~ one dataset's projected columns + the output matrix, roughly
+    window-independent beyond the irreducible tape itself.
+    """
+    feature_ids = engineered_feature_ids(base_features, zscore_windows=zscore_windows)
+    feat_to_col = {fid: i for i, fid in enumerate(feature_ids)}
+    needed = columnar_needed_columns(base_features)
+    by_dataset: dict[str, list] = {}
+    for bf in base_features:
+        by_dataset.setdefault(bf.dataset, []).append(bf)
+
+    # PASS 1 — key universe (cheap: symbol + window per dataset), first-seen order.
+    key_to_row: dict[tuple[str, int], int] = {}
+    for ds in by_dataset:
+        tbl = read_dataset(ds, ["symbol", "window_start_ns"])
+        if tbl is None or tbl.num_rows == 0:
+            continue
+        syms = tbl.column("symbol").to_pylist()
+        wins = tbl.column("window_start_ns").to_numpy(zero_copy_only=False)
+        for s, w in zip(syms, wins.tolist()):
+            k = (s, int(w))
+            if k not in key_to_row:
+                key_to_row[k] = len(key_to_row)
+
+    matrix = np.full((len(key_to_row), len(feature_ids)), np.nan, dtype=np.float64)
+
+    # PASS 2 — read each dataset's needed columns, vectorize the extracts + z + rank, scatter.
+    for ds, bfs in by_dataset.items():
+        tbl = read_dataset(ds, needed[ds])
+        if tbl is None or tbl.num_rows == 0:
+            continue
+        syms = np.asarray(tbl.column("symbol").to_pylist(), dtype=object)
+        wins = tbl.column("window_start_ns").to_numpy(zero_copy_only=False).astype(np.int64)
+        rows = np.fromiter((key_to_row.get((s, int(w)), -1)
+                            for s, w in zip(syms.tolist(), wins.tolist())),
+                           dtype=np.int64, count=len(syms))
+        # A row whose (symbol, window) is absent from PASS 1's key universe was written by the
+        # live tick BETWEEN the two reads (a concurrent-write TOCTOU — the 2026-08-08 gate
+        # KeyError). Drop it here, forward-only (it lands in the next discovery run), BEFORE the
+        # vectorized z / cross-universe rank — so a concurrent write can never perturb a
+        # processed row's per-coin z or its rank population. On a static store nothing is
+        # dropped and this is a no-op.
+        if not (rows >= 0).all():
+            keep = rows >= 0
+            tbl = tbl.filter(pa.array(keep))
+            syms, wins, rows = syms[keep], wins[keep], rows[keep]
+        for bf in bfs:
+            base = _columnar_base_values(bf, tbl)
+            if RAW in bf.transforms:
+                matrix[rows, feat_to_col[f"{bf.feature_id}.raw"]] = base
+            if Z in bf.transforms:
+                for win in zscore_windows:
+                    z = _columnar_zscore(syms, wins, base, window=win, min_history=zscore_min_history)
+                    matrix[rows, feat_to_col[f"{bf.feature_id}.z{win}"]] = z
+            if XRANK in bf.transforms:
+                xr = _columnar_xrank(syms, wins, base, min_coins=xuniv_min_coins)
+                matrix[rows, feat_to_col[f"{bf.feature_id}.xrank"]] = xr
+        del tbl
+
     keys_list = list(key_to_row)
     if keys_list:
         keep = ~np.all(np.isnan(matrix), axis=1)

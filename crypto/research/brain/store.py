@@ -345,54 +345,45 @@ def read_snapshots(root: str, dataset: str, symbol: Optional[str] = None, *,
     files under ``symbol=*/date=*`` are enumerated (everything ``write_snapshots`` emits);
     a non-conforming stray parquet elsewhere is not read.
     """
-    base = pathlib.Path(root, dataset)
-    if not base.exists():
-        return []
-    lower_date = (_date_str_from_ns(after_recv_ts_ns - _DATE_PRUNE_MARGIN_NS)
-                  if after_recv_ts_ns > _DATE_PRUNE_MARGIN_NS else None)
+    return _with_race_retry(
+        lambda: [r for t in _iter_selected_tables(
+            root, dataset, symbol, after_recv_ts_ns, window_end_floor_ns, columns, row_filter)
+            for r in t.to_pylist()],
+        dataset=dataset, symbol=symbol)
 
-    def _attempt() -> list[dict]:
-        if symbol is None:
-            sym_dirs = sorted(base.glob("symbol=*"))
-        else:
-            sym_dir = base / f"symbol={symbol}"
-            sym_dirs = [sym_dir] if sym_dir.exists() else []
-        files: list[pathlib.Path] = []
-        for sym_dir in sym_dirs:
-            for date_dir in sorted(sym_dir.glob("date=*")):
-                if lower_date is not None and date_dir.name[len("date="):] < lower_date:
-                    continue                          # pruned: older than the cursor window
-                for fp in sorted(date_dir.glob("*.parquet")):
-                    if window_end_floor_ns:
-                        try:
-                            mtime_ns = fp.stat().st_mtime_ns
-                        except OSError as exc:        # vanished post-glob: the compactor race
-                            raise FileNotFoundError(str(fp)) from exc
-                        if mtime_ns + _MTIME_SKIP_GUARD_NS <= window_end_floor_ns:
-                            continue                  # provably all-below-floor: skip unopened
-                    files.append(fp)
-        rows: list[dict] = []
-        for fp in files:
-            # BATCHED decode (discovery-OOM fix): iterate row-group batches of ONLY the projected
-            # ``columns`` instead of materializing the whole file, so peak memory is one batch, not
-            # the file/store. ``row_filter`` (e.g. horizon_min==60 for labels) drops rows pre-python.
-            # Batch/file order is preserved, so the accumulated list is identical to the old
-            # whole-file read filtered the same way. Callers that set a floor/row_filter must keep
-            # the referenced fields (window_end_ns, the predicate's fields) in ``columns``.
-            pf = pq.ParquetFile(str(fp))
-            for batch in pf.iter_batches(batch_size=_READ_BATCH_ROWS, columns=columns):
-                table = pa.Table.from_batches([batch])
-                if window_end_floor_ns:               # ROW prune: drop below-floor windows pre-python
-                    table = table.filter(pc.field("window_end_ns") >= window_end_floor_ns)
-                if row_filter is not None:
-                    table = table.filter(row_filter)
-                rows.extend(table.to_pylist())
-        return rows
 
+def read_snapshots_columnar(root: str, dataset: str, symbol: Optional[str] = None, *,
+                            after_recv_ts_ns: int = 0, window_end_floor_ns: int = 0,
+                            columns: Optional[list] = None,
+                            row_filter: Optional["pc.Expression"] = None) -> "pa.Table":
+    """Read persisted snapshots back as a single COLUMNAR ``pyarrow.Table`` (the option-B
+    primitive-read floor fix).
+
+    Byte-for-byte the SAME selection as :func:`read_snapshots` — identical fragment discovery,
+    date prune, mtime file-skip, ``window_end_floor_ns`` row prune, ``row_filter``, batch order
+    and compactor-race retry — but concatenated columnar instead of decoded to a ``list[dict]``.
+    For the same rows a columnar table is ~10-30x smaller than the per-row Python dicts (no
+    per-key str-interned dict overhead), so a discovery pass can hold all datasets it needs
+    without the ~12-13G list-of-dicts floor that OOMs the read. Returns an empty table when
+    nothing matches. ``read_snapshots`` (shared by the live tick loop) is unchanged.
+    """
+    def _build():
+        tables = list(_iter_selected_tables(
+            root, dataset, symbol, after_recv_ts_ns, window_end_floor_ns, columns, row_filter))
+        return pa.concat_tables(tables) if tables else pa.table({})
+
+    return _with_race_retry(_build, dataset=dataset, symbol=symbol)
+
+
+def _with_race_retry(build, *, dataset: str, symbol: Optional[str]):
+    """Run ``build`` under the compactor replace-then-delete race guard: on a mid-read
+    ``FileNotFoundError`` re-run from scratch (a fresh glob picks up the merged compact-* file,
+    so nothing is lost and downstream key-dedup makes an overlap harmless), bounded so a
+    persistent absence (a real error) still propagates."""
     last_exc: Optional[FileNotFoundError] = None
     for attempt in range(1, _READ_RACE_RETRIES + 1):
         try:
-            return _attempt()
+            return build()
         except FileNotFoundError as exc:         # compactor unlinked a fragment mid-read: re-list
             last_exc = exc
             logger.warning("brain store read: fragment vanished mid-read (compactor replace-then-"
@@ -400,3 +391,50 @@ def read_snapshots(root: str, dataset: str, symbol: Optional[str] = None, *,
                            attempt, _READ_RACE_RETRIES, dataset,
                            symbol if symbol is not None else "*", exc)
     raise last_exc                               # persistent absence is a real error, not a race
+
+
+def _iter_selected_tables(root: str, dataset: str, symbol: Optional[str],
+                          after_recv_ts_ns: int, window_end_floor_ns: int,
+                          columns: Optional[list], row_filter: Optional["pc.Expression"]):
+    """Yield the selected snapshot rows as filtered pyarrow Tables, one per row-group batch, in
+    fragment order — the selection core shared by :func:`read_snapshots` and
+    :func:`read_snapshots_columnar`. Applies the date prune, the mtime file-skip, the
+    ``window_end_floor_ns`` row prune and ``row_filter`` exactly as before. Raises
+    ``FileNotFoundError`` if a fragment vanishes mid-read (the compactor race); callers wrap
+    consumption in :func:`_with_race_retry`."""
+    base = pathlib.Path(root, dataset)
+    if not base.exists():
+        return
+    lower_date = (_date_str_from_ns(after_recv_ts_ns - _DATE_PRUNE_MARGIN_NS)
+                  if after_recv_ts_ns > _DATE_PRUNE_MARGIN_NS else None)
+    if symbol is None:
+        sym_dirs = sorted(base.glob("symbol=*"))
+    else:
+        sym_dir = base / f"symbol={symbol}"
+        sym_dirs = [sym_dir] if sym_dir.exists() else []
+    files: list[pathlib.Path] = []
+    for sym_dir in sym_dirs:
+        for date_dir in sorted(sym_dir.glob("date=*")):
+            if lower_date is not None and date_dir.name[len("date="):] < lower_date:
+                continue                          # pruned: older than the cursor window
+            for fp in sorted(date_dir.glob("*.parquet")):
+                if window_end_floor_ns:
+                    try:
+                        mtime_ns = fp.stat().st_mtime_ns
+                    except OSError as exc:        # vanished post-glob: the compactor race
+                        raise FileNotFoundError(str(fp)) from exc
+                    if mtime_ns + _MTIME_SKIP_GUARD_NS <= window_end_floor_ns:
+                        continue                  # provably all-below-floor: skip unopened
+                files.append(fp)
+    for fp in files:
+        # BATCHED decode: iterate row-group batches of ONLY the projected ``columns`` so peak
+        # memory is one batch, not the file/store. ``row_filter`` drops rows pre-python. Batch/
+        # file order is preserved, so the accumulation is identical to the old whole-file read.
+        pf = pq.ParquetFile(str(fp))
+        for batch in pf.iter_batches(batch_size=_READ_BATCH_ROWS, columns=columns):
+            table = pa.Table.from_batches([batch])
+            if window_end_floor_ns:               # ROW prune: drop below-floor windows pre-python
+                table = table.filter(pc.field("window_end_ns") >= window_end_floor_ns)
+            if row_filter is not None:
+                table = table.filter(row_filter)
+            yield table

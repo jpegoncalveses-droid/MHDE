@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import random
 
+import numpy as np
 import pytest
 
+from crypto.research.brain.discovery import rules as R
+from crypto.research.brain.discovery import scoring as S
 from crypto.research.brain.discovery.rules import Condition, make_rule
 from crypto.research.brain.discovery.scoring import (
     compute_instance_lifts, discover_entries, risk_adjusted_excursion, score_rule,
@@ -96,6 +99,46 @@ def test_null_passes_a_planted_real_signal():
     best = max(survivors, key=lambda r: r.edge)
     assert any(c.feature == "sig" for c in best.rule.conditions)
     assert best.edge > best.null_bar                      # beat its own depth's bar
+
+
+# -- MEMORY behaviour: firing held compact, not one N-byte bool mask per candidate --------
+# The 2026-08-09 gate OOM'd at >12G because the depth search materialized and HELD a full
+# N-byte bool firing mask per scorable candidate (O(n_scorable x N)). Firing is now stored as
+# compact int32 index arrays (total ~ number of fires). This pins that so it cannot silently
+# regress to the held-bool-mask form.
+
+def test_scorable_firing_holds_compact_firing_not_full_masks():
+    feats = [f"f{j}" for j in range(8)]
+    eng, lifts = _random_tape(2000, feats, signal=False, seed=11)      # largish N, ~50% fires
+    keys = sorted(k for k in lifts if k in eng)
+    n = len(keys)
+    atoms = R.build_atoms(eng, feats, 10)
+    cols = S._labeled_feature_columns(eng, feats, keys)
+    atom_bits = {a: S._atom_bits(cols[a.feature], a.op, a.threshold) for a in atoms}
+    rules = R.depth1_rules(atoms)
+
+    scorable, firing = S._scorable_firing(rules, atom_bits, n, min_firing=20)
+
+    assert len(scorable) >= 20 and len(firing) == len(scorable)        # many candidates
+    nbytes_per_packed = (n + 7) // 8
+    # every candidate's firing is <= the PACKED size (N/8) — packed uint8 (dense) or int32
+    # indices (sparse) — NEVER a held full N-byte bool mask.
+    for f in firing:
+        assert f.dtype in (np.uint8, np.int32)
+        assert f.nbytes <= nbytes_per_packed
+    total = sum(f.nbytes for f in firing)
+    assert total < len(scorable) * n                                  # far below the held-bool-mask form
+
+
+def test_fired_sum_matches_bool_mask_for_indices_and_packed():
+    # both firing representations sum byte-identically to values[bool_mask].sum() (the oracle).
+    n = 100
+    vals = np.arange(n, dtype=np.float64) * 1.5 + 0.25
+    mask = np.zeros(n, dtype=bool)
+    mask[[2, 50, 51, 99]] = True
+    want = float(vals[mask].sum())
+    assert S._fired_sum(vals, np.packbits(mask), n) == want                        # packed path
+    assert S._fired_sum(vals, np.flatnonzero(mask).astype(np.int32), n) == want    # index path
 
 
 def test_discover_is_deterministic_under_seed():
