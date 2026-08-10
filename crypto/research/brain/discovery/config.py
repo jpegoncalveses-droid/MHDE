@@ -62,11 +62,13 @@ MIN_FIRING_INSTANCES = 20
 #: (data/processed/stage1_breadth_cap_measurement.md, 2026-08-10): the permutation null goes
 #: PERMEABLE on selection-conditioned extensions at depth>=3 (45% pass at full universe,
 #: 46-54% on the 300-symbol proxy), flooding the pass set with a flat redundant tail — the
-#: top 1% of depth-4 survivors carry only ~2% of total lift, and 98% of depth-3 parents
-#: produce depth-4 passers. Adaptive beam-coverage on the designed-depth proxy run: K=500
-#: keeps >=98.8% of the top-10k depth-4 survivors (100% of the top-100/top-1k); the loss is
-#: confined to the redundant tail. Bounds the extension pool (<= K x n_atoms candidates) and
-#: the retained set (<= K per depth). ``None`` disables (unbounded — tests/analysis only).
+#: top 1% of depth-4 survivors carry only ~2% of total lift. Adaptive beam-coverage on the
+#: TRUE-SCALE designed-depth run (full universe, MAX_DEPTH=4, funnel 3 -> 4 -> 772 ->
+#: 31,760): K=500 keeps 99.3% of ALL depth-4 survivors — 100% of the top-100, 99.9% of the
+#: top-1k, 99.6% of the top-10k, 99.3% of total depth-4 lift mass (90% of depth-4 lineage
+#: flows through the top 483 depth-3 parents). The loss is confined to the redundant tail.
+#: Bounds the extension pool (<= K x n_atoms candidates) and the retained set (<= K per
+#: depth). ``None`` disables (unbounded — tests/analysis only).
 BEAM_WIDTH = 500
 
 # -- §5 risk-adjusted excursion label binding ---------------------------------
