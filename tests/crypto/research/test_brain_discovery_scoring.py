@@ -149,3 +149,98 @@ def test_discover_is_deterministic_under_seed():
     s1, _ = discover_entries(eng, lifts, **kw)
     s2, _ = discover_entries(eng, lifts, **kw)
     assert [(r.rule.canonical_id, r.edge) for r in s1] == [(r.rule.canonical_id, r.edge) for r in s2]
+
+
+# -- Beam cap + final-depth guard + per-feature atom bits (discovery-scale PR) ------------
+# Measured basis (data/processed/stage1_breadth_cap_measurement.md, 2026-08-10): the null
+# goes permeable at depth>=3 (54%/46% pass on the 300-sym proxy; 45% at true scale) and the
+# survivor flood is a flat redundant tail — a top-K beam keeps >=98.8% of the top-10k
+# depth-4 survivors at K=500 while bounding both the extension pool and the retained set.
+
+
+def _signal_tape_with_many_d1_passers(seed=3):
+    feats = ["sig", "n1", "n2"]
+    eng, lifts = _random_tape(400, feats, signal=True, seed=seed)
+    return feats, eng, lifts
+
+
+def test_beam_keeps_topk_by_lift_retained_and_extended():
+    feats, eng, lifts = _signal_tape_with_many_d1_passers()
+    kw = dict(feature_ids=feats, n_bins=10, n_permutations=120, null_quantile=0.95,
+              min_firing=20, max_depth=2, seed=3)
+    all_surv, all_diag = discover_entries(eng, lifts, beam_width=None, **kw)
+    d1_all = [r for r in all_surv if r.depth == 1]
+    assert len(d1_all) > 2, "precondition: need >2 depth-1 passers for the beam to bite"
+
+    K = 2
+    beam_surv, beam_diag = discover_entries(eng, lifts, beam_width=K, **kw)
+    d1_beam = [r for r in beam_surv if r.depth == 1]
+    d2_beam = [r for r in beam_surv if r.depth == 2]
+
+    # RETAINED: exactly the top-K depth-1 passers by edge survive (deterministic tie-break).
+    want = sorted(d1_all, key=lambda r: (-r.edge, r.rule.canonical_id))[:K]
+    assert {(r.rule.canonical_id, r.edge) for r in d1_beam} \
+        == {(r.rule.canonical_id, r.edge) for r in want}
+    assert len(d1_beam) == K
+
+    # depth-1 pool and bar are identical (beam filters AFTER the null), so n_passed matches;
+    # n_kept records the truncation.
+    assert beam_diag[0]["n_passed"] == all_diag[0]["n_passed"] > K
+    assert beam_diag[0]["n_kept"] == K
+    assert all_diag[0]["n_kept"] == all_diag[0]["n_passed"]   # unbounded -> kept == passed
+
+    # EXTENDED only from kept: fewer depth-2 candidates than the unbeamed run, and every
+    # beamed depth-2 survivor extends one of the K kept depth-1 rules.
+    assert beam_diag[1]["n_candidates"] < all_diag[1]["n_candidates"]
+    kept_cond_sets = [set(r.rule.conditions) for r in d1_beam]
+    for r in d2_beam:
+        conds = set(r.rule.conditions)
+        assert any(kc <= conds for kc in kept_cond_sets)
+
+
+def test_beam_default_is_config_width_and_noop_when_under_it():
+    from crypto.research.brain.discovery import config as dcfg
+    assert dcfg.BEAM_WIDTH == 500
+    feats, eng, lifts = _signal_tape_with_many_d1_passers()
+    kw = dict(feature_ids=feats, n_bins=10, n_permutations=120, null_quantile=0.95,
+              min_firing=20, max_depth=2, seed=3)
+    default_surv, default_diag = discover_entries(eng, lifts, **kw)            # default beam
+    unbounded_surv, _ = discover_entries(eng, lifts, beam_width=None, **kw)
+    # small tape passes << 500 per depth -> the default beam is a no-op
+    assert [(r.rule.canonical_id, r.edge) for r in default_surv] \
+        == [(r.rule.canonical_id, r.edge) for r in unbounded_surv]
+    assert all(d["n_kept"] == d["n_passed"] for d in default_diag)
+
+
+def test_no_extension_built_past_final_depth(monkeypatch):
+    # The md4 mirror OOM'd building a ~144M-rule extension pool for a depth that would
+    # never be scored. Pin: extend_rule is NEVER called once depth == max_depth.
+    feats, eng, lifts = _signal_tape_with_many_d1_passers()
+
+    def _boom(*a, **k):
+        raise AssertionError("extend_rule called at final depth")
+
+    monkeypatch.setattr(S.R, "extend_rule", _boom)
+    survivors, diag = discover_entries(
+        eng, lifts, feature_ids=feats, n_bins=10, n_permutations=120,
+        null_quantile=0.95, min_firing=20, max_depth=1, seed=3)
+    assert survivors and diag[0]["depth"] == 1     # ran, scored, survived — no extension
+
+
+def test_atom_bits_per_feature_matches_all_at_once():
+    # Oracle-preservation for the prep-transient fix: bits built one feature at a time are
+    # byte-identical to bits built from the all-features column dict.
+    feats = [f"f{j}" for j in range(6)]
+    eng, lifts = _random_tape(500, feats, signal=False, seed=13)
+    keys = sorted(k for k in lifts if k in eng)
+    atoms = R.build_atoms(eng, feats, 10)
+
+    cols = S._labeled_feature_columns(eng, feats, keys)
+    want = {a: S._atom_bits(cols[a.feature], a.op, a.threshold) for a in atoms}
+
+    got = S._atom_bits_per_feature(eng, feats, keys, atoms)
+
+    assert set(got) == set(want)
+    for a in atoms:
+        assert got[a].dtype == want[a].dtype
+        assert np.array_equal(got[a], want[a])

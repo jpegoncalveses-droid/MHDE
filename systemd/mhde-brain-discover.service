@@ -9,9 +9,16 @@ After=network-online.target
 # confirmation, run Stage-2 exit discovery on entry survivors, and log simulated round trips.
 # Writes ONLY the discovery SQLite-WAL DB (data/research/brain/discovery.sqlite); reads the
 # brain store + registry READ-ONLY; never opens the production DuckDB or the engine DB. The permutation
-# null is the dominant cost. Sized below the engine on the shared zero-swap 16GB host where
-# HOST-AGGREGATE memory is the binding limit (not this cap), and OOM-first, so a discovery run
-# never disturbs the engine's 1s cycle. Paired with the .timer.
+# null is the dominant cost. OOM-first and idle-scheduled, so a discovery run never disturbs
+# the engine's 1s cycle or capture/tick. Paired with the .timer.
+#
+# MemoryMax basis (measured 2026-08-10, data/processed/stage1_breadth_cap_measurement.md):
+# the full-universe tape+lifts residency is ~10.9-11.4G (scales ~linearly with instance
+# count, ~1.6kB/instance over the 14+2d window) and the BEAMED depth loop adds <=0.5G
+# (measured peak 11.17G through depth 2 at true scale, flat prep via the per-feature
+# atom-bits build). 13G runs the pass with headroom while leaving capture (~4G) +
+# brain-tick (3G) untouched on the zero-swap 22G host. If the store's instance count grows
+# this cap needs revisiting BEFORE the tape residency reaches it.
 #
 # BUILT-NOT-DEPLOYED: tracked but not installed/enabled. Enabling is the operator's deploy.
 Type=oneshot
@@ -20,7 +27,7 @@ ExecStartPre=/usr/bin/test -x /home/jpcg/MHDE/venv/bin/python
 ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto brain-discover-run
 Nice=19
 IOSchedulingClass=idle
-MemoryMax=3G
+MemoryMax=13G
 CPUWeight=20
 IOWeight=20
 OOMScoreAdjust=800

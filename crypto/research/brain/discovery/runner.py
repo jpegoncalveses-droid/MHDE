@@ -128,7 +128,8 @@ def run_discovery_pass(conn, engineered, lifts, price_index, coin_vols, *, featu
                        frontier_ns, now_ns, score_horizon_min=dcfg.SCORE_HORIZON_MIN,
                        n_bins=dcfg.QUANTILE_BINS, n_permutations=dcfg.N_PERMUTATIONS,
                        null_quantile=dcfg.NULL_QUANTILE, min_firing=dcfg.MIN_FIRING_INSTANCES,
-                       max_depth=dcfg.MAX_DEPTH, m=dcfg.CONFIRM_M, z=dcfg.CONFIRM_Z,
+                       max_depth=dcfg.MAX_DEPTH, beam_width=dcfg.BEAM_WIDTH,
+                       m=dcfg.CONFIRM_M, z=dcfg.CONFIRM_Z,
                        exit_grid=None, window_ns=dcfg.WINDOW_NS, seed=0) -> dict:
     """One discovery pass over already-loaded data. Returns a summary dict."""
     exit_grid = exit_grid if exit_grid is not None else X.build_exit_grid()
@@ -138,7 +139,7 @@ def run_discovery_pass(conn, engineered, lifts, price_index, coin_vols, *, featu
     survivors, diagnostics = S.discover_entries(
         engineered, lifts, feature_ids=feature_ids, n_bins=n_bins,
         n_permutations=n_permutations, null_quantile=null_quantile, min_firing=min_firing,
-        max_depth=max_depth, seed=seed)
+        max_depth=max_depth, beam_width=beam_width, seed=seed)
     for er in survivors:
         breadth = len({k[0] for k in R.fires(er.rule, engineered)})
         RS.upsert_entry(conn, er, score_horizon_min=score_horizon_min, breadth=breadth,

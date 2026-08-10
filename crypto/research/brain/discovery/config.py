@@ -57,6 +57,17 @@ MAX_DEPTH = 4
 #: A candidate must fire on at least this many in-sample instances to be scorable
 #: (below this the edge estimate is noise; it is neither passed nor counted).
 MIN_FIRING_INSTANCES = 20
+#: Beam cap on the depth search: at each depth only the top-K passers by edge are RETAINED
+#: (returned + persisted) and EXTENDED to the next depth. Measured basis
+#: (data/processed/stage1_breadth_cap_measurement.md, 2026-08-10): the permutation null goes
+#: PERMEABLE on selection-conditioned extensions at depth>=3 (45% pass at full universe,
+#: 46-54% on the 300-symbol proxy), flooding the pass set with a flat redundant tail — the
+#: top 1% of depth-4 survivors carry only ~2% of total lift, and 98% of depth-3 parents
+#: produce depth-4 passers. Adaptive beam-coverage on the designed-depth proxy run: K=500
+#: keeps >=98.8% of the top-10k depth-4 survivors (100% of the top-100/top-1k); the loss is
+#: confined to the redundant tail. Bounds the extension pool (<= K x n_atoms candidates) and
+#: the retained set (<= K per depth). ``None`` disables (unbounded — tests/analysis only).
+BEAM_WIDTH = 500
 
 # -- §5 risk-adjusted excursion label binding ---------------------------------
 #: The label horizon Stage-1 scores against (minutes == windows). 60 == 1 h: long

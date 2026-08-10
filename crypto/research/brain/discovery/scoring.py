@@ -200,6 +200,28 @@ def _fired_sum(values: np.ndarray, firing: np.ndarray, n: int) -> float:
     return float(values[np.unpackbits(firing)[:n].view(bool)].sum())
 
 
+def _atom_bits_per_feature(engineered: Mapping, feature_ids: Sequence[str],
+                           keys: Sequence[tuple], atoms: Sequence) -> dict:
+    """``atom -> packed firing bitset``, built ONE feature column at a time.
+
+    Byte-identical bits to building from a full ``_labeled_feature_columns`` dict
+    (``test_atom_bits_per_feature_matches_all_at_once``), without holding every feature
+    column at once: that n_keys x n_features float64 transient (~1.8 GiB at full universe)
+    was the load-side component of the 2026-08-09 gate OOM. One column (n_keys x 8 B) is
+    resident at a time — measured zero RSS spike at full scale
+    (data/processed/stage1_breadth_cap_measurement.md)."""
+    by_feat: dict = {}
+    for a in atoms:
+        by_feat.setdefault(a.feature, []).append(a)
+    bits: dict = {}
+    for fid, feat_atoms in by_feat.items():
+        col = _labeled_feature_columns(engineered, [fid], keys)[fid]
+        for a in feat_atoms:
+            bits[a] = _atom_bits(col, a.op, a.threshold)
+        del col
+    return bits
+
+
 def discover_entries(
     engineered: Mapping[tuple, Mapping[str, float]],
     lifts: Mapping[tuple, float],
@@ -210,14 +232,23 @@ def discover_entries(
     null_quantile: float = dcfg.NULL_QUANTILE,
     min_firing: int = dcfg.MIN_FIRING_INSTANCES,
     max_depth: int = dcfg.MAX_DEPTH,
+    beam_width: int | None = dcfg.BEAM_WIDTH,
     seed: int = 0,
 ) -> tuple[list, list]:
     """Run the depth-extensible Stage-1 search under the permutation null.
 
     Returns ``(survivors, diagnostics)``: survivors are :class:`EntryResult` (every
-    candidate that beat its depth's null bar), diagnostics a per-depth dict
-    (n_candidates, n_scorable, null_bar, n_passed) — the activity the dashboard surfaces
-    (huge candidate counts, almost all dying at the null, is correct, §11).
+    candidate that beat its depth's null bar AND was kept by the beam), diagnostics a
+    per-depth dict (n_candidates, n_scorable, null_bar, n_passed, n_kept) — the activity
+    the dashboard surfaces (huge candidate counts, almost all dying at the null, is
+    correct, §11).
+
+    BEAM (``beam_width``, default ``dcfg.BEAM_WIDTH``): at each depth only the top-K
+    passers by edge are retained and extended. The null gate goes PERMEABLE on
+    selection-conditioned extensions at depth>=3 (measured 45% pass at full universe),
+    flooding ``passed`` with a flat redundant tail; the beam sheds that tail, not the
+    head — K=500 keeps >=98.8% of the top-10k depth-4 survivors, 100% of the top-100
+    (data/processed/stage1_breadth_cap_measurement.md). ``None`` disables (unbounded).
 
     Atom firing is precomputed as PACKED BITSETS (N/8 each, ~one per atom), and each depth's
     scorable candidates carry their firing as compact int32 INDEX arrays (total ~ number of
@@ -238,10 +269,9 @@ def discover_entries(
     n = len(keys)
     values = np.array([lifts[k] for k in keys], dtype=np.float64)
     atoms = R.build_atoms(engineered, feature_ids, n_bins)
-    # firing is label-INDEPENDENT -> precompute each atom's packed firing bitset over keys ONCE
-    cols = _labeled_feature_columns(engineered, feature_ids, keys)
-    atom_bits: dict = {a: _atom_bits(cols[a.feature], a.op, a.threshold) for a in atoms}
-    del cols                                          # free the float columns before the null pass
+    # firing is label-INDEPENDENT -> precompute each atom's packed firing bitset over keys ONCE,
+    # one feature column resident at a time (identical bits; kills the all-columns transient)
+    atom_bits: dict = _atom_bits_per_feature(engineered, feature_ids, keys, atoms)
 
     rng = random.Random(seed)
     survivors: list = []
@@ -269,15 +299,28 @@ def discover_entries(
 
         passed = [(rule, edge, count) for (rule, edge), (_, count) in zip(real, scorable)
                   if edge > bar]
+        # BEAM: keep only the top-`beam_width` passers by edge — retained AND extended.
+        # Filters AFTER the null (the bar is over the full candidate pool); tie-break on
+        # canonical_id keeps the cut deterministic. No-op while len(passed) <= K.
+        if beam_width is not None and len(passed) > beam_width:
+            kept = sorted(passed, key=lambda t: (-t[1], t[0].canonical_id))[:beam_width]
+        else:
+            kept = passed
         diagnostics.append({"depth": depth, "n_candidates": len(current),
                             "n_scorable": len(scorable), "null_bar": bar,
-                            "n_passed": len(passed)})
-        for rule, edge, count in passed:
+                            "n_passed": len(passed), "n_kept": len(kept)})
+        for rule, edge, count in kept:
             survivors.append(EntryResult(rule=rule, edge=edge, n_fires=count,
                                          depth=depth, null_bar=bar, margin=edge - bar))
-        # extend only the survivors (a small set) to the next depth
+        if depth == max_depth:
+            # Never build a next-depth candidate pool that will not be scored: at a
+            # permeable depth-4, passed x atoms is ~10^8 rule objects — the measured OOM
+            # site of the instrumented designed-depth run (the loop condition would have
+            # discarded the pool unscored anyway).
+            break
+        # extend only the KEPT survivors to the next depth
         nxt: dict = {}
-        for rule, _, _ in passed:
+        for rule, _, _ in kept:
             for ext in R.extend_rule(rule, atoms):
                 nxt[ext.canonical_id] = ext
         current = list(nxt.values())

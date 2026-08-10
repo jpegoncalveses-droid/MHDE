@@ -50,6 +50,13 @@ def _mixed_tape(n_keys, feature_ids, *, seed):
 _FEATS = [f"f{j}" for j in range(6)]
 _KW = dict(feature_ids=_FEATS, n_bins=6, n_permutations=100, null_quantile=0.95,
            min_firing=20, max_depth=3, seed=13)
+# The frozen oracle predates the beam cap and is beam-less by design, so decision-identity
+# is asserted for the UNBOUNDED new search (beam_width=None) — this pins the
+# firing/scoring/null path, which is what the oracle guards. Beam semantics are pinned
+# separately in test_brain_discovery_scoring.py. On this strong-signal tape the deep passer
+# count exceeds BEAM_WIDTH, so the default beam would (correctly) truncate and diverge from
+# the beam-less oracle.
+_NEW_KW = {**_KW, "beam_width": None}
 
 
 # -- the load-bearing decision-identity guard ---------------------------------
@@ -57,7 +64,7 @@ _KW = dict(feature_ids=_FEATS, n_bins=6, n_permutations=100, null_quantile=0.95,
 def test_new_search_is_decision_identical_to_scalar_oracle():
     eng, lifts = _mixed_tape(500, _FEATS, seed=13)
     sur_o, diag_o = oracle.discover_entries(eng, lifts, **_KW)
-    sur_n, diag_n = scoring.discover_entries(eng, lifts, **_KW)
+    sur_n, diag_n = scoring.discover_entries(eng, lifts, **_NEW_KW)
 
     # the substrate is non-trivial: real survivors AND a depth-2 layer were reached
     assert sur_o, "planted signal must survive in the oracle (test would be vacuous otherwise)"
@@ -88,7 +95,7 @@ def test_new_search_is_deterministic_and_matches_oracle_across_seeds():
         eng, lifts = _mixed_tape(300, _FEATS, seed=seed)
         kw = {**_KW, "seed": seed, "n_permutations": 60}
         sur_o, _ = oracle.discover_entries(eng, lifts, **kw)
-        sur_n, _ = scoring.discover_entries(eng, lifts, **kw)
+        sur_n, _ = scoring.discover_entries(eng, lifts, beam_width=None, **kw)
         assert sorted(s.rule.canonical_id for s in sur_n) == sorted(s.rule.canonical_id for s in sur_o)
 
 
@@ -123,7 +130,7 @@ def test_lift_only_keys_are_excluded_not_diluting_the_null():
     # discovery-read time) can fire no rule; it must be EXCLUDED from the search universe -- not
     # crash the pass (as the scalar oracle did) and not pollute the permutation-null value pool.
     eng, lifts = _mixed_tape(300, _FEATS, seed=21)
-    kw = {**_KW, "seed": 21, "n_permutations": 60}
+    kw = {**_NEW_KW, "seed": 21, "n_permutations": 60}
     base_sur, base_diag = scoring.discover_entries(eng, lifts, **kw)
 
     lifts_extra = dict(lifts)
