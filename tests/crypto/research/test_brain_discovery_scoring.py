@@ -197,6 +197,13 @@ def test_beam_keeps_topk_by_lift_retained_and_extended():
         conds = set(r.rule.conditions)
         assert any(kc <= conds for kc in kept_cond_sets)
 
+    # DEPTH-GENERIC: the beam truncates at depth 2 as well (this fixture passes >K there
+    # too). Pins that the cap is not depth-1-only — a depth-conditional regression would
+    # leave exactly the permeable deep depths (measured 45% pass at depth 3) unbeamed.
+    assert beam_diag[1]["n_passed"] > K
+    assert beam_diag[1]["n_kept"] == K
+    assert len(d2_beam) == K
+
 
 def test_beam_default_is_config_width_and_noop_when_under_it():
     from crypto.research.brain.discovery import config as dcfg
@@ -210,6 +217,23 @@ def test_beam_default_is_config_width_and_noop_when_under_it():
     assert [(r.rule.canonical_id, r.edge) for r in default_surv] \
         == [(r.rule.canonical_id, r.edge) for r in unbounded_surv]
     assert all(d["n_kept"] == d["n_passed"] for d in default_diag)
+
+
+def test_beam_width_default_is_wired_from_config():
+    # The production path (systemd unit -> brain-discover-run -> run_discovery ->
+    # run_discovery_pass -> discover_entries) reaches the beam ONLY through these two
+    # signature defaults; a None (or literal) default ships an unbeamed production pass
+    # with every other test green. `is` pins identity to the config object: 500 is outside
+    # CPython's small-int cache, so a re-typed literal fails too.
+    import inspect
+
+    from crypto.research.brain.discovery import config as dcfg
+    from crypto.research.brain.discovery import runner
+
+    assert inspect.signature(S.discover_entries).parameters["beam_width"].default \
+        is dcfg.BEAM_WIDTH
+    assert inspect.signature(runner.run_discovery_pass).parameters["beam_width"].default \
+        is dcfg.BEAM_WIDTH
 
 
 def test_no_extension_built_past_final_depth(monkeypatch):
