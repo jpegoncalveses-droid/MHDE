@@ -318,3 +318,56 @@ below ~13.5 G the unit self-OOMs (second kill); at/above it the host slack drops
   (composition-sensitivity, Section 7) — and margin shrinks back as density grows.
 - **C: raise the cap to 14 G**: measured-rejectable — host slack ≤ 1 G is the exact
   first-kill failure mode.
+
+## 10. GATE-3 (2026-08-11, post-fixes) — the funnel EXISTS; the pass died at 79%-done stage-2
+
+After Option A + two further measured fixes (bounded columnar-read fold — the labels
+dataset's ~1M compaction-excluded fragments cost ~5G of held per-chunk overhead; in-place
+lift centering — the final comprehension held a second 6M-entry dict), the load profile
+collapsed: **full-load peak 9.51G** (tape 5.41 + price_index 1.7 + labels columnar ~0.4 +
+lifts, vs the ~13.5G that killed gates 1–2). The fold also cut the tape build itself
+(8.28G → 5.41G, 26% faster).
+
+**Gate-3** (real `brain-discover-run`, designed settings, beam=500, 13G cap, launched
+13:56:56 UTC): stage-1 COMPLETED all four depths, 1,012 survivors upserted, the funnel
+recorded to `discovery.sqlite`, forward confirmation advanced all 1,012 to CONFIRMING,
+and stage-2 exit discovery found **799 exits** before a **host-level OOM at 20:03**
+(6h06m in; unit peak **11.5G, 1.5G BELOW its cap**; systemd: "killed by the OOM killer";
+neither hourly compactor aligns — ambient co-tenant burst on a ~21G-committed 22G host).
+
+### THE ENGINE'S FIRST FULL PRODUCTION FUNNEL (discovery_runs run_id=1)
+
+| depth | candidates | scorable | null bar | passed | kept (beam) |
+|---|---|---|---|---|---|
+| 1 | 546 | 544 | 0.000436 | 4 | 4 |
+| 2 | 2,106 | 2,092 | 0.007439 | 8 | 8 |
+| 3 | 4,077 | 3,535 | 0.017080 | **621** | **500** |
+| 4 | 215,810 | 150,244 | 0.021247 | **50,918** | **500** |
+
+1,012 survivors → all CONFIRMING (0 promoted — correct: no post-frontier instances exist
+on a first pass); exits found for 799/1,012 (5 at d2, 353 at d3, 441 at d4);
+simulated_trades 0 (stage-4 is promoted-only). The beam behaved exactly as designed: the
+permeable depth-3/4 flood (621 and 50,918 passers) cut to 500 each, which is also what
+made a 1,012-rule stage-2 possible at all (unbeamed it would have been ~51,000 rules).
+
+### Why it still died, and the decision
+
+Memory is SOLVED (peak 11.5G incl. stage-2, never breached the cap). What remains is
+**wall-clock exposure**: ~6h beside co-tenants that burst unpredictably by 1–3G on a box
+with ~1.5–3G of slack ⇒ eventual collision (2 of 2 six-hour attempts died; both mirror
+runs with the fast numpy null completed in ≤2h). Time sinks: the production
+`random.shuffle` permutation null (~15s/perm at 6M keys × 200 perms × 4 depths ≈ 4h) and
+stage-2 continuation building (~3h for 1,012 rules). The pass is DB-RESUMABLE: upserts
+dedupe and stage-2 skips rules with exits, so a re-run completes the remaining 213.
+
+Options (operator decision):
+- **R — retry as-is**: zero change; stage-2 restart shrinks by the 799 banked exits;
+  still ~5.5h of collision exposure per attempt.
+- **F — numpy-permutation null in production** (recommended, with R after): the null needs
+  only an exchangeable uniform shuffle; numpy permutation is statistically identical and
+  ~30x faster ⇒ pass ≈ 2.5h, halving-plus the exposure. BUT draws become byte-different
+  from the frozen scalar oracle ⇒ amends the §12 byte-fidelity contract to
+  "decision-identical given the same draws + statistically identical null" (oracle test
+  runs with an injected shared RNG or pins the fast path against itself). Needs sign-off.
+- **S — cap stage-2 continuation breadth per rule**: bounds the other ~3h; changes
+  exit-discovery statistics; not needed for memory.
