@@ -276,3 +276,45 @@ full-4 replaces them with true-scale numbers if it completes.
   undisturbed throughout (box 22 G, ~15 G available).
 - Production code, discovery DB, brain store, registry: untouched (store/registry opened
   read-only through the standard read APIs).
+
+## 9. THE GATE (2026-08-11) — FAILED, and the measured reason
+
+The dispatched gate (real `main.py crypto brain-discover-run` on branch code, designed
+settings, beam=500, 13 G cap) was **OOM-killed 54 min in** (`mhde-gate-discover.service`,
+07:18–08:12 UTC, unit peak 9.9 G — *below* its cap, i.e. a HOST-global kill during a
+co-tenant spike). A follow-up read-only load-profile run (mirror + the production
+`price_index` path) was **also OOM-killed**, during the label read. Decomposition, measured
+on the real store (now 9.12 M instances in the 16 d window — +7% since full-4, 8 h earlier):
+
+| load stage | RSS after (G) | delta |
+|---|---|---|
+| engineered tape | 8.28 | +8.28 |
+| markprice table (transient) | 8.21 (peak 9.99) | +0.4 transient |
+| **price_index + coin_vols (held)** | **9.92** | **+1.71** |
+| label dict read (transient ~6 M × ~450 B) | *died here* | **~+2.7–3.0 transient** |
+| projected load peak | **~13.3–13.6** | > 13 G cap |
+
+Why the mirrors passed and the real pass cannot: the mirror runs **excluded `price_index`**
+(+1.71 G, held through the whole pass — the report noted the exclusion but the 13 G
+extrapolation never added it back), and the store grew ~7% overnight. The label read is the
+**last list-of-dicts load path** (`runner.py` `read_snapshots` → ~6 M dicts): Option B
+(PR#87) fixed primitives, this branch fixed the atom-bits prep; labels still materialize
+~2.7–3 G of transient dicts.
+
+Host budget (measured co-tenants: tick 3.0 G at cap, capture fleet incl. OKX ~3.4 G,
+engine+docker ~0.2 G, system/sessions ~0.7 G ≈ **7.2 G**): ~14.5–15 G true headroom.
+Requirement ~13.5 G vs cap 13 G vs host ~14.5 G — **no value of the cap alone fixes this**:
+below ~13.5 G the unit self-OOMs (second kill); at/above it the host slack drops under
+~1 G and co-tenant churn kills it globally (first kill).
+
+**Options (operator decision):**
+- **A (recommended): columnar label load** — read labels via `read_snapshots_columnar`,
+  build lifts from arrays (oracle-preserving vs `compute_instance_lifts` on dicts;
+  ~40–70 lines + equivalence test). Cuts the ~3 G transient to ~0.3 G → projected pass
+  peak **~11.5 G** (load ~11 G + ≤0.5 G beamed depth loop): fits 13 G with real margin and
+  leaves ~3.5 G host slack at window saturation. Completes the Option B family.
+- **B: reduce `DISCOVERY_HISTORY_DAYS`** (14 → ~12, config-only): fits today
+  (~10.5–11 G peak) but changes a designed setting — fewer instances shift the funnel
+  (composition-sensitivity, Section 7) — and margin shrinks back as density grows.
+- **C: raise the cap to 14 G**: measured-rejectable — host slack ≤ 1 G is the exact
+  first-kill failure mode.
