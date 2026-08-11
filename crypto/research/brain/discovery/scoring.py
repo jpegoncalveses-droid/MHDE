@@ -69,6 +69,44 @@ def compute_instance_lifts(label_rows: Sequence[Mapping], *, horizon_min: int,
     return {key: rae - baseline[key[0]] for key, rae in rae_by_key.items()}
 
 
+def compute_instance_lifts_columnar(label_tbl, *, horizon_min: int,
+                                    side: str = "long") -> dict:
+    """Columnar twin of :func:`compute_instance_lifts` — same dict out, no per-row dicts in.
+
+    The label read was the LAST list-of-dicts load path: ~6M rows materialized as Python
+    dicts is a ~3G transient, the measured OOM term of the 2026-08-11 gate (the store's
+    columnar table for the same rows is ~10-30x smaller). BYTE-IDENTICAL by construction:
+    rows are visited in TABLE ORDER with Python floats through the SAME
+    ``risk_adjusted_excursion``/``statistics.fmean`` arithmetic, preserving duplicate-key
+    last-wins (every occurrence still in the coin baseline), None mfe/mae exclusion
+    (``to_pylist`` keeps nulls as ``None`` — never NaN-coerced), and horizon/valid
+    filtering. Symbols come via dictionary-encode so the output keys share one ``str``
+    per symbol instead of one per row."""
+    if label_tbl is None or label_tbl.num_rows == 0:
+        return {}
+    enc = label_tbl.column("symbol").dictionary_encode().combine_chunks()
+    sym_pool = enc.dictionary.to_pylist()
+    sym_idx = enc.indices.to_numpy(zero_copy_only=False)
+    wins = label_tbl.column("window_start_ns").to_numpy(zero_copy_only=False)
+    hors = label_tbl.column("horizon_min").to_numpy(zero_copy_only=False)
+    valid = label_tbl.column("valid").to_numpy(zero_copy_only=False)
+    mfes = label_tbl.column("mfe").to_pylist()      # None-preserving (nullable float)
+    maes = label_tbl.column("mae").to_pylist()
+    rae_by_key: dict = {}
+    rae_by_coin: dict = defaultdict(list)
+    for i in range(label_tbl.num_rows):
+        if int(hors[i]) != horizon_min or not valid[i]:
+            continue
+        rae = risk_adjusted_excursion(mfes[i], maes[i], side)
+        if rae is None:
+            continue
+        sym = sym_pool[sym_idx[i]]
+        rae_by_key[(sym, int(wins[i]))] = rae
+        rae_by_coin[sym].append(rae)
+    baseline = {sym: statistics.fmean(vs) for sym, vs in rae_by_coin.items()}
+    return {key: rae - baseline[key[0]] for key, rae in rae_by_key.items()}
+
+
 def score_rule(rule: R.Rule, lifts: Mapping[tuple, float],
                engineered: Mapping[tuple, Mapping[str, float]],
                min_firing: int = dcfg.MIN_FIRING_INSTANCES) -> Optional[tuple]:

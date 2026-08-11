@@ -46,9 +46,10 @@ def test_run_discovery_windows_reads_from_frontier(tmp_path, monkeypatch):
         return []
 
     def fake_read_columnar(root, dataset, symbol=None, *, after_recv_ts_ns=0,
-                           window_end_floor_ns=0, columns=None):
+                           window_end_floor_ns=0, columns=None, row_filter=None):
         col_calls.append({"dataset": dataset, "after": after_recv_ts_ns,
-                          "floor": window_end_floor_ns, "columns": columns})
+                          "floor": window_end_floor_ns, "columns": columns,
+                          "row_filter": row_filter})
         return _empty_columnar_table(columns)
 
     class _DummyReg:
@@ -64,7 +65,12 @@ def test_run_discovery_windows_reads_from_frontier(tmp_path, monkeypatch):
 
     runner.run_discovery(discovery_db_path=str(tmp_path / "d.sqlite"), now_ns=_FRONTIER + _W)
 
-    label_calls = [c for c in calls if c["dataset"] == brain_labels.LABEL_DATASET]
+    # EVERYTHING streams through the COLUMNAR reader now — primitives + markprice since
+    # Option B (PR#87), labels since PR#88 (the last list-of-dicts load path, the ~3G
+    # transient behind the 2026-08-11 gate OOM). The scalar reader is out of the load path.
+    assert calls == []
+    label_calls = [c for c in col_calls if c["dataset"] == brain_labels.LABEL_DATASET]
+    prim_calls = [c for c in col_calls if c["dataset"] != brain_labels.LABEL_DATASET]
 
     assert len(label_calls) == 1
     lc = label_calls[0]
@@ -73,15 +79,12 @@ def test_run_discovery_windows_reads_from_frontier(tmp_path, monkeypatch):
     assert lc["columns"] == runner._LABEL_LOAD_COLUMNS                   # projection (drops fwd_return)
     assert lc["row_filter"] is not None                                 # horizon==60 predicate
 
-    # Primitives (and markprice) stream through the COLUMNAR reader (Option B, PR#87) —
-    # windowed at the z-lookback-widened floor and column-PROJECTED (the projection is the
-    # memory contract; window_end_ns is always carried for the floor filter).
+    # Primitives + markprice: windowed at the z-lookback-widened floor and column-PROJECTED
+    # (the projection is the memory contract; window_end_ns is always carried for the floor).
     prim_floor = _FRONTIER - (dcfg.DISCOVERY_HISTORY_NS + dcfg.DISCOVERY_PRIMITIVE_LOOKBACK_NS)
-    assert col_calls, "primitives must be read through the columnar streaming path"
-    assert all(c["after"] == prim_floor and c["floor"] == prim_floor for c in col_calls)   # 16d
-    assert all(c["columns"] and "window_end_ns" in c["columns"] for c in col_calls)
-    # the scalar reader now carries ONLY the label read
-    assert calls == label_calls
+    assert prim_calls, "primitives must be read through the columnar streaming path"
+    assert all(c["after"] == prim_floor and c["floor"] == prim_floor for c in prim_calls)   # 16d
+    assert all(c["columns"] and "window_end_ns" in c["columns"] for c in prim_calls)
     # primitive floor is strictly older than the label floor (the z-lookback margin)
     assert prim_floor < lc["floor"]
 

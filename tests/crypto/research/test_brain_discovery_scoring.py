@@ -268,3 +268,64 @@ def test_atom_bits_per_feature_matches_all_at_once():
     for a in atoms:
         assert got[a].dtype == want[a].dtype
         assert np.array_equal(got[a], want[a])
+
+
+# -- Columnar label load (Option A, PR #88): kill the ~3G label-dict transient ------------
+# The label read was the LAST list-of-dicts load path (runner read ~6M rows as Python
+# dicts, ~3G transient — the measured 2026-08-11 gate OOM term). The columnar twin must be
+# BYTE-IDENTICAL: same dict out, including duplicate-key last-wins (with every occurrence
+# still counted in the coin baseline), None mfe/mae exclusion (NOT NaN-coerced), row-order
+# fmean baselines, and horizon/valid filtering.
+
+def _lifts_tape_rows():
+    rows = [
+        _label("BTCUSDT", 0, 0.03, -0.01),                  # rae 0.02
+        _label("BTCUSDT", 1, 0.01, -0.01),                  # rae 0.00
+        _label("ETHUSDT", 0, 0.05, -0.01),                  # rae 0.04 (single-instance coin)
+        _label("BTCUSDT", 2, 0.9, -0.9, horizon=15),        # wrong horizon -> excluded
+        _label("BTCUSDT", 3, 0.9, -0.9, valid=False),       # invalid -> excluded
+        _label("SOLUSDT", 5, None, -0.01),                  # None mfe -> rae None -> excluded
+        _label("BTCUSDT", 1, 0.05, -0.01),                  # DUPLICATE key: last wins for the
+                                                            # key, BOTH occurrences in baseline
+        _label("ADAUSDT", 7, 0.02, -0.03),                  # negative-rae coin
+    ]
+    return rows
+
+
+def _rows_to_label_table(rows):
+    import pyarrow as pa
+    cols = {
+        "symbol": pa.array([r["symbol"] for r in rows], type=pa.string()),
+        "window_start_ns": pa.array([r["window_start_ns"] for r in rows], type=pa.int64()),
+        "window_end_ns": pa.array([r["window_start_ns"] + _W for r in rows], type=pa.int64()),
+        "horizon_min": pa.array([r["horizon_min"] for r in rows], type=pa.int64()),
+        "valid": pa.array([r["valid"] for r in rows], type=pa.bool_()),
+        "mfe": pa.array([r["mfe"] for r in rows], type=pa.float64()),
+        "mae": pa.array([r["mae"] for r in rows], type=pa.float64()),
+    }
+    return pa.table(cols)
+
+
+def test_instance_lifts_columnar_is_byte_identical_to_dict_path():
+    rows = _lifts_tape_rows()
+    tbl = _rows_to_label_table(rows)
+    want = compute_instance_lifts(rows, horizon_min=60, side="long")
+    got = S.compute_instance_lifts_columnar(tbl, horizon_min=60, side="long")
+    assert got == want                       # dict equality on floats == byte identity
+    assert set(map(type, got.values())) == {float}
+    # the tricky rows really exercised the semantics:
+    assert ("BTCUSDT", 1 * _W) in got                        # duplicate key present (last wins)
+    assert ("SOLUSDT", 5 * _W) not in got                    # None mfe excluded, not NaN
+    assert ("BTCUSDT", 2 * _W) not in got and ("BTCUSDT", 3 * _W) not in got
+
+
+def test_instance_lifts_columnar_empty_and_all_filtered():
+    import pyarrow as pa
+    rows = [_label("BTCUSDT", 0, 0.9, -0.9, horizon=15)]    # everything filtered out
+    assert S.compute_instance_lifts_columnar(_rows_to_label_table(rows), horizon_min=60) == {}
+    empty = _rows_to_label_table([]) if False else pa.table(
+        {c: pa.array([], type=t) for c, t in [
+            ("symbol", pa.string()), ("window_start_ns", pa.int64()),
+            ("window_end_ns", pa.int64()), ("horizon_min", pa.int64()),
+            ("valid", pa.bool_()), ("mfe", pa.float64()), ("mae", pa.float64())]})
+    assert S.compute_instance_lifts_columnar(empty, horizon_min=60) == {}

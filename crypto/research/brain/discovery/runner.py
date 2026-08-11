@@ -227,13 +227,17 @@ def run_discovery(*, store_root=dcfg.BRAIN_STORE_ROOT, label_store_root=dcfg.LAB
     coin_vols = coin_volatilities(price_index)
     del mp_tbl                                  # free the markprice read before the heavy null pass
 
-    label_rows = brain_store.read_snapshots(
+    # Labels read COLUMNAR too (the last list-of-dicts load path): ~6M rows as Python dicts
+    # was a ~3G transient — the measured OOM term of the 2026-08-11 gate — vs ~0.3G as a
+    # projected columnar table. Same selection (identical reader semantics), byte-identical
+    # lifts (compute_instance_lifts_columnar oracle test).
+    label_tbl = brain_store.read_snapshots_columnar(
         label_store_root, brain_labels.LABEL_DATASET,
         after_recv_ts_ns=label_floor, window_end_floor_ns=label_floor,
         columns=_LABEL_LOAD_COLUMNS, row_filter=pc.field("horizon_min") == score_horizon_min)
-    lifts = S.compute_instance_lifts(label_rows, horizon_min=score_horizon_min,
-                                     side=dcfg.SCORE_SIDE)
-    del label_rows                             # free the label load before the heavy null pass
+    lifts = S.compute_instance_lifts_columnar(label_tbl, horizon_min=score_horizon_min,
+                                              side=dcfg.SCORE_SIDE)
+    del label_tbl                              # free the label load before the heavy null pass
 
     conn = RS.connect(discovery_db_path)
     TL.ensure_schema(conn)

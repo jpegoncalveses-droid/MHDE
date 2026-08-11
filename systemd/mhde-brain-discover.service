@@ -12,13 +12,18 @@ After=network-online.target
 # null is the dominant cost. OOM-first and idle-scheduled, so a discovery run never disturbs
 # the engine's 1s cycle or capture/tick. Paired with the .timer.
 #
-# MemoryMax basis (measured 2026-08-10, data/processed/stage1_breadth_cap_measurement.md):
-# the full-universe tape+lifts residency is ~10.9-11.4G (scales ~linearly with instance
-# count, ~1.6kB/instance over the 14+2d window) and the BEAMED depth loop adds <=0.5G
-# (measured peak 11.17G through depth 2 at true scale, flat prep via the per-feature
-# atom-bits build). 13G runs the pass with headroom while leaving capture (~4G) +
-# brain-tick (3G) untouched on the zero-swap 22G host. If the store's instance count grows
-# this cap needs revisiting BEFORE the tape residency reaches it.
+# MemoryMax basis — FULL-PASS decomposition, measured on the real store 2026-08-11 at
+# 9.12M instances in the 14+2d window (data/processed/stage1_breadth_cap_measurement.md §9):
+#   engineered tape (columnar)            ~8.3G   (scales ~linearly with instance count)
+#   price_index + coin_vols (held)        ~1.7G
+#   label load, COLUMNAR (transient)      ~1.9G   (was ~3G as list-of-dicts — the measured
+#                                                  2026-08-11 gate-OOM term, removed in PR#88)
+#   beamed depth loop (BEAM_WIDTH=500)    <=0.5G  (measured across the designed-depth run)
+#   => pass peak ~12G worst-case at current store size; 13G caps it with margin while the
+#   co-tenants (capture fleet ~3.4G + brain-tick 3G + engine ~0.2G) leave ~14.5G host
+#   headroom on the zero-swap 22G host (~2.5G host slack during a pass). The window is
+#   BOUNDED (14+2d), so residency plateaus near window saturation; revisit only if the
+#   per-day instance density grows the tape toward ~10G.
 #
 # BUILT-NOT-DEPLOYED: tracked but not installed/enabled. Enabling is the operator's deploy.
 Type=oneshot
