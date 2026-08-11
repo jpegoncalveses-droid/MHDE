@@ -237,6 +237,10 @@ _MTIME_SKIP_GUARD_NS = 60 * 1_000_000_000
 #: Rows decoded per batch in read_snapshots — bounds peak memory to one batch of the projected
 #: columns (not a whole file / whole store), the discovery-OOM fix.
 _READ_BATCH_ROWS = 65_536
+#: Columnar-read fold width: how many per-batch tables accumulate before being combined
+#: into one contiguous table. Bounds the held per-fragment wrapper overhead to one fold
+#: (~KBs) regardless of dataset fragmentation (labels: ~1M fragments, compaction-excluded).
+_COLUMNAR_FOLD_BATCHES = 1024
 #: Bounded re-list retries when a fragment vanishes mid-read (the compactor's replace-then-delete
 #: race). One retry sufficed for the tick loop's short windowed read, but discovery's long
 #: whole-store read overlaps the ~12-min hourly compaction and can race repeatedly; each retry
@@ -368,9 +372,25 @@ def read_snapshots_columnar(root: str, dataset: str, symbol: Optional[str] = Non
     nothing matches. ``read_snapshots`` (shared by the live tick loop) is unchanged.
     """
     def _build():
-        tables = list(_iter_selected_tables(
-            root, dataset, symbol, after_recv_ts_ns, window_end_floor_ns, columns, row_filter))
-        return pa.concat_tables(tables) if tables else pa.table({})
+        # BOUNDED FOLD, never one held chunk per fragment: a compaction-excluded dataset
+        # (labels: ~1M tiny fragments) read as `list(...)` + one concat holds a Table/
+        # ChunkedArray wrapper per fragment — several KB EACH, ~5G at 1M fragments (the
+        # measured 2026-08-11 gate label-stage OOM). Fold every _COLUMNAR_FOLD_BATCHES
+        # batch-tables into one combined table, then combine the folds: peak overhead is
+        # one fold's wrappers, total data copied twice, row order identical.
+        merged: list = []
+        buf: list = []
+        for t in _iter_selected_tables(
+                root, dataset, symbol, after_recv_ts_ns, window_end_floor_ns, columns,
+                row_filter):
+            buf.append(t)
+            if len(buf) >= _COLUMNAR_FOLD_BATCHES:
+                merged.append(pa.concat_tables(buf).combine_chunks())
+                buf.clear()
+        if buf:
+            merged.append(pa.concat_tables(buf).combine_chunks())
+            buf.clear()
+        return pa.concat_tables(merged).combine_chunks() if merged else pa.table({})
 
     return _with_race_retry(_build, dataset=dataset, symbol=symbol)
 

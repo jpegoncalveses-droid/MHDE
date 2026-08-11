@@ -108,3 +108,27 @@ def test_build_price_index_columnar_preserves_null_mark(tmp_path):
     scalar = R.build_price_index(store.read_snapshots(str(tmp_path), "markprice"))
     assert columnar == scalar
     assert columnar["BTCUSDT"][0][0] is None
+
+
+def test_columnar_read_stays_compact_across_many_fragments(tmp_path):
+    # The labels dataset is compaction-EXCLUDED (needs its own oracle) and holds ~1M tiny
+    # fragments in production. A columnar read that keeps one chunk per fragment carries
+    # several KB of Table/ChunkedArray overhead PER FRAGMENT — ~5G held at 1M fragments,
+    # the measured kill mechanism of the 2026-08-11 gate label stage. Pin: many fragments
+    # in, rows byte-identical to the scalar reader, and the returned table is COMBINED
+    # (a handful of chunks per column, never one per fragment).
+    n_frags = 300
+    for i in range(n_frags):
+        _write(tmp_path, [_trade_snap("AAA", i, 2 + i % 3, 1)])   # one fragment per write
+    import pathlib
+    frags = list(pathlib.Path(tmp_path, "trades").rglob("*.parquet"))
+    assert len(frags) >= n_frags                                  # really one file per write
+
+    tbl = store.read_snapshots_columnar(str(tmp_path), "trades")
+    rows = store.read_snapshots(str(tmp_path), "trades")
+    assert tbl.num_rows == len(rows) == n_frags
+    got = sorted((r["symbol"], r["window_start_ns"], r["trade_count"]) for r in tbl.to_pylist())
+    want = sorted((r["symbol"], r["window_start_ns"], r["trade_count"]) for r in rows)
+    assert got == want
+    max_chunks = max(tbl.column(name).num_chunks for name in tbl.column_names)
+    assert max_chunks <= 4, f"columnar read held {max_chunks} chunks/column for {n_frags} fragments"

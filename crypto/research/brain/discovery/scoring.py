@@ -94,7 +94,8 @@ def compute_instance_lifts_columnar(label_tbl, *, horizon_min: int,
     maes = label_tbl.column("mae").to_pylist()
     rae_by_key: dict = {}
     rae_by_coin: dict = defaultdict(list)
-    for i in range(label_tbl.num_rows):
+    n_rows = label_tbl.num_rows
+    for i in range(n_rows):
         if int(hors[i]) != horizon_min or not valid[i]:
             continue
         rae = risk_adjusted_excursion(mfes[i], maes[i], side)
@@ -103,8 +104,17 @@ def compute_instance_lifts_columnar(label_tbl, *, horizon_min: int,
         sym = sym_pool[sym_idx[i]]
         rae_by_key[(sym, int(wins[i]))] = rae
         rae_by_coin[sym].append(rae)
+    # Free the row-loop intermediates BEFORE centering, and center IN PLACE: at ~6M labels
+    # a `{key: rae - baseline for ...}` comprehension holds a SECOND 6M-entry dict beside
+    # the first (~+1.3G) at the highest-residency moment of the whole load — the 13G-cap
+    # kill point of the 2026-08-11 gate-2 run. Same arithmetic per entry, same insertion
+    # order (value assignment does not rehash), byte-identical output.
+    del mfes, maes, sym_idx, wins, hors, valid, enc
     baseline = {sym: statistics.fmean(vs) for sym, vs in rae_by_coin.items()}
-    return {key: rae - baseline[key[0]] for key, rae in rae_by_key.items()}
+    del rae_by_coin
+    for key, rae in rae_by_key.items():
+        rae_by_key[key] = rae - baseline[key[0]]
+    return rae_by_key
 
 
 def score_rule(rule: R.Rule, lifts: Mapping[tuple, float],
