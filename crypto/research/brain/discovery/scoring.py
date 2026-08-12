@@ -321,12 +321,20 @@ def discover_entries(
     # one feature column resident at a time (identical bits; kills the all-columns transient)
     atom_bits: dict = _atom_bits_per_feature(engineered, feature_ids, keys, atoms)
 
-    rng = random.Random(seed)
+    # Null permutation RNG: numpy Generator, NOT random.shuffle on an n-element Python list.
+    # The null's correctness property is EXCHANGEABILITY of the label shuffle — any uniform
+    # permutation distribution preserves it; nothing depends on a specific RNG stream. The
+    # pure-python Fisher-Yates cost ~15s/perm at 6M keys (~4h of the measured 6h full pass —
+    # the gate-3 host-OOM exposure window); ``permutation(n)`` is ~30x faster. The scalar
+    # oracle consumes the SAME ``default_rng(seed).permutation(n)`` stream, so decision-
+    # identity vs the oracle still holds draw-for-draw (§12 amendment: identity is defined
+    # given the shared draw stream; the noise-rejection guarantee is exchangeability-based
+    # and RNG-independent).
+    null_rng = np.random.default_rng(seed)
     survivors: list = []
     diagnostics: list = []
     current = R.depth1_rules(atoms)
     depth = 1
-    base_idx = list(range(n))
     while current and depth <= max_depth:
         # Firing carried COMPACT per candidate (packed bitset or int32 indices, whichever is
         # smaller), NOT a held N-byte bool mask (the >12G 2026-08-09 stage1 OOM). Each sum is
@@ -337,9 +345,7 @@ def discover_entries(
 
         null_bests = []                              # one best-on-noise edge per permutation
         for _ in range(n_permutations):
-            perm = base_idx[:]
-            rng.shuffle(perm)                        # SAME draws as scalar ``shuffle(values)``
-            shuffled = values[perm]
+            shuffled = values[null_rng.permutation(n)]
             best = max((_fired_sum(shuffled, f, n) / count
                         for (_, count), f in zip(scorable, firing)), default=float("-inf"))
             null_bests.append(best)
