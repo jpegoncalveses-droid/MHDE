@@ -371,3 +371,41 @@ Options (operator decision):
   runs with an injected shared RNG or pins the fast path against itself). Needs sign-off.
 - **S — cap stage-2 continuation breadth per rule**: bounds the other ~3h; changes
   exit-discovery statistics; not needed for memory.
+
+## 11. Gates 4–5 (Option F landed) — the lifecycle is LIVE; completion blocked by a
+## structural host collision, and the retry ratchet DIVERGES
+
+**Option F worked as designed**: numpy-permutation null (oracle deliberately amended to the
+shared draw stream; noise-rejection verified on a 20-seed pure-noise sweep — zero
+promotions every tape). Stage-1 now takes ~40 min, not ~4.5 h.
+
+**Gate-4** (06:06–10:04, 3h58m, peak 11.4G): run-2 funnel recorded (548→7, 3,690→36,
+18,300→1,892→500, 212,293→65,380→500; 1,043 survivors); confirmation ran against 18h of
+genuinely fresh post-run-1 data → **the engine's first real state transitions: 22
+promoted, 289 rejected**; exits 799→1,635. Host-OOM in stage-2.
+**Gate-5** (12:37–16:11, 3h34m, peak 11.6G): run-3 funnel (1,027 survivors); 97 promoted
+total, 415 rejected; exits →2,453. Host-OOM in stage-2 — **killed at 16:11:17, DURING the
+16:06:00–16:11:41 `mhde-capture-firehose-compact` run** (its own 2G cap holds, but host =
+gate 11.6 + co-tenants ~7.2 + compactor 2 + writeback ≈ 22G ⇒ kernel kills the biggest
+process). Three of four host kills land at :03–:12 past the hour.
+
+**Finding — the retry ratchet diverges**: runs 1–3 minted 1,012 + 1,043 + 1,027 = 3,082
+rules with ~ZERO canonical-id overlap (fresh permutation draws + a moving 14d window shift
+the quantile thresholds, so rule identities are unstable run-to-run). Each attempt banks
+~800 exits but mints ~1,000 new exit-less rules: confirming/promoted missing exits went
+420 → 620. Retry-until-done cannot complete the gate; ONE attempt must survive stage-2
+end-to-end (~3.5–4h spanning 3–4 hourly compactor windows at ~11.6G residency).
+
+**Options (operator decision):**
+- **T — pause the two hourly compactor timers for one gate window (~4h)**: zero code
+  change, reversible, capture keeps writing (compaction is catch-up-able backlog by
+  design). Highest single-shot completion probability.
+- **S — cap stage-2 continuation breadth per rule**: cuts late-phase residency ~11.6G →
+  ~9.5G (host peak survivable even during compaction), but changes exit-discovery
+  statistics — previously deferred by the operator.
+- **T+S** for margin.
+
+Where the engine stands regardless: 3 recorded funnels, 3,082 rules, 2,453 exits, 97
+PROMOTED / 415 rejected via real forward confirmation — the full discover→confirm→
+promote/reject lifecycle has operated on production data. simulated_trades=0 (stage-4
+runs after stage-2; no pass has yet crossed it).
