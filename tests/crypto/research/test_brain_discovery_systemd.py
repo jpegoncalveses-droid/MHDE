@@ -74,5 +74,6 @@ def test_deployment_status_marker_present():
     # DEPLOYED (enabled, 6-hourly); the tracked copy documents that it is the source of
     # truth requiring an operator copy + daemon-reload to take effect.
     body = SVC.read_text()
-    assert "DEPLOYED since 2026-08-13" in body
+    import re
+    assert re.search(r"^# DEPLOYED since 2026-08-13", body, re.M)
     assert "daemon-reload" in body

@@ -47,11 +47,17 @@ clear_failsafe() {
 
 case "$ACTION" in
   pause)
+    # NOTE: pause deliberately never fails the unit (ExecStartPre must not gate the pass);
+    # a fully failed pause runs the pass unprotected with only these stderr/journal lines
+    # as the signal.
     clear_failsafe
     "$SYSTEMCTL" --user stop "${TIMERS[@]}" \
       || echo "discovery_compact_window: PAUSE FAILED — compactor timers still live" >&2
+    # Guard on ActiveState, NEVER `is-active`: a Type=oneshot unit reports "activating"
+    # for its ENTIRE run and `is-active` exits 3 for it — an is-active guard would fire
+    # the restart exactly while the pass runs.
     "$SYSTEMD_RUN" --user --on-active=5h30m --unit="$FAILSAFE" --collect \
-      /bin/bash -c "systemctl --user is-active mhde-brain-discover.service >/dev/null 2>&1 || systemctl --user start ${TIMERS[*]}" \
+      /bin/bash -c "st=\$(systemctl --user show -p ActiveState --value mhde-brain-discover.service 2>/dev/null); case \"\$st\" in active|activating|reloading|deactivating) : ;; *) systemctl --user start ${TIMERS[*]} ;; esac" \
       || echo "discovery_compact_window: FAILSAFE ARM FAILED — restore relies on ExecStopPost alone" >&2
     ;;
   resume)

@@ -73,12 +73,55 @@ def test_pause_clears_stale_failsafe_then_stops_timers_then_arms():
     assert _FAILSAFE in arm and "--on-active" in arm
     for t in _TIMERS:
         assert t in arm, f"failsafe does not restart {t}: {calls}"
-    # the failsafe must be CONDITIONAL: never restart compactors while the pass still runs
-    assert "is-active mhde-brain-discover.service" in arm, \
-        f"failsafe lacks the mid-pass guard: {arm}"
     # stale-clear also removes a wedged transient SERVICE, not just the timer
     assert f"{_FAILSAFE}.service" in lines[clear_i] or any(
         f"{_FAILSAFE}.service" in ln for ln in lines[:arm_i]), calls
+
+
+def _armed_guard_command(tmp_path):
+    """Extract the exact command the failsafe would run (everything after `/bin/bash -c`)."""
+    res, calls = _run_with_mocks(tmp_path, "pause")
+    assert res.returncode == 0, res.stderr
+    arm = next(ln for ln in calls.splitlines() if "systemd-run" in ln)
+    return arm.split("/bin/bash -c ", 1)[1]
+
+
+def _exec_guard(tmp_path, guard_cmd, active_state):
+    """EXECUTE the armed guard with a mocked systemctl reporting `active_state`."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir(parents=True, exist_ok=True)
+    log = tmp_path / "guard_calls.log"
+    mock = bindir / "systemctl"
+    mock.write_text(
+        '#!/bin/bash\n'
+        f'echo "systemctl $@" >> "{log}"\n'
+        'case "$*" in *"show -p ActiveState"*) echo "' + active_state + '";; esac\n')
+    mock.chmod(mock.stat().st_mode | stat.S_IEXEC)
+    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}")
+    res = subprocess.run(["/bin/bash", "-c", guard_cmd], env=env,
+                         capture_output=True, text=True, timeout=30)
+    assert res.returncode == 0, res.stderr
+    return log.read_text() if log.exists() else ""
+
+
+def test_failsafe_guard_noops_while_pass_is_running(tmp_path):
+    # BEHAVIORAL (re-review finding 1): a Type=oneshot pass reports "activating" for its
+    # whole run — the armed guard must NOT start the compactors in that state. A guard
+    # built on `is-active` (exit 3 for activating) fails this test.
+    guard = _armed_guard_command(tmp_path)
+    for busy in ("activating", "active", "deactivating"):
+        calls = _exec_guard(tmp_path / busy, guard, busy)
+        assert not any(" start " in ln for ln in calls.splitlines()), \
+            f"guard restarted compactors while pass state={busy}: {calls}"
+
+
+def test_failsafe_guard_restores_when_pass_is_gone(tmp_path):
+    guard = _armed_guard_command(tmp_path)
+    for gone in ("inactive", "failed"):
+        calls = _exec_guard(tmp_path / gone, guard, gone)
+        start = next((ln for ln in calls.splitlines() if " start " in ln), "")
+        for t in _TIMERS:
+            assert t in start, f"guard did not restore {t} when pass state={gone}: {calls}"
 
 
 def test_resume_restarts_all_three_and_cancels_failsafe_only_on_success():
