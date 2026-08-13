@@ -10,11 +10,21 @@ deliberately not kept in sync with future scoring changes; it freezes THIS refac
 If you are here because scoring semantics legitimately changed, regenerate/retire this
 oracle DELIBERATELY (and update the equivalence test), never edit it to make a failing
 equivalence test pass.
+
+DELIBERATE AMENDMENT (2026-08-12, operator-approved Option F, PR #88): the null's draw
+source changed in production from ``random.Random(seed).shuffle`` to
+``numpy.default_rng(seed).permutation(n)`` — the null's correctness property is
+EXCHANGEABILITY of the label shuffle, not a specific RNG stream, and the pure-python
+shuffle was ~4h of the measured 6h full pass. This oracle consumes the SAME numpy draw
+stream (one ``permutation(n)`` per permutation, identical call sequence) so decision-
+identity remains pinned draw-for-draw. Everything the bitset/columnar refactor froze
+(frozenset firing, scalar Python sums, the quantile) is UNCHANGED.
 """
 from __future__ import annotations
 
-import random
 from typing import Mapping, Sequence
+
+import numpy as np
 
 from crypto.research.brain.discovery import rules as R
 from crypto.research.brain.discovery.scoring import EntryResult
@@ -57,7 +67,7 @@ def discover_entries(
         sets = [atom_idx[c] for c in rule.conditions]
         return frozenset.intersection(*sets) if sets else frozenset()
 
-    rng = random.Random(seed)
+    null_rng = np.random.default_rng(seed)     # SAME draw stream as production (see header)
     survivors: list = []
     diagnostics: list = []
     current = R.depth1_rules(atoms)
@@ -72,8 +82,8 @@ def discover_entries(
 
         null_bests = []
         for _ in range(n_permutations):
-            shuffled = values[:]
-            rng.shuffle(shuffled)
+            perm = null_rng.permutation(len(values))
+            shuffled = [values[int(j)] for j in perm]     # scalar gather, same permutation
             best = max((_mean_at(shuffled, idx) for _, idx in scorable), default=float("-inf"))
             null_bests.append(best)
         bar = _quantile(null_bests, null_quantile) if scorable else float("inf")

@@ -9,9 +9,21 @@ After=network-online.target
 # confirmation, run Stage-2 exit discovery on entry survivors, and log simulated round trips.
 # Writes ONLY the discovery SQLite-WAL DB (data/research/brain/discovery.sqlite); reads the
 # brain store + registry READ-ONLY; never opens the production DuckDB or the engine DB. The permutation
-# null is the dominant cost. Sized below the engine on the shared zero-swap 16GB host where
-# HOST-AGGREGATE memory is the binding limit (not this cap), and OOM-first, so a discovery run
-# never disturbs the engine's 1s cycle. Paired with the .timer.
+# null is the dominant cost. OOM-first and idle-scheduled, so a discovery run never disturbs
+# the engine's 1s cycle or capture/tick. Paired with the .timer.
+#
+# MemoryMax basis — FULL-PASS decomposition, measured on the real store 2026-08-11 at
+# 9.12M instances in the 14+2d window (data/processed/stage1_breadth_cap_measurement.md §9):
+#   engineered tape (columnar)            ~8.3G   (scales ~linearly with instance count)
+#   price_index + coin_vols (held)        ~1.7G
+#   label load, COLUMNAR (transient)      ~1.9G   (was ~3G as list-of-dicts — the measured
+#                                                  2026-08-11 gate-OOM term, removed in PR#88)
+#   beamed depth loop (BEAM_WIDTH=500)    <=0.5G  (measured across the designed-depth run)
+#   => pass peak ~12G worst-case at current store size; 13G caps it with margin while the
+#   co-tenants (capture fleet ~3.4G + brain-tick 3G + engine ~0.2G) leave ~14.5G host
+#   headroom on the zero-swap 22G host (~2.5G host slack during a pass). The window is
+#   BOUNDED (14+2d), so residency plateaus near window saturation; revisit only if the
+#   per-day instance density grows the tape toward ~10G.
 #
 # BUILT-NOT-DEPLOYED: tracked but not installed/enabled. Enabling is the operator's deploy.
 Type=oneshot
@@ -20,7 +32,7 @@ ExecStartPre=/usr/bin/test -x /home/jpcg/MHDE/venv/bin/python
 ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto brain-discover-run
 Nice=19
 IOSchedulingClass=idle
-MemoryMax=3G
+MemoryMax=13G
 CPUWeight=20
 IOWeight=20
 OOMScoreAdjust=800

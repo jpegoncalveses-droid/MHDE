@@ -19,9 +19,11 @@ settled AFTER discovery.
 """
 from __future__ import annotations
 
+import hashlib
 import statistics
 from typing import Mapping, Optional, Sequence
 
+import numpy as np
 import pyarrow.compute as pc
 
 from crypto.research.brain import labels as brain_labels
@@ -105,12 +107,35 @@ def build_continuation(symbol: str, t_entry: int, price_index, engineered, *,
     return cont
 
 
+def _sampled_fires(entry_rule, engineered, *, max_instances: Optional[int], seed: int) -> list:
+    """The rule's fired instances in CANONICAL (sorted) order, sampled down to at most
+    ``max_instances`` when it fires more broadly.
+
+    The sample is DETERMINISTIC per rule and attempt-stable: the RNG is seeded from the
+    rule's ``canonical_id`` digest (xor the pass seed), NOT from process state or attempt
+    identity — so a resumed/re-run pass discovers the same exit for the same rule over the
+    same population, and the selection is independent of ``R.fires``'s set-iteration order
+    (which is PYTHONHASHSEED-dependent; the sort also makes the UNSAMPLED path's
+    continuation order reproducible, which it previously was not). Rules firing
+    ``<= max_instances`` are returned whole — byte-identical continuations downstream."""
+    fired = sorted(R.fires(entry_rule, engineered))
+    if max_instances is None or len(fired) <= max_instances:
+        return fired
+    digest = hashlib.sha256(entry_rule.canonical_id.encode("utf-8")).digest()
+    rule_seed = int.from_bytes(digest[:8], "big") ^ (seed & 0xFFFF_FFFF_FFFF_FFFF)
+    idx = np.random.default_rng(rule_seed).choice(len(fired), size=max_instances,
+                                                  replace=False)
+    idx.sort()
+    return [fired[i] for i in idx]
+
+
 def _entry_continuations(entry_rule, engineered, price_index, coin_vols, *, max_cap, window_ns,
-                         only_settled_at: Optional[int] = None):
+                         only_settled_at: Optional[int] = None,
+                         max_instances: Optional[int] = None, seed: int = 0):
     """Build continuations + per-instance vols for an entry's firing instances."""
     conts: dict = {}
     vols: dict = {}
-    for k in R.fires(entry_rule, engineered):
+    for k in _sampled_fires(entry_rule, engineered, max_instances=max_instances, seed=seed):
         if only_settled_at is not None and k[1] > only_settled_at:
             continue
         v = coin_vols.get(k[0])
@@ -128,7 +153,9 @@ def run_discovery_pass(conn, engineered, lifts, price_index, coin_vols, *, featu
                        frontier_ns, now_ns, score_horizon_min=dcfg.SCORE_HORIZON_MIN,
                        n_bins=dcfg.QUANTILE_BINS, n_permutations=dcfg.N_PERMUTATIONS,
                        null_quantile=dcfg.NULL_QUANTILE, min_firing=dcfg.MIN_FIRING_INSTANCES,
-                       max_depth=dcfg.MAX_DEPTH, m=dcfg.CONFIRM_M, z=dcfg.CONFIRM_Z,
+                       max_depth=dcfg.MAX_DEPTH, beam_width=dcfg.BEAM_WIDTH,
+                       exit_max_instances=dcfg.EXIT_DISCOVERY_MAX_INSTANCES,
+                       m=dcfg.CONFIRM_M, z=dcfg.CONFIRM_Z,
                        exit_grid=None, window_ns=dcfg.WINDOW_NS, seed=0) -> dict:
     """One discovery pass over already-loaded data. Returns a summary dict."""
     exit_grid = exit_grid if exit_grid is not None else X.build_exit_grid()
@@ -138,7 +165,7 @@ def run_discovery_pass(conn, engineered, lifts, price_index, coin_vols, *, featu
     survivors, diagnostics = S.discover_entries(
         engineered, lifts, feature_ids=feature_ids, n_bins=n_bins,
         n_permutations=n_permutations, null_quantile=null_quantile, min_firing=min_firing,
-        max_depth=max_depth, seed=seed)
+        max_depth=max_depth, beam_width=beam_width, seed=seed)
     for er in survivors:
         breadth = len({k[0] for k in R.fires(er.rule, engineered)})
         RS.upsert_entry(conn, er, score_horizon_min=score_horizon_min, breadth=breadth,
@@ -157,9 +184,14 @@ def run_discovery_pass(conn, engineered, lifts, price_index, coin_vols, *, featu
             if row["exit_def"] is not None:
                 continue
             entry_rule = RS.deserialize_rule(row["entry_def"])
+            # Stage-2 samples <=exit_max_instances fired instances per rule (deterministic,
+            # rule-seeded) — the unbounded continuation build was the +2G that pushed six
+            # gate attempts into the host OOM kill zone. Stage-4 (trade logging, promoted
+            # rules only) remains unsampled.
             conts, vols = _entry_continuations(entry_rule, engineered, price_index, coin_vols,
                                                max_cap=max_cap, window_ns=window_ns,
-                                               only_settled_at=frontier_ns)
+                                               only_settled_at=frontier_ns,
+                                               max_instances=exit_max_instances, seed=seed)
             inst = list(conts)
             if len(inst) < min_firing:
                 continue
@@ -226,13 +258,17 @@ def run_discovery(*, store_root=dcfg.BRAIN_STORE_ROOT, label_store_root=dcfg.LAB
     coin_vols = coin_volatilities(price_index)
     del mp_tbl                                  # free the markprice read before the heavy null pass
 
-    label_rows = brain_store.read_snapshots(
+    # Labels read COLUMNAR too (the last list-of-dicts load path): ~6M rows as Python dicts
+    # was a ~3G transient — the measured OOM term of the 2026-08-11 gate — vs ~0.3G as a
+    # projected columnar table. Same selection (identical reader semantics), byte-identical
+    # lifts (compute_instance_lifts_columnar oracle test).
+    label_tbl = brain_store.read_snapshots_columnar(
         label_store_root, brain_labels.LABEL_DATASET,
         after_recv_ts_ns=label_floor, window_end_floor_ns=label_floor,
         columns=_LABEL_LOAD_COLUMNS, row_filter=pc.field("horizon_min") == score_horizon_min)
-    lifts = S.compute_instance_lifts(label_rows, horizon_min=score_horizon_min,
-                                     side=dcfg.SCORE_SIDE)
-    del label_rows                             # free the label load before the heavy null pass
+    lifts = S.compute_instance_lifts_columnar(label_tbl, horizon_min=score_horizon_min,
+                                              side=dcfg.SCORE_SIDE)
+    del label_tbl                              # free the label load before the heavy null pass
 
     conn = RS.connect(discovery_db_path)
     TL.ensure_schema(conn)

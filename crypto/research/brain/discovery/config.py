@@ -57,6 +57,29 @@ MAX_DEPTH = 4
 #: A candidate must fire on at least this many in-sample instances to be scorable
 #: (below this the edge estimate is noise; it is neither passed nor counted).
 MIN_FIRING_INSTANCES = 20
+#: Beam cap on the depth search: at each depth only the top-K passers by edge are RETAINED
+#: (returned + persisted) and EXTENDED to the next depth. Measured basis
+#: (data/processed/stage1_breadth_cap_measurement.md, 2026-08-10): the permutation null goes
+#: PERMEABLE on selection-conditioned extensions at depth>=3 (45% pass at full universe,
+#: 46-54% on the 300-symbol proxy), flooding the pass set with a flat redundant tail — the
+#: top 1% of depth-4 survivors carry only ~2% of total lift. Adaptive beam-coverage on the
+#: TRUE-SCALE designed-depth run (full universe, MAX_DEPTH=4, funnel 3 -> 4 -> 772 ->
+#: 31,760): K=500 keeps 99.3% of ALL depth-4 survivors — 100% of the top-100, 99.9% of the
+#: top-1k, 99.6% of the top-10k, 99.3% of total depth-4 lift mass (90% of depth-4 lineage
+#: flows through the top 483 depth-3 parents). The loss is confined to the redundant tail.
+#: Bounds the extension pool (<= K x n_atoms candidates) and the retained set (<= K per
+#: depth). ``None`` disables (unbounded — tests/analysis only).
+BEAM_WIDTH = 500
+#: Stage-2 exit discovery samples at most this many fired instances per rule. Basis
+#: (data/processed/stage1_breadth_cap_measurement.md §12): the unbounded per-rule
+#: continuation build lifted the full pass from its ~9.5G load steady-state to
+#: ~11.3-11.6G — into the host OOM kill zone that ended six gate attempts (every kill
+#: host-level, the unit always under its own 13G cap). Deep rules fire fewer than N and
+#: are UNTOUCHED (byte-identical continuations); only broad shallow rules sample. The
+#: sample is DETERMINISTIC per rule (seeded from the rule's canonical_id, attempt-stable
+#: — a re-run discovers the same exit). Bounds the stage-2 increment to ~0.3-0.5G
+#: (run peak ~10G). ``None`` disables (unbounded — tests/analysis only).
+EXIT_DISCOVERY_MAX_INSTANCES = 5000
 
 # -- §5 risk-adjusted excursion label binding ---------------------------------
 #: The label horizon Stage-1 scores against (minutes == windows). 60 == 1 h: long

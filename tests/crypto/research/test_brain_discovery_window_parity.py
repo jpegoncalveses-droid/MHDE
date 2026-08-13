@@ -21,8 +21,23 @@ _W = 60_000_000_000
 _FRONTIER = 1_800_000_000 * _W // 60 * 60          # a fixed frontier ns
 
 
+def _empty_columnar_table(columns):
+    import pyarrow as pa
+
+    def _typ(c):
+        if c == "symbol":
+            return pa.string()
+        if c.endswith("_ns"):
+            return pa.int64()
+        return pa.float64()
+
+    cols = list(columns) if columns else ["symbol", "window_end_ns"]
+    return pa.table({c: pa.array([], type=_typ(c)) for c in cols})
+
+
 def test_run_discovery_windows_reads_from_frontier(tmp_path, monkeypatch):
     calls = []
+    col_calls = []
 
     def fake_read(root, dataset, symbol=None, *, after_recv_ts_ns=0, window_end_floor_ns=0,
                   columns=None, row_filter=None):
@@ -30,11 +45,19 @@ def test_run_discovery_windows_reads_from_frontier(tmp_path, monkeypatch):
                       "columns": columns, "row_filter": row_filter})
         return []
 
+    def fake_read_columnar(root, dataset, symbol=None, *, after_recv_ts_ns=0,
+                           window_end_floor_ns=0, columns=None, row_filter=None):
+        col_calls.append({"dataset": dataset, "after": after_recv_ts_ns,
+                          "floor": window_end_floor_ns, "columns": columns,
+                          "row_filter": row_filter})
+        return _empty_columnar_table(columns)
+
     class _DummyReg:
         def close(self):
             pass
 
     monkeypatch.setattr(runner.brain_store, "read_snapshots", fake_read)
+    monkeypatch.setattr(runner.brain_store, "read_snapshots_columnar", fake_read_columnar)
     monkeypatch.setattr(runner.brain_labels, "_markprice_frontier_ns", lambda reg: _FRONTIER)
     monkeypatch.setattr(runner.brain_registry, "connect", lambda p: _DummyReg())
     # short-circuit the heavy pass — we only assert the LOAD is windowed
@@ -42,8 +65,12 @@ def test_run_discovery_windows_reads_from_frontier(tmp_path, monkeypatch):
 
     runner.run_discovery(discovery_db_path=str(tmp_path / "d.sqlite"), now_ns=_FRONTIER + _W)
 
-    label_calls = [c for c in calls if c["dataset"] == brain_labels.LABEL_DATASET]
-    prim_calls = [c for c in calls if c["dataset"] != brain_labels.LABEL_DATASET]
+    # EVERYTHING streams through the COLUMNAR reader now — primitives + markprice since
+    # Option B (PR#87), labels since PR#88 (the last list-of-dicts load path, the ~3G
+    # transient behind the 2026-08-11 gate OOM). The scalar reader is out of the load path.
+    assert calls == []
+    label_calls = [c for c in col_calls if c["dataset"] == brain_labels.LABEL_DATASET]
+    prim_calls = [c for c in col_calls if c["dataset"] != brain_labels.LABEL_DATASET]
 
     assert len(label_calls) == 1
     lc = label_calls[0]
@@ -52,24 +79,33 @@ def test_run_discovery_windows_reads_from_frontier(tmp_path, monkeypatch):
     assert lc["columns"] == runner._LABEL_LOAD_COLUMNS                   # projection (drops fwd_return)
     assert lc["row_filter"] is not None                                 # horizon==60 predicate
 
+    # Primitives + markprice: windowed at the z-lookback-widened floor and column-PROJECTED
+    # (the projection is the memory contract; window_end_ns is always carried for the floor).
     prim_floor = _FRONTIER - (dcfg.DISCOVERY_HISTORY_NS + dcfg.DISCOVERY_PRIMITIVE_LOOKBACK_NS)
-    assert prim_calls, "primitives must be read"
+    assert prim_calls, "primitives must be read through the columnar streaming path"
     assert all(c["after"] == prim_floor and c["floor"] == prim_floor for c in prim_calls)   # 16d
-    assert all(c["columns"] is None and c["row_filter"] is None for c in prim_calls)         # full cols
+    assert all(c["columns"] and "window_end_ns" in c["columns"] for c in prim_calls)
     # primitive floor is strictly older than the label floor (the z-lookback margin)
     assert prim_floor < lc["floor"]
 
 
 def test_run_discovery_floors_never_go_negative(tmp_path, monkeypatch):
-    # a young store (frontier < window) must floor at 0, not a negative ns
+    # a young store (frontier < window) must floor at 0, not a negative ns — on BOTH readers
     calls = []
+
+    def fake_read_columnar(root, dataset, symbol=None, **k):
+        calls.append(k)
+        return _empty_columnar_table(k.get("columns"))
+
     monkeypatch.setattr(runner.brain_store, "read_snapshots",
                         lambda *a, **k: calls.append(k) or [])
+    monkeypatch.setattr(runner.brain_store, "read_snapshots_columnar", fake_read_columnar)
     monkeypatch.setattr(runner.brain_labels, "_markprice_frontier_ns", lambda reg: 5 * _W)
     monkeypatch.setattr(runner.brain_registry, "connect",
                         lambda p: type("R", (), {"close": lambda s: None})())
     monkeypatch.setattr(runner, "run_discovery_pass", lambda *a, **k: {})
     runner.run_discovery(discovery_db_path=str(tmp_path / "d.sqlite"), now_ns=10 * _W)
+    assert calls
     assert all(c["after_recv_ts_ns"] >= 0 and c["window_end_floor_ns"] >= 0 for c in calls)
 
 
