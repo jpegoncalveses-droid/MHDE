@@ -117,3 +117,78 @@ def test_round_trip_scores_and_serialize():
     scores = X.round_trip_scores(er, inst, conts, vols)
     assert set(scores) == set(inst) and all(v == pytest.approx(1.0) for v in scores.values())
     assert X.exit_from_json(X.exit_to_json(er)) == er
+
+
+# -- Stage-2 instance sampling (Option S, PR #88): bound the continuation build -----------
+# Six gate attempts died to host-level OOM with stage-2's unbounded per-rule continuation
+# build lifting the pass to ~11.3-11.6G. Sampling <=N fired instances per rule bounds the
+# stage-2 increment to ~0.3-0.5G. Conditions (operator dispatch): the sample must be
+# DETERMINISTIC per rule (seeded from canonical_id — attempt-stable, so a re-run discovers
+# the same exit) and rules firing <=N are UNTOUCHED (byte-identical continuations).
+
+from crypto.research.brain.discovery import runner as RN
+from crypto.research.brain.discovery.rules import Condition as _C, make_rule as _mk
+
+
+def _eng_tape(n, order_seed=None):
+    keys = [(f"S{i % 40}", (i + 1) * _W) for i in range(n)]
+    if order_seed is not None:
+        random.Random(order_seed).shuffle(keys)      # insertion order must not matter
+    return {k: {"f": 1.0} for k in keys}
+
+
+def test_sampled_fires_identity_below_cap():
+    eng = _eng_tape(300)
+    rule = _mk([_C("f", ">", 0.5)])                  # fires on all 300
+    got = RN._sampled_fires(rule, eng, max_instances=300, seed=0)
+    assert got == sorted(eng.keys())                 # full population, canonical order
+    assert RN._sampled_fires(rule, eng, max_instances=None, seed=0) == sorted(eng.keys())
+
+
+def test_sampled_fires_deterministic_and_insertion_order_independent():
+    rule = _mk([_C("f", ">", 0.5)])
+    a = RN._sampled_fires(rule, _eng_tape(500), max_instances=100, seed=3)
+    b = RN._sampled_fires(rule, _eng_tape(500), max_instances=100, seed=3)
+    c = RN._sampled_fires(rule, _eng_tape(500, order_seed=99), max_instances=100, seed=3)
+    assert a == b == c                               # attempt-stable AND order-independent
+    assert len(a) == 100 and a == sorted(a)          # exact cap, canonical order
+    assert set(a) <= set(_eng_tape(500).keys())
+
+
+def test_sampled_fires_seed_derives_from_rule_identity():
+    eng = _eng_tape(500)
+    r1 = _mk([_C("f", ">", 0.5)])
+    r2 = _mk([_C("f", ">", 0.25)])                   # different canonical_id, same firing set
+    s1 = RN._sampled_fires(r1, eng, max_instances=100, seed=3)
+    s2 = RN._sampled_fires(r2, eng, max_instances=100, seed=3)
+    assert s1 != s2                                  # rule-derived seed, not shared
+
+
+def test_sampled_exit_discovery_recovers_full_population_exit():
+    # STATISTICAL ADEQUACY: on the planted vol-matched dataset the full population and a
+    # <=100-of-400 sample must select the SAME exit rule.
+    inst, conts, vols = _planted(400, seed=5)
+    grid = X.build_exit_grid((1.0, 2.0), (1.0, 2.0), (3, 5))
+    full = X.discover_exit(inst, conts, vols, exit_grid=grid, n_permutations=80,
+                           null_quantile=0.95, min_firing=20, seed=5)
+    assert full is not None
+
+    sub_keys = RN._sampled_fires(_mk([_C("f", ">", 0.5)]),
+                                 {k: {"f": 1.0} for k in inst}, max_instances=100, seed=5)
+    sub = X.discover_exit(sub_keys, {k: conts[k] for k in sub_keys},
+                          {k: vols[k] for k in sub_keys}, exit_grid=grid,
+                          n_permutations=80, null_quantile=0.95, min_firing=20, seed=5)
+    assert sub is not None
+    assert (sub.exit_rule.favorable_vol_mult, sub.exit_rule.adverse_vol_mult,
+            sub.exit_rule.time_cap_min) == \
+           (full.exit_rule.favorable_vol_mult, full.exit_rule.adverse_vol_mult,
+            full.exit_rule.time_cap_min)
+
+
+def test_exit_sampling_wired_from_config():
+    import inspect
+
+    from crypto.research.brain.discovery import config as dcfg
+    assert dcfg.EXIT_DISCOVERY_MAX_INSTANCES == 5000
+    assert inspect.signature(RN.run_discovery_pass).parameters["exit_max_instances"].default \
+        is dcfg.EXIT_DISCOVERY_MAX_INSTANCES

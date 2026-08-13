@@ -70,6 +70,16 @@ MIN_FIRING_INSTANCES = 20
 #: Bounds the extension pool (<= K x n_atoms candidates) and the retained set (<= K per
 #: depth). ``None`` disables (unbounded — tests/analysis only).
 BEAM_WIDTH = 500
+#: Stage-2 exit discovery samples at most this many fired instances per rule. Basis
+#: (data/processed/stage1_breadth_cap_measurement.md §12): the unbounded per-rule
+#: continuation build lifted the full pass from its ~9.5G load steady-state to
+#: ~11.3-11.6G — into the host OOM kill zone that ended six gate attempts (every kill
+#: host-level, the unit always under its own 13G cap). Deep rules fire fewer than N and
+#: are UNTOUCHED (byte-identical continuations); only broad shallow rules sample. The
+#: sample is DETERMINISTIC per rule (seeded from the rule's canonical_id, attempt-stable
+#: — a re-run discovers the same exit). Bounds the stage-2 increment to ~0.3-0.5G
+#: (run peak ~10G). ``None`` disables (unbounded — tests/analysis only).
+EXIT_DISCOVERY_MAX_INSTANCES = 5000
 
 # -- §5 risk-adjusted excursion label binding ---------------------------------
 #: The label horizon Stage-1 scores against (minutes == windows). 60 == 1 h: long
