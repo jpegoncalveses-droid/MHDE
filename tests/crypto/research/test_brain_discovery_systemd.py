@@ -69,5 +69,11 @@ def test_units_never_touch_the_production_db():
         assert "mhde.duckdb" not in unit.read_text()
 
 
-def test_built_not_deployed_marker_present():
-    assert "BUILT-NOT-DEPLOYED" in SVC.read_text()
+def test_deployment_status_marker_present():
+    # The unit carries an explicit deployment-status marker. Since 2026-08-13 the timer is
+    # DEPLOYED (enabled, 6-hourly); the tracked copy documents that it is the source of
+    # truth requiring an operator copy + daemon-reload to take effect.
+    body = SVC.read_text()
+    import re
+    assert re.search(r"^# DEPLOYED since 2026-08-13", body, re.M)
+    assert "daemon-reload" in body

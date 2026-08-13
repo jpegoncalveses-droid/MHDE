@@ -25,11 +25,25 @@ After=network-online.target
 #   BOUNDED (14+2d), so residency plateaus near window saturation; revisit only if the
 #   per-day instance density grows the tape toward ~10G.
 #
-# BUILT-NOT-DEPLOYED: tracked but not installed/enabled. Enabling is the operator's deploy.
+# DEPLOYED since 2026-08-13 (timer enabled, 6-hourly). This tracked copy is the source of
+# truth; changes take effect only after the operator copies it to ~/.config/systemd/user/
+# and daemon-reloads.
+# PROTECTED WINDOW (2026-08-13): the pass runs ~4h at ~11.5G beside hourly compactors
+# whose 1-2G bursts repeatedly host-OOM'd it (first scheduled run died 4 min after
+# brain-compact fired). ExecStartPre pauses the three compactor TIMERS (in-flight compact
+# SERVICES finish normally); ExecStopPost — which runs on EVERY exit, oom-kill included —
+# restores them. A transient 5h30m failsafe covers exactly a failed/skipped ExecStopPost
+# and no-ops if the pass is somehow still running (a mid-pass restart would recreate the
+# collision). It does NOT survive a user-manager death — that case self-heals because the
+# three timers are enabled and a fresh manager pulls them in via timers.target. Honest
+# bound: removes the known hourly spikes, not the unidentified ambient burst class.
+# See scripts/discovery_compact_window.sh for backlog math + catch-up concurrency.
 Type=oneshot
 WorkingDirectory=/home/jpcg/MHDE
 ExecStartPre=/usr/bin/test -x /home/jpcg/MHDE/venv/bin/python
+ExecStartPre=/bin/bash /home/jpcg/MHDE/scripts/discovery_compact_window.sh pause
 ExecStart=/home/jpcg/MHDE/venv/bin/python main.py crypto brain-discover-run
+ExecStopPost=/bin/bash /home/jpcg/MHDE/scripts/discovery_compact_window.sh resume
 Nice=19
 IOSchedulingClass=idle
 MemoryMax=13G
