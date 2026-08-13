@@ -409,3 +409,31 @@ Where the engine stands regardless: 3 recorded funnels, 3,082 rules, 2,453 exits
 PROMOTED / 415 rejected via real forward confirmation — the full discover→confirm→
 promote/reject lifecycle has operated on production data. simulated_trades=0 (stage-4
 runs after stage-2; no pass has yet crossed it).
+
+## 12. Gate-6 (compactor-pause window) — killed anyway; the ambient floor is the blocker
+
+Option T executed clean: both firehose compactor timers stopped 19:54:42→23:34:30 UTC
+(failsafe armed and cancelled; catch-up compact ran clean on re-enable; hourly cadence
+restored). **Gate-6 still host-OOM'd at 23:33:40** — 3h39m in, peak **11.3G** (1.7G below
+its cap), stage-2 phase, and the kill window shows **zero user-unit activity**: with the
+named aggressor paused, the collision came from the ambient floor (system-side services,
+writeback bursts, session processes — tick is hard-capped at 3G and cannot burst).
+
+Six gate attempts total. Every memory bound I control held every time (peaks 9.9–12.8G,
+only gate-2 ever touched its own cap, and that was fixed). The box cannot reliably host
+an ~11.3–11.6G × 3.5h batch: **the stage-2 phase's +1.8–2.1G increment over the ~9.5G
+load steady-state is what lifts the run into the kill zone.**
+
+Gate-6 banked: run-4 funnel (1,031 survivors → 4,113 rules total, ~zero cross-run
+overlap again), exits 2,453→3,124, **107 promoted / 460 rejected**. Trades still 0
+(stage-4 unreached).
+
+**Remaining levers (operator decision):**
+- **S — cap stage-2 continuation breadth per rule** (the last code lever): sample at most
+  N fired instances per rule for exit discovery (e.g. N=5,000; deep rules mostly fire
+  fewer — unaffected; only broad shallow rules get sampled). Bounds the per-rule
+  continuation dict to ~15MB → stage-2 increment ~0.3–0.5G → run peak ~10G → host peak
+  ~17–18G, robust against every burst profile observed. Changes exit-discovery statistics
+  only for rules firing >N instances.
+- **Host-level**: reduce the ambient floor during gate windows (engine/docker/session
+  hygiene) or grow the box — operator/ops domain.
