@@ -437,3 +437,31 @@ overlap again), exits 2,453→3,124, **107 promoted / 460 rejected**. Trades sti
   only for rules firing >N instances.
 - **Host-level**: reduce the ambient floor during gate windows (engine/docker/session
   hygiene) or grow the box — operator/ops domain.
+
+## 13. GATE-7 — PASSED. The engine's first COMPLETED full production pass
+
+**2026-08-13 06:09:33 → 09:49:25 UTC (3h 39m 52s wall, 3h 47m CPU), peak RSS 11.5G under
+the 13G cap, clean exit, `discovery pass complete` logged.** Stack: beam=500 + flat-prep
+atom bits + columnar labels + bounded read fold + numpy null + bounded stage-2 (Option S).
+
+Run-5 funnel (designed settings, 896 symbols):
+
+| depth | candidates | scorable | null bar | passed | kept |
+|---|---|---|---|---|---|
+| 1 | 546 | 544 | 0.000415 | 6 | 6 |
+| 2 | 3,154 | 3,130 | 0.009895 | 10 | 10 |
+| 3 | 5,105 | 2,866 | 0.015173 | 1,407 | **500** |
+| 4 | 224,946 | 49,263 | 0.015008 | 46,583 | **500** |
+
+Pass results: 1,016 survivors upserted + advanced; **stage-2 COMPLETED end-to-end** — the
+loop visited every eligible confirming/promoted rule; 673 new exits found this pass
+(cumulative 3,797); rules still exit-less after a completed pass are LEGITIMATELY so
+(exit-null not beaten, or <MIN_FIRING settled instances) — not unfinished work.
+**Stage-4 ran for the first time: 10,696 simulated round trips logged** for the 103
+promoted rules with exits. Cumulative DB: 5 recorded funnels, 5,129 rules, 3,797 exits,
+103 promoted / 486 rejected.
+
+Seven attempts, six of them killed by a host that could not carry the unbounded pass —
+each kill converted into a measured fix (per-feature prep, columnar labels, bounded read
+fold, in-place centering, numpy null, bounded stage-2). The completing funnel above is
+the thing every gate since July has been trying to produce.
