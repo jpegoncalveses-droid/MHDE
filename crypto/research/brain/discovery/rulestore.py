@@ -47,7 +47,11 @@ REJECTED = "rejected"
 _TRANSITIONS = {
     DISCOVERED: {CONFIRMING, REJECTED},
     CONFIRMING: {PROMOTED, REJECTED},
-    PROMOTED: {REJECTED},
+    # PROMOTED -> CONFIRMING is the evidence-shrink DEMOTION (2026-08-14): fresh
+    # recounts are non-monotonic, and a promoted rule whose count falls below
+    # CONFIRM_M returns to confirming (it did not FAIL; its sample fell under the
+    # decision floor). It re-promotes when the count returns.
+    PROMOTED: {REJECTED, CONFIRMING},
     REJECTED: set(),
 }
 

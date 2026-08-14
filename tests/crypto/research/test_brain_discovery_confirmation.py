@@ -101,3 +101,73 @@ def test_run_confirmation_demotes_a_decayed_promoted_rule(tmp_path):
         assert "deca" in (RS.get_rule(conn, rid)["reject_reason"] or "").lower()
     finally:
         conn.close()
+
+
+# -- Sub-M decay immunity fix (2026-08-14): evidence-shrink demotes, never exempts --------
+# fresh recounts are NON-MONOTONIC (features re-derive each pass; instances cross rule
+# thresholds both ways). The old _decayed gate required n >= M, so a promoted rule whose
+# recount fell below CONFIRM_M became decay-IMMUNE — 30/110 live promoted rules sat at
+# 24-29 fresh, un-demotable regardless of forward edge. New semantics: a promoted rule
+# with fresh_count < M is DEMOTED to CONFIRMING (evidence shrank, not failed); it
+# re-promotes when the count returns and the edge still clears the gauntlet.
+
+def test_promoted_rule_with_sub_m_fresh_demotes_to_confirming(tmp_path):
+    conn = RS.connect(str(tmp_path / "d.sqlite"))
+    try:
+        rule, rid = _seed_rule(conn, disc_w=4 * _W)
+        RS.set_state(conn, rid, RS.CONFIRMING, now_ns=2)
+        RS.set_state(conn, rid, RS.PROMOTED, now_ns=3)
+        eng = {(f"S{i}", i * _W): {"f": 1.0} for i in range(10)}   # 5 fresh (< M=30)
+        lifts = {k: 0.02 for k in eng}                             # edge is HEALTHY
+        summary = C.run_confirmation(conn, eng, lifts, m=30, z=2.0, now_ns=10)
+        row = RS.get_rule(conn, rid)
+        assert row["state"] == RS.CONFIRMING                       # demoted, NOT rejected
+        assert not row["reject_reason"]
+        assert row["fresh_count"] == 5
+        assert summary.get("demoted", 0) == 1
+    finally:
+        conn.close()
+
+
+def test_promoted_rule_with_zero_fresh_demotes_to_confirming(tmp_path):
+    conn = RS.connect(str(tmp_path / "d.sqlite"))
+    try:
+        rule, rid = _seed_rule(conn, disc_w=100 * _W)              # nothing is fresh
+        RS.set_state(conn, rid, RS.CONFIRMING, now_ns=2)
+        RS.set_state(conn, rid, RS.PROMOTED, now_ns=3)
+        eng = {(f"S{i}", i * _W): {"f": 1.0} for i in range(10)}
+        lifts = {k: 0.02 for k in eng}
+        C.run_confirmation(conn, eng, lifts, m=30, z=2.0, now_ns=10)
+        assert RS.get_rule(conn, rid)["state"] == RS.CONFIRMING
+    finally:
+        conn.close()
+
+
+def test_demoted_rule_repromotes_when_evidence_returns(tmp_path):
+    conn = RS.connect(str(tmp_path / "d.sqlite"))
+    try:
+        rule, rid = _seed_rule(conn, disc_w=0)
+        RS.set_state(conn, rid, RS.CONFIRMING, now_ns=2)
+        RS.set_state(conn, rid, RS.PROMOTED, now_ns=3)
+        few = {(f"S{i}", i * _W): {"f": 1.0} for i in range(1, 6)}   # 5 fresh -> demote
+        C.run_confirmation(conn, few, {k: 0.02 for k in few}, m=30, z=2.0, now_ns=10)
+        assert RS.get_rule(conn, rid)["state"] == RS.CONFIRMING
+        many = {(f"S{i % 7}", i * _W): {"f": 1.0} for i in range(1, 61)}  # 60 fresh, healthy
+        C.run_confirmation(conn, many, {k: 0.02 for k in many}, m=30, z=2.0, now_ns=11)
+        assert RS.get_rule(conn, rid)["state"] == RS.PROMOTED       # re-earned
+    finally:
+        conn.close()
+
+
+def test_promoted_rule_with_healthy_full_evidence_stays_promoted(tmp_path):
+    conn = RS.connect(str(tmp_path / "d.sqlite"))
+    try:
+        rule, rid = _seed_rule(conn, disc_w=0)
+        RS.set_state(conn, rid, RS.CONFIRMING, now_ns=2)
+        RS.set_state(conn, rid, RS.PROMOTED, now_ns=3)
+        eng = {(f"S{i % 7}", i * _W): {"f": 1.0} for i in range(1, 61)}
+        lifts = {k: 0.02 for k in eng}
+        C.run_confirmation(conn, eng, lifts, m=30, z=2.0, now_ns=10)
+        assert RS.get_rule(conn, rid)["state"] == RS.PROMOTED
+    finally:
+        conn.close()

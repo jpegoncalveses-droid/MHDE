@@ -77,7 +77,7 @@ def run_confirmation(conn, engineered: Mapping[tuple, Mapping[str, float]],
                      z: float = dcfg.CONFIRM_Z, now_ns: int = 0) -> dict:
     """Advance every live rule against the current settled tape. Returns a small summary
     (counts of promoted / rejected / still-confirming this pass)."""
-    summary = {"advanced": 0, "promoted": 0, "rejected": 0, "confirming": 0}
+    summary = {"advanced": 0, "promoted": 0, "rejected": 0, "confirming": 0, "demoted": 0}
     for state in (RS.DISCOVERED, RS.CONFIRMING, RS.PROMOTED):
         for row in RS.list_rules(conn, state=state):
             rid = row["rule_id"]
@@ -106,7 +106,17 @@ def run_confirmation(conn, engineered: Mapping[tuple, Mapping[str, float]],
                 else:
                     summary["confirming"] += 1
             elif cur == RS.PROMOTED:
-                if _decayed(n, edge, null_bar=bar, M=m):
+                if n < m:
+                    # Evidence-shrink demotion (2026-08-14): recounts are non-monotonic
+                    # (features re-derive each pass; instances cross thresholds both
+                    # ways). The old gate required n >= M before ANY decay check, so a
+                    # promoted rule recounting below M became decay-IMMUNE (30/110 live
+                    # promoted sat at 24-29 fresh). Below the decision floor the rule
+                    # goes back to CONFIRMING — not rejected: its sample shrank, it did
+                    # not fail — and re-promotes when the count returns.
+                    RS.set_state(conn, rid, RS.CONFIRMING, now_ns=now_ns)
+                    summary["demoted"] += 1
+                elif _decayed(n, edge, null_bar=bar, M=m):
                     RS.set_state(conn, rid, RS.REJECTED,
                                  reject_reason="forward edge decayed below bar", now_ns=now_ns)
                     summary["rejected"] += 1
