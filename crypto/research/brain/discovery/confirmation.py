@@ -14,8 +14,13 @@ Promotion (§6.2) requires the fresh-instance edge to:
   * stay PAST the in-sample null bar.
 
 A confirming rule with >= M fresh instances that does not meet all three is REJECTED (it
-had its chance and did not confirm — most will, by design, §11). A PROMOTED rule whose
-forward edge later DECAYS below the bar is rejected too (§8.1).
+had its chance and did not confirm — most will, by design, §11). A PROMOTED rule with
+>= M fresh whose forward edge DECAYS below the bar is rejected too (§8.1); one whose
+fresh recount falls BELOW M is DEMOTED to confirming (2026-08-14 — recounts are
+non-monotonic; the sample shrank, the rule did not fail). NOTE the deliberate asymmetry:
+staying promoted is judged edge-only (decay), while RETURNING from a demotion re-runs the
+full promotion gauntlet including the t-stat >= z significance test — the same bar the
+rule passed at first promotion.
 
 The per-coin baseline used to centre fresh lifts is computed upstream over the current
 settled tape (a slowly-varying reference, not a label leak); the decisive lookahead-free
@@ -76,8 +81,8 @@ def run_confirmation(conn, engineered: Mapping[tuple, Mapping[str, float]],
                      lifts: Mapping[tuple, float], *, m: int = dcfg.CONFIRM_M,
                      z: float = dcfg.CONFIRM_Z, now_ns: int = 0) -> dict:
     """Advance every live rule against the current settled tape. Returns a small summary
-    (counts of promoted / rejected / still-confirming this pass)."""
-    summary = {"advanced": 0, "promoted": 0, "rejected": 0, "confirming": 0}
+    (counts of advanced / promoted / rejected / demoted / still-confirming this pass)."""
+    summary = {"advanced": 0, "promoted": 0, "rejected": 0, "confirming": 0, "demoted": 0}
     for state in (RS.DISCOVERED, RS.CONFIRMING, RS.PROMOTED):
         for row in RS.list_rules(conn, state=state):
             rid = row["rule_id"]
@@ -106,7 +111,17 @@ def run_confirmation(conn, engineered: Mapping[tuple, Mapping[str, float]],
                 else:
                     summary["confirming"] += 1
             elif cur == RS.PROMOTED:
-                if _decayed(n, edge, null_bar=bar, M=m):
+                if n < m:
+                    # Evidence-shrink demotion (2026-08-14): recounts are non-monotonic
+                    # (features re-derive each pass; instances cross thresholds both
+                    # ways). The old gate required n >= M before ANY decay check, so a
+                    # promoted rule recounting below M became decay-IMMUNE (30/110 live
+                    # promoted sat at 24-29 fresh). Below the decision floor the rule
+                    # goes back to CONFIRMING — not rejected: its sample shrank, it did
+                    # not fail — and re-promotes when the count returns.
+                    RS.set_state(conn, rid, RS.CONFIRMING, now_ns=now_ns)
+                    summary["demoted"] += 1
+                elif _decayed(n, edge, null_bar=bar, M=m):
                     RS.set_state(conn, rid, RS.REJECTED,
                                  reject_reason="forward edge decayed below bar", now_ns=now_ns)
                     summary["rejected"] += 1
