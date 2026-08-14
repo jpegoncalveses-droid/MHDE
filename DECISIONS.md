@@ -2606,3 +2606,16 @@ demotion windows as EVIDENCE-GAPS — the same no-bias rule as skipped/corrupt s
 fragments: missing observation windows are flagged as gaps, never zero-filled or treated
 as flat performance, because silently absent trips would bias any per-family performance
 statistic toward the periods the rule was healthy enough to stay promoted.
+
+**ADR-041 addendum (review F2, honesty).** The hold band is bounded in width, UNBOUNDED
+in time — and the live distribution shows it is not a transit corridor but where the
+promoted population lives: at first measurement 66 of 113 promoted rules sat in [25,30)
+(86 at 23–30). Those rules are indefinitely un-decay-judgeable while in the band, and 53
+of the 66 carry exits and continue emitting simulated round trips that no decay gate can
+invalidate — kept-but-never-revalidated trips, in tension with decision (2)'s evidence-gap
+honesty. Mitigating fact at measurement time: 0 of the 66 had forward_edge <= null_bar.
+Accepted with eyes open; if the band population's edges decay in practice, the H knob (or
+a band-scoped edge check) is the revisit point. Also noted: hysteresis makes state
+PATH-DEPENDENT — two rules at fresh=27 can legitimately be promoted (never dipped) or
+confirming (dipped, not yet recovered to M) — which will read as an inconsistency in the
+dashboard's state/fresh columns until documented there.

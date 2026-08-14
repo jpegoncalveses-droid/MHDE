@@ -16,8 +16,9 @@ Promotion (§6.2) requires the fresh-instance edge to:
 A confirming rule with >= M fresh instances that does not meet all three is REJECTED (it
 had its chance and did not confirm — most will, by design, §11). A PROMOTED rule with
 >= M fresh whose forward edge DECAYS below the bar is rejected too (§8.1); one whose
-fresh recount falls BELOW M is DEMOTED to confirming (2026-08-14 — recounts are
-non-monotonic; the sample shrank, the rule did not fail). NOTE the deliberate asymmetry:
+fresh recount falls below M - CONFIRM_DEMOTE_HYSTERESIS is DEMOTED to confirming
+(2026-08-14 — recounts are non-monotonic; the sample shrank, the rule did not fail);
+the band [M-H, M) HOLDS promoted (decay-quiet jitter band, ADR-041). NOTE the deliberate asymmetry:
 staying promoted is judged edge-only (decay), while RETURNING from a demotion re-runs the
 full promotion gauntlet including the t-stat >= z significance test — the same bar the
 rule passed at first promotion.
@@ -79,9 +80,15 @@ def _decayed(n: int, edge: Optional[float], *, null_bar: float, M: int) -> bool:
 
 def run_confirmation(conn, engineered: Mapping[tuple, Mapping[str, float]],
                      lifts: Mapping[tuple, float], *, m: int = dcfg.CONFIRM_M,
-                     z: float = dcfg.CONFIRM_Z, now_ns: int = 0) -> dict:
+                     z: float = dcfg.CONFIRM_Z,
+                     hysteresis: int = dcfg.CONFIRM_DEMOTE_HYSTERESIS,
+                     now_ns: int = 0) -> dict:
     """Advance every live rule against the current settled tape. Returns a small summary
     (counts of advanced / promoted / rejected / demoted / still-confirming this pass)."""
+    if not 0 <= hysteresis < m:
+        # m is an explicitly to-be-retuned default; a band as wide as m would make the
+        # demotion branch dead code (n < 0) and silently reopen the sub-M immunity.
+        raise ValueError(f"hysteresis must satisfy 0 <= h < m (got h={hysteresis}, m={m})")
     summary = {"advanced": 0, "promoted": 0, "rejected": 0, "confirming": 0, "demoted": 0}
     for state in (RS.DISCOVERED, RS.CONFIRMING, RS.PROMOTED):
         for row in RS.list_rules(conn, state=state):
@@ -111,7 +118,7 @@ def run_confirmation(conn, engineered: Mapping[tuple, Mapping[str, float]],
                 else:
                     summary["confirming"] += 1
             elif cur == RS.PROMOTED:
-                if n < m - dcfg.CONFIRM_DEMOTE_HYSTERESIS:
+                if n < m - hysteresis:
                     # Evidence-shrink demotion with HYSTERESIS (2026-08-14): recounts
                     # are non-monotonic and most dips are jitter within [M-H, M) — that
                     # band HOLDS promoted (no demote, no decay, no flap; ADR-041). Only a

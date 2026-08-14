@@ -20,8 +20,10 @@ capital and never wires to an executor (the brain↔executor loop stays open by 
    without a constant cap (§1) — depth is capped by the data, not a number.
 4. **Rule store + state machine (§8.1/§8.3, `rulestore.py`)** — `discovered → confirming →
    promoted | rejected`, plus the evidence-shrink demotion edge `promoted → confirming`
-   (2026-08-14: a promoted rule whose fresh recount falls below CONFIRM_M returns to
-   confirming and re-promotes through the full gauntlet). SQLite-WAL (`discovery.sqlite`).
+   (2026-08-14: a promoted rule whose fresh recount falls below
+   CONFIRM_M − CONFIRM_DEMOTE_HYSTERESIS returns to confirming and re-promotes through
+   the full gauntlet; the band [M−H, M) holds promoted — the decay-quiet jitter band of
+   ADR-041). SQLite-WAL (`discovery.sqlite`).
 5. **Forward confirmation (§6.2, `confirmation.py`)** — promote only on ≥ M **fresh
    post-discovery** instances whose edge stays positive, distinguishable from zero, past the
    null bar. The fresh filter (`window_start_ns > discovery_window`) is the un-gameable gate.
@@ -43,6 +45,7 @@ capital and never wires to an executor (the brain↔executor loop stays open by 
 | `N_PERMUTATIONS` | 200 | Resolves the ~99th pct of best-on-noise; **the dominant cost — size against measured host run-cost.** |
 | `NULL_QUANTILE` | 0.95 | Controls the search's ghost rate at each depth (1.0 = strictest, used by tests). |
 | `CONFIRM_M` | 30 | **Conservative default, explicitly NOT final** — depends on observed firing rates; the operator re-tunes after watching live firing for a week or two. |
+| `CONFIRM_DEMOTE_HYSTERESIS` | 5 | demotion floor offset: promoted demotes below M−H; [M−H, M) is the hold band (ADR-041) |
 | `CONFIRM_Z` | 2.0 | Fresh edge must be distinguishable from zero. |
 | exit vol-multiples / time caps | fav (1,1.5,2,3)×vol, adv (0.5,1,1.5,2)×vol, caps (5,15,30,60) | Vol-multiples so a target/stop means the same across coins. |
 | `MIN_FIRING_INSTANCES` | 20 | Below this an edge estimate is noise. |

@@ -156,6 +156,7 @@ def run_discovery_pass(conn, engineered, lifts, price_index, coin_vols, *, featu
                        max_depth=dcfg.MAX_DEPTH, beam_width=dcfg.BEAM_WIDTH,
                        exit_max_instances=dcfg.EXIT_DISCOVERY_MAX_INSTANCES,
                        m=dcfg.CONFIRM_M, z=dcfg.CONFIRM_Z,
+                       confirm_hysteresis=dcfg.CONFIRM_DEMOTE_HYSTERESIS,
                        exit_grid=None, window_ns=dcfg.WINDOW_NS, seed=0) -> dict:
     """One discovery pass over already-loaded data. Returns a summary dict."""
     exit_grid = exit_grid if exit_grid is not None else X.build_exit_grid()
@@ -175,7 +176,8 @@ def run_discovery_pass(conn, engineered, lifts, price_index, coin_vols, *, featu
                   n_survivors=len(survivors))
 
     # 2. Forward confirmation: advance discovered->confirming->promoted|rejected.
-    conf = CF.run_confirmation(conn, engineered, lifts, m=m, z=z, now_ns=now_ns)
+    conf = CF.run_confirmation(conn, engineered, lifts, m=m, z=z,
+                               hysteresis=confirm_hysteresis, now_ns=now_ns)
 
     # 3. Stage 2: exit discovery for confirming/promoted entries that still lack an exit.
     # FAMILY-DEDUPED: rule identity re-mints ~1,000 near-duplicates per pass (thresholds
