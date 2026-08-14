@@ -2537,3 +2537,39 @@ Stage B re-enable.
   flush.
 - `systemd/mhde-capture-firehose-compact.{service,timer}` — the hourly compactor.
 - ADR-037 (the roll-up this supersedes), ADR-036/035 (the guards/buffer it keeps).
+
+## ADR-040 — family-level exit inheritance: exit validity is per-family, not per-identity
+
+**Date:** 2026-08-14 · **Status:** accepted (operator-dispatched capacity fix, PR #91)
+**(ADR-039 is reserved for the sharded capture design referenced by the capture units;
+it predates this entry but is documented in the unit files, not yet here.)**
+
+**Context.** Rule IDENTITY is unstable run-to-run: thresholds sit on a quantile grid over
+a moving 14-day window, so each discovery pass re-mints ~1,000 near-duplicate canonical
+ids with ~zero overlap against prior cohorts, while rule COMPOSITION — the sorted
+(feature, op) set, i.e. the FAMILY — is stable. Stage-2 ran a full exit search
+(continuation build + exit permutation null) per IDENTITY: 1,780 exit-less rules queued
+on the live store, the dominant term in pass wall-time growth (3h40m → 4h45m in two
+days, toward 6-hourly cadence saturation).
+
+**Decision.** An exit-less confirming/promoted rule whose family already holds a LIVE
+member's discovered exit INHERITS that exit instead of re-running the search. Donor =
+lowest rule_id among confirming/promoted members with an exit (deterministic; rejected
+rules never seed their family). Provenance records the ROOT discoverer
+(`exit_inherited_from`), never a chain.
+
+**The trade, stated plainly.** Previously every exit passed `discover_exit`'s own
+permutation null on that rule's own instances. With inheritance, one member per family is
+null-tested and its compositionally-identical siblings (thresholds differ, instance sets
+overlap heavily) copy the result untested. This weakens per-identity exit-null coverage
+in exchange for bounding stage-2 to ~one search per family (~94 queued searches vs
+1,780 on the live store). Accepted because: (a) siblings differ only in thresholds on the
+same features — the exit's shape (vol-multiple barriers + time cap) is a family-level
+property; (b) the forward-confirmation gate on ENTRIES is untouched; (c) provenance makes
+every inherited exit auditable back to its null-tested root; (d) the graduation bar
+evaluates families, and per-family exit consistency is what it consumes.
+
+**Withdrawn from the same PR:** stale-confirming expiry (fresh_count==0 @ 48h) — review
+falsified the premise on live data (fresh=0 vs fresh>0 populations indistinguishable;
+~4% chance-level selection at median firing rates; contradicts the instance-count-not-
+calendar principle). A firing-rate-relative criterion is future work.

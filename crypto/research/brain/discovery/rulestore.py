@@ -41,19 +41,14 @@ DISCOVERED = "discovered"
 CONFIRMING = "confirming"
 PROMOTED = "promoted"
 REJECTED = "rejected"
-#: Terminal-but-RETAINED: a confirming rule with zero fresh firing for the stale window
-#: (quantile-threshold drift orphaned it) is expired — the ROW persists so family/cohort
-#: provenance survives for the graduation bar's persistence counting.
-EXPIRED = "expired"
 
 #: Allowed forward transitions (a same-state set via set_state is a no-op; anything else
 #: not listed raises). Rejected is terminal.
 _TRANSITIONS = {
     DISCOVERED: {CONFIRMING, REJECTED},
-    CONFIRMING: {PROMOTED, REJECTED, EXPIRED},
+    CONFIRMING: {PROMOTED, REJECTED},
     PROMOTED: {REJECTED},
     REJECTED: set(),
-    EXPIRED: set(),
 }
 
 _SCHEMA = """
@@ -74,7 +69,10 @@ CREATE TABLE IF NOT EXISTS rules (
     reject_reason       TEXT,
     discovery_window_ns INTEGER NOT NULL,
     discovered_at_ns    INTEGER NOT NULL,
-    updated_at_ns       INTEGER NOT NULL
+    updated_at_ns       INTEGER NOT NULL,
+    family_key          TEXT,
+    exit_inherited_from TEXT,
+    promoted_at_ns      INTEGER
 );
 CREATE TABLE IF NOT EXISTS discovery_runs (
     run_id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -213,34 +211,28 @@ def update_forward(conn: sqlite3.Connection, rule_id: str, *, fresh_count: int,
 
 def family_exit_donor(conn: sqlite3.Connection, fam_key: str, *,
                       exclude: str) -> Optional[dict]:
-    """The family's deterministic exit donor: lowest rule_id holding an exit (stable
-    across passes/attempts), or None if the family has no discovered exit yet."""
+    """The family's deterministic exit donor: the lowest rule_id holding an exit among
+    LIVE members (confirming/promoted — a rejected rule's exit must not seed its family,
+    review F4), or None if the family has no live discovered exit yet."""
     row = conn.execute(
-        "SELECT rule_id, exit_def FROM rules WHERE family_key=? AND exit_def IS NOT NULL "
-        "AND rule_id != ? ORDER BY rule_id LIMIT 1", (fam_key, exclude)).fetchone()
+        "SELECT rule_id, exit_def, exit_inherited_from FROM rules "
+        "WHERE family_key=? AND exit_def IS NOT NULL AND rule_id != ? "
+        "AND state IN (?, ?) ORDER BY rule_id LIMIT 1",
+        (fam_key, exclude, CONFIRMING, PROMOTED)).fetchone()
     return dict(row) if row is not None else None
 
 
 def inherit_exit(conn: sqlite3.Connection, rule_id: str, donor: dict, *,
                  now_ns: int) -> None:
-    """Copy the family donor's exit onto ``rule_id`` with provenance — a new family
-    member skips the exit search entirely (the capacity fix: exit work is per-FAMILY,
-    not per-identity)."""
+    """Copy the family donor's exit onto ``rule_id`` with ROOT provenance — if the donor
+    itself inherited, the recorded source is the ORIGINAL discovering rule, so provenance
+    never forms unrecoverable chains (review F6). A new family member skips the exit
+    search entirely (the capacity fix: exit work is per-FAMILY, not per-identity; the
+    exit-null trade this makes is ADR-040)."""
+    root = donor.get("exit_inherited_from") or donor["rule_id"]
     with conn:
         conn.execute("UPDATE rules SET exit_def=?, exit_inherited_from=?, updated_at_ns=? "
-                     "WHERE rule_id=?", (donor["exit_def"], donor["rule_id"], now_ns, rule_id))
-
-
-def expire_stale_confirming(conn: sqlite3.Connection, *, now_ns: int,
-                            stale_ns: int) -> int:
-    """Expire CONFIRMING rules with zero fresh firing whose age exceeds ``stale_ns``
-    (terminal but retained — see EXPIRED). Returns the number expired."""
-    with conn:
-        cur = conn.execute(
-            "UPDATE rules SET state=?, updated_at_ns=? WHERE state=? AND fresh_count=0 "
-            "AND ? - discovered_at_ns >= ?",
-            (EXPIRED, now_ns, CONFIRMING, now_ns, stale_ns))
-    return cur.rowcount
+                     "WHERE rule_id=?", (donor["exit_def"], root, now_ns, rule_id))
 
 
 def set_exit(conn: sqlite3.Connection, rule_id: str, exit_def: str, now_ns: int) -> None:

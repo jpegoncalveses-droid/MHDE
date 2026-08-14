@@ -11,15 +11,15 @@ pass lengthens toward cadence saturation (measured 3h40m -> 4h45m in two days).
 (b) EXIT INHERITANCE: a new exit-less confirming/promoted rule whose family already
     holds a discovered exit INHERITS it (deterministic donor: lowest rule_id) instead of
     re-running the exit search — provenance in exit_inherited_from.
-(c) STALE-CONFIRMING EXPIRY: confirming + fresh_count == 0 + age >= 48h (N=8 passes at
-    the 6h cadence) -> EXPIRED — terminal but RETAINED, so family/cohort provenance
-    survives for the bar's persistence counting.
+(c) [WITHDRAWN in review] stale-confirming expiry: the proposed fresh_count==0 @ 48h
+    criterion was falsified on live data (fresh=0 vs fresh>0 populations statistically
+    indistinguishable; a median-rate rule has ~4% chance of 0 fires in 48h; and it
+    contradicts the instance-count-not-calendar design principle). A firing-rate-relative
+    criterion is a separate design discussion.
 (d) promoted_at_ns: promoted-EVER marker (first promotion), so demotions (PR #90) cannot
     erase a family's promotion history from cohort tracking.
 """
 from __future__ import annotations
-
-import pytest
 
 from crypto.research.brain.discovery import config as dcfg
 from crypto.research.brain.discovery import confirmation as C
@@ -86,6 +86,8 @@ def test_family_exit_donor_is_deterministic_lowest_rule_id(tmp_path):
     try:
         _, r1 = _seed(conn, [("f.z", ">", 1.1)])
         _, r2 = _seed(conn, [("f.z", ">", 1.9)])       # same family, different threshold
+        for rid in (r1, r2):
+            RS.set_state(conn, rid, RS.CONFIRMING, now_ns=4)   # donors must be LIVE (F4)
         RS.set_exit(conn, r1, '{"e": 1}', 5)
         RS.set_exit(conn, r2, '{"e": 2}', 6)
         _, r3 = _seed(conn, [("f.z", ">", 1.5)])
@@ -100,6 +102,7 @@ def test_inherit_exit_copies_def_and_records_provenance(tmp_path):
     conn = RS.connect(str(tmp_path / "d.sqlite"))
     try:
         _, r1 = _seed(conn, [("f.z", ">", 1.1)])
+        RS.set_state(conn, r1, RS.CONFIRMING, now_ns=4)        # donor must be LIVE (F4)
         RS.set_exit(conn, r1, '{"e": 1}', 5)
         _, r2 = _seed(conn, [("f.z", ">", 1.7)])
         donor = RS.family_exit_donor(conn, RS.get_rule(conn, r2)["family_key"], exclude=r2)
@@ -113,49 +116,6 @@ def test_inherit_exit_copies_def_and_records_provenance(tmp_path):
         _, r9 = _seed(conn, [("other.x", ">", 0.5)])
         assert RS.family_exit_donor(conn, RS.get_rule(conn, r9)["family_key"],
                                     exclude=r9) is None
-    finally:
-        conn.close()
-
-
-# -- (c) stale-confirming expiry ----------------------------------------------
-
-def test_expire_stale_confirming_terminal_but_retained(tmp_path):
-    conn = RS.connect(str(tmp_path / "d.sqlite"))
-    try:
-        _, stale = _seed(conn, [("f.z", ">", 1.1)], now=0)
-        _, fresh = _seed(conn, [("f.z", ">", 1.9)], now=0)
-        _, young = _seed(conn, [("f.z", ">", 1.5)], now=0)
-        for rid in (stale, fresh, young):
-            RS.set_state(conn, rid, RS.CONFIRMING, now_ns=1)
-        with conn:                                       # fresh evidence for one; young age for another
-            conn.execute("UPDATE rules SET fresh_count=7 WHERE rule_id=?", (fresh,))
-            conn.execute("UPDATE rules SET discovered_at_ns=? WHERE rule_id=?",
-                         (dcfg.EXPIRE_STALE_CONFIRMING_NS, young))   # age < threshold at now
-        now = dcfg.EXPIRE_STALE_CONFIRMING_NS + 10
-        n = RS.expire_stale_confirming(conn, now_ns=now,
-                                       stale_ns=dcfg.EXPIRE_STALE_CONFIRMING_NS)
-        assert n == 1
-        assert RS.get_rule(conn, stale)["state"] == RS.EXPIRED       # 0 fresh, old -> expired
-        assert RS.get_rule(conn, fresh)["state"] == RS.CONFIRMING    # has fresh evidence
-        assert RS.get_rule(conn, young)["state"] == RS.CONFIRMING    # too young
-        # RETAINED: the row (cohort + family provenance) still exists
-        assert RS.get_rule(conn, stale)["family_key"] is not None
-        assert RS.get_rule(conn, stale)["discovery_window_ns"] is not None
-    finally:
-        conn.close()
-
-
-def test_expired_rules_are_outside_the_confirmation_loop(tmp_path):
-    conn = RS.connect(str(tmp_path / "d.sqlite"))
-    try:
-        _, rid = _seed(conn, [("f", ">", 0.5)], disc_w=0, now=0)
-        RS.set_state(conn, rid, RS.CONFIRMING, now_ns=1)
-        RS.expire_stale_confirming(conn, now_ns=dcfg.EXPIRE_STALE_CONFIRMING_NS + 10,
-                                   stale_ns=dcfg.EXPIRE_STALE_CONFIRMING_NS)
-        assert RS.get_rule(conn, rid)["state"] == RS.EXPIRED
-        eng = {(f"S{i % 7}", i * _W): {"f": 1.0} for i in range(1, 61)}
-        C.run_confirmation(conn, eng, {k: 0.02 for k in eng}, m=30, z=2.0, now_ns=99)
-        assert RS.get_rule(conn, rid)["state"] == RS.EXPIRED         # untouched
     finally:
         conn.close()
 
@@ -212,6 +172,50 @@ def test_run_discovery_pass_inherits_family_exit_without_searching(tmp_path, mon
         assert row["exit_def"] is not None
         assert row["exit_inherited_from"] == r1
         assert summary["exits_inherited"] == 1
-        assert "expired" in summary
+    finally:
+        conn.close()
+
+
+def test_rejected_donor_is_never_inherited_from(tmp_path):
+    # Review F4: a rejected rule's exit must not seed its family (6 live rules would have
+    # inherited from rejected donors under the unfiltered query).
+    conn = RS.connect(str(tmp_path / "d.sqlite"))
+    try:
+        _, bad = _seed(conn, [("f.z", ">", 1.1)])
+        RS.set_state(conn, bad, RS.CONFIRMING, now_ns=1)
+        RS.set_exit(conn, bad, '{"e": "bad"}', 2)
+        RS.set_state(conn, bad, RS.REJECTED, now_ns=3)
+        _, joiner = _seed(conn, [("f.z", ">", 1.7)])
+        fam = RS.get_rule(conn, joiner)["family_key"]
+        assert RS.family_exit_donor(conn, fam, exclude=joiner) is None
+        _, live = _seed(conn, [("f.z", ">", 1.4)])
+        RS.set_state(conn, live, RS.CONFIRMING, now_ns=4)
+        RS.set_exit(conn, live, '{"e": "good"}', 5)
+        donor = RS.family_exit_donor(conn, fam, exclude=joiner)
+        assert donor is not None and donor["rule_id"] == live
+    finally:
+        conn.close()
+
+
+def test_inheritance_provenance_records_the_root_not_the_chain(tmp_path):
+    # Review F6: if the donor itself inherited, the new member records the ORIGINAL
+    # discovering rule — provenance never forms chains with unrecoverable roots.
+    conn = RS.connect(str(tmp_path / "d.sqlite"))
+    try:
+        _, r1 = _seed(conn, [("f.z", ">", 1.1)])
+        RS.set_state(conn, r1, RS.CONFIRMING, now_ns=1)
+        RS.set_exit(conn, r1, '{"e": 1}', 2)                        # r1 DISCOVERED the exit
+        _, r0 = _seed(conn, [("f.z", ">", 1.05)])                   # lower rule_id than r1
+        RS.set_state(conn, r0, RS.CONFIRMING, now_ns=3)
+        fam = RS.get_rule(conn, r0)["family_key"]
+        RS.inherit_exit(conn, r0, RS.family_exit_donor(conn, fam, exclude=r0), now_ns=4)
+        assert RS.get_rule(conn, r0)["exit_inherited_from"] == r1
+        # now r0 (lowest id, itself an inheritor) becomes the donor for the next joiner...
+        _, r2 = _seed(conn, [("f.z", ">", 1.9)])
+        RS.set_state(conn, r2, RS.CONFIRMING, now_ns=5)
+        donor = RS.family_exit_donor(conn, fam, exclude=r2)
+        assert donor["rule_id"] == min(r0, r1)
+        RS.inherit_exit(conn, r2, donor, now_ns=6)
+        assert RS.get_rule(conn, r2)["exit_inherited_from"] == r1   # ...but the ROOT is recorded
     finally:
         conn.close()

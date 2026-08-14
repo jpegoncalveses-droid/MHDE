@@ -177,12 +177,6 @@ def run_discovery_pass(conn, engineered, lifts, price_index, coin_vols, *, featu
     # 2. Forward confirmation: advance discovered->confirming->promoted|rejected.
     conf = CF.run_confirmation(conn, engineered, lifts, m=m, z=z, now_ns=now_ns)
 
-    # 2b. Retention: expire confirming rules with zero fresh firing past the stale window
-    # (AFTER confirmation, so this pass's recount is what is judged). Terminal-but-retained
-    # — family/cohort provenance survives for the graduation bar.
-    n_expired = RS.expire_stale_confirming(conn, now_ns=now_ns,
-                                           stale_ns=dcfg.EXPIRE_STALE_CONFIRMING_NS)
-
     # 3. Stage 2: exit discovery for confirming/promoted entries that still lack an exit.
     # FAMILY-DEDUPED: rule identity re-mints ~1,000 near-duplicates per pass (thresholds
     # shift on the moving quantile grid) and exit work per identity was the pass's
@@ -232,7 +226,7 @@ def run_discovery_pass(conn, engineered, lifts, price_index, coin_vols, *, featu
         trades_logged += TL.record_trades(conn, trades, exit_def=row["exit_def"], now_ns=now_ns)
 
     return {"survivors": len(survivors), "diagnostics": diagnostics, "exits_found": exits_found,
-            "exits_inherited": exits_inherited, "expired": n_expired,
+            "exits_inherited": exits_inherited,
             "trades_logged": trades_logged, **conf}
 
 
