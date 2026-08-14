@@ -196,12 +196,11 @@ def test_sub_m_demotes_even_with_a_terrible_edge(tmp_path):
 def test_returning_demotee_faces_the_full_gauntlet_including_z(tmp_path):
     # DOCUMENTED ASYMMETRY (review F1): a rule that STAYS promoted faces the edge-only
     # decay check, but a demoted rule RETURNS through confirmation_decision — including
-    # the tstat >= z significance test it originally passed at first promotion. A
-    # returning rule with a healthy mean edge but an edge indistinguishable from zero is
-    # REJECTED, where the old immune rule would have squatted promoted forever. This is
-    # the intended consequence of closing the immunity, pinned here explicitly.
-    import random as _random
-
+    # the tstat >= z significance test it originally passed at first promotion. The
+    # fixture is DETERMINISTIC and isolates the z-gate as the SOLE failing clause:
+    # lifts alternate 0.35 / -0.25 -> n=60, mean edge exactly 0.05 (10x the 0.005 bar,
+    # positive, past the bar) with tstat ~1.28 < z=2.0. The z=-inf counter-assertion
+    # proves the z-gate is load-bearing — delete the tstat clause and this test fails.
     conn = RS.connect(str(tmp_path / "d.sqlite"))
     try:
         rule, rid = _seed_rule(conn, disc_w=0)
@@ -210,12 +209,20 @@ def test_returning_demotee_faces_the_full_gauntlet_including_z(tmp_path):
         few = {(f"S{i}", i * _W): {"f": 1.0} for i in range(1, 6)}
         C.run_confirmation(conn, few, {k: 0.02 for k in few}, m=30, z=2.0, now_ns=10)
         assert RS.get_rule(conn, rid)["state"] == RS.CONFIRMING       # demoted
-        rng = _random.Random(7)
-        many = {(f"S{i % 7}", i * _W): {"f": 1.0} for i in range(1, 61)}
-        noisy = {k: 0.02 + rng.gauss(0, 0.5) for k in many}           # mean ~0.02, sd ~0.5
+
+        keys = [(f"S{i % 7}", i * _W) for i in range(1, 61)]
+        many = {k: {"f": 1.0} for k in keys}
+        vals = [0.05 + 0.30, 0.05 - 0.30] * 30                        # edge 0.05, tstat ~1.28
+        noisy = dict(zip(keys, vals))
+        n, edge, tstat = C.fresh_stats([noisy[k] for k in keys])
+        assert n == 60 and edge == pytest.approx(0.05) and 1.2 < tstat < 1.4
+        # the z-gate is the SOLE failing clause: with z disabled this promotes...
+        assert C.confirmation_decision(n, edge, tstat, null_bar=0.005, M=30,
+                                       z=float("-inf")) == "promote"
+        # ...and through the real path with z=2.0 the returning rule is REJECTED.
         C.run_confirmation(conn, many, noisy, m=30, z=2.0, now_ns=11)
         row = RS.get_rule(conn, rid)
-        assert row["state"] == RS.REJECTED                            # z-gate applied on return
+        assert row["state"] == RS.REJECTED
         assert row["reject_reason"] == "forward edge not confirmed"
     finally:
         conn.close()

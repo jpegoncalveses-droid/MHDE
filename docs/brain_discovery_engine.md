@@ -19,7 +19,9 @@ capital and never wires to an executor (the brain↔executor loop stays open by 
    (re-run the same search on label-shuffled tape). This is what makes unbounded depth safe
    without a constant cap (§1) — depth is capped by the data, not a number.
 4. **Rule store + state machine (§8.1/§8.3, `rulestore.py`)** — `discovered → confirming →
-   promoted | rejected`, SQLite-WAL (`discovery.sqlite`).
+   promoted | rejected`, plus the evidence-shrink demotion edge `promoted → confirming`
+   (2026-08-14: a promoted rule whose fresh recount falls below CONFIRM_M returns to
+   confirming and re-promotes through the full gauntlet). SQLite-WAL (`discovery.sqlite`).
 5. **Forward confirmation (§6.2, `confirmation.py`)** — promote only on ≥ M **fresh
    post-discovery** instances whose edge stays positive, distinguishable from zero, past the
    null bar. The fresh filter (`window_start_ns > discovery_window`) is the un-gameable gate.
