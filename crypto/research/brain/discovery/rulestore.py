@@ -76,7 +76,10 @@ CREATE TABLE IF NOT EXISTS rules (
     reject_reason       TEXT,
     discovery_window_ns INTEGER NOT NULL,
     discovered_at_ns    INTEGER NOT NULL,
-    updated_at_ns       INTEGER NOT NULL
+    updated_at_ns       INTEGER NOT NULL,
+    family_key          TEXT,
+    exit_inherited_from TEXT,
+    promoted_at_ns      INTEGER
 );
 CREATE TABLE IF NOT EXISTS discovery_runs (
     run_id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -106,11 +109,45 @@ def connect(path: str, *, read_only: bool = False) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.executescript(_SCHEMA)
+    _migrate(conn)
     conn.commit()
     return conn
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Additive schema migration (idempotent). family_key/exit_inherited_from/
+    promoted_at_ns arrived 2026-08-14 (family hygiene); family_key is backfilled from
+    entry_def for pre-migration rows."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(rules)").fetchall()}
+    if "family_key" not in cols:
+        conn.execute("ALTER TABLE rules ADD COLUMN family_key TEXT")
+    if "exit_inherited_from" not in cols:
+        conn.execute("ALTER TABLE rules ADD COLUMN exit_inherited_from TEXT")
+    if "promoted_at_ns" not in cols:
+        conn.execute("ALTER TABLE rules ADD COLUMN promoted_at_ns INTEGER")
+    for row in conn.execute(
+            "SELECT rule_id, entry_def FROM rules WHERE family_key IS NULL").fetchall():
+        conn.execute("UPDATE rules SET family_key=? WHERE rule_id=?",
+                     (family_key_from_entry_def(row["entry_def"]), row["rule_id"]))
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_rules_family_key ON rules(family_key)")
+
+
 # -- entry (de)serialisation ----------------------------------------------------
+
+def family_key(rule) -> str:
+    """The rule's FAMILY: its sorted (feature, op) composition, thresholds excluded.
+
+    Rule IDENTITY (canonical_id) is unstable run-to-run — thresholds shift on the moving
+    quantile grid, so cohorts re-mint ~1,000 near-duplicate identities per pass with
+    ~zero id overlap. COMPOSITION is the stable notion the graduation bar evaluates.
+    Ops are part of the family (direction is identity); features are unique within a
+    rule (the search extends by distinct-feature atoms only)."""
+    return "|".join(sorted(f"{c.feature}{c.op}" for c in rule.conditions))
+
+
+def family_key_from_entry_def(entry_def: str) -> str:
+    return "|".join(sorted(f"{d['feature']}{d['op']}" for d in json.loads(entry_def)))
+
 
 def serialize_rule(rule) -> str:
     return json.dumps([{"feature": c.feature, "op": c.op, "threshold": c.threshold}
@@ -143,11 +180,12 @@ def upsert_entry(conn: sqlite3.Connection, result: EntryResult, *, score_horizon
             conn.execute(
                 "INSERT INTO rules (rule_id, entry_def, exit_def, depth, score_horizon_min, "
                 "insample_edge, null_bar, null_margin, n_fires, breadth, state, fresh_count, "
-                "forward_edge, reject_reason, discovery_window_ns, discovered_at_ns, updated_at_ns) "
-                "VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?, ?, ?)",
+                "forward_edge, reject_reason, discovery_window_ns, discovered_at_ns, "
+                "updated_at_ns, family_key) "
+                "VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?, ?, ?, ?)",
                 (rule_id, entry_def, result.depth, score_horizon_min, result.edge,
                  result.null_bar, result.margin, result.n_fires, breadth, DISCOVERED,
-                 discovery_window_ns, now_ns, now_ns))
+                 discovery_window_ns, now_ns, now_ns, family_key(result.rule)))
     return rule_id
 
 
@@ -163,6 +201,11 @@ def set_state(conn: sqlite3.Connection, rule_id: str, state: str, *,
     with conn:
         conn.execute("UPDATE rules SET state=?, reject_reason=?, updated_at_ns=? WHERE rule_id=?",
                      (state, reject_reason, now_ns, rule_id))
+        if state == PROMOTED:
+            # promoted-EVER marker, set once: demotions/decays must not erase a family's
+            # promotion history from the bar's cohort tracking.
+            conn.execute("UPDATE rules SET promoted_at_ns=? "
+                         "WHERE rule_id=? AND promoted_at_ns IS NULL", (now_ns, rule_id))
 
 
 def update_forward(conn: sqlite3.Connection, rule_id: str, *, fresh_count: int,
@@ -171,6 +214,32 @@ def update_forward(conn: sqlite3.Connection, rule_id: str, *, fresh_count: int,
     with conn:
         conn.execute("UPDATE rules SET fresh_count=?, forward_edge=?, updated_at_ns=? "
                      "WHERE rule_id=?", (fresh_count, forward_edge, now_ns, rule_id))
+
+
+def family_exit_donor(conn: sqlite3.Connection, fam_key: str, *,
+                      exclude: str) -> Optional[dict]:
+    """The family's deterministic exit donor: the lowest rule_id holding an exit among
+    LIVE members (confirming/promoted — a rejected rule's exit must not seed its family,
+    review F4), or None if the family has no live discovered exit yet."""
+    row = conn.execute(
+        "SELECT rule_id, exit_def, exit_inherited_from FROM rules "
+        "WHERE family_key=? AND exit_def IS NOT NULL AND rule_id != ? "
+        "AND state IN (?, ?) ORDER BY rule_id LIMIT 1",
+        (fam_key, exclude, CONFIRMING, PROMOTED)).fetchone()
+    return dict(row) if row is not None else None
+
+
+def inherit_exit(conn: sqlite3.Connection, rule_id: str, donor: dict, *,
+                 now_ns: int) -> None:
+    """Copy the family donor's exit onto ``rule_id`` with ROOT provenance — if the donor
+    itself inherited, the recorded source is the ORIGINAL discovering rule, so provenance
+    never forms unrecoverable chains (review F6). A new family member skips the exit
+    search entirely (the capacity fix: exit work is per-FAMILY, not per-identity; the
+    exit-null trade this makes is ADR-040)."""
+    root = donor.get("exit_inherited_from") or donor["rule_id"]
+    with conn:
+        conn.execute("UPDATE rules SET exit_def=?, exit_inherited_from=?, updated_at_ns=? "
+                     "WHERE rule_id=?", (donor["exit_def"], root, now_ns, rule_id))
 
 
 def set_exit(conn: sqlite3.Connection, rule_id: str, exit_def: str, now_ns: int) -> None:
