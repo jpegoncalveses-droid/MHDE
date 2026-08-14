@@ -127,6 +127,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE rules ADD COLUMN exit_inherited_from TEXT")
     if "promoted_at_ns" not in cols:
         conn.execute("ALTER TABLE rules ADD COLUMN promoted_at_ns INTEGER")
+    # promoted_at_ns backfill for rows promoted BEFORE the marker existed (operator-
+    # approved 2026-08-14): their promotion time is best-approximated by updated_at_ns at
+    # migration time. Only the STANDING promoted set is recoverable from the DB — rules
+    # demoted/rejected before this migration keep NULL (their promoted-ever history lives
+    # in SESSION_LOG). Idempotent: new promotions set the marker at set_state.
+    conn.execute("UPDATE rules SET promoted_at_ns = updated_at_ns "
+                 "WHERE state = 'promoted' AND promoted_at_ns IS NULL")
     for row in conn.execute(
             "SELECT rule_id, entry_def FROM rules WHERE family_key IS NULL").fetchall():
         conn.execute("UPDATE rules SET family_key=? WHERE rule_id=?",
