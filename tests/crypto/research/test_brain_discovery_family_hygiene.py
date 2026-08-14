@@ -21,8 +21,6 @@ pass lengthens toward cadence saturation (measured 3h40m -> 4h45m in two days).
 """
 from __future__ import annotations
 
-from crypto.research.brain.discovery import config as dcfg
-from crypto.research.brain.discovery import confirmation as C
 from crypto.research.brain.discovery import rulestore as RS
 from crypto.research.brain.discovery.rules import Condition, make_rule
 from crypto.research.brain.discovery.scoring import EntryResult
@@ -135,7 +133,7 @@ def test_promoted_at_ns_set_once_on_first_promotion(tmp_path):
         conn.close()
 
 
-# -- runner wiring: stage-2 inherits instead of re-searching; expiry in the pass ----------
+# -- runner wiring: stage-2 inherits instead of re-searching ------------------------------
 
 def test_run_discovery_pass_inherits_family_exit_without_searching(tmp_path, monkeypatch):
     import random

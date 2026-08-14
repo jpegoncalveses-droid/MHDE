@@ -2566,8 +2566,16 @@ in exchange for bounding stage-2 to ~one search per family (~94 queued searches 
 1,780 on the live store). Accepted because: (a) siblings differ only in thresholds on the
 same features — the exit's shape (vol-multiple barriers + time cap) is a family-level
 property; (b) the forward-confirmation gate on ENTRIES is untouched; (c) provenance makes
-every inherited exit auditable back to its null-tested root; (d) the graduation bar
-evaluates families, and per-family exit consistency is what it consumes.
+every inherited exit auditable back to its null-tested root; (d) the family-level
+graduation bar this is being built toward evaluates families, and per-family exit
+consistency is what it will consume.
+
+**Also lost, deliberately:** identity churn previously re-ran the exit search
+continuously as new ids minted — an implicit exit refresh. With inheritance a family
+keeps its first null-tested exit until something clears it; a donor-by-evidence choice
+(highest null-margin, rule_id tiebreak) and an explicit re-search trigger are follow-up
+work, as is surfacing `exit_inherited_from` in the dashboard (inherited exits currently
+render identically to null-tested ones).
 
 **Withdrawn from the same PR:** stale-confirming expiry (fresh_count==0 @ 48h) — review
 falsified the premise on live data (fresh=0 vs fresh>0 populations indistinguishable;
