@@ -217,3 +217,27 @@ def test_inheritance_provenance_records_the_root_not_the_chain(tmp_path):
         assert RS.get_rule(conn, r2)["exit_inherited_from"] == r1   # ...but the ROOT is recorded
     finally:
         conn.close()
+
+
+def test_migration_backfills_promoted_at_for_standing_promoted_rows(tmp_path):
+    # Rows promoted before the marker existed get promoted_at_ns := updated_at_ns on the
+    # next connect (operator-approved backfill); non-promoted rows stay NULL.
+    db = str(tmp_path / "d.sqlite")
+    conn = RS.connect(db)
+    try:
+        _, promoted = _seed(conn, [("f.z", ">", 1.1)])
+        RS.set_state(conn, promoted, RS.CONFIRMING, now_ns=2)
+        RS.set_state(conn, promoted, RS.PROMOTED, now_ns=3)
+        _, confirming = _seed(conn, [("g.raw", "<", 1.0)])
+        RS.set_state(conn, confirming, RS.CONFIRMING, now_ns=4)
+        with conn:                                   # simulate a pre-marker promoted row
+            conn.execute("UPDATE rules SET promoted_at_ns=NULL, updated_at_ns=77 "
+                         "WHERE rule_id=?", (promoted,))
+    finally:
+        conn.close()
+    conn = RS.connect(db)
+    try:
+        assert RS.get_rule(conn, promoted)["promoted_at_ns"] == 77
+        assert RS.get_rule(conn, confirming)["promoted_at_ns"] is None
+    finally:
+        conn.close()
