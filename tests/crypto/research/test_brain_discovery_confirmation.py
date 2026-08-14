@@ -108,8 +108,9 @@ def test_run_confirmation_demotes_a_decayed_promoted_rule(tmp_path):
 # thresholds both ways). The old _decayed gate required n >= M, so a promoted rule whose
 # recount fell below CONFIRM_M became decay-IMMUNE — 30/110 live promoted rules sat at
 # 24-29 fresh, un-demotable regardless of forward edge. New semantics: a promoted rule
-# with fresh_count < M is DEMOTED to CONFIRMING (evidence shrank, not failed); it
-# re-promotes when the count returns and the edge still clears the gauntlet.
+# with fresh_count < M - CONFIRM_DEMOTE_HYSTERESIS is DEMOTED to CONFIRMING (evidence
+# shrank, not failed); the band [M-H, M) HOLDS (decay-quiet, ADR-041); it re-promotes
+# when the count returns and the edge still clears the gauntlet.
 
 def test_promoted_rule_with_sub_m_fresh_demotes_to_confirming(tmp_path):
     conn = RS.connect(str(tmp_path / "d.sqlite"))
@@ -224,5 +225,75 @@ def test_returning_demotee_faces_the_full_gauntlet_including_z(tmp_path):
         row = RS.get_rule(conn, rid)
         assert row["state"] == RS.REJECTED
         assert row["reject_reason"] == "forward edge not confirmed"
+    finally:
+        conn.close()
+
+
+# -- Demotion hysteresis (operator decision 2026-08-14, after PR #90's first-application
+# analysis): demote at fresh < M-5, promote at >= M. 66 of the 75 demotion-eligible
+# promoted rules sat in [M-5, M) — recount jitter, not evidence loss — so a symmetric
+# threshold flaps ~88% of them every pass. The band [M-5, M) is a deliberate HOLD zone:
+# no demotion, no decay judgment (decay needs a full n >= M sample), no promotion — a
+# bounded quiet zone traded for flap prevention, pinned below.
+
+def test_promoted_holds_in_hysteresis_band_even_with_bad_edge(tmp_path):
+    from crypto.research.brain.discovery import config as dcfg
+    assert dcfg.CONFIRM_DEMOTE_HYSTERESIS == 5
+    # FRESH connection per case (review F3): the > threshold is one-sided, so sharing a
+    # DB would silently re-judge earlier rules on later passes.
+    for i, (n_fresh, edge) in enumerate(((25, 0.02), (29, 0.02), (27, -0.9))):
+        conn = RS.connect(str(tmp_path / f"d{i}.sqlite"))
+        try:
+            rule, rid = _seed_rule(conn, disc_w=0)
+            RS.set_state(conn, rid, RS.CONFIRMING, now_ns=2)
+            RS.set_state(conn, rid, RS.PROMOTED, now_ns=3)
+            eng = {(f"S{j}", j * _W): {"f": 1.0} for j in range(1, n_fresh + 1)}
+            lifts = {k: edge for k in eng}
+            C.run_confirmation(conn, eng, lifts, m=30, z=2.0, hysteresis=5, now_ns=10)
+            row = RS.get_rule(conn, rid)
+            assert row["state"] == RS.PROMOTED, (n_fresh, edge)      # HOLD: no flap, no decay
+            assert row["fresh_count"] == n_fresh
+        finally:
+            conn.close()
+
+
+def test_hysteresis_must_be_smaller_than_m(tmp_path):
+    # review F4: m is a to-be-retuned default; h >= m would make demotion dead code and
+    # silently reopen the sub-M immunity — guarded with a hard error.
+    import pytest as _pytest
+    conn = RS.connect(str(tmp_path / "d.sqlite"))
+    try:
+        with _pytest.raises(ValueError):
+            C.run_confirmation(conn, {}, {}, m=5, z=2.0, hysteresis=5, now_ns=1)
+        with _pytest.raises(ValueError):
+            C.run_confirmation(conn, {}, {}, m=30, z=2.0, hysteresis=-1, now_ns=1)
+    finally:
+        conn.close()
+
+
+def test_promoted_demotes_below_the_hysteresis_floor(tmp_path):
+    conn = RS.connect(str(tmp_path / "d.sqlite"))
+    try:
+        rule, rid = _seed_rule(conn, disc_w=0)
+        RS.set_state(conn, rid, RS.CONFIRMING, now_ns=2)
+        RS.set_state(conn, rid, RS.PROMOTED, now_ns=3)
+        eng = {(f"S{i}", i * _W): {"f": 1.0} for i in range(1, 25)}   # 24 fresh < M-5
+        lifts = {k: 0.02 for k in eng}
+        summary = C.run_confirmation(conn, eng, lifts, m=30, z=2.0, now_ns=10)
+        assert RS.get_rule(conn, rid)["state"] == RS.CONFIRMING
+        assert summary["demoted"] == 1
+    finally:
+        conn.close()
+
+
+def test_decay_and_promotion_thresholds_unchanged_by_hysteresis(tmp_path):
+    conn = RS.connect(str(tmp_path / "d.sqlite"))
+    try:
+        rule, rid = _seed_rule(conn, disc_w=0)
+        RS.set_state(conn, rid, RS.CONFIRMING, now_ns=2)
+        RS.set_state(conn, rid, RS.PROMOTED, now_ns=3)
+        eng = {(f"S{i % 7}", i * _W): {"f": 1.0} for i in range(1, 61)}   # 60 fresh >= M
+        C.run_confirmation(conn, eng, {k: 0.0001 for k in eng}, m=30, z=2.0, now_ns=10)
+        assert RS.get_rule(conn, rid)["state"] == RS.REJECTED             # decay unchanged
     finally:
         conn.close()
