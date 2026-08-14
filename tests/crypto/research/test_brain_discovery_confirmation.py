@@ -171,3 +171,51 @@ def test_promoted_rule_with_healthy_full_evidence_stays_promoted(tmp_path):
         assert RS.get_rule(conn, rid)["state"] == RS.PROMOTED
     finally:
         conn.close()
+
+
+def test_sub_m_demotes_even_with_a_terrible_edge(tmp_path):
+    # It is the COUNT, not the edge, that selects the demotion branch: sub-M + awful edge
+    # -> CONFIRMING (parked awaiting evidence), never rejected-by-decay (decay judgment
+    # requires a decision-floor sample). Pins the branch selection against a future
+    # "demote only if healthy else reject" refactor.
+    conn = RS.connect(str(tmp_path / "d.sqlite"))
+    try:
+        rule, rid = _seed_rule(conn, disc_w=4 * _W)
+        RS.set_state(conn, rid, RS.CONFIRMING, now_ns=2)
+        RS.set_state(conn, rid, RS.PROMOTED, now_ns=3)
+        eng = {(f"S{i}", i * _W): {"f": 1.0} for i in range(10)}   # 5 fresh (< M)
+        lifts = {k: -0.9 for k in eng}                             # edge is TERRIBLE
+        C.run_confirmation(conn, eng, lifts, m=30, z=2.0, now_ns=10)
+        row = RS.get_rule(conn, rid)
+        assert row["state"] == RS.CONFIRMING
+        assert not row["reject_reason"]
+    finally:
+        conn.close()
+
+
+def test_returning_demotee_faces_the_full_gauntlet_including_z(tmp_path):
+    # DOCUMENTED ASYMMETRY (review F1): a rule that STAYS promoted faces the edge-only
+    # decay check, but a demoted rule RETURNS through confirmation_decision — including
+    # the tstat >= z significance test it originally passed at first promotion. A
+    # returning rule with a healthy mean edge but an edge indistinguishable from zero is
+    # REJECTED, where the old immune rule would have squatted promoted forever. This is
+    # the intended consequence of closing the immunity, pinned here explicitly.
+    import random as _random
+
+    conn = RS.connect(str(tmp_path / "d.sqlite"))
+    try:
+        rule, rid = _seed_rule(conn, disc_w=0)
+        RS.set_state(conn, rid, RS.CONFIRMING, now_ns=2)
+        RS.set_state(conn, rid, RS.PROMOTED, now_ns=3)
+        few = {(f"S{i}", i * _W): {"f": 1.0} for i in range(1, 6)}
+        C.run_confirmation(conn, few, {k: 0.02 for k in few}, m=30, z=2.0, now_ns=10)
+        assert RS.get_rule(conn, rid)["state"] == RS.CONFIRMING       # demoted
+        rng = _random.Random(7)
+        many = {(f"S{i % 7}", i * _W): {"f": 1.0} for i in range(1, 61)}
+        noisy = {k: 0.02 + rng.gauss(0, 0.5) for k in many}           # mean ~0.02, sd ~0.5
+        C.run_confirmation(conn, many, noisy, m=30, z=2.0, now_ns=11)
+        row = RS.get_rule(conn, rid)
+        assert row["state"] == RS.REJECTED                            # z-gate applied on return
+        assert row["reject_reason"] == "forward edge not confirmed"
+    finally:
+        conn.close()

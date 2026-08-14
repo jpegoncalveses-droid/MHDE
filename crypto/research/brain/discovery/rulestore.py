@@ -13,8 +13,11 @@ permutation-null result (bar at its depth + the margin, +ve beat / -ve missed-or
 the forward-confirmation status (fresh post-discovery instance count + current forward
 edge), its state, and depth / frequency / breadth.
 
-STATE MACHINE (§8.3): ``discovered`` -> ``confirming`` -> ``promoted`` | ``rejected``.
-Rejected is terminal (fails the null, fails forward confirmation, or decays below the bar).
+STATE MACHINE (§8.3): ``discovered`` -> ``confirming`` -> ``promoted`` | ``rejected``,
+plus the evidence-shrink DEMOTION edge ``promoted`` -> ``confirming`` (2026-08-14: a
+promoted rule whose fresh recount falls below CONFIRM_M returns to confirming and
+re-promotes through the full gauntlet when its count returns). Rejected is terminal
+(fails the null, fails forward confirmation, or decays below the bar).
 Transitions are validated; an illegal jump raises.
 
 SCOPING NOTE (for the reviewer): the store tracks NULL-SURVIVORS (the meaningful set the
