@@ -111,8 +111,11 @@ def run_confirmation(conn, engineered: Mapping[tuple, Mapping[str, float]],
                 else:
                     summary["confirming"] += 1
             elif cur == RS.PROMOTED:
-                if n < m:
-                    # Evidence-shrink demotion (2026-08-14): recounts are non-monotonic
+                if n < m - dcfg.CONFIRM_DEMOTE_HYSTERESIS:
+                    # Evidence-shrink demotion with HYSTERESIS (2026-08-14): recounts
+                    # are non-monotonic and most dips are jitter within [M-H, M) — that
+                    # band HOLDS promoted (no demote, no decay, no flap; ADR-041). Only a
+                    # recount below M-H demotes. Original rationale: recounts non-monotonic
                     # (features re-derive each pass; instances cross thresholds both
                     # ways). The old gate required n >= M before ANY decay check, so a
                     # promoted rule recounting below M became decay-IMMUNE (30/110 live

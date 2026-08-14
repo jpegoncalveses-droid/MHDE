@@ -129,6 +129,15 @@ CONFIRM_M = 30
 #: The fresh-instance edge must be POSITIVE and distinguishable from zero past this
 #: z (mean / (std/sqrt(n)) >= CONFIRM_Z) AND stay above the in-sample null bar.
 CONFIRM_Z = 2.0
+#: Demotion hysteresis (operator decision 2026-08-14): a promoted rule demotes only when
+#: its fresh recount falls below ``CONFIRM_M - CONFIRM_DEMOTE_HYSTERESIS``; the band
+#: [M-5, M) is a deliberate HOLD zone — no demotion, no decay judgment (decay needs a
+#: full n >= M sample), no promotion. Basis: recounts are non-monotonic and 66 of the 75
+#: demotion-eligible promoted rules sat in [M-5, M) at first application — recount
+#: jitter, not evidence loss — so a symmetric threshold flaps ~88% of them every pass
+#: (PROMOTED<->CONFIRMING churn + trade-log discontinuities). The bounded quiet band is
+#: the accepted trade (ADR-041). Operator-tunable.
+CONFIRM_DEMOTE_HYSTERESIS = 5
 
 # -- §7 Stage-2 conditional exit discovery ------------------------------------
 #: Excursion-level exits as MULTIPLES OF THE COIN'S VOLATILITY (not fixed %), so a
