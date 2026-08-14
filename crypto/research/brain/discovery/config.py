@@ -146,3 +146,11 @@ EXIT_TIME_CAPS_MIN = (5, 15, 30, 60)
 #: host load modest. Tunable; size against measured run-cost (§14). The unit is wired
 #: BUILT-NOT-DEPLOYED — enabling it is the operator's deploy, not this PR.
 DISCOVERY_TIMER_ONCALENDAR = "*-*-* 00/6:30:00"   # 00:30, 06:30, 12:30, 18:30 UTC
+
+# -- family-aware rule-store hygiene (2026-08-14) ------------------------------
+#: A CONFIRMING rule with ZERO fresh firing whose age exceeds this window is EXPIRED
+#: (terminal but retained — family/cohort provenance survives). PROPOSED N = 8 passes at
+#: the 6-hourly cadence = 48h: fresh recounts are absolute per pass, so a rule still at
+#: fresh_count 0 after 2 days of forward data never fires forward — its quantile
+#: thresholds drifted off the live distribution. Operator-tunable.
+EXPIRE_STALE_CONFIRMING_NS = 48 * 3600 * 1_000_000_000

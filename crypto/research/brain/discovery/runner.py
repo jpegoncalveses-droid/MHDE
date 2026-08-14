@@ -177,11 +177,27 @@ def run_discovery_pass(conn, engineered, lifts, price_index, coin_vols, *, featu
     # 2. Forward confirmation: advance discovered->confirming->promoted|rejected.
     conf = CF.run_confirmation(conn, engineered, lifts, m=m, z=z, now_ns=now_ns)
 
+    # 2b. Retention: expire confirming rules with zero fresh firing past the stale window
+    # (AFTER confirmation, so this pass's recount is what is judged). Terminal-but-retained
+    # — family/cohort provenance survives for the graduation bar.
+    n_expired = RS.expire_stale_confirming(conn, now_ns=now_ns,
+                                           stale_ns=dcfg.EXPIRE_STALE_CONFIRMING_NS)
+
     # 3. Stage 2: exit discovery for confirming/promoted entries that still lack an exit.
+    # FAMILY-DEDUPED: rule identity re-mints ~1,000 near-duplicates per pass (thresholds
+    # shift on the moving quantile grid) and exit work per identity was the pass's
+    # dominant growth term. A new family member inherits the family's discovered exit
+    # (deterministic donor) instead of re-running the exit search.
     exits_found = 0
+    exits_inherited = 0
     for state in (RS.CONFIRMING, RS.PROMOTED):
         for row in RS.list_rules(conn, state=state):
             if row["exit_def"] is not None:
+                continue
+            donor = RS.family_exit_donor(conn, row["family_key"], exclude=row["rule_id"])
+            if donor is not None:
+                RS.inherit_exit(conn, row["rule_id"], donor, now_ns=now_ns)
+                exits_inherited += 1
                 continue
             entry_rule = RS.deserialize_rule(row["entry_def"])
             # Stage-2 samples <=exit_max_instances fired instances per rule (deterministic,
@@ -216,6 +232,7 @@ def run_discovery_pass(conn, engineered, lifts, price_index, coin_vols, *, featu
         trades_logged += TL.record_trades(conn, trades, exit_def=row["exit_def"], now_ns=now_ns)
 
     return {"survivors": len(survivors), "diagnostics": diagnostics, "exits_found": exits_found,
+            "exits_inherited": exits_inherited, "expired": n_expired,
             "trades_logged": trades_logged, **conf}
 
 
