@@ -33,6 +33,8 @@ import math
 import statistics
 from typing import Mapping, Optional, Sequence
 
+import numpy as np
+
 from crypto.research.brain.discovery import config as dcfg
 from crypto.research.brain.discovery import rulestore as RS
 from crypto.research.brain.discovery import rules as R
@@ -78,6 +80,76 @@ def _decayed(n: int, edge: Optional[float], *, null_bar: float, M: int) -> bool:
     return n >= M and not (edge is not None and edge > 0 and edge > null_bar)
 
 
+#: Bounded per-feature column cache for the shared-compute walk: 8 columns x ~75MB at
+#: full scale ~= 600MB. The walk is FAMILY-ORDERED so members hit the cache; an unbounded
+#: cache (35 features x 75MB ~= 2.6G) would breach the pass memory budget.
+_CONFIRM_COLUMN_CACHE_MAX = 8
+
+
+class _SharedWalk:
+    """MECHANISM 1 (2026-08-15, ADR-042): one shared-COMPUTE confirmation walk.
+
+    Row-aligned ``window``/``lift`` arrays are built ONCE per pass and per-feature
+    columns are extracted once (LRU-bounded); every rule's fresh set derives from ITS
+    OWN vectorized mask over those shared arrays. Evidence is never shared — only
+    compute — so per-rule fresh_count/forward_edge stay individually correct and a ghost
+    rule in a real family fails on its own numbers (both pinned by tests). Semantics are
+    the scalar path's exactly: absent feature / NaN never holds, strict comparisons,
+    fresh = fired AND post-discovery AND labeled, sample-stdev t-stat with the
+    fresh_stats edge cases. Replaces a per-rule ``fires()`` SET materialization that cost
+    ~0.6s/rule (~1h40m of the 2026-08-14 observation pass at 9.6k rules; the dominant
+    saturation term at +1,000 rules/pass growth)."""
+
+    def __init__(self, engineered, lifts):
+        from crypto.research.brain.discovery import scoring as _S
+        self._eng = engineered
+        self._S = _S
+        self._keys = list(engineered)
+        n = len(self._keys)
+        self._win = np.fromiter((k[1] for k in self._keys), dtype=np.int64, count=n)
+        key_to_row = getattr(engineered, "_key_to_row", None)   # tape: reuse (a second
+        if key_to_row is None:                                  # 9.4M map would cost ~1.2G)
+            key_to_row = {k: i for i, k in enumerate(self._keys)}
+        self._lift = np.full(n, np.nan, dtype=np.float64)
+        for k, v in lifts.items():
+            i = key_to_row.get(k)
+            if i is not None:
+                self._lift[i] = v
+        self._has_label = ~np.isnan(self._lift)
+        self._cols: dict = {}                                   # tiny LRU
+
+    def _col(self, feature):
+        col = self._cols.pop(feature, None)
+        if col is None:
+            col = self._S._labeled_feature_columns(self._eng, [feature], self._keys)[feature]
+        self._cols[feature] = col                               # (re-)append = most recent
+        if len(self._cols) > _CONFIRM_COLUMN_CACHE_MAX:
+            self._cols.pop(next(iter(self._cols)))              # evict least recent
+        return col
+
+    def fresh_stats_for(self, rule, discovery_window_ns):
+        """(n, edge, tstat) for the rule's fresh instances — fresh_stats semantics."""
+        mask = None
+        for c in rule.conditions:
+            col = self._col(c.feature)
+            cm = col > c.threshold if c.op == ">" else col < c.threshold
+            mask = cm if mask is None else (mask & cm)          # NaN compares False
+        fresh = (self._win > discovery_window_ns) & self._has_label
+        if mask is not None:
+            fresh &= mask
+        n = int(fresh.sum())
+        if n == 0:
+            return 0, None, None
+        vals = self._lift[fresh]
+        edge = float(vals.mean())
+        if n < 2:
+            return n, edge, None
+        sd = float(vals.std(ddof=1))
+        if sd == 0:
+            return n, edge, math.inf if edge > 0 else (-math.inf if edge < 0 else 0.0)
+        return n, edge, edge / (sd / math.sqrt(n))
+
+
 def run_confirmation(conn, engineered: Mapping[tuple, Mapping[str, float]],
                      lifts: Mapping[tuple, float], *, m: int = dcfg.CONFIRM_M,
                      z: float = dcfg.CONFIRM_Z,
@@ -90,14 +162,16 @@ def run_confirmation(conn, engineered: Mapping[tuple, Mapping[str, float]],
         # demotion branch dead code (n < 0) and silently reopen the sub-M immunity.
         raise ValueError(f"hysteresis must satisfy 0 <= h < m (got h={hysteresis}, m={m})")
     summary = {"advanced": 0, "promoted": 0, "rejected": 0, "confirming": 0, "demoted": 0}
+    walk = _SharedWalk(engineered, lifts)
     for state in (RS.DISCOVERED, RS.CONFIRMING, RS.PROMOTED):
-        for row in RS.list_rules(conn, state=state):
+        # FAMILY-ORDERED so same-family members hit the bounded column cache
+        for row in sorted(RS.list_rules(conn, state=state),
+                          key=lambda r: r.get("family_key") or ""):
             rid = row["rule_id"]
             rule = RS.deserialize_rule(row["entry_def"])
             bar = row["null_bar"]
-            fresh = fresh_instances(rule, engineered, lifts,
-                                    discovery_window_ns=row["discovery_window_ns"])
-            n, edge, tstat = fresh_stats([lifts[k] for k in fresh])
+            n, edge, tstat = walk.fresh_stats_for(
+                rule, discovery_window_ns=row["discovery_window_ns"])
             RS.update_forward(conn, rid, fresh_count=n, forward_edge=edge, now_ns=now_ns)
 
             cur = state

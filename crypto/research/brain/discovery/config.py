@@ -139,6 +139,19 @@ CONFIRM_Z = 2.0
 #: the accepted trade (ADR-041). Operator-tunable.
 CONFIRM_DEMOTE_HYSTERESIS = 5
 
+# -- pace-collapse expiry (ADR-042, 2026-08-15) --------------------------------
+#: A confirming rule is expired once resolution is IMPLAUSIBLE at its own pace: with
+#: opportunity O = n_fires x elapsed / DISCOVERY_HISTORY (expected fresh instances at the
+#: rule's in-sample rate), expire iff O >= CONFIRM_M (never judged early), fresh_count <
+#: M - H (the resolving band incl. hysteresis demotees is exempt), and fresh_count x
+#: EXPIRE_PACE_FACTOR < O (reaching M would need > 6x its observed pace's opportunity).
+#: Fully evidence-relative — calendar enters only via the rule's OWN rate; replaces the
+#: wall-clock criterion falsified in PR #91 review. Basis for 6: the confirming set grows
+#: ~+1,000/pass toward ~72k steady state without retention (saturating the 6h cadence in
+#: ~2-3 days); the pace test removes only rules whose observed pace has collapsed >6x vs
+#: their in-sample rate. Operator-tunable.
+EXPIRE_PACE_FACTOR = 6
+
 # -- §7 Stage-2 conditional exit discovery ------------------------------------
 #: Excursion-level exits as MULTIPLES OF THE COIN'S VOLATILITY (not fixed %), so a
 #: target/stop means the same thing across coins. Coin vol = the per-coin baseline

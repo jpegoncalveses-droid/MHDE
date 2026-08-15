@@ -45,12 +45,16 @@ DISCOVERED = "discovered"
 CONFIRMING = "confirming"
 PROMOTED = "promoted"
 REJECTED = "rejected"
+#: Terminal-but-RETAINED (pace-collapse expiry, ADR-042): a confirming rule whose
+#: observed fresh pace makes resolution implausible relative to its OWN in-sample firing
+#: rate. The ROW persists — family/cohort provenance survives for the graduation bar.
+EXPIRED = "expired"
 
 #: Allowed forward transitions (a same-state set via set_state is a no-op; anything else
 #: not listed raises). Rejected is terminal.
 _TRANSITIONS = {
     DISCOVERED: {CONFIRMING, REJECTED},
-    CONFIRMING: {PROMOTED, REJECTED},
+    CONFIRMING: {PROMOTED, REJECTED, EXPIRED},
     # PROMOTED -> CONFIRMING is the evidence-shrink DEMOTION (2026-08-14): fresh
     # recounts are non-monotonic, and a promoted rule whose count falls below
     # CONFIRM_M - CONFIRM_DEMOTE_HYSTERESIS returns to confirming (it did not FAIL;
@@ -58,6 +62,7 @@ _TRANSITIONS = {
     # It re-promotes through the full gauntlet when the count returns.
     PROMOTED: {REJECTED, CONFIRMING},
     REJECTED: set(),
+    EXPIRED: set(),
 }
 
 _SCHEMA = """
@@ -249,6 +254,32 @@ def inherit_exit(conn: sqlite3.Connection, rule_id: str, donor: dict, *,
     with conn:
         conn.execute("UPDATE rules SET exit_def=?, exit_inherited_from=?, updated_at_ns=? "
                      "WHERE rule_id=?", (donor["exit_def"], root, now_ns, rule_id))
+
+
+def expire_slow_resolvers(conn: sqlite3.Connection, *, now_ns: int, m: int,
+                          hysteresis: int, history_ns: int, opportunity_floor: int,
+                          pace_factor: int) -> int:
+    """Pace-collapse expiry (ADR-042) — the firing-rate-relative retention that replaced
+    the falsified wall-clock criterion. Opportunity O = n_fires x elapsed / history: the
+    rule's OWN in-sample rate converts calendar exposure into expected fresh INSTANCES.
+    Expire CONFIRMING iff:
+      O >= opportunity_floor      (never judged before M's worth of expected evidence)
+      AND fresh_count < m - hysteresis   (the resolving band — incl. hysteresis demotees
+                                          re-entering with 25-29 fresh — is exempt)
+      AND fresh_count * pace_factor < O  (resolution would need > pace_factor x its
+                                          observed pace's opportunity — implausible).
+    REAL casts: n_fires x elapsed_ns overflows SQLite INTEGER (~1e23 vs 9.2e18).
+    Terminal but retained. Returns the number expired."""
+    with conn:
+        cur = conn.execute(
+            "UPDATE rules SET state=?, updated_at_ns=? WHERE state=? "
+            "AND fresh_count < ? "
+            "AND CAST(n_fires AS REAL) * (? - discovered_at_ns) >= CAST(? AS REAL) * ? "
+            "AND CAST(fresh_count AS REAL) * ? * ? < CAST(n_fires AS REAL) * (? - discovered_at_ns)",
+            (EXPIRED, now_ns, CONFIRMING, m - hysteresis,
+             now_ns, opportunity_floor, history_ns,
+             pace_factor, history_ns, now_ns))
+    return cur.rowcount
 
 
 def set_exit(conn: sqlite3.Connection, rule_id: str, exit_def: str, now_ns: int) -> None:

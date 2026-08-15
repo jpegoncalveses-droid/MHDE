@@ -2619,3 +2619,40 @@ a band-scoped edge check) is the revisit point. Also noted: hysteresis makes sta
 PATH-DEPENDENT — two rules at fresh=27 can legitimately be promoted (never dipped) or
 confirming (dipped, not yet recovered to M) — which will read as an inconsistency in the
 dashboard's state/fresh columns until documented there.
+
+## ADR-042 — bounding the confirming set: shared-compute confirmation + pace-collapse expiry
+
+**Date:** 2026-08-15 · **Status:** accepted (operator-dispatched; the load-bearing fix
+before the measured ~2-3 day cadence saturation)
+
+**Context.** The confirming set (8,632 and growing ~+1,000/completed pass; influx
+1,010–1,043 across all 9 runs) had become the dominant pass term: ~0.6 s/rule for a
+per-rule ``fires()`` SET materialization over the 9.4M-instance tape ≈ 1h40m of the
+observation pass. Hard saturation at ~22k rules (~3.3 days), practical at ~17k (~2 days);
+natural residence ≈ 18 days at the median firing rate ⇒ un-retained steady state ≈ 72k —
+3-4× past saturation.
+
+**Mechanism 1 — shared-COMPUTE confirmation.** One walk builds row-aligned window/lift
+arrays once and per-feature columns once (LRU-bounded at 8 columns ≈ 600MB — a full
+35-column cache would breach the pass memory budget), family-ordered for cache locality.
+Every rule's fresh set derives from ITS OWN vectorized mask: evidence is never shared,
+only compute. Invariants held structurally: per-rule fresh_count/forward_edge individually
+correct (equivalence-pinned vs the scalar reference); cohort provenance untouched; a
+ghost in a real family fails on its own numbers (pinned). ~0.6 s → ~tens of ms per rule.
+
+**Mechanism 2 — pace-collapse expiry** (the firing-rate-relative form owed since the
+PR #91 review falsified the wall-clock criterion). Opportunity O = n_fires × elapsed /
+DISCOVERY_HISTORY — the rule's OWN in-sample rate converts calendar into expected fresh
+INSTANCES. Expire CONFIRMING iff O ≥ CONFIRM_M (no premature judgment) AND fresh_count <
+M−H (the resolving band, incl. hysteresis demotees re-entering with 25-29 fresh, is
+exempt — their clock reflects their evidence) AND fresh_count × EXPIRE_PACE_FACTOR(6) <
+O (resolution would need >6× the observed pace's opportunity — implausible). Terminal
+but retained; rows keep family/cohort/promoted-ever provenance. Expiry is NOT reversed
+on re-discovery: exact-identity re-minting is empirically ~never (~zero canonical-id
+overlap across cohorts) and rewriting discovered_at/cohort would corrupt provenance —
+the FAMILY keeps discovering through new identities.
+
+**What this does not do:** it does not shrink the steady-state confirming set below the
+~50-70k the resolution pipeline implies — it makes that set affordable (mechanism 1) and
+prunes only pace-collapsed never-resolvers (mechanism 2). The knobs (PACE_FACTOR, the
+opportunity floor) tighten it if the operator wants a smaller standing set.

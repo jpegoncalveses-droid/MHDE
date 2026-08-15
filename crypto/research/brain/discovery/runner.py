@@ -157,6 +157,7 @@ def run_discovery_pass(conn, engineered, lifts, price_index, coin_vols, *, featu
                        exit_max_instances=dcfg.EXIT_DISCOVERY_MAX_INSTANCES,
                        m=dcfg.CONFIRM_M, z=dcfg.CONFIRM_Z,
                        confirm_hysteresis=dcfg.CONFIRM_DEMOTE_HYSTERESIS,
+                       expire_pace_factor=dcfg.EXPIRE_PACE_FACTOR,
                        exit_grid=None, window_ns=dcfg.WINDOW_NS, seed=0) -> dict:
     """One discovery pass over already-loaded data. Returns a summary dict."""
     exit_grid = exit_grid if exit_grid is not None else X.build_exit_grid()
@@ -178,6 +179,14 @@ def run_discovery_pass(conn, engineered, lifts, price_index, coin_vols, *, featu
     # 2. Forward confirmation: advance discovered->confirming->promoted|rejected.
     conf = CF.run_confirmation(conn, engineered, lifts, m=m, z=z,
                                hysteresis=confirm_hysteresis, now_ns=now_ns)
+
+    # 2b. Pace-collapse retention (ADR-042): AFTER confirmation so this pass's recount is
+    # what is judged; before stage-2 so expired rules draw no exit work. Terminal but
+    # retained — family/cohort provenance survives for the graduation bar.
+    n_expired = RS.expire_slow_resolvers(
+        conn, now_ns=now_ns, m=m, hysteresis=confirm_hysteresis,
+        history_ns=dcfg.DISCOVERY_HISTORY_NS, opportunity_floor=m,
+        pace_factor=expire_pace_factor)
 
     # 3. Stage 2: exit discovery for confirming/promoted entries that still lack an exit.
     # FAMILY-DEDUPED: rule identity re-mints ~1,000 near-duplicates per pass (thresholds
@@ -228,7 +237,7 @@ def run_discovery_pass(conn, engineered, lifts, price_index, coin_vols, *, featu
         trades_logged += TL.record_trades(conn, trades, exit_def=row["exit_def"], now_ns=now_ns)
 
     return {"survivors": len(survivors), "diagnostics": diagnostics, "exits_found": exits_found,
-            "exits_inherited": exits_inherited,
+            "exits_inherited": exits_inherited, "expired": n_expired,
             "trades_logged": trades_logged, **conf}
 
 
