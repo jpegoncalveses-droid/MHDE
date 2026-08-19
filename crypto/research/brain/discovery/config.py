@@ -139,6 +139,18 @@ CONFIRM_Z = 2.0
 #: the accepted trade (ADR-041). Operator-tunable.
 CONFIRM_DEMOTE_HYSTERESIS = 5
 
+# -- pace-collapse expiry (ADR-042, 2026-08-15; redesigned after review) -------
+#: A never-promoted confirming rule is expired once resolution is IMPLAUSIBLE at its own
+#: pace. Opportunity O = n_fires x min(elapsed, DISCOVERY_HISTORY)/DISCOVERY_HISTORY is
+#: WINDOW-CAPPED so it compares like with like (fresh_count is a rolling 14d count): for
+#: mature rules the criterion is the pure forward/in-sample rate-collapse ratio
+#: fresh x 6 < n_fires — time-free; a rate-stable rule is held forever. Expire iff
+#: promoted_at_ns IS NULL (once-promoted NEVER pace-expires — demotee protection is
+#: structural) AND O >= CONFIRM_M AND fresh < M-H AND fresh x EXPIRE_PACE_FACTOR < O.
+#: Honesty: this prunes rate-collapsed never-resolvers only; mechanism 1 (shared-compute
+#: confirmation) carries the saturation fix. Operator-tunable.
+EXPIRE_PACE_FACTOR = 6
+
 # -- §7 Stage-2 conditional exit discovery ------------------------------------
 #: Excursion-level exits as MULTIPLES OF THE COIN'S VOLATILITY (not fixed %), so a
 #: target/stop means the same thing across coins. Coin vol = the per-coin baseline

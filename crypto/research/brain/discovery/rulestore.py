@@ -45,12 +45,17 @@ DISCOVERED = "discovered"
 CONFIRMING = "confirming"
 PROMOTED = "promoted"
 REJECTED = "rejected"
+#: Terminal-but-RETAINED (pace-collapse expiry, ADR-042): a never-promoted confirming
+#: rule whose forward firing pace has collapsed >= EXPIRE_PACE_FACTOR x vs its own
+#: in-sample rate (window-capped opportunity — time-free once mature). The ROW persists —
+#: family/cohort provenance survives for the graduation bar.
+EXPIRED = "expired"
 
 #: Allowed forward transitions (a same-state set via set_state is a no-op; anything else
 #: not listed raises). Rejected is terminal.
 _TRANSITIONS = {
     DISCOVERED: {CONFIRMING, REJECTED},
-    CONFIRMING: {PROMOTED, REJECTED},
+    CONFIRMING: {PROMOTED, REJECTED, EXPIRED},
     # PROMOTED -> CONFIRMING is the evidence-shrink DEMOTION (2026-08-14): fresh
     # recounts are non-monotonic, and a promoted rule whose count falls below
     # CONFIRM_M - CONFIRM_DEMOTE_HYSTERESIS returns to confirming (it did not FAIL;
@@ -58,6 +63,7 @@ _TRANSITIONS = {
     # It re-promotes through the full gauntlet when the count returns.
     PROMOTED: {REJECTED, CONFIRMING},
     REJECTED: set(),
+    EXPIRED: set(),
 }
 
 _SCHEMA = """
@@ -249,6 +255,46 @@ def inherit_exit(conn: sqlite3.Connection, rule_id: str, donor: dict, *,
     with conn:
         conn.execute("UPDATE rules SET exit_def=?, exit_inherited_from=?, updated_at_ns=? "
                      "WHERE rule_id=?", (donor["exit_def"], root, now_ns, rule_id))
+
+
+def expire_slow_resolvers(conn: sqlite3.Connection, *, now_ns: int, m: int,
+                          hysteresis: int, history_ns: int, opportunity_floor: int,
+                          pace_factor: int) -> int:
+    """Pace-collapse expiry (ADR-042, redesigned after the BLOCK review).
+
+    Opportunity is WINDOW-CAPPED: O = n_fires x min(elapsed, history)/history — expected
+    fresh instances at the rule's in-sample rate over a window NO LONGER than the rolling
+    window fresh_count itself measures. For mature rules (elapsed >= history) the
+    criterion is therefore the pure forward/in-sample RATE-COLLAPSE ratio
+    (fresh x pace_factor < n_fires) — completely time-free; calendar enters only as the
+    pro-rating of a rule's first 14 days. A rate-stable rule (fresh ~ n_fires) is held
+    forever. (The un-capped form degenerated to a rate-scaled wall clock ~ pace x 14d —
+    the shape the PR #91 review falsified.)
+
+    Expire CONFIRMING iff ALL of:
+      promoted_at_ns IS NULL           — once-promoted rules NEVER pace-expire: demotee
+                                         protection is structural (the operator's
+                                         non-negotiable), not arithmetic; they exit via
+                                         re-promotion or decay-rejection only.
+      O >= opportunity_floor           — never judged before M's worth of expected
+                                         evidence (window-capped).
+      fresh_count < m - hysteresis     — the resolving band [M-H, M) is exempt.
+      fresh_count x pace_factor < O    — resolution implausible at observed pace.
+
+    REAL casts (n_fires x ns overflows SQLite INTEGER). Bulk UPDATE with the source state
+    pinned in WHERE — the CONFIRMING -> EXPIRED edge in _TRANSITIONS is honored by
+    construction (this is the sole producer of EXPIRED). Terminal but retained."""
+    with conn:
+        cur = conn.execute(
+            "UPDATE rules SET state=?, updated_at_ns=? WHERE state=? "
+            "AND promoted_at_ns IS NULL "
+            "AND fresh_count < ? "
+            "AND CAST(n_fires AS REAL) * MIN(? - discovered_at_ns, ?) >= CAST(? AS REAL) * ? "
+            "AND CAST(fresh_count AS REAL) * ? * ? < CAST(n_fires AS REAL) * MIN(? - discovered_at_ns, ?)",
+            (EXPIRED, now_ns, CONFIRMING, m - hysteresis,
+             now_ns, history_ns, opportunity_floor, history_ns,
+             pace_factor, history_ns, now_ns, history_ns))
+    return cur.rowcount
 
 
 def set_exit(conn: sqlite3.Connection, rule_id: str, exit_def: str, now_ns: int) -> None:
