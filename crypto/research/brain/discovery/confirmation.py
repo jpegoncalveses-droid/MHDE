@@ -96,29 +96,44 @@ class _SharedWalk:
     rule in a real family fails on its own numbers (both pinned by tests). Semantics are
     the scalar path's exactly: absent feature / NaN never holds, strict comparisons,
     fresh = fired AND post-discovery AND labeled, sample-stdev t-stat with the
-    fresh_stats edge cases. Replaces a per-rule ``fires()`` SET materialization that cost
-    ~0.6s/rule (~1h40m of the 2026-08-14 observation pass at 9.6k rules; the dominant
-    saturation term at +1,000 rules/pass growth)."""
+    fresh_stats edge cases. On an EngineeredTape, feature columns are zero-copy VIEWS of
+    the tape matrix (the LRU-gather path serves dict tapes/tests only). Replaces a
+    per-rule ``fires()`` SET materialization that cost ~0.6s/rule (~1h40m of the
+    2026-08-14 observation pass at 9.6k rules; the dominant saturation term at +1,000
+    rules/pass growth); the vectorized walk is measured at the shadow gate."""
 
     def __init__(self, engineered, lifts):
         from crypto.research.brain.discovery import scoring as _S
         self._eng = engineered
         self._S = _S
-        self._keys = list(engineered)
+        self._keys = getattr(engineered, "_keys", None) or list(engineered)
         n = len(self._keys)
         self._win = np.fromiter((k[1] for k in self._keys), dtype=np.int64, count=n)
         key_to_row = getattr(engineered, "_key_to_row", None)   # tape: reuse (a second
         if key_to_row is None:                                  # 9.4M map would cost ~1.2G)
             key_to_row = {k: i for i, k in enumerate(self._keys)}
+        elif len(key_to_row) != n:                              # cheap alignment insurance:
+            raise AssertionError(                               # a silently misaligned map
+                f"tape _key_to_row size {len(key_to_row)} != {n} keys")  # corrupts every lift
         self._lift = np.full(n, np.nan, dtype=np.float64)
-        for k, v in lifts.items():
-            i = key_to_row.get(k)
-            if i is not None:
-                self._lift[i] = v
-        self._has_label = ~np.isnan(self._lift)
-        self._cols: dict = {}                                   # tiny LRU
+        self._has_label = np.zeros(n, dtype=bool)               # EXACT `k in lifts` — a NaN
+        for k, v in lifts.items():                              # lift VALUE (impossible by
+            i = key_to_row.get(k)                               # construction) would still
+            if i is not None:                                   # count and propagate, like
+                self._lift[i] = v                               # the scalar path
+                self._has_label[i] = True
+        # Zero-copy tape fast path: EngineeredTape stores the matrix — a column is a view
+        # (~us). The LRU (dict tapes only) bounds gather cost at 8 columns.
+        self._feat_to_col = getattr(engineered, "_feat_to_col", None)
+        self._values = getattr(engineered, "_values", None)
+        self._cols: dict = {}                                   # tiny LRU (dict-tape path)
 
     def _col(self, feature):
+        if self._feat_to_col is not None:
+            i = self._feat_to_col.get(feature)
+            if i is None:
+                return None                                     # feature absent tape-wide
+            return self._values[:, i]                           # view, no copy
         col = self._cols.pop(feature, None)
         if col is None:
             col = self._S._labeled_feature_columns(self._eng, [feature], self._keys)[feature]
@@ -132,6 +147,8 @@ class _SharedWalk:
         mask = None
         for c in rule.conditions:
             col = self._col(c.feature)
+            if col is None:                                     # feature absent tape-wide:
+                return 0, None, None                            # the rule never fires
             cm = col > c.threshold if c.op == ">" else col < c.threshold
             mask = cm if mask is None else (mask & cm)          # NaN compares False
         fresh = (self._win > discovery_window_ns) & self._has_label

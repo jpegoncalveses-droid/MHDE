@@ -45,9 +45,10 @@ DISCOVERED = "discovered"
 CONFIRMING = "confirming"
 PROMOTED = "promoted"
 REJECTED = "rejected"
-#: Terminal-but-RETAINED (pace-collapse expiry, ADR-042): a confirming rule whose
-#: observed fresh pace makes resolution implausible relative to its OWN in-sample firing
-#: rate. The ROW persists — family/cohort provenance survives for the graduation bar.
+#: Terminal-but-RETAINED (pace-collapse expiry, ADR-042): a never-promoted confirming
+#: rule whose forward firing pace has collapsed >= EXPIRE_PACE_FACTOR x vs its own
+#: in-sample rate (window-capped opportunity — time-free once mature). The ROW persists —
+#: family/cohort provenance survives for the graduation bar.
 EXPIRED = "expired"
 
 #: Allowed forward transitions (a same-state set via set_state is a no-op; anything else
@@ -259,26 +260,40 @@ def inherit_exit(conn: sqlite3.Connection, rule_id: str, donor: dict, *,
 def expire_slow_resolvers(conn: sqlite3.Connection, *, now_ns: int, m: int,
                           hysteresis: int, history_ns: int, opportunity_floor: int,
                           pace_factor: int) -> int:
-    """Pace-collapse expiry (ADR-042) — the firing-rate-relative retention that replaced
-    the falsified wall-clock criterion. Opportunity O = n_fires x elapsed / history: the
-    rule's OWN in-sample rate converts calendar exposure into expected fresh INSTANCES.
-    Expire CONFIRMING iff:
-      O >= opportunity_floor      (never judged before M's worth of expected evidence)
-      AND fresh_count < m - hysteresis   (the resolving band — incl. hysteresis demotees
-                                          re-entering with 25-29 fresh — is exempt)
-      AND fresh_count * pace_factor < O  (resolution would need > pace_factor x its
-                                          observed pace's opportunity — implausible).
-    REAL casts: n_fires x elapsed_ns overflows SQLite INTEGER (~1e23 vs 9.2e18).
-    Terminal but retained. Returns the number expired."""
+    """Pace-collapse expiry (ADR-042, redesigned after the BLOCK review).
+
+    Opportunity is WINDOW-CAPPED: O = n_fires x min(elapsed, history)/history — expected
+    fresh instances at the rule's in-sample rate over a window NO LONGER than the rolling
+    window fresh_count itself measures. For mature rules (elapsed >= history) the
+    criterion is therefore the pure forward/in-sample RATE-COLLAPSE ratio
+    (fresh x pace_factor < n_fires) — completely time-free; calendar enters only as the
+    pro-rating of a rule's first 14 days. A rate-stable rule (fresh ~ n_fires) is held
+    forever. (The un-capped form degenerated to a rate-scaled wall clock ~ pace x 14d —
+    the shape the PR #91 review falsified.)
+
+    Expire CONFIRMING iff ALL of:
+      promoted_at_ns IS NULL           — once-promoted rules NEVER pace-expire: demotee
+                                         protection is structural (the operator's
+                                         non-negotiable), not arithmetic; they exit via
+                                         re-promotion or decay-rejection only.
+      O >= opportunity_floor           — never judged before M's worth of expected
+                                         evidence (window-capped).
+      fresh_count < m - hysteresis     — the resolving band [M-H, M) is exempt.
+      fresh_count x pace_factor < O    — resolution implausible at observed pace.
+
+    REAL casts (n_fires x ns overflows SQLite INTEGER). Bulk UPDATE with the source state
+    pinned in WHERE — the CONFIRMING -> EXPIRED edge in _TRANSITIONS is honored by
+    construction (this is the sole producer of EXPIRED). Terminal but retained."""
     with conn:
         cur = conn.execute(
             "UPDATE rules SET state=?, updated_at_ns=? WHERE state=? "
+            "AND promoted_at_ns IS NULL "
             "AND fresh_count < ? "
-            "AND CAST(n_fires AS REAL) * (? - discovered_at_ns) >= CAST(? AS REAL) * ? "
-            "AND CAST(fresh_count AS REAL) * ? * ? < CAST(n_fires AS REAL) * (? - discovered_at_ns)",
+            "AND CAST(n_fires AS REAL) * MIN(? - discovered_at_ns, ?) >= CAST(? AS REAL) * ? "
+            "AND CAST(fresh_count AS REAL) * ? * ? < CAST(n_fires AS REAL) * MIN(? - discovered_at_ns, ?)",
             (EXPIRED, now_ns, CONFIRMING, m - hysteresis,
-             now_ns, opportunity_floor, history_ns,
-             pace_factor, history_ns, now_ns))
+             now_ns, history_ns, opportunity_floor, history_ns,
+             pace_factor, history_ns, now_ns, history_ns))
     return cur.rowcount
 
 

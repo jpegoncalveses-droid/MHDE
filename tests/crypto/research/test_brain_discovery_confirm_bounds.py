@@ -8,11 +8,17 @@ forward_edge are individually correct; (b) cohort provenance untouched; (c) a gh
 real family fails on its own numbers.
 
 MECHANISM 2 — pace-collapse expiry (the firing-rate-relative form of ADR-040's future
-work): opportunity O = n_fires x elapsed / DISCOVERY_HISTORY (the rule's OWN in-sample
-rate converts calendar to instances). Expire CONFIRMING iff O >= floor (=M, no premature
-judgment) AND fresh_count < M-H (the resolving/hysteresis band is exempt — demotees are
-structurally untouchable) AND fresh_count x PACE_FACTOR < O (resolution would need >Kx
-its observed pace's opportunity — implausible). Terminal but retained.
+work), WINDOW-CAPPED after the review round: opportunity O = n_fires x min(elapsed,
+DISCOVERY_HISTORY) / DISCOVERY_HISTORY — expected fresh instances at the rule's OWN
+in-sample rate over a window no longer than the rolling window fresh_count itself
+measures. For mature rules the criterion is the pure forward/in-sample rate-collapse
+ratio (fresh x K < n_fires) — time-free; a rate-stable rule is held forever. Expire
+CONFIRMING iff promoted_at_ns IS NULL (once-promoted rules NEVER pace-expire — demotee
+protection is STRUCTURAL; demotees enter confirming at fresh <= 24, BELOW the [M-H, M)
+band, so the band never protected them) AND O >= floor (=M, no premature judgment) AND
+fresh_count < M-H (the resolving band is exempt) AND fresh_count x PACE_FACTOR < O
+(resolution would need >Kx its observed pace's opportunity — implausible). Terminal but
+retained.
 """
 from __future__ import annotations
 
@@ -178,9 +184,11 @@ def test_young_rule_is_never_judged(tmp_path):
         conn.close()
 
 
-def test_resolving_band_and_demotees_are_exempt(tmp_path):
-    # fresh >= M-H (incl. hysteresis demotees re-entering with 25-29 evidence) is NEVER
-    # expired regardless of opportunity — "their clock reflects that".
+def test_resolving_band_is_exempt(tmp_path):
+    # fresh >= M-H is NEVER expired regardless of opportunity — a rule in the resolving
+    # band is closing on M; judging it there would race the resolution it is about to
+    # get. (Demotees are NOT protected by this band — they enter at fresh <= 24, below
+    # it; their protection is structural, pinned separately below.)
     conn = RS.connect(str(tmp_path / "d.sqlite"))
     try:
         _, rid = _seed(conn, [("f.z", ">", 1.0)], n_fires=400, now=0)
@@ -208,6 +216,58 @@ def test_on_pace_rule_is_held(tmp_path):
                                         history_ns=_H14, opportunity_floor=30,
                                         pace_factor=6) == 0
         assert RS.get_rule(conn, rid)["state"] == RS.CONFIRMING
+    finally:
+        conn.close()
+
+
+def test_mature_rate_stable_rule_is_held_by_the_window_cap(tmp_path):
+    # THE WINDOW-CAP PIN (review round): a MATURE rule (elapsed >> history) firing near
+    # its in-sample rate must be held BECAUSE opportunity is capped at one history
+    # window. fresh=24 sits BELOW the band (m-h=25), so the band does not decide;
+    # capped O = n_fires = 30 passes the floor, and 24*6=144 >= 30 -> held, at ANY age.
+    # The un-capped form (O = n_fires x elapsed/history, = 300 at 10x history) would
+    # expire it (144 < 300) — the rate-scaled wall clock the PR #91 review falsified.
+    # Mutation-verified: reverting MIN() to bare elapsed fails this test.
+    conn = RS.connect(str(tmp_path / "d.sqlite"))
+    try:
+        _, rid = _seed(conn, [("f.z", ">", 1.0)], n_fires=30, now=0)
+        RS.set_state(conn, rid, RS.CONFIRMING, now_ns=1)
+        with conn:
+            conn.execute("UPDATE rules SET fresh_count=24 WHERE rule_id=?", (rid,))
+        for elapsed_windows in (10, 100):            # held forever, not just at 10x
+            assert RS.expire_slow_resolvers(conn, now_ns=elapsed_windows * _H14, m=30,
+                                            hysteresis=5, history_ns=_H14,
+                                            opportunity_floor=30, pace_factor=6) == 0
+        assert RS.get_rule(conn, rid)["state"] == RS.CONFIRMING
+    finally:
+        conn.close()
+
+
+def test_demotee_below_band_is_structurally_protected(tmp_path):
+    # THE STRUCTURAL-PROTECTION PIN (review round): demotees enter confirming at
+    # fresh <= 24 — BELOW the [m-h, m) band — so the band never protected them. What
+    # does is `promoted_at_ns IS NULL` in the expiry WHERE: once-promoted rules NEVER
+    # pace-expire. A never-promoted twin with IDENTICAL numbers expires in the same
+    # call, proving every arithmetic expiry condition was met and ONLY the structural
+    # clause separates them. Mutation-verified: dropping the IS NULL clause fails this.
+    conn = RS.connect(str(tmp_path / "d.sqlite"))
+    try:
+        _, demotee = _seed(conn, [("f.z", ">", 1.0)], n_fires=120, now=0)
+        RS.set_state(conn, demotee, RS.CONFIRMING, now_ns=1)
+        RS.set_state(conn, demotee, RS.PROMOTED, now_ns=2)
+        RS.set_state(conn, demotee, RS.CONFIRMING, now_ns=3)      # hysteresis demotion
+        assert RS.get_rule(conn, demotee)["promoted_at_ns"] == 2  # promoted-ever marker
+        _, twin = _seed(conn, [("g.raw", ">", 1.0)], n_fires=120, now=0)
+        RS.set_state(conn, twin, RS.CONFIRMING, now_ns=1)
+        with conn:
+            conn.execute("UPDATE rules SET fresh_count=4 WHERE rule_id IN (?, ?)",
+                         (demotee, twin))
+        now = _age_ns(60, 120)                       # O = 60 >= floor(30); 4*6=24 < 60
+        assert RS.expire_slow_resolvers(conn, now_ns=now, m=30, hysteresis=5,
+                                        history_ns=_H14, opportunity_floor=30,
+                                        pace_factor=6) == 1
+        assert RS.get_rule(conn, demotee)["state"] == RS.CONFIRMING   # protected
+        assert RS.get_rule(conn, twin)["state"] == RS.EXPIRED         # twin expired
     finally:
         conn.close()
 

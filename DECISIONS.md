@@ -2641,18 +2641,29 @@ correct (equivalence-pinned vs the scalar reference); cohort provenance untouche
 ghost in a real family fails on its own numbers (pinned). ~0.6 s → ~tens of ms per rule.
 
 **Mechanism 2 — pace-collapse expiry** (the firing-rate-relative form owed since the
-PR #91 review falsified the wall-clock criterion). Opportunity O = n_fires × elapsed /
-DISCOVERY_HISTORY — the rule's OWN in-sample rate converts calendar into expected fresh
-INSTANCES. Expire CONFIRMING iff O ≥ CONFIRM_M (no premature judgment) AND fresh_count <
-M−H (the resolving band, incl. hysteresis demotees re-entering with 25-29 fresh, is
-exempt — their clock reflects their evidence) AND fresh_count × EXPIRE_PACE_FACTOR(6) <
-O (resolution would need >6× the observed pace's opportunity — implausible). Terminal
-but retained; rows keep family/cohort/promoted-ever provenance. Expiry is NOT reversed
-on re-discovery: exact-identity re-minting is empirically ~never (~zero canonical-id
-overlap across cohorts) and rewriting discovered_at/cohort would corrupt provenance —
-the FAMILY keeps discovering through new identities.
+PR #91 review falsified the wall-clock criterion; REDESIGNED in the review round — the
+first cut's un-capped O degenerated to a rate-scaled wall clock, the very shape #91
+falsified). Opportunity is WINDOW-CAPPED: O = n_fires × min(elapsed, DISCOVERY_HISTORY)
+/ DISCOVERY_HISTORY — expected fresh INSTANCES at the rule's OWN in-sample rate over a
+window no longer than the rolling window fresh_count itself measures. For mature rules
+(elapsed ≥ history) the criterion is therefore the pure forward/in-sample RATE-COLLAPSE
+ratio (fresh × 6 < n_fires) — time-free; a rate-stable rule is held forever. Expire
+CONFIRMING iff promoted_at_ns IS NULL (once-promoted rules NEVER pace-expire — demotee
+protection is STRUCTURAL, not arithmetic; hysteresis demotees enter confirming at
+fresh ≤ 24, BELOW the [M−H, M) band, so the band never protected them) AND O ≥
+CONFIRM_M (no premature judgment) AND fresh_count < M−H (the resolving band is exempt)
+AND fresh_count × EXPIRE_PACE_FACTOR(6) < O (resolution would need >6× the observed
+pace's opportunity — implausible). Both the window cap and the structural clause are
+mutation-verified pins (reverting either fails its test). Terminal but retained; rows
+keep family/cohort/promoted-ever provenance. Expiry is NOT reversed on re-discovery:
+exact-identity re-minting is empirically ~never (~zero canonical-id overlap across
+cohorts) and rewriting discovered_at/cohort would corrupt provenance — the FAMILY keeps
+discovering through new identities.
 
-**What this does not do:** it does not shrink the steady-state confirming set below the
-~50-70k the resolution pipeline implies — it makes that set affordable (mechanism 1) and
-prunes only pace-collapsed never-resolvers (mechanism 2). The knobs (PACE_FACTOR, the
-opportunity floor) tighten it if the operator wants a smaller standing set.
+**What this does not do: it does not deliver the bound.** Mechanism 1 buys ~8.5 days of
+runway (practical saturation ~17k → ~43k rules); mechanism 2 correctly prunes ~0 on
+today's young population and bites only as rules mature past their first window. The
+un-retained steady state (~72k) still exceeds the post-fix hard saturation (~59k): this
+PR buys runway and a safety valve, not the bound. The bound is the influx fix —
+family-level admission — designed in its own round. The knobs (PACE_FACTOR, the
+opportunity floor) tighten the standing set if the operator wants it smaller.
