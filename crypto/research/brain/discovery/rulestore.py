@@ -257,10 +257,20 @@ def inherit_exit(conn: sqlite3.Connection, rule_id: str, donor: dict, *,
                      "WHERE rule_id=?", (donor["exit_def"], root, now_ns, rule_id))
 
 
-def expire_slow_resolvers(conn: sqlite3.Connection, *, now_ns: int, m: int,
-                          hysteresis: int, history_ns: int, opportunity_floor: int,
-                          pace_factor: int) -> int:
-    """Pace-collapse expiry (ADR-042, redesigned after the BLOCK review).
+def expire_slow_resolvers(conn: sqlite3.Connection, *, now_ns: int, frontier_ns: int,
+                          m: int, hysteresis: int, history_ns: int,
+                          opportunity_floor: int, pace_factor: int) -> int:
+    """Pace-collapse expiry (ADR-042; EVIDENCE clock since F4/KI-166).
+
+    Elapsed is the EVIDENCE clock: ``frontier_ns - discovery_window_ns`` — labeled
+    tape actually appended past the rule's own evidence boundary — never the wall
+    clock. ``fresh_count`` can only accrue when labels are ingested, so opportunity
+    must only accrue with them too: a frozen frontier freezes opportunity (the
+    2026-08-20 incident expired 635 rules on wall-elapsed manufactured by a dead
+    pipe — KI-166; only ~1 survived the evidence clock). ``now_ns`` is ONLY the
+    updated_at stamp. Known transient: after a tape-loss gap the frontier delta
+    OVERCOUNTS labeled exposure for pre-gap mints until the gap rolls out of the
+    window — the runner holds expiry below EXPIRE_RESUME_FRONTIER_NS for that.
 
     Opportunity is WINDOW-CAPPED: O = n_fires x min(elapsed, history)/history — expected
     fresh instances at the rule's in-sample rate over a window NO LONGER than the rolling
@@ -289,11 +299,11 @@ def expire_slow_resolvers(conn: sqlite3.Connection, *, now_ns: int, m: int,
             "UPDATE rules SET state=?, updated_at_ns=? WHERE state=? "
             "AND promoted_at_ns IS NULL "
             "AND fresh_count < ? "
-            "AND CAST(n_fires AS REAL) * MIN(? - discovered_at_ns, ?) >= CAST(? AS REAL) * ? "
-            "AND CAST(fresh_count AS REAL) * ? * ? < CAST(n_fires AS REAL) * MIN(? - discovered_at_ns, ?)",
+            "AND CAST(n_fires AS REAL) * MIN(? - discovery_window_ns, ?) >= CAST(? AS REAL) * ? "
+            "AND CAST(fresh_count AS REAL) * ? * ? < CAST(n_fires AS REAL) * MIN(? - discovery_window_ns, ?)",
             (EXPIRED, now_ns, CONFIRMING, m - hysteresis,
-             now_ns, history_ns, opportunity_floor, history_ns,
-             pace_factor, history_ns, now_ns, history_ns))
+             frontier_ns, history_ns, opportunity_floor, history_ns,
+             pace_factor, history_ns, frontier_ns, history_ns))
     return cur.rowcount
 
 

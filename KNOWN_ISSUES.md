@@ -205,6 +205,21 @@ disk free is still below the soft floor and inodes re-warned 81% on 08-20
 matches — compaction gaps are invisible to labels (gap-handling workstream);
 the 08-15 registry-mismatch damage (1.07M windows) is unaudited.
 
+**F4 update (2026-08-20): the expiry side of the incident.** The three 08-20
+passes expired **635** confirming rules on wall-clock elapsed against the frozen
+frontier — ~all stall artifacts (ADR-042 addendum). Fixed: expiry now runs on
+the EVIDENCE clock (`frontier − discovery_window_ns`; frozen frontier ⇒ frozen
+opportunity; mutation-pinned) and is HELD below `EXPIRE_RESUME_FRONTIER_NS`
+(2026-09-03 = gap end + 14d) so the post-gap frontier delta cannot overcount
+opportunity for pre-gap mints during rollout. The sanctioned one-off
+`scripts/unexpire_ki166_stall_artifacts.py` (dry-run default) restores the
+artifacts to CONFIRMING; genuine evidence-clock expiries stand. Cursor recovery
+itself landed in PR #95 (maroon-jump): all four dense cursors jumped to the tape
+edge 2026-08-20 17:38-17:39 with the intervals flagged in `_gaps`. Note: the
+treadmill-crept portion of the gap (08-15 frontier → 08-18 cursor positions) is
+documented here and in the RCA but not yet in the `_gaps` manifest — optional
+operator one-off (only markprice matters to labels).
+
 ### KI-165 — Brain-store compactor OOM-looped hourly for ~4 days, silently, driving a fan-out → disk-soft-floor → capture-buffer-shrink → dense-cursor-starvation chain
 
 **Severity: HIGH — a silent hourly OOM-kill (no alert on the monitoring plane)

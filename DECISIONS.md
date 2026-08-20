@@ -2667,3 +2667,25 @@ un-retained steady state (~72k) still exceeds the post-fix hard saturation (~59k
 PR buys runway and a safety valve, not the bound. The bound is the influx fix —
 family-level admission — designed in its own round. The knobs (PACE_FACTOR, the
 opportunity floor) tighten the standing set if the operator wants it smaller.
+
+**Addendum (2026-08-20, F4/KI-166) — the EVIDENCE clock.** Mechanism 2's first
+production application exposed a clock defect: elapsed was `now − discovered_at` —
+wall clock — while `fresh_count` can only accrue with label ingestion. With the
+frontier frozen (the KI-166 substrate stall), wall-elapsed manufactured opportunity
+out of a dead pipe: 635 rules were expired across three passes, ~all artifacts
+(post-freeze mints had zero ingestible fresh by construction); the terminal EXPIRED
+state made a pipeline outage permanently kill rules — the very missing-data-as-quiet
+bias D9 exists to forbid (its third instance, after the 48h wall-clock criterion and
+the un-capped O). Corrected: elapsed = `frontier − discovery_window_ns` — labeled
+tape actually appended past the rule's own evidence boundary; a frozen frontier
+freezes opportunity (mutation-pinned). `now_ns` remains only the updated_at stamp.
+The stall artifacts are restored by the sanctioned one-off
+`scripts/unexpire_ki166_stall_artifacts.py` (evidence-clock predicate recomputed at
+the frozen frontier; genuine expiries stand). Known transient: after a tape-loss gap
+the frontier delta OVERCOUNTS labeled exposure for pre-gap mints until the gap rolls
+out of the 14-day window — expiry is HELD below `EXPIRE_RESUME_FRONTIER_NS`
+(2026-09-03 for this incident; 0 disables the hold; a future gap-aware clock could
+subtract `_gaps` intervals instead). Also corrected here for the record: mechanism
+1's per-rule cost is ~234 ms measured at the shadow gate and corroborated in
+production — the "~tens of ms" phrasing above was a projection that did not
+materialize end-to-end; saturation stands at ~43k practical / ~59k hard.

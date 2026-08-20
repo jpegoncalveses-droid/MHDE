@@ -151,6 +151,14 @@ CONFIRM_DEMOTE_HYSTERESIS = 5
 #: confirmation) carries the saturation fix. Operator-tunable.
 EXPIRE_PACE_FACTOR = 6
 
+#: KI-166 incident hold (F4): expiry runs only once the frontier has passed this value.
+#: After the 08-15->08-20 tape-loss gap, ``frontier - discovery_window`` OVERCOUNTS
+#: labeled exposure for pre-gap mints until the 5-day hole rolls out of the 14-day
+#: window — judging pace against overcounted opportunity would re-manufacture
+#: artifacts. 2026-09-03 00:00 UTC = gap end (2026-08-20) + DISCOVERY_HISTORY (14d).
+#: Set to 0 to disable the hold (the steady-state value once removed). Operator-tunable.
+EXPIRE_RESUME_FRONTIER_NS = 1_788_393_600_000_000_000
+
 # -- §7 Stage-2 conditional exit discovery ------------------------------------
 #: Excursion-level exits as MULTIPLES OF THE COIN'S VOLATILITY (not fixed %), so a
 #: target/stop means the same thing across coins. Coin vol = the per-coin baseline
