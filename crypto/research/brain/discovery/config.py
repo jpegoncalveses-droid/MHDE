@@ -159,6 +159,15 @@ EXPIRE_PACE_FACTOR = 6
 #: Set to 0 to disable the hold (the steady-state value once removed). Operator-tunable.
 EXPIRE_RESUME_FRONTIER_NS = 1_788_393_600_000_000_000
 
+# -- Option 2 family-level admission (ADR-043) ---------------------------------
+#: Max CONCURRENT confirming seats per family (a seat = a confirming row carrying
+#: n_fires_at_admission). Three cohort-distinct seats let the graduation bar's
+#: "3+ cohorts" accrue in PARALLEL while bounding the standing set to
+#: ~(active families x k). k=1 degenerates to the sticky-seat bound (serialized
+#: bar); the resolvability floor is CONFIRM_M itself (no separate constant).
+#: Operator-tunable. Design: data/processed/family_admission_design.md.
+ADMIT_MAX_PER_FAMILY = 3
+
 # -- §7 Stage-2 conditional exit discovery ------------------------------------
 #: Excursion-level exits as MULTIPLES OF THE COIN'S VOLATILITY (not fixed %), so a
 #: target/stop means the same thing across coins. Coin vol = the per-coin baseline

@@ -31,6 +31,7 @@ from crypto.research.brain import labels as brain_labels
 from crypto.research.brain import registry as brain_registry
 from crypto.research.brain import store as brain_store
 from crypto.research.brain.discovery import config as dcfg
+from crypto.research.brain.discovery import admission as AD
 from crypto.research.brain.discovery import confirmation as CF
 from crypto.research.brain.discovery import engineered as E
 from crypto.research.brain.discovery import exits as X
@@ -169,6 +170,7 @@ def run_discovery_pass(conn, engineered, lifts, price_index, coin_vols, *, featu
                        confirm_hysteresis=dcfg.CONFIRM_DEMOTE_HYSTERESIS,
                        expire_pace_factor=dcfg.EXPIRE_PACE_FACTOR,
                        expire_resume_frontier_ns=dcfg.EXPIRE_RESUME_FRONTIER_NS,
+                       admit_max_per_family=dcfg.ADMIT_MAX_PER_FAMILY,
                        exit_grid=None, window_ns=dcfg.WINDOW_NS, seed=0) -> dict:
     """One discovery pass over already-loaded data. Returns a summary dict."""
     exit_grid = exit_grid if exit_grid is not None else X.build_exit_grid()
@@ -179,13 +181,23 @@ def run_discovery_pass(conn, engineered, lifts, price_index, coin_vols, *, featu
         engineered, lifts, feature_ids=feature_ids, n_bins=n_bins,
         n_permutations=n_permutations, null_quantile=null_quantile, min_firing=min_firing,
         max_depth=max_depth, beam_width=beam_width, seed=seed)
+    # The run row is recorded FIRST so its run_id stamps every fresh insert's cohort
+    # (minted_run_id, S1/ADR-043) — cohort identity is first-class, not a timestamp
+    # join. Re-run safety unchanged: upserts dedupe on rule_id.
+    run_id = RS.record_run(conn, started_at_ns=now_ns, frontier_ns=frontier_ns,
+                           score_horizon_min=score_horizon_min, funnel=diagnostics,
+                           n_survivors=len(survivors))
     for er in survivors:
         breadth = len({k[0] for k in R.fires(er.rule, engineered)})
         RS.upsert_entry(conn, er, score_horizon_min=score_horizon_min, breadth=breadth,
-                        discovery_window_ns=frontier_ns, now_ns=now_ns)
-    RS.record_run(conn, started_at_ns=now_ns, frontier_ns=frontier_ns,
-                  score_horizon_min=score_horizon_min, funnel=diagnostics,
-                  n_survivors=len(survivors))
+                        discovery_window_ns=frontier_ns, now_ns=now_ns,
+                        minted_run_id=run_id)
+
+    # 1b. Family-level admission (ADR-043): gate the DISCOVERED->CONFIRMING advance —
+    # resolvability floor (n_fires >= M), one per family per pass, quota k concurrent
+    # seats, in-sample margin selection; losers are BENCHED (never walked). This is
+    # THE bound on the confirming set (the walk's cost is linear in it).
+    adm = AD.run_admission(conn, m=m, k=admit_max_per_family, now_ns=now_ns)
 
     # 2. Forward confirmation: advance discovered->confirming->promoted|rejected.
     conf = CF.run_confirmation(conn, engineered, lifts, m=m, z=z,
@@ -203,8 +215,16 @@ def run_discovery_pass(conn, engineered, lifts, price_index, coin_vols, *, featu
             hysteresis=confirm_hysteresis,
             history_ns=dcfg.DISCOVERY_HISTORY_NS, opportunity_floor=m,
             pace_factor=expire_pace_factor)
+        # S8 mature-seat eviction (ADR-042 amendment): drains the dead zone
+        # (mature, never-promoted, below the resolving band) that pace-expiry
+        # structurally cannot, so seats always turn over. Same evidence clock,
+        # same gap-rollout hold.
+        n_evicted = RS.evict_mature_unresolved(
+            conn, now_ns=now_ns, frontier_ns=frontier_ns, m=m,
+            hysteresis=confirm_hysteresis, history_ns=dcfg.DISCOVERY_HISTORY_NS)
     else:
         n_expired = 0
+        n_evicted = 0
         logger.info("brain discovery: pace-expiry HELD — frontier %d below the KI-166 "
                     "gap-rollout resume threshold %d", frontier_ns,
                     expire_resume_frontier_ns)
@@ -258,7 +278,7 @@ def run_discovery_pass(conn, engineered, lifts, price_index, coin_vols, *, featu
         trades_logged += TL.record_trades(conn, trades, exit_def=row["exit_def"], now_ns=now_ns)
 
     return {"survivors": len(survivors), "diagnostics": diagnostics, "exits_found": exits_found,
-            "exits_inherited": exits_inherited, "expired": n_expired,
+            "exits_inherited": exits_inherited, "expired": n_expired, "evicted": n_evicted, "admitted": adm["admitted"], "benched": adm["benched"],
             "trades_logged": trades_logged, **conf}
 
 

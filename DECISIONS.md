@@ -2689,3 +2689,71 @@ subtract `_gaps` intervals instead). Also corrected here for the record: mechani
 1's per-rule cost is ~234 ms measured at the shadow gate and corroborated in
 production — the "~tens of ms" phrasing above was a projection that did not
 materialize end-to-end; saturation stands at ~43k practical / ~59k hard.
+
+## ADR-043 — family-level confirmation admission: cohort-diverse quota + resolvability floor + bench (Option 2)
+
+**Date:** 2026-08-20 · **Status:** accepted (operator-selected Option 2 of the
+design round; full analysis with the five-invariant compliance matrix, projections,
+and rejected alternatives: `data/processed/family_admission_design.md`, draft v2,
+adversarially verified)
+
+**Context.** ADR-042 bought runway, not the bound. Measured 2026-08-20: ~71% of the
+confirming set has NO exit path (`n_fires < M` ⇒ never pace-expirable since
+window-capped `O ≤ n_fires`; sub-M/window forward rate ⇒ `fresh` never reaches M ⇒
+never promotes or rejects) — un-admitted, the set grows linearly (~+1,800-2,600/day)
+with practical saturation ~9-17 live days out. The re-mint drift drain measured
+exactly zero across all 13 moving-frontier passes. Admission is the only available
+bound, and the graduation bar's unit — the FAMILY — is its natural grain.
+
+**Mechanism.** Admission gates the DISCOVERED→CONFIRMING advance (`admission.py`,
+between stage-1 and confirmation):
+- **Resolvability floor**: only variants with `n_fires ≥ CONFIRM_M` compete — a
+  sub-floor rule can neither resolve nor expire; benching it loses nothing the bar
+  could measure. The floor IS M (tracks any retune; D9: an instance count).
+- **One per family per pass** (same-pass variants are threshold jitter), selected by
+  IN-SAMPLE `null_margin` DESC (tiebreak `rule_id`) — no out-of-sample state ever
+  enters the decision (invariant a).
+- **Quota k = ADMIT_MAX_PER_FAMILY (3) concurrent seats**; a seat = a confirming row
+  carrying `n_fires_at_admission` with `promoted_at_ns` NULL. Demotees keep the lane:
+  they never consume a seat and re-enter through the untouched demotion edge
+  (invariant d). Seats are cohort-distinct by construction (one admission per pass;
+  `minted_run_id` — stamped at INSERT from the pass's run row, recorded FIRST — makes
+  cohorts first-class; UNIQUE index on `discovery_runs.started_at_ns` retires the
+  timestamp-join convention).
+- **INSERT-only domain**: re-mints take the UPDATE path and keep their state — a
+  benched/terminal identity can never re-enter via admission (its refreshed
+  in-sample window would overlap its own forward record).
+- **BENCHED**: terminal-but-retained v1, never walked, no exit work, donor-eligible
+  (exit validity is per-family, ADR-040; F4's exclusion targeted REJECTED — judged —
+  rules). The bench is the family's countable trial denominator: per-family
+  multiplicity drops from unbounded (avg 18.7, max 257 concurrent) to ≤ 3.
+- **S8 mature-seat eviction (ADR-042 amendment)**: the measured dead zone — mature,
+  never-promoted, stable fresh in `[n_fires/pace, M)` — can neither resolve nor
+  pace-expire ("a rate-stable rule is held forever" predates seat scarcity; 53% of
+  floor-passing rules measured in the zone). Once mature on the EVIDENCE clock
+  (`frontier − discovery_window ≥ DISCOVERY_HISTORY`), a rule below the resolving
+  band is evicted (EXPIRED, reject_reason "mature-evicted (S8)"). Band [M−H, M)
+  stays exempt (ADR-041); demotees structurally exempt; runs under the same KI-166
+  gap-rollout hold as pace-expiry.
+- **S9 anti-drift**: expiry judges opportunity against
+  `MAX(n_fires, n_fires_at_admission)` — a deflating re-mint can never revoke a
+  seat's expirability (the absorbing stuck-seat leak, closed structurally).
+- **Cohort credit (invariant c)**: family F promoted in cohort N ⇔ ∃ member with
+  `minted_run_id = N` and `promoted_at_ns` set. At most one member per
+  (family, cohort) ever confirms, so credits are unambiguous; the bar's exact
+  predicate remains operator-ratified (design doc §10 item 2).
+
+**Migration** (`scripts/migrate_option2_admission.py`, sanctioned one-off, dry-run
+default): the standing confirming set through the same predicate — band and
+promoted-ever exempt unstamped, ≤ k cohort-distinct floor-passing seats per family
+by margin, rest benched. Live dry-run at build time: 13,535 → 783 confirming
+(744 seats + 38 band + 1 demotee), −94.2%; confirm term ~53 → ~3 min/pass.
+
+**What this buys / costs.** Bounds the confirming set to ~(active families × k)
+(design projection ~650-1,500 steady; migration proxy 783) with the bar's "3+
+cohorts" accruing in PARALLEL. Cost: a family's edge living in a variant its seats
+miss is covered by three concurrent cohort-diverse shots plus seat turnover
+(S8-guaranteed) rather than unbounded concurrency; per-family trials become
+countable. Explicitly NOT bounded: the PROMOTED set (success frees slots) — watch
+trigger ~500 promoted forces the graduation/retirement policy decision (design doc
+§10 item 9).
