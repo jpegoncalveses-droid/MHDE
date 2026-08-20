@@ -157,7 +157,7 @@ def test_pace_collapsed_slow_resolver_expires(tmp_path):
         with conn:
             conn.execute("UPDATE rules SET fresh_count=4 WHERE rule_id=?", (rid,))
         now = _age_ns(60, 120)                       # O = 60 >= floor(30); 4*6=24 < 60
-        n = RS.expire_slow_resolvers(conn, now_ns=now, m=30, hysteresis=5,
+        n = RS.expire_slow_resolvers(conn, now_ns=now, frontier_ns=now, m=30, hysteresis=5,
                                      history_ns=_H14, opportunity_floor=30, pace_factor=6)
         assert n == 1
         row = RS.get_rule(conn, rid)
@@ -176,7 +176,7 @@ def test_young_rule_is_never_judged(tmp_path):
         with conn:
             conn.execute("UPDATE rules SET fresh_count=0 WHERE rule_id=?", (rid,))
         now = _age_ns(29, 120)                       # O = 29 < floor(30)
-        assert RS.expire_slow_resolvers(conn, now_ns=now, m=30, hysteresis=5,
+        assert RS.expire_slow_resolvers(conn, now_ns=now, frontier_ns=now, m=30, hysteresis=5,
                                         history_ns=_H14, opportunity_floor=30,
                                         pace_factor=6) == 0
         assert RS.get_rule(conn, rid)["state"] == RS.CONFIRMING
@@ -196,7 +196,7 @@ def test_resolving_band_is_exempt(tmp_path):
         with conn:
             conn.execute("UPDATE rules SET fresh_count=25 WHERE rule_id=?", (rid,))
         now = _age_ns(10_000, 400)                   # enormous opportunity
-        assert RS.expire_slow_resolvers(conn, now_ns=now, m=30, hysteresis=5,
+        assert RS.expire_slow_resolvers(conn, now_ns=now, frontier_ns=now, m=30, hysteresis=5,
                                         history_ns=_H14, opportunity_floor=30,
                                         pace_factor=6) == 0
         assert RS.get_rule(conn, rid)["state"] == RS.CONFIRMING
@@ -212,7 +212,7 @@ def test_on_pace_rule_is_held(tmp_path):
         with conn:
             conn.execute("UPDATE rules SET fresh_count=12 WHERE rule_id=?", (rid,))
         now = _age_ns(60, 120)                       # O = 60; 12*6=72 >= 60 -> on pace
-        assert RS.expire_slow_resolvers(conn, now_ns=now, m=30, hysteresis=5,
+        assert RS.expire_slow_resolvers(conn, now_ns=now, frontier_ns=now, m=30, hysteresis=5,
                                         history_ns=_H14, opportunity_floor=30,
                                         pace_factor=6) == 0
         assert RS.get_rule(conn, rid)["state"] == RS.CONFIRMING
@@ -235,7 +235,7 @@ def test_mature_rate_stable_rule_is_held_by_the_window_cap(tmp_path):
         with conn:
             conn.execute("UPDATE rules SET fresh_count=24 WHERE rule_id=?", (rid,))
         for elapsed_windows in (10, 100):            # held forever, not just at 10x
-            assert RS.expire_slow_resolvers(conn, now_ns=elapsed_windows * _H14, m=30,
+            assert RS.expire_slow_resolvers(conn, now_ns=elapsed_windows * _H14, frontier_ns=elapsed_windows * _H14, m=30,
                                             hysteresis=5, history_ns=_H14,
                                             opportunity_floor=30, pace_factor=6) == 0
         assert RS.get_rule(conn, rid)["state"] == RS.CONFIRMING
@@ -263,7 +263,7 @@ def test_demotee_below_band_is_structurally_protected(tmp_path):
             conn.execute("UPDATE rules SET fresh_count=4 WHERE rule_id IN (?, ?)",
                          (demotee, twin))
         now = _age_ns(60, 120)                       # O = 60 >= floor(30); 4*6=24 < 60
-        assert RS.expire_slow_resolvers(conn, now_ns=now, m=30, hysteresis=5,
+        assert RS.expire_slow_resolvers(conn, now_ns=now, frontier_ns=now, m=30, hysteresis=5,
                                         history_ns=_H14, opportunity_floor=30,
                                         pace_factor=6) == 1
         assert RS.get_rule(conn, demotee)["state"] == RS.CONFIRMING   # protected
@@ -279,7 +279,7 @@ def test_expired_is_terminal_and_outside_all_walks(tmp_path):
         RS.set_state(conn, rid, RS.CONFIRMING, now_ns=1)
         with conn:
             conn.execute("UPDATE rules SET fresh_count=0 WHERE rule_id=?", (rid,))
-        RS.expire_slow_resolvers(conn, now_ns=_age_ns(60, 120), m=30, hysteresis=5,
+        RS.expire_slow_resolvers(conn, now_ns=_age_ns(60, 120), frontier_ns=_age_ns(60, 120), m=30, hysteresis=5,
                                  history_ns=_H14, opportunity_floor=30, pace_factor=6)
         assert RS.get_rule(conn, rid)["state"] == RS.EXPIRED
         eng = {(f"S{i % 7}", i * _W): {"f": 1.0} for i in range(1, 61)}

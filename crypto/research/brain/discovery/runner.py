@@ -20,6 +20,7 @@ settled AFTER discovery.
 from __future__ import annotations
 
 import hashlib
+import logging
 import statistics
 from typing import Mapping, Optional, Sequence
 
@@ -149,6 +150,15 @@ def _entry_continuations(entry_rule, engineered, price_index, coin_vols, *, max_
     return conts, vols
 
 
+logger = logging.getLogger("mhde.crypto.brain.discovery")
+
+
+def _expiry_active(*, frontier_ns: int, resume_ns: int) -> bool:
+    """The KI-166 gap-rollout hold: pace-expiry runs only once the frontier has
+    reached ``resume_ns`` (0 = no hold). Frontier-relative, never wall-clock."""
+    return frontier_ns >= resume_ns
+
+
 def run_discovery_pass(conn, engineered, lifts, price_index, coin_vols, *, feature_ids,
                        frontier_ns, now_ns, score_horizon_min=dcfg.SCORE_HORIZON_MIN,
                        n_bins=dcfg.QUANTILE_BINS, n_permutations=dcfg.N_PERMUTATIONS,
@@ -158,6 +168,7 @@ def run_discovery_pass(conn, engineered, lifts, price_index, coin_vols, *, featu
                        m=dcfg.CONFIRM_M, z=dcfg.CONFIRM_Z,
                        confirm_hysteresis=dcfg.CONFIRM_DEMOTE_HYSTERESIS,
                        expire_pace_factor=dcfg.EXPIRE_PACE_FACTOR,
+                       expire_resume_frontier_ns=dcfg.EXPIRE_RESUME_FRONTIER_NS,
                        exit_grid=None, window_ns=dcfg.WINDOW_NS, seed=0) -> dict:
     """One discovery pass over already-loaded data. Returns a summary dict."""
     exit_grid = exit_grid if exit_grid is not None else X.build_exit_grid()
@@ -182,11 +193,21 @@ def run_discovery_pass(conn, engineered, lifts, price_index, coin_vols, *, featu
 
     # 2b. Pace-collapse retention (ADR-042): AFTER confirmation so this pass's recount is
     # what is judged; before stage-2 so expired rules draw no exit work. Terminal but
-    # retained — family/cohort provenance survives for the graduation bar.
-    n_expired = RS.expire_slow_resolvers(
-        conn, now_ns=now_ns, m=m, hysteresis=confirm_hysteresis,
-        history_ns=dcfg.DISCOVERY_HISTORY_NS, opportunity_floor=m,
-        pace_factor=expire_pace_factor)
+    # retained — family/cohort provenance survives for the graduation bar. Runs on the
+    # EVIDENCE clock (frontier, F4/KI-166) and only once the frontier has passed the
+    # gap-rollout hold (otherwise the post-gap frontier delta overcounts opportunity
+    # for pre-gap mints and re-manufactures stall artifacts).
+    if _expiry_active(frontier_ns=frontier_ns, resume_ns=expire_resume_frontier_ns):
+        n_expired = RS.expire_slow_resolvers(
+            conn, now_ns=now_ns, frontier_ns=frontier_ns, m=m,
+            hysteresis=confirm_hysteresis,
+            history_ns=dcfg.DISCOVERY_HISTORY_NS, opportunity_floor=m,
+            pace_factor=expire_pace_factor)
+    else:
+        n_expired = 0
+        logger.info("brain discovery: pace-expiry HELD — frontier %d below the KI-166 "
+                    "gap-rollout resume threshold %d", frontier_ns,
+                    expire_resume_frontier_ns)
 
     # 3. Stage 2: exit discovery for confirming/promoted entries that still lack an exit.
     # FAMILY-DEDUPED: rule identity re-mints ~1,000 near-duplicates per pass (thresholds
