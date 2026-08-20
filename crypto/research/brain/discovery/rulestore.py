@@ -140,6 +140,23 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # in SESSION_LOG). Idempotent: new promotions set the marker at set_state.
     conn.execute("UPDATE rules SET promoted_at_ns = updated_at_ns "
                  "WHERE state = 'promoted' AND promoted_at_ns IS NULL")
+    # Trade-log promoted-ever recovery (F5/KI-166, operator-approved 2026-08-20).
+    # Stage-4 writes simulated_trades ONLY for PROMOTED rules, so a trade row proves
+    # once-promoted. Rules demoted/rejected BEFORE the 2026-08-14 marker migration kept
+    # NULL (the backfill above could only see the standing promoted set — the D5 hole),
+    # leaving hidden demotees without the structural expiry protection D4 promises
+    # (3 confirming rows found unprotected 2026-08-20). First-promotion approximation:
+    # the EARLIEST recorded trade — the same first-evidence spirit as updated_at_ns
+    # above. Set-once preserved (only NULL markers are written); a DB without the
+    # stage-4 table (created by tradelog.ensure_schema, not here) skips cleanly.
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                    "AND name='simulated_trades'").fetchone():
+        conn.execute(
+            "UPDATE rules SET promoted_at_ns = ("
+            "SELECT MIN(t.recorded_at_ns) FROM simulated_trades t "
+            "WHERE t.rule_id = rules.rule_id) "
+            "WHERE promoted_at_ns IS NULL "
+            "AND rule_id IN (SELECT DISTINCT rule_id FROM simulated_trades)")
     for row in conn.execute(
             "SELECT rule_id, entry_def FROM rules WHERE family_key IS NULL").fetchall():
         conn.execute("UPDATE rules SET family_key=? WHERE rule_id=?",
