@@ -220,6 +220,17 @@ treadmill-crept portion of the gap (08-15 frontier → 08-18 cursor positions) i
 documented here and in the RCA but not yet in the `_gaps` manifest — optional
 operator one-off (only markprice matters to labels).
 
+**F5 update (2026-08-20): the D5 marker hole closed.** `_migrate` now recovers
+promoted-ever markers from the trade log (stage-4 writes `simulated_trades` only
+for PROMOTED rules — a trade row proves once-promoted; earliest `recorded_at_ns`
+approximates first promotion, same first-evidence spirit as the PR #93 backfill).
+Live scope on deploy: 70 NULL-marker rules gain markers — 3 CONFIRMING (the
+hidden demotees, now structurally expiry-protected per D4) + 67 rejected
+(promoted-ever history restored for the bar's cohort tracking). The ~16
+pre-2026-08-14 demotees that never logged a trade remain a SESSION_LOG-only
+hole (bounded, accepted in PR #93). Applies automatically at the next
+`rulestore.connect` (next discovery pass).
+
 ### KI-165 — Brain-store compactor OOM-looped hourly for ~4 days, silently, driving a fan-out → disk-soft-floor → capture-buffer-shrink → dense-cursor-starvation chain
 
 **Severity: HIGH — a silent hourly OOM-kill (no alert on the monitoring plane)
