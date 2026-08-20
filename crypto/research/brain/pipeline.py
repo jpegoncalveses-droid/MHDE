@@ -27,11 +27,16 @@ Isolation: reads capture READ-ONLY; writes only the brain store + registry.
 """
 from __future__ import annotations
 
+import logging
 import pathlib
+from datetime import datetime, timezone
 from typing import Iterable, NamedTuple, Optional, Sequence
 
 from crypto.research.brain import config as cfg
 from crypto.research.brain import registry, store
+from crypto.research.capture_core import store as capture_store
+
+logger = logging.getLogger("mhde.crypto.brain.pipeline")
 
 _MS_TO_NS = 1_000_000
 
@@ -249,6 +254,62 @@ def run_once(
         conn.close()
 
 
+# -- maroon-jump: escape a cursor stranded below the surviving tape (KI-166) ---
+
+#: The _gaps ``stream`` value per capture dataset. markPrice must carry the
+#: combined-stream prefix the label builder consumes (labels.py
+#: MARK_GAP_STREAM_PREFIX = "!markPrice@arr" filters with startswith); everything
+#: else keeps the capture dir name, the compaction-gap convention.
+_MAROON_GAP_STREAMS = {"markPrice": "!markPrice@arr"}
+
+
+def _maroon_gap_stream(capture_dataset: str) -> str:
+    return _MAROON_GAP_STREAMS.get(capture_dataset, capture_dataset)
+
+
+def _oldest_tape_start_ns(capture_root: str, capture_dataset: str) -> Optional[int]:
+    """UTC-midnight ns of the OLDEST ``date=`` partition that still HOLDS data for
+    ``capture_dataset`` — the surviving tape's lower edge. Retention can leave an
+    emptied date dir behind, so the oldest candidate is verified to contain at least
+    one part file before it counts. ``None`` when the dataset has no data at all.
+    Directory listings only (no parquet opened); called only on zero-row passes."""
+    base = pathlib.Path(capture_root, capture_dataset)
+    if not base.exists():
+        return None
+    dates: set = set()
+    for sym in base.glob("symbol=*"):
+        if not sym.is_dir():
+            continue
+        for d in sym.glob("date=*"):
+            if d.is_dir():
+                dates.add(d.name[len("date="):])
+    for ds in sorted(dates):                     # ISO dates: lexicographic == chronological
+        if next(base.glob(f"symbol=*/date={ds}/*.parquet"), None) is None:
+            continue                             # emptied by retention -- not real tape
+        try:
+            day = datetime.strptime(ds, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+        return int(day.timestamp()) * 1_000_000_000
+    return None
+
+
+def _persist_maroon_gap(capture_root: str, spec, start_ns: int, end_ns: int,
+                        now_ns: int) -> None:
+    """Flag the jumped interval in the capture ``_gaps`` manifest (flag-don't-drop:
+    pruned tape is MISSING data, never a quiet window — the no-bias rule)."""
+    w = capture_store.gap_writer(str(capture_root))
+    w.append({
+        "symbol": "*",
+        "stream": _maroon_gap_stream(spec.capture_dataset),
+        "gap_start_ms": start_ns // _MS_TO_NS,
+        "gap_end_ms": end_ns // _MS_TO_NS,
+        "reason": "brain maroon-jump: raw tape pruned below the reader cursor (KI-166)",
+        "recorded_recv_ts_ns": now_ns,
+    })
+    w.flush_all()
+
+
 def run_pass(
     spec,
     *,
@@ -312,6 +373,24 @@ def run_pass(
             g_max_settled, g_min_pending, cursor_before,
             read_ceiling_ns=read_ceiling_ns, horizon_ns=horizon_ns, cadence_ns=cadence_ns,
             real_settle_floor_ns=now_ns - watermark_ns - cadence_ns)
+        # MAROON-JUMP (KI-166): a zero-row bounded pass whose whole window lies BELOW
+        # the oldest surviving raw partition can never reach data by quiet-skipping
+        # (+W-watermark-cadence per pass vs a tape edge that moves a day per midnight
+        # prune). Jump to the surviving tape's edge and FLAG the interval as a capture
+        # gap. Genuine quiet tape (partitions exist spanning the window) never jumps.
+        maroon_jump_ns = 0
+        if rows_read == 0 and read_ceiling_ns is not None:
+            oldest_ns = _oldest_tape_start_ns(capture_root, spec.capture_dataset)
+            if oldest_ns is not None and oldest_ns > read_ceiling_ns:
+                target = min(oldest_ns - 1, now_ns - watermark_ns - cadence_ns)
+                if target > new_cursor:
+                    _persist_maroon_gap(capture_root, spec, cursor_before, target, now_ns)
+                    logger.warning(
+                        "brain pipeline: %s cursor MAROONED below surviving tape — "
+                        "jumping %d -> %d (+%.1fh); interval flagged to _gaps (KI-166)",
+                        spec.reader_name, cursor_before, target,
+                        (target - cursor_before) / 3.6e12)
+                    new_cursor = maroon_jump_ns = target
         registry.advance(conn, spec.reader_name, new_recv_ts_ns=new_cursor,
                          bookkeeping=(), now_ns=now_ns)
         return {
@@ -324,6 +403,7 @@ def run_pass(
             "files_written": files_written,
             "cursor_before": cursor_before,
             "cursor_after": registry.get_cursor(conn, spec.reader_name),
+            "maroon_jump_ns": maroon_jump_ns,
         }
     finally:
         conn.close()

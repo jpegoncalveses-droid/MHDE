@@ -163,6 +163,48 @@ The historical record of resolved bugs lives in
 
 ## Open
 
+### KI-166 — Frontier stall 2026-08-15→08-20: dense cursors marooned below a disk-guard-truncated tape; 5-day dense/label gap (permanent); frontier + labels + discovery frozen silently
+
+**Severity: CRITICAL (production data loss + 5 silent days). Recurrence of the
+[[KI-165]] chain with a new terminal mechanism. Fix in this change (maroon-jump +
+frontier monitor); the chronic disk-pressure precondition ([[KI-164]]) still needs
+an operator decision. Full RCA: `data/processed/frontier_stall_rca.md`.**
+
+Chronic free-space < the 50 GiB disk-guard soft floor collapsed raw firehose
+retention from 7d to <13-24h (guard prunes everything but today). During the
+Aug 13-15 discovery-load spike (6h cadence + shadow run + host kernel OOM kills),
+the four dense brain cursors fell >1 day behind and the tape was deleted out from
+under them (mass `FileNotFoundError` 08-15 03:05-03:06; brain-compact killed mid
+replace-then-delete → 1,074,704 registry-mismatch windows). Once the cursors
+drained the surviving backlog (08-16 03:55), every bounded read found a void: the
+quiet-gap skip advances `W − watermark − cadence` (+150s tape/tick) against a
+~148s mean tick wall — ~1.0× real-time — while the surviving tape's edge jumps a
+day forward every midnight prune. Settlement is cursor-gated, so the frontier
+froze at the deleted region's data-time boundaries (bookticker/trades 08-15
+02:03, forceorder 03:01, markprice 06:04); labels dead since 08-16 04:01;
+discovery re-scored a frozen substrate for 4+ days (byte-identical funnels).
+Silent because `max_lag`/`sources=4/4 ok` are liveness-shaped and the
+substrate-freshness monitor watched `MAX(reader_cursor.updated_at_ns)` — bumped
+every tick regardless of progress.
+
+Fixed in this change: (1) **maroon-jump** — a zero-row bounded pass whose whole
+window lies below the oldest surviving raw partition jumps the cursor to the
+tape's edge and flags the skipped interval in the capture `_gaps` manifest
+(flag-don't-drop; markPrice gaps use the label-consumed `!markPrice@arr` stream
+name); the current stall self-heals on deploy (brain-tick restart). (2)
+**frontier watch** — `substrate_freshness` now samples per-dataset
+`MAX(window_end_ns)` (`brain/frontier/<ds>`, dense 2h / REST-derived 6h
+thresholds), the exact signal discovery consumes.
+
+Residuals (open): the 08-15→08-20 dense/label gap is UNRECOVERABLE (tape
+deleted) — flagged, never zero-fill; registry retention deletes the frozen
+frontier rows on 2026-08-26 00:45 (deploy before then keeps MAX() meaningful);
+disk free is still below the soft floor and inodes re-warned 81% on 08-20
+([[KI-164]] decision pending); compaction-inferred `_gaps` records use
+`stream=dataset` which the labels filter (`!markPrice@arr` prefix) never
+matches — compaction gaps are invisible to labels (gap-handling workstream);
+the 08-15 registry-mismatch damage (1.07M windows) is unaudited.
+
 ### KI-165 — Brain-store compactor OOM-looped hourly for ~4 days, silently, driving a fan-out → disk-soft-floor → capture-buffer-shrink → dense-cursor-starvation chain
 
 **Severity: HIGH — a silent hourly OOM-kill (no alert on the monitoring plane)
@@ -328,6 +370,21 @@ monitor-data-quality (02:00), monitor-dashboard (03:30), paper-trading-drift,
 streamlit-freshness, dashboard-synthetic. Needs triage: common-cause (env/DB
 path/permission) vs per-monitor. Not investigated further in the drift
 workstream.
+
+**Triaged 2026-08-20 (during the [[KI-166]] RCA; fleet still red, fix is its own
+round):** (1) the bulk crash with `CatalogException` on the dropped `fx_*`/equity
+tables since ~2026-06-18 — pipeline (`monitoring/pipeline_execution.py:88`), smoke
+(`smoke_test.py:39`), data-quality, model-perf, cross-artifact, dashboard,
+dashboard-synthetic, continuous (FX check red 48/48 runs/day), AND
+`mhde-health-check` (`pipelines/health_check.py:47`) — the morning Telegram
+heartbeat has been dead since then; all die BEFORE `send_alert`. (2) DuckDB
+`InternalException` on `engine_runs` (continuous + paper-trading-drift, 972
+occurrences since 05-21). (3) Telegram HTTP 400 on >4096-char trace-embedding
+bodies, and `monitoring/alert.py:214-220` persists throttle state even on failed
+sends (a failed alert self-suppresses 24h). (4) Singletons: crypto-retrain
+30-min `TimeoutStartSec` kill; phase0 monitor opens DuckDB writable → writer-lock
+IO Error; streamlit-freshness legitimately red (running code ~505h stale).
+Evidence: `data/processed/frontier_stall_rca.md` §3.4 + `data/logs/*.log`.
 
 ### KI-164 — Capture disk pinned at the 50 GiB disk-guard soft floor: retention being consumed continuously (662 partition prunes in one night)
 
