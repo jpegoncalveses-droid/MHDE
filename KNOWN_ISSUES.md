@@ -220,6 +220,15 @@ treadmill-crept portion of the gap (08-15 frontier → 08-18 cursor positions) i
 documented here and in the RCA but not yet in the `_gaps` manifest — optional
 operator one-off (only markprice matters to labels).
 
+**Admission update (2026-08-20, ADR-043): THE bound shipped.** Family-level
+admission (quota k=3, resolvability floor, INSERT-only, BENCHED, S8 eviction, S9
+anti-drift stamp) gates the confirming set to ~(active families × 3); migration
+one-off `scripts/migrate_option2_admission.py` (live dry-run: 13,535 → 783
+confirming, −94.2%). The no-exit-path population lands on the bench where it
+belongs; the linear-growth trajectory (§2.3 of the design doc) is closed.
+Remaining open watch items: PROMOTED-set growth (unbounded by design — trigger
+~500 forces the graduation/retirement decision) and the KI-164 disk decision.
+
 **F5 update (2026-08-20): the D5 marker hole closed.** `_migrate` now recovers
 promoted-ever markers from the trade log (stage-4 writes `simulated_trades` only
 for PROMOTED rules — a trade row proves once-promoted; earliest `recorded_at_ns`

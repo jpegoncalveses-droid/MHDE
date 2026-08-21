@@ -50,11 +50,16 @@ REJECTED = "rejected"
 #: in-sample rate (window-capped opportunity — time-free once mature). The ROW persists —
 #: family/cohort provenance survives for the graduation bar.
 EXPIRED = "expired"
+#: Terminal-but-RETAINED (Option 2 admission, ADR-043): a survivor NOT admitted to
+#: confirmation (family quota, resolvability floor, or lost the in-sample margin
+#: contest). Full provenance kept — the family's countable trial denominator — but the
+#: row is NEVER walked and draws no exit work (zero per-pass cost). No revival in v1.
+BENCHED = "benched"
 
 #: Allowed forward transitions (a same-state set via set_state is a no-op; anything else
 #: not listed raises). Rejected is terminal.
 _TRANSITIONS = {
-    DISCOVERED: {CONFIRMING, REJECTED},
+    DISCOVERED: {CONFIRMING, REJECTED, BENCHED},
     CONFIRMING: {PROMOTED, REJECTED, EXPIRED},
     # PROMOTED -> CONFIRMING is the evidence-shrink DEMOTION (2026-08-14): fresh
     # recounts are non-monotonic, and a promoted rule whose count falls below
@@ -64,6 +69,7 @@ _TRANSITIONS = {
     PROMOTED: {REJECTED, CONFIRMING},
     REJECTED: set(),
     EXPIRED: set(),
+    BENCHED: set(),
 }
 
 _SCHEMA = """
@@ -87,7 +93,9 @@ CREATE TABLE IF NOT EXISTS rules (
     updated_at_ns       INTEGER NOT NULL,
     family_key          TEXT,
     exit_inherited_from TEXT,
-    promoted_at_ns      INTEGER
+    promoted_at_ns      INTEGER,
+    minted_run_id       INTEGER,
+    n_fires_at_admission INTEGER
 );
 CREATE TABLE IF NOT EXISTS discovery_runs (
     run_id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -133,6 +141,21 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE rules ADD COLUMN exit_inherited_from TEXT")
     if "promoted_at_ns" not in cols:
         conn.execute("ALTER TABLE rules ADD COLUMN promoted_at_ns INTEGER")
+    if "minted_run_id" not in cols:
+        conn.execute("ALTER TABLE rules ADD COLUMN minted_run_id INTEGER")
+    if "n_fires_at_admission" not in cols:
+        conn.execute("ALTER TABLE rules ADD COLUMN n_fires_at_admission INTEGER")
+    # minted_run_id backfill (S1, ADR-043): cohort = the discovery pass that FIRST
+    # minted the identity. The timestamp join is exact for every existing cluster
+    # (verified 13/13, zero started_at_ns collisions); the UNIQUE index below turns
+    # that convention into a constraint so the join can never silently smear.
+    conn.execute(
+        "UPDATE rules SET minted_run_id = ("
+        "SELECT d.run_id FROM discovery_runs d "
+        "WHERE d.started_at_ns = rules.discovered_at_ns) "
+        "WHERE minted_run_id IS NULL")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_discovery_runs_started "
+                 "ON discovery_runs(started_at_ns)")
     # promoted_at_ns backfill for rows promoted BEFORE the marker existed (operator-
     # approved 2026-08-14): their promotion time is best-approximated by updated_at_ns at
     # migration time. Only the STANDING promoted set is recoverable from the DB — rules
@@ -194,7 +217,8 @@ def deserialize_rule(entry_def: str):
 # -- writes ---------------------------------------------------------------------
 
 def upsert_entry(conn: sqlite3.Connection, result: EntryResult, *, score_horizon_min: int,
-                 breadth: int, discovery_window_ns: int, now_ns: int) -> str:
+                 breadth: int, discovery_window_ns: int, now_ns: int,
+                 minted_run_id: Optional[int] = None) -> str:
     """Insert a null-survivor as ``discovered`` (first sighting) or update its in-sample
     metrics in place (idempotent on ``rule_id``). State / fresh-count / exit are NOT
     touched on update — those advance only through the state-machine helpers."""
@@ -213,11 +237,12 @@ def upsert_entry(conn: sqlite3.Connection, result: EntryResult, *, score_horizon
                 "INSERT INTO rules (rule_id, entry_def, exit_def, depth, score_horizon_min, "
                 "insample_edge, null_bar, null_margin, n_fires, breadth, state, fresh_count, "
                 "forward_edge, reject_reason, discovery_window_ns, discovered_at_ns, "
-                "updated_at_ns, family_key) "
-                "VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?, ?, ?, ?)",
+                "updated_at_ns, family_key, minted_run_id) "
+                "VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?, ?, ?, ?, ?)",
                 (rule_id, entry_def, result.depth, score_horizon_min, result.edge,
                  result.null_bar, result.margin, result.n_fires, breadth, DISCOVERED,
-                 discovery_window_ns, now_ns, now_ns, family_key(result.rule)))
+                 discovery_window_ns, now_ns, now_ns, family_key(result.rule),
+                 minted_run_id))
     return rule_id
 
 
@@ -251,13 +276,14 @@ def update_forward(conn: sqlite3.Connection, rule_id: str, *, fresh_count: int,
 def family_exit_donor(conn: sqlite3.Connection, fam_key: str, *,
                       exclude: str) -> Optional[dict]:
     """The family's deterministic exit donor: the lowest rule_id holding an exit among
-    LIVE members (confirming/promoted — a rejected rule's exit must not seed its family,
-    review F4), or None if the family has no live discovered exit yet."""
+    un-falsified members (confirming/promoted/benched — a REJECTED rule's exit must
+    not seed its family, review F4; a BENCHED rule was never judged and its exit is
+    family-valid, ADR-040/S7), or None if the family has no eligible exit yet."""
     row = conn.execute(
         "SELECT rule_id, exit_def, exit_inherited_from FROM rules "
         "WHERE family_key=? AND exit_def IS NOT NULL AND rule_id != ? "
-        "AND state IN (?, ?) ORDER BY rule_id LIMIT 1",
-        (fam_key, exclude, CONFIRMING, PROMOTED)).fetchone()
+        "AND state IN (?, ?, ?) ORDER BY rule_id LIMIT 1",
+        (fam_key, exclude, CONFIRMING, PROMOTED, BENCHED)).fetchone()
     return dict(row) if row is not None else None
 
 
@@ -316,11 +342,39 @@ def expire_slow_resolvers(conn: sqlite3.Connection, *, now_ns: int, frontier_ns:
             "UPDATE rules SET state=?, updated_at_ns=? WHERE state=? "
             "AND promoted_at_ns IS NULL "
             "AND fresh_count < ? "
-            "AND CAST(n_fires AS REAL) * MIN(? - discovery_window_ns, ?) >= CAST(? AS REAL) * ? "
-            "AND CAST(fresh_count AS REAL) * ? * ? < CAST(n_fires AS REAL) * MIN(? - discovery_window_ns, ?)",
+            "AND CAST(MAX(n_fires, COALESCE(n_fires_at_admission, 0)) AS REAL) "
+            "* MIN(? - discovery_window_ns, ?) >= CAST(? AS REAL) * ? "
+            "AND CAST(fresh_count AS REAL) * ? * ? "
+            "< CAST(MAX(n_fires, COALESCE(n_fires_at_admission, 0)) AS REAL) "
+            "* MIN(? - discovery_window_ns, ?)",
             (EXPIRED, now_ns, CONFIRMING, m - hysteresis,
              frontier_ns, history_ns, opportunity_floor, history_ns,
              pace_factor, history_ns, frontier_ns, history_ns))
+    return cur.rowcount
+
+
+def evict_mature_unresolved(conn: sqlite3.Connection, *, now_ns: int, frontier_ns: int,
+                            m: int, hysteresis: int, history_ns: int) -> int:
+    """S8 mature-seat eviction (ADR-042 amendment; Option 2 admission round).
+
+    The dead zone: a mature never-promoted confirming rule with stable fresh in
+    [n_fires/pace, M) can neither promote/reject (needs fresh >= M) nor pace-expire
+    (band-exempt above M-H; pace-held or sub-floor below) — under scarce seats it
+    burns a family slot forever (53% of floor-passing rules measured in the zone,
+    2026-08-20). Once MATURE on the EVIDENCE clock (frontier - discovery_window >=
+    history: fresh_count is then the definitive rolling-window measurement), a rule
+    below the resolving band is evicted. The band [M-H, M) stays exempt (ADR-041);
+    demotees are structurally exempt; immature rules keep the full ADR-042 pace
+    predicate. Terminal-but-retained, reject_reason marks the disposition. The
+    caller gates this behind the same KI-166 gap-rollout hold as pace-expiry."""
+    with conn:
+        cur = conn.execute(
+            "UPDATE rules SET state=?, reject_reason=?, updated_at_ns=? WHERE state=? "
+            "AND promoted_at_ns IS NULL "
+            "AND (? - discovery_window_ns) >= ? "
+            "AND fresh_count < ?",
+            (EXPIRED, "mature-evicted (S8): below the resolving band at full window",
+             now_ns, CONFIRMING, frontier_ns, history_ns, m - hysteresis))
     return cur.rowcount
 
 
