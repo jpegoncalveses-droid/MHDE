@@ -204,7 +204,7 @@ _STAGE4_SAMPLE_SALT = "stage4-tradelog"
 
 def _stage4_continuations(entry_rule, engineered, price_index, coin_vols, *, max_cap,
                           window_ns, seed: int = 0,
-                          max_instances: Optional[int] = None):
+                          max_instances: Optional[int] = dcfg.TRADELOG_MAX_INSTANCES):
     """Stage-4 (trade-logging) continuations, BOUNDED by ``TRADELOG_MAX_INSTANCES``.
 
     This was the last unsampled continuation build in the pass: stage-2 has been sampled
@@ -213,10 +213,9 @@ def _stage4_continuations(entry_rule, engineered, price_index, coin_vols, *, max
     RCA names as the relapse risk once P1 makes the tail reachable again. Same deterministic
     rule-seeded sampler as stage-2, so the selection is reproducible.
     """
-    cap = dcfg.TRADELOG_MAX_INSTANCES if max_instances is None else max_instances
     return _entry_continuations(entry_rule, engineered, price_index, coin_vols,
                                 max_cap=max_cap, window_ns=window_ns,
-                                max_instances=cap, seed=seed,
+                                max_instances=max_instances, seed=seed,
                                 salt=_STAGE4_SAMPLE_SALT)
 
 

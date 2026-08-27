@@ -185,3 +185,29 @@ def test_fires_breadth_on_an_empty_tape():
     for rule in (make_rule([]), make_rule([Condition("f0", ">", 0.5)]),
                  make_rule([Condition("zz", ">", 0.5)])):
         assert R.fires_breadth(rule, tape) == 0
+
+
+def test_stage4_none_max_instances_means_unbounded_not_the_config_default(monkeypatch):
+    """`None` must mean UNBOUNDED, matching stage-2's `exit_max_instances` convention and
+    what KI-167 documents as the escape hatch. Falling back to the configured cap would make
+    the documented unbounded A/B run silently still-capped."""
+    seen = []
+    real = RUN._entry_continuations
+
+    def _spy(entry_rule, engineered, price_index, coin_vols, **kw):
+        seen.append(kw.get("max_instances"))
+        return real(entry_rule, engineered, price_index, coin_vols, **kw)
+
+    monkeypatch.setattr(RUN, "_entry_continuations", _spy)
+    tape = _tape(n_keys=80)
+    rule = make_rule([Condition("f0", ">", 0.1)])
+    price_index = {k[0]: {} for k in tape}
+
+    RUN._stage4_continuations(rule, tape, price_index, {}, max_cap=60, window_ns=_W,
+                              max_instances=None)
+    assert seen == [None], f"None must pass through as unbounded, got {seen}"
+
+    seen.clear()
+    RUN._stage4_continuations(rule, tape, price_index, {}, max_cap=60, window_ns=_W)
+    assert seen == [dcfg.TRADELOG_MAX_INSTANCES], (
+        f"omitting the arg must use the configured cap, got {seen}")
