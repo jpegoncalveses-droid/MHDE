@@ -137,6 +137,34 @@ def test_label_load_path_never_reads_the_whole_label_table(monkeypatch, tmp_path
         f"labels must not be read wholesale; saw {seen}")
 
 
+def test_streamed_lifts_share_one_symbol_string_across_batches(tmp_path):
+    """Symbol strings must be shared ACROSS batches.
+
+    The store is symbol-partitioned (one symbol per fragment), so each batch's
+    `dictionary_encode()` mints a fresh `str` per symbol. Naively keeping those puts one
+    `str` per FRAGMENT into the lift keys (~1.1M on the live labels store) instead of one
+    per SYMBOL (~915) — a memory regression inside the very path being bounded.
+    """
+    root = tmp_path / "store"
+    # 30 fragments over only 3 symbols => 30 batches, 3 distinct symbol values
+    frags = [[_label_row(f"SYM{f % 3}USDT", f)] for f in range(30)]
+    _write_fragmented(root, brain_labels.LABEL_DATASET, brain_labels.LABEL_SCHEMA, frags)
+
+    acc = store.fold_snapshots_columnar(
+        str(root), brain_labels.LABEL_DATASET,
+        columns=RUN._LABEL_LOAD_COLUMNS, row_filter=pc.field("horizon_min") == 60,
+        fold=lambda a, t: a.update(t),
+        init=lambda: S.InstanceLiftAccumulator(horizon_min=60, side="long"))
+    lifts = acc.finalize()
+
+    symbols = {k[0] for k in lifts}
+    identities = {id(k[0]) for k in lifts}
+    assert len(symbols) == 3
+    assert len(identities) == len(symbols), (
+        f"{len(identities)} distinct str objects for {len(symbols)} symbols — "
+        "symbols are not interned across batches")
+
+
 # ---------------------------------------------------------------- P1b: bounded price index
 
 def test_streamed_price_index_is_identical_to_whole_table_build(tmp_path):

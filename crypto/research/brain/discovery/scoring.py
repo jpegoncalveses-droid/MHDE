@@ -84,20 +84,28 @@ class InstanceLiftAccumulator:
     it is the measured discovery-OOM kill site (see ``store.fold_snapshots_columnar``).
     """
 
-    __slots__ = ("_horizon_min", "_side", "_rae_by_key", "_rae_by_coin")
+    __slots__ = ("_horizon_min", "_side", "_rae_by_key", "_rae_by_coin", "_sym_intern")
 
     def __init__(self, *, horizon_min: int, side: str = "long"):
         self._horizon_min = horizon_min
         self._side = side
         self._rae_by_key: dict = {}
         self._rae_by_coin: dict = defaultdict(list)
+        self._sym_intern: dict = {}     # batch-local str -> the one shared str per symbol
 
     def update(self, label_tbl) -> None:
         """Fold one batch table (or a whole table) into the running aggregate."""
         if label_tbl is None or label_tbl.num_rows == 0:
             return
         enc = label_tbl.column("symbol").dictionary_encode().combine_chunks()
-        sym_pool = enc.dictionary.to_pylist()
+        # Intern the batch's dictionary through the accumulator-wide pool. The store is
+        # symbol-partitioned, so each batch mints a FRESH str per symbol; keeping those
+        # would put one str per FRAGMENT (~1.1M on the live labels store) into the lift
+        # keys instead of one per SYMBOL (~915) — a regression inside the path being
+        # bounded. setdefault keeps the first str seen for a value, so every key that
+        # follows shares it, exactly as a single whole-table encode did.
+        intern = self._sym_intern
+        sym_pool = [intern.setdefault(v, v) for v in enc.dictionary.to_pylist()]
         sym_idx = enc.indices.to_numpy(zero_copy_only=False)
         wins = label_tbl.column("window_start_ns").to_numpy(zero_copy_only=False)
         hors = label_tbl.column("horizon_min").to_numpy(zero_copy_only=False)
@@ -125,6 +133,7 @@ class InstanceLiftAccumulator:
         rae_by_key = self._rae_by_key
         baseline = {sym: statistics.fmean(vs) for sym, vs in self._rae_by_coin.items()}
         self._rae_by_coin = defaultdict(list)
+        self._sym_intern = {}
         for key, rae in rae_by_key.items():
             rae_by_key[key] = rae - baseline[key[0]]
         self._rae_by_key = {}
