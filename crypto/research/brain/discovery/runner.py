@@ -50,9 +50,10 @@ _LABEL_LOAD_COLUMNS = ["symbol", "window_start_ns", "window_end_ns",
 def build_price_index(markprice_rows: Sequence[Mapping]) -> dict:
     """``symbol -> {window_start_ns: (close, high, low)}`` from markprice snapshots.
 
-    RETAINED, NOT DEAD: production uses ``build_price_index_columnar`` (reads the markprice
-    arrow Table directly, no list-of-dicts); this version is kept as its equivalence ORACLE
-    (test_brain_store_columnar)."""
+    RETAINED, NOT DEAD: production streams the markprice read through
+    :class:`PriceIndexAccumulator`; this version and ``build_price_index_columnar`` are kept
+    as its equivalence ORACLES (test_brain_store_columnar,
+    test_brain_discovery_bounded_label_read)."""
     idx: dict = {}
     for s in markprice_rows:
         idx.setdefault(s["symbol"], {})[int(s["window_start_ns"])] = (
@@ -61,9 +62,11 @@ def build_price_index(markprice_rows: Sequence[Mapping]) -> dict:
 
 
 def build_price_index_columnar(markprice_table) -> dict:
-    """``build_price_index`` from a columnar markprice ``pyarrow.Table`` (option-B read) instead
-    of a list-of-dicts — same output (``to_pylist`` maps a parquet NULL to None exactly as the
-    dict path did), without materializing the markprice rows as Python dicts."""
+    """``build_price_index`` from a columnar markprice ``pyarrow.Table`` — same output
+    (``to_pylist`` maps a parquet NULL to None exactly as the dict path did).
+
+    ORACLE ONLY as of the streaming fix: production uses :class:`PriceIndexAccumulator`,
+    which folds the same rows batch-by-batch instead of materialising the whole table."""
     idx: dict = {}
     if markprice_table.num_rows == 0:
         return idx
@@ -142,7 +145,8 @@ def build_continuation(symbol: str, t_entry: int, price_index, engineered, *,
     return cont
 
 
-def _sampled_fires(entry_rule, engineered, *, max_instances: Optional[int], seed: int) -> list:
+def _sampled_fires(entry_rule, engineered, *, max_instances: Optional[int], seed: int,
+                   salt: str = "") -> list:
     """The rule's fired instances in CANONICAL (sorted) order, sampled down to at most
     ``max_instances`` when it fires more broadly.
 
@@ -152,11 +156,19 @@ def _sampled_fires(entry_rule, engineered, *, max_instances: Optional[int], seed
     same population, and the selection is independent of ``R.fires``'s set-iteration order
     (which is PYTHONHASHSEED-dependent; the sort also makes the UNSAMPLED path's
     continuation order reproducible, which it previously was not). Rules firing
-    ``<= max_instances`` are returned whole — byte-identical continuations downstream."""
+    ``<= max_instances`` are returned whole — byte-identical continuations downstream.
+
+    ``salt`` makes an INDEPENDENT draw for a different consumer of the same rule at the same
+    cap. Stage-2 (exit discovery) and stage-4 (trade logging) share this sampler and the same
+    cap, so an unsalted stage-4 would redraw stage-2's EXACT sample whenever the firing set is
+    unchanged — making the trade log a 100% in-sample echo of the instances the exit was
+    fitted on. The empty default leaves the stage-2 digest byte-identical, preserving its
+    attempt-stability guarantee."""
     fired = sorted(R.fires(entry_rule, engineered))
     if max_instances is None or len(fired) <= max_instances:
         return fired
-    digest = hashlib.sha256(entry_rule.canonical_id.encode("utf-8")).digest()
+    key = entry_rule.canonical_id if not salt else f"{entry_rule.canonical_id}\x00{salt}"
+    digest = hashlib.sha256(key.encode("utf-8")).digest()
     rule_seed = int.from_bytes(digest[:8], "big") ^ (seed & 0xFFFF_FFFF_FFFF_FFFF)
     idx = np.random.default_rng(rule_seed).choice(len(fired), size=max_instances,
                                                   replace=False)
@@ -166,11 +178,13 @@ def _sampled_fires(entry_rule, engineered, *, max_instances: Optional[int], seed
 
 def _entry_continuations(entry_rule, engineered, price_index, coin_vols, *, max_cap, window_ns,
                          only_settled_at: Optional[int] = None,
-                         max_instances: Optional[int] = None, seed: int = 0):
+                         max_instances: Optional[int] = None, seed: int = 0,
+                         salt: str = ""):
     """Build continuations + per-instance vols for an entry's firing instances."""
     conts: dict = {}
     vols: dict = {}
-    for k in _sampled_fires(entry_rule, engineered, max_instances=max_instances, seed=seed):
+    for k in _sampled_fires(entry_rule, engineered, max_instances=max_instances, seed=seed,
+                            salt=salt):
         if only_settled_at is not None and k[1] > only_settled_at:
             continue
         v = coin_vols.get(k[0])
@@ -184,8 +198,13 @@ def _entry_continuations(entry_rule, engineered, price_index, coin_vols, *, max_
     return conts, vols
 
 
+#: Sampler salt that makes stage-4's draw independent of stage-2's at the same cap.
+_STAGE4_SAMPLE_SALT = "stage4-tradelog"
+
+
 def _stage4_continuations(entry_rule, engineered, price_index, coin_vols, *, max_cap,
-                          window_ns, seed: int = 0):
+                          window_ns, seed: int = 0,
+                          max_instances: Optional[int] = None):
     """Stage-4 (trade-logging) continuations, BOUNDED by ``TRADELOG_MAX_INSTANCES``.
 
     This was the last unsampled continuation build in the pass: stage-2 has been sampled
@@ -194,9 +213,11 @@ def _stage4_continuations(entry_rule, engineered, price_index, coin_vols, *, max
     RCA names as the relapse risk once P1 makes the tail reachable again. Same deterministic
     rule-seeded sampler as stage-2, so the selection is reproducible.
     """
+    cap = dcfg.TRADELOG_MAX_INSTANCES if max_instances is None else max_instances
     return _entry_continuations(entry_rule, engineered, price_index, coin_vols,
                                 max_cap=max_cap, window_ns=window_ns,
-                                max_instances=dcfg.TRADELOG_MAX_INSTANCES, seed=seed)
+                                max_instances=cap, seed=seed,
+                                salt=_STAGE4_SAMPLE_SALT)
 
 
 logger = logging.getLogger("mhde.crypto.brain.discovery")
@@ -214,6 +235,7 @@ def run_discovery_pass(conn, engineered, lifts, price_index, coin_vols, *, featu
                        null_quantile=dcfg.NULL_QUANTILE, min_firing=dcfg.MIN_FIRING_INSTANCES,
                        max_depth=dcfg.MAX_DEPTH, beam_width=dcfg.BEAM_WIDTH,
                        exit_max_instances=dcfg.EXIT_DISCOVERY_MAX_INSTANCES,
+                       tradelog_max_instances=dcfg.TRADELOG_MAX_INSTANCES,
                        m=dcfg.CONFIRM_M, z=dcfg.CONFIRM_Z,
                        confirm_hysteresis=dcfg.CONFIRM_DEMOTE_HYSTERESIS,
                        expire_pace_factor=dcfg.EXPIRE_PACE_FACTOR,
@@ -320,7 +342,8 @@ def run_discovery_pass(conn, engineered, lifts, price_index, coin_vols, *, featu
         exit_rule = X.exit_from_json(row["exit_def"])
         conts, vols = _stage4_continuations(entry_rule, engineered, price_index, coin_vols,
                                             max_cap=exit_rule.time_cap_min,
-                                            window_ns=window_ns, seed=seed)
+                                            window_ns=window_ns, seed=seed,
+                                            max_instances=tradelog_max_instances)
         trades = TL.build_trades(row["rule_id"], exit_rule, list(conts), conts, vols,
                                  window_ns=window_ns, now_ns=now_ns)
         trades_logged += TL.record_trades(conn, trades, exit_def=row["exit_def"], now_ns=now_ns)

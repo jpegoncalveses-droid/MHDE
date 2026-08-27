@@ -417,7 +417,9 @@ def fold_snapshots_columnar(root: str, dataset: str, symbol: Optional[str] = Non
     order-sensitive reduction (duplicate-key last-wins, running means) is byte-identical to
     folding the whole table in one go. On the compactor replace-then-delete race the WHOLE
     fold is retried from a FRESH accumulator (``init()`` again), so a partial fold is never
-    double-counted. Returns the accumulator.
+    double-counted -- ``init`` MUST construct a new accumulator, never return a shared one.
+    For the same reason ``fold`` must be free of external side effects (it can be re-applied
+    to already-consumed batches on a retry). Returns the accumulator.
     """
     def _build():
         acc = init()

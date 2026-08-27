@@ -11,6 +11,8 @@ reachable again, so the last two unbounded builds must be bounded first:
 """
 from __future__ import annotations
 
+import hashlib
+
 import numpy as np
 
 from crypto.research.brain.discovery import config as dcfg
@@ -118,3 +120,68 @@ def test_sampled_fires_respects_the_bound_deterministically():
     b = RUN._sampled_fires(rule, tape, max_instances=25, seed=7)
     assert len(a) == 25
     assert list(a) == list(b)
+
+
+def test_stage4_sample_is_independent_of_the_stage2_sample():
+    """Stage-4 must NOT re-draw stage-2's exact sample.
+
+    Both use the same deterministic rule-seeded sampler and the same cap (5000), so an
+    unsalted stage-4 draw is bit-identical to the stage-2 exit-discovery draw whenever the
+    firing set is unchanged. That would make `simulated_trades` a 100% in-sample echo of the
+    instances the exit was fitted on — destroying the trade log's value as an independent
+    signal (it backs rule_aggregates / equity_points and the promote-to-paper decision).
+    """
+    tape = _tape(n_keys=4000)
+    rule = make_rule([Condition("f0", ">", -1.0)])            # fires on every key
+    stage2 = RUN._sampled_fires(rule, tape, max_instances=100, seed=0)
+    stage4 = RUN._sampled_fires(rule, tape, max_instances=100, seed=0,
+                                salt=RUN._STAGE4_SAMPLE_SALT)
+    assert len(stage2) == len(stage4) == 100
+    assert stage2 != stage4, "stage-4 must draw independently of stage-2"
+
+
+def test_stage4_sample_is_deterministic():
+    tape = _tape(n_keys=4000)
+    rule = make_rule([Condition("f0", ">", -1.0)])
+    a = RUN._sampled_fires(rule, tape, max_instances=100, seed=0,
+                           salt=RUN._STAGE4_SAMPLE_SALT)
+    b = RUN._sampled_fires(rule, tape, max_instances=100, seed=0,
+                           salt=RUN._STAGE4_SAMPLE_SALT)
+    assert a == b
+
+
+def test_unsalted_sample_is_unchanged_by_the_salt_parameter():
+    """The stage-2 draw must be BYTE-IDENTICAL to the pre-salt algorithm — the attempt-
+    stability guarantee ('a re-run discovers the same exit') depends on it."""
+    tape = _tape(n_keys=4000)
+    rule = make_rule([Condition("f0", ">", -1.0)])
+    fired = sorted(R.fires(rule, tape))
+    digest = hashlib.sha256(rule.canonical_id.encode("utf-8")).digest()
+    rule_seed = int.from_bytes(digest[:8], "big") ^ 0
+    idx = np.random.default_rng(rule_seed).choice(len(fired), size=100, replace=False)
+    idx.sort()
+    expected = [fired[i] for i in idx]
+
+    assert RUN._sampled_fires(rule, tape, max_instances=100, seed=0) == expected
+    assert RUN._sampled_fires(rule, tape, max_instances=100, seed=0, salt="") == expected
+
+
+def test_fires_breadth_matches_on_a_nan_laden_tape():
+    """NaN compares False, so an absent feature never holds — breadth must agree there too."""
+    keys = [("AUSDT", _W), ("AUSDT", 2 * _W), ("BUSDT", _W), ("CUSDT", _W)]
+    vals = np.array([[np.nan, 0.9], [0.8, np.nan], [np.nan, np.nan], [0.7, 0.7]])
+    tape = E.EngineeredTape(keys, {k: i for i, k in enumerate(keys)}, ["f0", "f1"],
+                            {"f0": 0, "f1": 1}, vals)
+    for rule in (make_rule([Condition("f0", ">", 0.5)]),
+                 make_rule([Condition("f0", "<", 0.5)]),
+                 make_rule([Condition("f0", ">", 0.5), Condition("f1", ">", 0.5)]),
+                 make_rule([]),
+                 make_rule([Condition("zz", ">", 0.0)])):
+        assert R.fires_breadth(rule, tape) == len({k[0] for k in R.fires(rule, tape)})
+
+
+def test_fires_breadth_on_an_empty_tape():
+    tape = E.EngineeredTape([], {}, ["f0"], {"f0": 0}, np.zeros((0, 1)))
+    for rule in (make_rule([]), make_rule([Condition("f0", ">", 0.5)]),
+                 make_rule([Condition("zz", ">", 0.5)])):
+        assert R.fires_breadth(rule, tape) == 0

@@ -100,9 +100,9 @@ def test_streamed_lifts_are_byte_identical_to_concat_path(tmp_path):
     tbl = store.read_snapshots_columnar(str(root), brain_labels.LABEL_DATASET, **kw)
     expected = S.compute_instance_lifts_columnar(tbl, horizon_min=60, side="long")
 
-    acc = S.InstanceLiftAccumulator(horizon_min=60, side="long")
-    store.fold_snapshots_columnar(str(root), brain_labels.LABEL_DATASET,
-                                  fold=lambda a, t: a.update(t), init=lambda: acc, **kw)
+    acc = store.fold_snapshots_columnar(
+        str(root), brain_labels.LABEL_DATASET, fold=lambda a, t: a.update(t),
+        init=lambda: S.InstanceLiftAccumulator(horizon_min=60, side="long"), **kw)
     streamed = acc.finalize()
 
     assert streamed == expected
@@ -179,9 +179,9 @@ def test_streamed_price_index_is_identical_to_whole_table_build(tmp_path):
     tbl = store.read_snapshots_columnar(str(root), "markprice", columns=cols)
     expected = RUN.build_price_index_columnar(tbl)
 
-    acc = RUN.PriceIndexAccumulator()
-    store.fold_snapshots_columnar(str(root), "markprice", columns=cols,
-                                  fold=lambda a, t: a.update(t), init=lambda: acc)
+    acc = store.fold_snapshots_columnar(str(root), "markprice", columns=cols,
+                                        fold=lambda a, t: a.update(t),
+                                        init=RUN.PriceIndexAccumulator)
     assert acc.finalize() == expected
 
 
@@ -202,3 +202,40 @@ def test_price_index_accumulator_peak_rows_bounded(tmp_path):
                                            "mark_high", "mark_low"],
                                   fold=_fold, init=RUN.PriceIndexAccumulator)
     assert peak["rows"] <= store._READ_BATCH_ROWS
+
+
+def test_fold_retry_uses_a_fresh_accumulator_and_never_double_counts(tmp_path):
+    """The compactor race re-runs the whole fold. `init()` MUST construct a new accumulator:
+    reusing one silently double-counts every batch consumed before the race."""
+    root = tmp_path / "store"
+    _write_fragmented(root, brain_labels.LABEL_DATASET, brain_labels.LABEL_SCHEMA,
+                      _label_fragments(6))
+    kw = dict(columns=RUN._LABEL_LOAD_COLUMNS, row_filter=pc.field("horizon_min") == 60)
+    expected = S.compute_instance_lifts_columnar(
+        store.read_snapshots_columnar(str(root), brain_labels.LABEL_DATASET, **kw),
+        horizon_min=60, side="long")
+
+    real_iter = store._iter_selected_tables
+    attempts = {"n": 0}
+
+    def _flaky(*a, **k):
+        attempts["n"] += 1
+        for i, t in enumerate(real_iter(*a, **k)):
+            yield t
+            if attempts["n"] == 1 and i == 0:       # vanish mid-fold, once
+                raise FileNotFoundError("simulated compactor replace-then-delete race")
+
+    monkey = store._iter_selected_tables
+    store._iter_selected_tables = _flaky
+    try:
+        acc = store.fold_snapshots_columnar(
+            str(root), brain_labels.LABEL_DATASET, fold=lambda a, t: a.update(t),
+            init=lambda: S.InstanceLiftAccumulator(horizon_min=60, side="long"), **kw)
+        got = acc.finalize()
+    finally:
+        store._iter_selected_tables = monkey
+
+    assert attempts["n"] == 2, "the race should have forced exactly one retry"
+    assert got == expected, "a retried fold must not double-count"
+    for k in expected:
+        assert got[k].hex() == expected[k].hex()
