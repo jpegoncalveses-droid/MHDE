@@ -12,6 +12,11 @@ from crypto.research.capture_core import config as cfg
 from crypto.research.capture_core import disk_guard as dg
 from crypto.research.capture_core import service as svc
 
+# KI-164 retired the depth family by DEFAULT (DEPTH_ENABLED / DEPTH_SNAPSHOT_ENABLED /
+# DEPTH_STATE_ENABLED all False). The tests below exercise that machinery, which must keep
+# working for a Stage-C revival, so they enable it EXPLICITLY — the same convention the
+# depth_state gate tests already use to prove gate semantics independent of the default.
+
 
 # -- shipped thresholds --------------------------------------------------------
 
@@ -103,7 +108,7 @@ def _agg_data():
 def test_firehose_write_dropped_when_inode_guard_halted(tmp_path):
     s = svc.CaptureService(root=str(tmp_path), client=None, enable_snapshots=False,
                            install_signals=False, disk_guard=_FakeGuard(halted=False),
-                           inode_guard=_FakeGuard(halted=True))
+                           inode_guard=_FakeGuard(halted=True), depth_enabled=True, depth_snapshot_enabled=True)
     s._on_message("btcusdt@aggTrade", _agg_data(), recv_ns=10)
     s.flush_all()
     assert s.stats()["agg_rows"] == 0              # forward-only drop on inode halt
@@ -112,7 +117,7 @@ def test_firehose_write_dropped_when_inode_guard_halted(tmp_path):
 def test_firehose_write_kept_when_neither_guard_halted(tmp_path):
     s = svc.CaptureService(root=str(tmp_path), client=None, enable_snapshots=False,
                            install_signals=False, disk_guard=_FakeGuard(halted=False),
-                           inode_guard=_FakeGuard(halted=False))
+                           inode_guard=_FakeGuard(halted=False), depth_enabled=True, depth_snapshot_enabled=True)
     s._on_message("btcusdt@aggTrade", _agg_data(), recv_ns=10)
     s.flush_all()
     assert s.stats()["agg_rows"] == 1
@@ -120,8 +125,8 @@ def test_firehose_write_kept_when_neither_guard_halted(tmp_path):
 
 def test_default_inode_guard_constructed_when_enabled(tmp_path):
     s = svc.CaptureService(root=str(tmp_path), client=None, enable_snapshots=False,
-                           install_signals=False)
+                           install_signals=False, depth_enabled=True, depth_snapshot_enabled=True)
     assert isinstance(s._inode_guard, dg.InodeGuard)
     s2 = svc.CaptureService(root=str(tmp_path), client=None, enable_snapshots=False,
-                            install_signals=False, inode_guard_enabled=False)
+                            install_signals=False, inode_guard_enabled=False, depth_enabled=True, depth_snapshot_enabled=True)
     assert s2._inode_guard is None

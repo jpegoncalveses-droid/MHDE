@@ -47,7 +47,12 @@ def _touch_partition(root, dataset, symbol, date):
 # -- shipped retention constant ------------------------------------------------
 
 def test_shipped_retention_window():
-    assert cfg.CAPTURE_RAW_RETENTION_DAYS == 7  # ADR-038: 14 -> 7d
+    # ADR-038: 14 -> 7d. KI-164: 7 -> 3d, and now HONEST — the 7d was never achieved
+    # (the byte guard had pruned the dense set to a single day on disk), and 3d is
+    # nightly-ENFORCED per class on both roots via CAPTURE_RETENTION_POLICY.
+    assert cfg.CAPTURE_RAW_RETENTION_DAYS == 3
+    assert cfg.CAPTURE_DENSE_RETENTION_DAYS == 3
+    assert cfg.CAPTURE_RAW_RETENTION_DAYS is cfg.CAPTURE_DENSE_RETENTION_DAYS
 
 
 # -- (c) retention prunes only beyond the window, never today ------------------
@@ -55,7 +60,9 @@ def test_shipped_retention_window():
 def test_expire_firehose_prunes_only_beyond_window_never_today(tmp_path):
     now_ms = _ms(datetime(2026, 6, 14, 12, 0, tzinfo=timezone.utc))
     dates = {"old": "2026-05-20", "edge_in": "2026-06-01", "today": "2026-06-14"}
-    for ds in ("aggTrade", "depth"):
+    # KI-164: ``depth`` is retired and no longer prunable, so the fixture uses two
+    # SURVIVING dense datasets. The windowing behaviour under test is unchanged.
+    for ds in ("aggTrade", "bookTicker"):
         for date in dates.values():
             _touch_partition(tmp_path, ds, "BTCUSDT", date)
 
@@ -63,7 +70,7 @@ def test_expire_firehose_prunes_only_beyond_window_never_today(tmp_path):
         str(tmp_path), days=14, now_ms=now_ms)
 
     assert len(removed) == 2 and all("date=2026-05-20" in p for p in removed)
-    for ds in ("aggTrade", "depth"):
+    for ds in ("aggTrade", "bookTicker"):
         assert not pathlib.Path(tmp_path, ds, "symbol=BTCUSDT",
                                 "date=2026-05-20").exists()   # 25d -> pruned
         assert pathlib.Path(tmp_path, ds, "symbol=BTCUSDT",

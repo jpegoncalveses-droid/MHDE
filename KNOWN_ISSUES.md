@@ -458,6 +458,36 @@ full-population. Nothing currently gates promotion on these aggregates.
 `tradelog_max_instances=None` to `run_discovery_pass` (mirrors stage-2's
 `exit_max_instances`); it is unbounded and will reproduce the pre-PR-99 memory profile.
 
+**UPDATE 2026-08-27 — root cause named and closed by PR #100 (`fix/ki164-bounded-footprint`).**
+The disk-guard symptom was downstream of the real fault: **writers with no enforced
+ceiling.** Two inode HALTs followed (91% 2026-08-21, 90% 2026-08-26). `depth_state` was
+emergency-deleted 2026-08-26 21:20 (2,970,965 files, 12G — 30% of the filesystem's inodes),
+but its WRITER stayed live and regrew ~1.1M files/day, so the deletion bought ~3 days.
+
+The close: (a) the whole depth family (`depth`, `depth_snapshot`, `depth_state`) is retired
+by config kill-switch — readers untouched, Stage C revives by flag flip — plus a one-off
+sweep (`scripts/ki164_retire_depth_family.py`); (b) a nightly-enforced per-class retention
+policy (`CAPTURE_RETENTION_POLICY`: dense 3d / the 7 REST as-of series 21d / klines 30d) on
+BOTH roots, replacing a scheme where only `FIREHOSE_PRUNABLE_DATASETS` had a ceiling and the
+as-of series had **none at all**; (c) `_gaps` is never expired.
+
+Two facts worth carrying forward:
+  * the configured 7d dense window was **never achieved** — the byte guard had pruned the
+    dense set to a SINGLE day on disk, so retention was guard-driven, not policy-driven;
+  * retiring `depth` removes the only Binance stream carrying sequence numbers, so the
+    depth-derived `sequence_gap` detector goes with it. Connection-level gaps
+    (`conn_manager` `proactive_reconnect`) are unaffected. Nothing else currently detects a
+    silent mid-stream drop on aggTrade/bookTicker — see [[KI-168]] if that becomes a gap.
+
+DEPLOY ORDER (load-bearing): update tree -> restart `mhde-capture.target` -> sweep
+`--apply`. In the window between merge and restart the running processes still hold the old
+code and keep writing, so the retired datasets deliberately keep BOTH their nightly ceiling
+(`CAPTURE_RETIRED_RETENTION_DAYS = 1`) AND their place in
+`CAPTURE_CLOSED_HOUR_COMPACT_DATASETS`. The compaction half is the load-bearing one for that
+window: the nightly expire only removes partitions older than yesterday, so TODAY's
+partition grows all day, and uncompacted `depth` runs ~1.5M files/day vs ~13k compacted
+(~100x, measured 2026-08-27). Both become no-ops once the writers are off.
+
 ### KI-164 — Capture disk pinned at the 50 GiB disk-guard soft floor: retention being consumed continuously (662 partition prunes in one night)
 
 **Severity: medium — the guard is doing its job, but "steady state" is now

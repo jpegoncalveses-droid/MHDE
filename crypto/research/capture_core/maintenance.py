@@ -474,6 +474,44 @@ def expire_firehose_partitions(
     return removed
 
 
+def expire_by_policy(
+    root: str,
+    *,
+    policy: Optional[dict] = None,
+    now_ms: Optional[int] = None,
+) -> dict:
+    """Expire every dataset to ITS OWN retention (KI-164), on whichever root is given.
+
+    ``policy`` is ``{dataset: days}`` — :data:`config.CAPTURE_RETENTION_POLICY` by default:
+    dense WS firehose 3d, the 7 REST as-of series 21d, ``klines_1h`` 30d. The nightly CLI
+    runs this on the Binance root and, via ``--root``, on the OKX root, so ONE policy governs
+    both (previously only ``FIREHOSE_PRUNABLE_DATASETS`` had a ceiling and the as-of series
+    had none at all — the unbounded-writer half of KI-164).
+
+    ``_gaps`` is not in the policy and is therefore never touched: it is the audit manifest
+    of capture outages, and an expired gap is a silent no-bias violation. Today's partition
+    is always kept (the cutoff is ``now - days``). Filesystem-only; no DB.
+
+    Returns ``{dataset: [removed partition paths]}`` for the datasets that lost something.
+    """
+    policy = policy if policy is not None else cfg.CAPTURE_RETENTION_POLICY
+    now_ms = now_ms if now_ms is not None else int(time.time() * 1000)
+    out: dict = {}
+    for dataset, days in sorted(policy.items()):
+        cutoff = _date_str(now_ms - days * 86_400_000)
+        parts = dg.list_firehose_partitions(root, (dataset,), with_size=False)
+        removed: list[str] = []
+        for part in sorted(parts, key=lambda x: (x.date, x.path)):   # oldest-first
+            if part.date < cutoff:                                   # ISO dates sort lexically
+                shutil.rmtree(part.path)
+                removed.append(part.path)
+        if removed:
+            out[dataset] = removed
+            logger.info("retention[%s]: expired %d partitions older than %s (%dd)",
+                        dataset, len(removed), cutoff, days)
+    return out
+
+
 def expire_depth_state_partitions(
     root: str,
     *,

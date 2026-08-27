@@ -25,6 +25,11 @@ from crypto.research.capture_core import maintenance
 from crypto.research.capture_core import service as svc
 from crypto.research.capture_core import store
 
+# KI-164 retired the depth family by DEFAULT (DEPTH_ENABLED / DEPTH_SNAPSHOT_ENABLED /
+# DEPTH_STATE_ENABLED all False). The tests below exercise that machinery, which must keep
+# working for a Stage-C revival, so they enable it EXPLICITLY — the same convention the
+# depth_state gate tests already use to prove gate semantics independent of the default.
+
 _DAY = datetime(2026, 5, 29, 12, 0, 0, tzinfo=timezone.utc)
 _HOUR = 3600
 
@@ -76,7 +81,7 @@ def test_rollup_constant_is_retired():
 def test_firehose_writers_use_short_flush_interval(tmp_path):
     s = svc.CaptureService(root=str(tmp_path), client=None, enable_snapshots=False,
                            install_signals=False, disk_guard_enabled=False,
-                           inode_guard_enabled=False)
+                           inode_guard_enabled=False, depth_enabled=True, depth_snapshot_enabled=True)
     for w in (s._agg, s._depth, s._bookticker, s._forceorder, s._markprice, s._snapshot):
         assert w._flush_interval_s == cfg.CAPTURE_FIREHOSE_FLUSH_S
 
@@ -197,23 +202,26 @@ def test_part_and_compact_mix_reads_as_hive_with_cursor(tmp_path):
 
 # -- (e) retention at 7 days ---------------------------------------------------
 
-def test_shipped_retention_is_seven_days():
-    assert cfg.CAPTURE_RAW_RETENTION_DAYS == 7
+def test_shipped_dense_retention_is_three_days():
+    # ADR-038 shipped 7d; KI-164 cut the dense class to 3d and made it nightly-ENFORCED
+    # per class on both roots (the 7d was never achieved — the byte guard had already
+    # pruned the dense set to a single day on disk).
+    assert cfg.CAPTURE_RAW_RETENTION_DAYS == 3
 
 
-def test_expire_prunes_only_beyond_7d_never_today(tmp_path):
+def test_expire_prunes_only_beyond_the_dense_window_never_today(tmp_path):
     now_ms = _ms(datetime(2026, 6, 14, 12, 0, tzinfo=timezone.utc))
-    for date in ("2026-06-01", "2026-06-08", "2026-06-14"):  # 13d, 6d, today
+    for date in ("2026-06-01", "2026-06-12", "2026-06-14"):  # 13d, 2d, today
         d = pathlib.Path(tmp_path, "aggTrade", "symbol=BTCUSDT", f"date={date}")
         d.mkdir(parents=True)
         (d / "part.parquet").write_bytes(b"x")
 
     removed = maintenance.expire_firehose_partitions(str(tmp_path), now_ms=now_ms)
 
-    assert any("2026-06-01" in p for p in removed)            # 13d > 7d -> pruned
+    assert any("2026-06-01" in p for p in removed)            # 13d > 3d -> pruned
     assert not pathlib.Path(tmp_path, "aggTrade", "symbol=BTCUSDT",
                             "date=2026-06-01").exists()
     assert pathlib.Path(tmp_path, "aggTrade", "symbol=BTCUSDT",
-                        "date=2026-06-08").exists()           # 6d < 7d -> kept
+                        "date=2026-06-12").exists()           # 2d < 3d -> kept
     assert pathlib.Path(tmp_path, "aggTrade", "symbol=BTCUSDT",
                         "date=2026-06-14").exists()           # today -> kept

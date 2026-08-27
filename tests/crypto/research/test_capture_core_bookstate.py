@@ -15,6 +15,9 @@ import pyarrow.parquet as pq
 from crypto.research.capture_core.book import DepthMaintainer
 from crypto.research.capture_core import store, config as cfg, service
 
+# KI-164 retired the depth family by DEFAULT; these tests exercise that machinery
+# (kept for a Stage-C revival), so they enable it EXPLICITLY.
+
 
 # -- helpers --
 
@@ -162,7 +165,8 @@ def _diff(symbol, U, u, pu, *, b=None, a=None):
 
 
 def test_service_periodic_write_synced_only_and_cadence_gated(tmp_path):
-    s = service.CaptureService(root=str(tmp_path), client=None, depth_state_enabled=True)
+    s = service.CaptureService(root=str(tmp_path), client=None, depth_state_enabled=True,
+                               depth_enabled=True, depth_snapshot_enabled=True)
     # seed + sync BTCUSDT's level book
     s._on_snapshot_arrived("BTCUSDT", {"lastUpdateId": 100, "bids": _A_BIDS, "asks": _A_ASKS}, recv_ns=1)
     s._handle_depth(_diff("BTCUSDT", 99, 105, 98, b=[["100.0", "7"]]), recv_ns=2)
@@ -213,7 +217,8 @@ def test_malformed_level_leaves_book_untouched_atomic():
 
 def test_service_periodic_write_is_best_effort_per_symbol(tmp_path):
     # One symbol's corrupt book must NOT take down the flush loop or drop the others.
-    s = service.CaptureService(root=str(tmp_path), client=None, depth_state_enabled=True)
+    s = service.CaptureService(root=str(tmp_path), client=None, depth_state_enabled=True,
+                               depth_enabled=True, depth_snapshot_enabled=True)
     s._on_snapshot_arrived("BTCUSDT", {"lastUpdateId": 100, "bids": _A_BIDS, "asks": _A_ASKS}, recv_ns=1)
     s._handle_depth(_diff("BTCUSDT", 99, 105, 98, b=[["100.0", "7"]]), recv_ns=2)
     s._on_snapshot_arrived("ETHUSDT", {"lastUpdateId": 50, "bids": [["10.0", "1"]], "asks": [["11.0", "1"]]}, recv_ns=3)
@@ -249,7 +254,8 @@ def test_depth_state_retention_prunes_old_partitions(tmp_path):
 def test_service_raw_depth_persist_path_unchanged(tmp_path):
     # ADDITIVE guarantee: the new level-book/state work does not alter raw diff
     # persistence — every diff still lands in the depth dataset verbatim.
-    s = service.CaptureService(root=str(tmp_path), client=None)
+    s = service.CaptureService(root=str(tmp_path), client=None,
+                               depth_enabled=True, depth_snapshot_enabled=True)
     s._handle_depth(_diff("BTCUSDT", 1, 2, 0, b=[["1.0", "2"]]), recv_ns=1)
     s._handle_depth(_diff("BTCUSDT", 3, 4, 2, a=[["9.0", "1"]]), recv_ns=2)
     s._depth.flush_all()

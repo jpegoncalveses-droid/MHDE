@@ -2164,7 +2164,7 @@ def crypto_capture_klines_seed(root, days):
 @click.option("--root", default=None,
               help="Raw capture dir. Default: capture_core.config.RAW_DIR.")
 @click.option("--days", default=None, type=int,
-              help="Retention window in days. Default: config.KLINES_RETENTION_DAYS (90).")
+              help="Retention window in days. Default: config.KLINES_RETENTION_DAYS (30).")
 def crypto_capture_klines_expire(root, days):
     """Expire klines_1h date partitions older than the retention window (rolling).
 
@@ -2188,14 +2188,18 @@ def crypto_capture_klines_expire(root, days):
 @click.option("--root", default=None,
               help="Raw capture dir. Default: capture_core.config.RAW_DIR.")
 @click.option("--days", default=None, type=int,
-              help="Retention window in days. Default: config.CAPTURE_RAW_RETENTION_DAYS (14).")
+              help="Override EVERY class with one window. Default: the per-class "
+                   "config.CAPTURE_RETENTION_POLICY (dense 3d / as-of 21d / klines 30d).")
 def crypto_capture_firehose_expire(root, days):
-    """Expire raw FIREHOSE date partitions older than the rolling window.
+    """Expire capture date partitions per the KI-164 per-class retention policy.
 
-    Whole date= partitions, oldest-first, never today's, firehose datasets only
-    (klines_1h / REST series / _gaps untouched). Filesystem-only under the capture
-    store; never opens the production DB. Intended for a daily timer; complements
-    PR-3's in-loop free-space byte guard (this is the TIME bound).
+    Whole date= partitions, oldest-first, never today's. Each dataset gets ITS OWN window
+    (dense WS firehose 3d, the 7 REST as-of series 21d, klines_1h 30d); ``_gaps`` is not in
+    the policy and is never touched. Runs against whichever root it is pointed at, so the
+    OKX unit (``--root data/research/capture_core_okx``) gets the SAME policy. ``--days``
+    overrides every class with one window. Filesystem-only under the capture store; never
+    opens the production DB. Daily timer; complements the in-loop free-space byte guard
+    (this is the TIME bound).
     """
     import logging
 
@@ -2206,12 +2210,17 @@ def crypto_capture_firehose_expire(root, days):
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    removed = mt.expire_firehose_partitions(
-        root or cc_cfg.RAW_DIR, days=days or cc_cfg.CAPTURE_RAW_RETENTION_DAYS)
-    click.echo(f"firehose retention: {len(removed)} partitions expired")
-    # depth_state is a short consumption buffer with its OWN (shorter) retention.
-    ds_removed = mt.expire_depth_state_partitions(root or cc_cfg.RAW_DIR)
-    click.echo(f"depth_state retention: {len(ds_removed)} partitions expired")
+    target = root or cc_cfg.RAW_DIR
+    if days is not None:
+        # Explicit override: one window across the whole policy (ops escape hatch).
+        policy = {ds: days for ds in cc_cfg.CAPTURE_RETENTION_POLICY}
+    else:
+        policy = None
+    by_ds = mt.expire_by_policy(target, policy=policy)
+    total = sum(len(v) for v in by_ds.values())
+    for ds in sorted(by_ds):
+        click.echo(f"retention[{ds}]: {len(by_ds[ds])} partitions expired")
+    click.echo(f"retention: {total} partitions expired across {len(by_ds)} dataset(s)")
 
 
 @crypto.command("capture-firehose-compact")

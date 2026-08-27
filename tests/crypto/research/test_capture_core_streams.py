@@ -4,9 +4,19 @@ from __future__ import annotations
 from crypto.research.capture_core import service as svc
 
 
-def test_per_symbol_streams_covers_aggtrade_depth_bookticker():
+def test_per_symbol_streams_covers_aggtrade_and_bookticker():
+    """KI-164: the depth diff is RETIRED by default — retiring it drops the SUBSCRIPTION,
+    not just the writer (the stream is the bandwidth/CPU/inode source)."""
+    out = svc.per_symbol_streams(["BTCUSDT", "ETHUSDT"])
+    assert out == ["btcusdt@aggTrade", "btcusdt@bookTicker",
+                   "ethusdt@aggTrade", "ethusdt@bookTicker"]
+
+
+def test_per_symbol_streams_restores_depth_when_re_enabled(monkeypatch):
+    """Stage C revives by flag flip: the depth subscription must come back with the flag."""
+    monkeypatch.setattr(svc.cfg, "DEPTH_ENABLED", True)
     out = svc.per_symbol_streams(["BTCUSDT"])
-    assert out == ["btcusdt@aggTrade", "btcusdt@depth@100ms", "btcusdt@bookTicker"]
+    assert f"btcusdt@depth@{svc.cfg.DEPTH_UPDATE_SPEED}" in out
 
 
 def test_capture_streams_appends_market_wide_array_streams():

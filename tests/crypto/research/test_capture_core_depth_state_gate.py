@@ -20,6 +20,11 @@ import pyarrow.parquet as pq
 
 from crypto.research.capture_core import service as svc
 
+# KI-164 retired the depth family by DEFAULT (DEPTH_ENABLED / DEPTH_SNAPSHOT_ENABLED /
+# DEPTH_STATE_ENABLED all False). The tests below exercise that machinery, which must keep
+# working for a Stage-C revival, so they enable it EXPLICITLY — the same convention the
+# depth_state gate tests already use to prove gate semantics independent of the default.
+
 _A_BIDS = [["100.0", "5"], ["99.0", "3"], ["98.0", "2"]]
 _A_ASKS = [["101.0", "4"], ["102.0", "6"], ["103.0", "1"]]
 
@@ -58,22 +63,25 @@ def _sync(s):
 # The OFF-behavior tests pass depth_state_enabled=False EXPLICITLY so they prove the
 # gate's semantics independent of the config default (which PR #71 flipped to ON).
 
-def test_default_is_now_on(tmp_path):
-    # PR #71 flipped the default OFF -> ON (deliberate activation, depth buffer tuned
-    # 5000 -> 1500 for host-memory safety). The pre-#71 default was False.
+def test_default_is_now_off_again(tmp_path):
+    # History: default OFF -> ON in PR #71 (deliberate activation) -> OFF again in KI-164.
+    # depth_state regenerated ~1.1M files/day and was 30% of the filesystem's inodes; the
+    # whole depth family is retired by kill-switch (readers untouched, Stage C revives by
+    # flag flip). The gate itself is unchanged — only the shipped default.
     s = svc.CaptureService(root=str(tmp_path), client=None)
-    assert s._depth_state_enabled is True                # default ON after activation
+    assert s._depth_state_enabled is False
+    assert s._depth is None and s._snapshot is None
 
 
 def test_gate_off_keeps_maintainer_cursor_only(tmp_path):
-    s = svc.CaptureService(root=str(tmp_path), client=None, depth_state_enabled=False)
+    s = svc.CaptureService(root=str(tmp_path), client=None, depth_state_enabled=False, depth_enabled=True, depth_snapshot_enabled=True)
     m = _sync(s)
     assert m.synced is True                              # cursor still works...
     assert m.bids == {} and m.asks == {}                # ...but NO level book is built
 
 
 def test_gate_off_creates_no_depth_state_writer_and_writes_nothing(tmp_path):
-    s = svc.CaptureService(root=str(tmp_path), client=None, depth_state_enabled=False)
+    s = svc.CaptureService(root=str(tmp_path), client=None, depth_state_enabled=False, depth_enabled=True, depth_snapshot_enabled=True)
     assert s._depth_state is None                        # writer not created
     assert None not in s._writers                        # and not in the flush set
     _sync(s)
@@ -85,7 +93,7 @@ def test_gate_off_creates_no_depth_state_writer_and_writes_nothing(tmp_path):
 def test_gate_off_does_not_feed_levels_into_the_buffer(tmp_path):
     # The fat, level-carrying _Diff buffer is the reconnect-storm OOM source — when
     # OFF, an unsynced diff must buffer WITHOUT its level arrays.
-    s = svc.CaptureService(root=str(tmp_path), client=None, depth_state_enabled=False)
+    s = svc.CaptureService(root=str(tmp_path), client=None, depth_state_enabled=False, depth_enabled=True, depth_snapshot_enabled=True)
     s._handle_depth(_diff("ETHUSDT", 5, 10, 4, b=[["10.0", "1"]], a=[["11.0", "1"]]), recv_ns=1)
     m = s._maintainers["ETHUSDT"]
     assert m._buffer[-1].bids is None and m._buffer[-1].asks is None
@@ -93,7 +101,7 @@ def test_gate_off_does_not_feed_levels_into_the_buffer(tmp_path):
 
 def test_gate_off_still_persists_raw_depth(tmp_path):
     # The gate only changes what the MAINTAINER sees; the raw firehose is untouched.
-    s = svc.CaptureService(root=str(tmp_path), client=None, depth_state_enabled=False)
+    s = svc.CaptureService(root=str(tmp_path), client=None, depth_state_enabled=False, depth_enabled=True, depth_snapshot_enabled=True)
     s._handle_depth(_diff("BTCUSDT", 5, 10, 4, b=[["10.0", "1"]], a=[]), recv_ns=7)
     s.flush_all()
     raw = _read_depth(str(tmp_path))
@@ -103,7 +111,7 @@ def test_gate_off_still_persists_raw_depth(tmp_path):
 # -- ON: the full PR #49 behavior --
 
 def test_gate_on_builds_book_and_feeds_buffer(tmp_path):
-    s = svc.CaptureService(root=str(tmp_path), client=None, depth_state_enabled=True)
+    s = svc.CaptureService(root=str(tmp_path), client=None, depth_state_enabled=True, depth_enabled=True, depth_snapshot_enabled=True)
     m = _sync(s)
     assert m.synced is True
     assert m.bids and m.asks                              # level book is maintained
@@ -113,7 +121,7 @@ def test_gate_on_builds_book_and_feeds_buffer(tmp_path):
 
 
 def test_gate_on_writes_depth_state(tmp_path):
-    s = svc.CaptureService(root=str(tmp_path), client=None, depth_state_enabled=True)
+    s = svc.CaptureService(root=str(tmp_path), client=None, depth_state_enabled=True, depth_enabled=True, depth_snapshot_enabled=True)
     assert s._depth_state is not None and s._depth_state in s._writers
     _sync(s)
     s._maybe_write_book_states()
