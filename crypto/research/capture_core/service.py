@@ -50,12 +50,16 @@ MARKET_STREAMS = ["!forceOrder@arr", f"!markPrice@arr@{cfg.MARKPRICE_SPEED}"]
 
 
 def per_symbol_streams(universe: Sequence[str]) -> list[str]:
-    """Per-symbol capture streams: aggTrade + depth diff + bookTicker."""
+    """Per-symbol capture streams: aggTrade + bookTicker (+ depth diff when enabled).
+
+    KI-164: the depth diff is gated by ``DEPTH_ENABLED``. Retiring it drops the
+    SUBSCRIPTION, not just the writer — the stream is the bandwidth/CPU/inode source."""
     out: list[str] = []
     for s in universe:
         low = s.lower()
-        out += [f"{low}@aggTrade", f"{low}@depth@{cfg.DEPTH_UPDATE_SPEED}",
-                f"{low}@bookTicker"]
+        out += [f"{low}@aggTrade", f"{low}@bookTicker"]
+        if cfg.DEPTH_ENABLED:
+            out.append(f"{low}@depth@{cfg.DEPTH_UPDATE_SPEED}")
     return out
 
 
@@ -200,6 +204,8 @@ class CaptureService:
         inode_guard: Optional[Any] = None,
         inode_guard_enabled: bool = True,
         disk_check_interval_s: float = cfg.CAPTURE_DISK_CHECK_INTERVAL_S,
+        depth_enabled: bool = cfg.DEPTH_ENABLED,
+        depth_snapshot_enabled: bool = cfg.DEPTH_SNAPSHOT_ENABLED,
         depth_state_enabled: bool = cfg.DEPTH_STATE_ENABLED,
         notifier: Optional[Any] = None,
         watchdog_liveness_window_s: float = cfg.SOCKET_SILENCE_TIMEOUT_S,
@@ -250,11 +256,15 @@ class CaptureService:
 
         _wkw = dict(flush_interval_s=flush_interval_s, flush_max_bytes=flush_max_bytes)
         self._agg = store.aggtrade_writer(root, **_wkw)
-        self._depth = store.depth_writer(root, **_wkw)
+        # KI-164 retirement gates. None => never created, never flushed, never on disk.
+        self._depth_enabled = depth_enabled
+        self._depth_snapshot_enabled = depth_snapshot_enabled
+        self._depth = store.depth_writer(root, **_wkw) if depth_enabled else None
         self._bookticker = store.bookticker_writer(root, **_wkw)
         self._forceorder = store.forceorder_writer(root, **_wkw)
         self._markprice = store.markprice_writer(root, **_wkw)
-        self._snapshot = store.depth_snapshot_writer(root, **_wkw)
+        self._snapshot = (store.depth_snapshot_writer(root, **_wkw)
+                          if depth_snapshot_enabled else None)
         # Online book-state dataset: periodic top-N states from the level book. GATED
         # by DEPTH_STATE_ENABLED — when OFF the maintainer stays cursor-only (no level
         # feed, no book, no fat buffers) and this writer is never created or flushed,
@@ -264,18 +274,21 @@ class CaptureService:
                              if self._depth_state_enabled else None)
         self._last_book_state_monotonic = 0.0
         self._gaps = store.gap_writer(root)
-        self._writers = [self._agg, self._depth, self._bookticker, self._forceorder,
-                         self._markprice, self._snapshot, self._gaps]
-        if self._depth_state is not None:
-            self._writers.append(self._depth_state)
+        self._writers = [w for w in (self._agg, self._depth, self._bookticker,
+                                     self._forceorder, self._markprice, self._snapshot,
+                                     self._gaps, self._depth_state) if w is not None]
 
         # Per-symbol depth sequence maintenance (cursor only; not a level book).
         self._maintainers: dict[str, DepthMaintainer] = {}
 
         # REST snapshot scheduler (paced/deduped). Injected in tests; built from
         # the client otherwise. None disables depth seeding/resync.
-        if snap_scheduler is not None:
-            self._snap_sched: Any = snap_scheduler
+        if not depth_snapshot_enabled:
+            # KI-164: no snapshot writer => no reason to schedule REST snapshots. This
+            # idles the snapshot-owner's sole /fapi/v1/depth duty.
+            self._snap_sched: Any = None
+        elif snap_scheduler is not None:
+            self._snap_sched = snap_scheduler
         elif snapshot_socket_path is not None:
             # SHARD process (ADR-039 2b): seed via the snapshot-owner over the socket,
             # so the owner is the SOLE REST caller and the global weight budget holds
@@ -332,7 +345,8 @@ class CaptureService:
         if stream.endswith("@aggTrade"):
             self._agg.append(aggtrade_row(data, recv_ns))
         elif "@depth@" in stream:
-            self._handle_depth(data, recv_ns)
+            if self._depth_enabled:          # KI-164: retired => ignore any stray frame
+                self._handle_depth(data, recv_ns)
         elif stream.endswith("@bookTicker"):
             self._bookticker.append(bookticker_row(data, recv_ns))
         elif stream == "!forceOrder@arr":

@@ -248,7 +248,16 @@ KLINES_SEED_DAYS = 90
 KLINES_SEED_LIMIT = 1500
 #: Rolling on-host retention for the klines store (piece-2-specific; separate from
 #: PR-3's firehose buffer cap). Partitions older than this are expired.
-KLINES_RETENTION_DAYS = 90
+#: KI-164: 90 -> 30d. EVIDENCE (C1): no consumer reads capture klines by deep DATE.
+#: The brain tick consumes forward by ``recv_ts_ns > cursor`` (reader.read_new_klines) and
+#: discovery reads the BRAIN store, not capture, over DISCOVERY_HISTORY_DAYS(14) +
+#: PRIMITIVE_LOOKBACK(2). The deepest real requirement is a brain-store REBUILD, bounded by
+#: BRAIN_STORE_RETENTION_DAYS = 21 -> 30d leaves 9 days of margin. NOTE: klines ``date=`` is
+#: keyed on bar openTime, so a backfill writes old-dated partitions at recv=now; the brain
+#: reader therefore excludes klines from its date prune (reader._RECV_DATED_DATASETS) and
+#: never depends on old partitions surviving. KLINES_SEED_DAYS (90) now EXCEEDS this window:
+#: a manual re-seed writes ~60 days that the next nightly expire reclaims (one-off churn).
+KLINES_RETENTION_DAYS = 30
 
 # -- Capture disk guard (PR-3 safety) -----------------------------------------
 # Free-space-aware protection for the FIREHOSE datasets only. The caps express
@@ -257,9 +266,11 @@ KLINES_RETENTION_DAYS = 90
 #: Datasets the guard may prune (the big WS firehose writers), pruned oldest-first.
 #: klines_1h, the REST present-state series, and the _gaps manifest (tiny / audit /
 #: longer-lived) are NEVER pruned — they are simply absent from this list.
-FIREHOSE_PRUNABLE_DATASETS = (
-    "aggTrade", "depth", "bookTicker", "forceOrder", "markPrice", "depth_snapshot",
-)
+#: KI-164: the depth family (``depth``, ``depth_snapshot``, ``depth_state``) is RETIRED —
+#: its writers are off, so it is neither written nor prunable. Dense == the four surviving
+#: WS firehose writers.
+CAPTURE_DENSE_DATASETS = ("aggTrade", "bookTicker", "forceOrder", "markPrice")
+FIREHOSE_PRUNABLE_DATASETS = CAPTURE_DENSE_DATASETS
 #: The 7 REST present-state ("as-of") series. Low-rate AND never date-pruned by the
 #: brain reader (every date partition is read every tick), so the closed-hour
 #: (flush-mtime-hour) compactor only buys ~1.5-2x; instead they get a DAILY WHOLE-
@@ -323,7 +334,18 @@ CAPTURE_INODE_RESUME_FRACTION = 0.88
 #: TIME bound on the raw firehose tape (the brain Phase 1 reader needs ~24h). 7d is a
 #: comfortable research buffer that keeps total file/inode count low under the
 #: write-then-compact layout (ADR-038). Filesystem-only; never opens the production DB.
-CAPTURE_RAW_RETENTION_DAYS = 7
+#: KI-164: 7 -> 3d, and now HONEST. The configured 7d was never achieved: the byte guard
+#: had pruned the Binance dense set to a SINGLE day on disk (measured 2026-08-27), so
+#: retention was guard-driven, not policy-driven. 3d is nightly-ENFORCED for both roots and
+#: still exceeds the brain reader's ~24h need with margin.
+CAPTURE_DENSE_RETENTION_DAYS = 3
+#: Legacy alias (one source of truth) — kept because callers/tests reference it by name.
+CAPTURE_RAW_RETENTION_DAYS = CAPTURE_DENSE_RETENTION_DAYS
+#: The 7 REST as-of series had NO enforced ceiling at all: they are absent from
+#: FIREHOSE_PRUNABLE_DATASETS, which is what the nightly expire read, so nothing ever
+#: expired them on either root (measured 2026-08-27: 28 days resident and growing; OKX
+#: premium_index/open_interest at ~242k files EACH). Now nightly-enforced.
+CAPTURE_ASOF_RETENTION_DAYS = 21
 
 # -- Stream cadences --
 DEPTH_UPDATE_SPEED = "100ms"   # rawest diff cadence (operator GO: no pre-coarsen)
@@ -341,7 +363,21 @@ MARKPRICE_SPEED = "1s"
 # OFF keeps the maintainer CURSOR-ONLY (the proven pre-#49 path: no per-symbol book, no
 # fat level-carrying _Diff buffers — the reconnect-storm OOM source). Flip ON only as a
 # deliberate depth-state activation (alongside tuning CAPTURE_DEPTH_BUFFER_MAXLEN).
-DEPTH_STATE_ENABLED = True
+# KI-164 RETIREMENT (kill-switch, NOT deletion — Stage C revives by flag flip):
+# depth_state regenerated ~870k files/day and was 30% of the filesystem's inodes when
+# emergency-deleted 2026-08-26. The raw ``depth`` diff and the REST ``depth_snapshot``
+# exist only to feed it (and each other): depth carries the sequence numbers the online
+# book needs, depth_snapshot seeds/resyncs that book. With depth_state off they are pure
+# cost, so all three are retired together. Readers (brain/depth.py, read_new_depth_state,
+# the unwired DEPTH SourceSpec) are deliberately UNTOUCHED.
+#: Raw depth diff stream: subscription AND writer. Off => the stream is not subscribed at
+#: all (bandwidth + CPU + inodes), no sequence maintainer, and therefore no depth-derived
+#: ``sequence_gap`` manifest rows. Connection-level gaps (conn_manager) are unaffected.
+DEPTH_ENABLED = False
+#: REST /fapi/v1/depth snapshot seeding. Off => no snapshot writer and no snapshot
+#: scheduler, which idles the snapshot-owner's sole REST duty.
+DEPTH_SNAPSHOT_ENABLED = False
+DEPTH_STATE_ENABLED = False
 DEPTH_STATE_DATASET = "depth_state"
 DEPTH_STATE_TOP_N = 20            # levels per side (the signal-rich near book)
 DEPTH_STATE_CADENCE_S = 5.0       # one state per synced symbol every 5s
@@ -364,3 +400,21 @@ EXCLUDED_STREAMS = {
         "Only emits for composite-index symbols, not regular perps. Inapplicable "
         "to the perp universe.",
 }
+
+
+# -- KI-164: nightly-enforced retention policy (per CLASS, both roots) ---------
+#: ``dataset -> retention days``, enforced every night by ``crypto capture-firehose-expire``
+#: on WHICHEVER root it is pointed at (the OKX unit runs the same CLI with ``--root``), so
+#: one policy governs both. Before this, only FIREHOSE_PRUNABLE_DATASETS had a ceiling and
+#: the 7 as-of series had none — the unbounded-writer half of KI-164.
+#:
+#: ``_gaps`` is DELIBERATELY ABSENT and must never be added: it is the audit manifest of
+#: capture outages (tiny, append-only) and a gap that expires is a silent no-bias violation.
+#: The retired depth family is absent because it is no longer written at all.
+CAPTURE_RETENTION_POLICY: dict = {
+    **{d: CAPTURE_DENSE_RETENTION_DAYS for d in CAPTURE_DENSE_DATASETS},
+    **{d: CAPTURE_ASOF_RETENTION_DAYS for d in CAPTURE_ASOF_DATASETS},
+    KLINES_DATASET: KLINES_RETENTION_DAYS,
+}
+#: Datasets retired by KI-164 — swept once by ``scripts/ki164_retire_depth_family.py``.
+CAPTURE_RETIRED_DATASETS = ("depth", "depth_snapshot", "depth_state")

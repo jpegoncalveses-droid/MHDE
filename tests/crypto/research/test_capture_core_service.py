@@ -10,6 +10,11 @@ import pyarrow.parquet as pq
 from crypto.research.capture_core import conn_manager as cm
 from crypto.research.capture_core import service as svc
 
+# KI-164 retired the depth family by DEFAULT (DEPTH_ENABLED / DEPTH_SNAPSHOT_ENABLED /
+# DEPTH_STATE_ENABLED all False). The tests below exercise that machinery, which must keep
+# working for a Stage-C revival, so they enable it EXPLICITLY — the same convention the
+# depth_state gate tests already use to prove gate semantics independent of the default.
+
 
 def _read(root, dataset):
     rows = []
@@ -42,7 +47,7 @@ def test_universe_changed_is_order_insensitive():
 # -- gap mapping --
 
 def test_on_gap_writes_one_row_per_symbol(tmp_path):
-    s = svc.CaptureService(root=str(tmp_path), client=None)
+    s = svc.CaptureService(root=str(tmp_path), client=None, depth_enabled=True, depth_snapshot_enabled=True)
     s._on_gap(["btcusdt@aggTrade", "ethusdt@aggTrade"], "reconnect", 1_748_563_200_000,
               1_748_563_205_000)
     s.flush_all()
@@ -78,7 +83,7 @@ class _FakeConn:
 
 
 def test_service_captures_aggtrade_to_parquet_end_to_end(tmp_path):
-    s = svc.CaptureService(root=str(tmp_path), client=None)
+    s = svc.CaptureService(root=str(tmp_path), client=None, depth_enabled=True, depth_snapshot_enabled=True)
     conn = _FakeConn([_frame("BTCUSDT", "100.0"), _frame("ETHUSDT", "42.0")])
 
     count = [0]
@@ -113,8 +118,7 @@ def test_flush_loop_size_flushes_between_age_intervals(tmp_path):
         root=str(tmp_path), client=None,
         flush_interval_s=10**6,   # age never triggers in this test
         flush_max_bytes=1,        # any buffered row exceeds the size cap
-        flush_poll_s=0.0, install_signals=False,
-    )
+        flush_poll_s=0.0, install_signals=False, depth_enabled=True, depth_snapshot_enabled=True)
     s._agg.append(svc.aggtrade_row(
         {"e": "aggTrade", "E": 1_748_563_200_000, "a": 1, "s": "BTCUSDT",
          "p": "1.0", "q": "1.0", "f": 1, "l": 1, "T": 1_748_563_200_000, "m": False},
@@ -157,7 +161,7 @@ def _read(root, dataset):
 
 
 def test_service_routes_each_stream_to_its_dataset(tmp_path):
-    s = svc.CaptureService(root=str(tmp_path), client=None, snap_scheduler=_RecSched())
+    s = svc.CaptureService(root=str(tmp_path), client=None, snap_scheduler=_RecSched(), depth_enabled=True, depth_snapshot_enabled=True)
     s._on_message("btcusdt@depth@100ms", _depth_data(11, 20, 10, 2), 100)
     s._on_message("btcusdt@bookTicker",
                   {"e": "bookTicker", "u": 5, "s": "BTCUSDT", "b": "1", "B": "2",
@@ -183,14 +187,14 @@ def test_service_routes_each_stream_to_its_dataset(tmp_path):
 
 def test_seed_universe_requests_one_snapshot_per_symbol(tmp_path):
     rec = _RecSched()
-    s = svc.CaptureService(root=str(tmp_path), client=None, snap_scheduler=rec)
+    s = svc.CaptureService(root=str(tmp_path), client=None, snap_scheduler=rec, depth_enabled=True, depth_snapshot_enabled=True)
     s.seed_universe(["BTCUSDT", "ETHUSDT"])
     assert rec.requested == ["BTCUSDT", "ETHUSDT"]
 
 
 def test_depth_break_records_gap_and_requests_resync(tmp_path):
     rec = _RecSched()
-    s = svc.CaptureService(root=str(tmp_path), client=None, snap_scheduler=rec)
+    s = svc.CaptureService(root=str(tmp_path), client=None, snap_scheduler=rec, depth_enabled=True, depth_snapshot_enabled=True)
 
     # seed + sync (snapshot lastUpdateId bridged by the buffered diff)
     s._on_message("btcusdt@depth@100ms", _depth_data(11, 20, 10, E=2), 100)
@@ -257,8 +261,7 @@ def test_run_rebuilds_manager_when_universe_changes(tmp_path):
     s = svc.CaptureService(
         root=str(tmp_path), client=client, mgr_factory=factory,
         reresolve_interval_s=0.0, flush_interval_s=10**6, install_signals=False,
-        enable_snapshots=False,
-    )
+        enable_snapshots=False, depth_enabled=True, depth_snapshot_enabled=True)
 
     async def scenario():
         task = asyncio.create_task(s.run())

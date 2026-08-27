@@ -16,6 +16,11 @@ import pyarrow.parquet as pq
 from crypto.research.capture_core import rest_throttle as rt
 from crypto.research.capture_core import snapshot_owner as so
 
+# KI-164 retired the depth family by DEFAULT (DEPTH_ENABLED / DEPTH_SNAPSHOT_ENABLED /
+# DEPTH_STATE_ENABLED all False). The tests below exercise that machinery, which must keep
+# working for a Stage-C revival, so they enable it EXPLICITLY — the same convention the
+# depth_state gate tests already use to prove gate semantics independent of the default.
+
 
 class FakeClock:
     def __init__(self) -> None:
@@ -116,7 +121,7 @@ def test_raw_diff_tape_is_independent_of_snapshot_owner(tmp_path):
     from crypto.research.capture_core import service as svc
     s = svc.CaptureService(root=str(tmp_path), client=None, enable_snapshots=False,
                            install_signals=False, disk_guard_enabled=False,
-                           inode_guard_enabled=False)
+                           inode_guard_enabled=False, depth_enabled=True, depth_snapshot_enabled=True)
     assert s._snap_sched is None
     diff = {"e": "depthUpdate", "E": 1000, "T": 1000, "s": "BTCUSDT",
             "U": 1, "u": 2, "pu": 0, "b": [["100", "1"]], "a": [["101", "2"]]}

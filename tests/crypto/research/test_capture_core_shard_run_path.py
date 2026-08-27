@@ -15,6 +15,11 @@ from crypto.research.capture_core import service as svc
 from crypto.research.capture_core import sharding
 from crypto.research.capture_core import snapshot_owner as so
 
+# KI-164 retired the depth family by DEFAULT (DEPTH_ENABLED / DEPTH_SNAPSHOT_ENABLED /
+# DEPTH_STATE_ENABLED all False). The tests below exercise that machinery, which must keep
+# working for a Stage-C revival, so they enable it EXPLICITLY — the same convention the
+# depth_state gate tests already use to prove gate semantics independent of the default.
+
 _UNIV = [f"SYM{i}USDT" for i in range(60)]
 
 
@@ -32,7 +37,7 @@ class FakeUniverseClient:
 def _svc(**kw):
     return svc.CaptureService(root="/tmp/unused-2b", client=FakeUniverseClient(_UNIV),
                               install_signals=False, enable_snapshots=False,
-                              disk_guard_enabled=False, inode_guard_enabled=False, **kw)
+                              disk_guard_enabled=False, inode_guard_enabled=False, **kw, depth_enabled=True, depth_snapshot_enabled=True)
 
 
 # -- (a) subset = symbols_for_shard(N,K), disjoint + full coverage ------------
@@ -119,7 +124,7 @@ def test_no_socket_uses_direct_rest_scheduler():
     from crypto.research.capture_core.snapshot import SnapshotScheduler
     s = svc.CaptureService(root="/tmp/unused-2b", client=FakeUniverseClient(_UNIV),
                            install_signals=False, enable_snapshots=True,
-                           disk_guard_enabled=False, inode_guard_enabled=False)
+                           disk_guard_enabled=False, inode_guard_enabled=False, depth_enabled=True, depth_snapshot_enabled=True)
     assert isinstance(s._snap_sched, SnapshotScheduler)
     assert not isinstance(s._snap_sched, so.SnapshotClientScheduler)
 

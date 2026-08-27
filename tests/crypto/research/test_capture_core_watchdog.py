@@ -11,6 +11,11 @@ import time
 
 from crypto.research.capture_core.service import CaptureService
 
+# KI-164 retired the depth family by DEFAULT (DEPTH_ENABLED / DEPTH_SNAPSHOT_ENABLED /
+# DEPTH_STATE_ENABLED all False). The tests below exercise that machinery, which must keep
+# working for a Stage-C revival, so they enable it EXPLICITLY — the same convention the
+# depth_state gate tests already use to prove gate semantics independent of the default.
+
 
 class _RecordingNotifier:
     def __init__(self):
@@ -52,7 +57,7 @@ def _svc(tmp_path, notifier, **kw):
         install_signals=False, enable_snapshots=False,
         disk_guard_enabled=False, inode_guard_enabled=False,
         mgr_factory=lambda streams: _FakeMgr(),
-        notifier=notifier, **kw)
+        notifier=notifier, **kw, depth_enabled=True, depth_snapshot_enabled=True)
 
 
 def test_on_message_stamps_liveness_before_halt_guard(tmp_path):

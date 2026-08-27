@@ -7,6 +7,11 @@ from crypto.research.capture_core import config as cfg
 from crypto.research.capture_core import disk_guard as dg
 from crypto.research.capture_core import service as svc
 
+# KI-164 retired the depth family by DEFAULT (DEPTH_ENABLED / DEPTH_SNAPSHOT_ENABLED /
+# DEPTH_STATE_ENABLED all False). The tests below exercise that machinery, which must keep
+# working for a Stage-C revival, so they enable it EXPLICITLY — the same convention the
+# depth_state gate tests already use to prove gate semantics independent of the default.
+
 GIB = 1024 ** 3
 
 
@@ -140,7 +145,7 @@ def _agg_data():
 def _service(tmp_path, guard):
     return svc.CaptureService(root=str(tmp_path), client=None,
                               enable_snapshots=False, install_signals=False,
-                              disk_guard=guard)
+                              disk_guard=guard, depth_enabled=True, depth_snapshot_enabled=True)
 
 
 def test_firehose_write_dropped_when_guard_halted(tmp_path):
@@ -159,8 +164,8 @@ def test_firehose_write_kept_when_guard_not_halted(tmp_path):
 
 def test_default_disk_guard_constructed_when_enabled(tmp_path):
     s = svc.CaptureService(root=str(tmp_path), client=None, enable_snapshots=False,
-                           install_signals=False)
+                           install_signals=False, depth_enabled=True, depth_snapshot_enabled=True)
     assert isinstance(s._disk_guard, dg.DiskGuard)
     s2 = svc.CaptureService(root=str(tmp_path), client=None, enable_snapshots=False,
-                            install_signals=False, disk_guard_enabled=False)
+                            install_signals=False, disk_guard_enabled=False, depth_enabled=True, depth_snapshot_enabled=True)
     assert s2._disk_guard is None
