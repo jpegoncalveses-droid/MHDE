@@ -2164,7 +2164,7 @@ def crypto_capture_klines_seed(root, days):
 @click.option("--root", default=None,
               help="Raw capture dir. Default: capture_core.config.RAW_DIR.")
 @click.option("--days", default=None, type=int,
-              help="Retention window in days. Default: config.KLINES_RETENTION_DAYS (90).")
+              help="Retention window in days. Default: config.KLINES_RETENTION_DAYS (30).")
 def crypto_capture_klines_expire(root, days):
     """Expire klines_1h date partitions older than the retention window (rolling).
 

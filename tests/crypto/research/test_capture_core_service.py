@@ -258,10 +258,13 @@ def test_run_rebuilds_manager_when_universe_changes(tmp_path):
         return m
 
     client = _FakeClient([["BTCUSDT"], ["BTCUSDT", "ETHUSDT"]])
+    # SHIPPED DEFAULTS deliberately: this is the only test that drives run() through to its
+    # `finally`, so it is what covers stats()-on-shutdown with the KI-164 kill-switches ON.
+    # Do NOT add depth_enabled=True here — that hides a retired-writer deref (review, PR #100).
     s = svc.CaptureService(
         root=str(tmp_path), client=client, mgr_factory=factory,
         reresolve_interval_s=0.0, flush_interval_s=10**6, install_signals=False,
-        enable_snapshots=False, depth_enabled=True, depth_snapshot_enabled=True)
+        enable_snapshots=False)
 
     async def scenario():
         task = asyncio.create_task(s.run())

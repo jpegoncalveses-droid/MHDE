@@ -411,10 +411,20 @@ EXCLUDED_STREAMS = {
 #: ``_gaps`` is DELIBERATELY ABSENT and must never be added: it is the audit manifest of
 #: capture outages (tiny, append-only) and a gap that expires is a silent no-bias violation.
 #: The retired depth family is absent because it is no longer written at all.
+#: Datasets retired by KI-164 — swept once by ``scripts/ki164_retire_depth_family.py``.
+CAPTURE_RETIRED_DATASETS = ("depth", "depth_snapshot", "depth_state")
+#: DEPLOY-ORDER SAFETY. The kill-switches only bite when the operator restarts the fleet;
+#: until then the RUNNING processes hold the old code and keep writing. Dropping
+#: depth_state's old 2-day expire in that window would leave it with NO ceiling at all —
+#: strictly worse than before this change, and depth_state regrows ~1.1M files/day. The
+#: retired datasets therefore keep the TIGHTEST nightly ceiling until the sweep removes
+#: them, after which every pass is a no-op.
+CAPTURE_RETIRED_RETENTION_DAYS = 1
+
 CAPTURE_RETENTION_POLICY: dict = {
     **{d: CAPTURE_DENSE_RETENTION_DAYS for d in CAPTURE_DENSE_DATASETS},
     **{d: CAPTURE_ASOF_RETENTION_DAYS for d in CAPTURE_ASOF_DATASETS},
     KLINES_DATASET: KLINES_RETENTION_DAYS,
+    # Retired-but-possibly-still-being-written (see CAPTURE_RETIRED_RETENTION_DAYS).
+    **{d: CAPTURE_RETIRED_RETENTION_DAYS for d in CAPTURE_RETIRED_DATASETS},
 }
-#: Datasets retired by KI-164 — swept once by ``scripts/ki164_retire_depth_family.py``.
-CAPTURE_RETIRED_DATASETS = ("depth", "depth_snapshot", "depth_state")

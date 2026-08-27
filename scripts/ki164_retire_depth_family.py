@@ -12,8 +12,15 @@ This removes what is already there:
 
 DRY-RUN BY DEFAULT: prints per-source file count and bytes and touches nothing. Pass
 ``--apply`` to delete. Idempotent — a second ``--apply`` finds nothing and reports zeros.
-Filesystem-only; never opens a DB, never touches a live writer, never touches ``_gaps`` or
-any surviving dataset.
+Filesystem-only; never opens a DB, never touches ``_gaps`` or any surviving dataset.
+
+ORDER MATTERS — run this LAST:
+  1. update the working tree (the kill-switches live in config)
+  2. ``systemctl --user restart mhde-capture.target``  <- the RUNNING shards hold the OLD
+     code until this; deleting first just lets a live writer recreate the tree
+  3. ``--apply`` this script
+Until step 2 lands, the retired datasets still carry the tightest nightly ceiling
+(``CAPTURE_RETIRED_RETENTION_DAYS``), so they cannot grow unbounded in the meantime.
 
     venv/bin/python scripts/ki164_retire_depth_family.py            # report only
     venv/bin/python scripts/ki164_retire_depth_family.py --apply    # delete
@@ -25,13 +32,17 @@ import os
 import shutil
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _REPO_ROOT)
 
 from crypto.research.capture_core import config as cc_cfg          # noqa: E402
 from crypto.research.capture_core_okx import config as okx_cfg     # noqa: E402
 
 RETIRED = cc_cfg.CAPTURE_RETIRED_DATASETS
-DEFAULT_ROOTS = (cc_cfg.RAW_DIR, okx_cfg.RAW_DIR)
+#: Anchored to the REPO ROOT: the config values are relative, so a run from any other cwd
+#: would silently report "absent / TOTAL 0" and read as "nothing to sweep".
+DEFAULT_ROOTS = (os.path.join(_REPO_ROOT, cc_cfg.RAW_DIR),
+                 os.path.join(_REPO_ROOT, okx_cfg.RAW_DIR))
 
 
 def _measure(path: str) -> tuple[int, int]:
@@ -52,7 +63,8 @@ def sweep(roots, *, apply: bool = False) -> dict:
 
     Returns ``{dataset: {"files": n, "bytes": n, "paths": [...]}}`` aggregated over roots.
     """
-    report: dict = {ds: {"files": 0, "bytes": 0, "paths": []} for ds in RETIRED}
+    report: dict = {ds: {"files": 0, "bytes": 0, "paths": [], "remaining": 0}
+                   for ds in RETIRED}
     for root in roots:
         for ds in RETIRED:
             path = os.path.join(root, ds)
@@ -64,6 +76,12 @@ def sweep(roots, *, apply: bool = False) -> dict:
             report[ds]["paths"].append(path)
             if apply:
                 shutil.rmtree(path, ignore_errors=True)
+                # Re-measure: rmtree(ignore_errors=True) swallows failures (e.g. a symlinked
+                # dataset dir), so reporting the PRE-count as "deleted" could be a lie.
+                left_files, left_bytes = _measure(path) if os.path.isdir(path) else (0, 0)
+                report[ds]["files"] -= left_files
+                report[ds]["bytes"] -= left_bytes
+                report[ds]["remaining"] = report[ds].get("remaining", 0) + left_files
     return report
 
 
@@ -104,7 +122,11 @@ def main(argv=None) -> int:
     if not args.apply:
         print("\n  Dry run — nothing deleted. Re-run with --apply to reclaim.")
     else:
+        left = sum(report[ds].get("remaining", 0) for ds in RETIRED)
         print(f"\n  Deleted {tf:,} files ({_human(tb)}) across {len(roots)} root(s).")
+        if left:
+            print(f"  WARNING: {left:,} file(s) could NOT be removed — re-run, or check for "
+                  f"a symlinked dataset dir / permissions.")
     return 0
 
 

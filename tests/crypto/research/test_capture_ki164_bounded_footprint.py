@@ -128,10 +128,12 @@ def test_gaps_are_never_expired():
     assert "_gaps" not in cfg.CAPTURE_RETENTION_POLICY
 
 
-def test_retired_datasets_are_not_written_pruned_or_expired():
+def test_retired_datasets_are_not_written_and_not_guard_prunable():
+    """They keep a tight nightly ceiling (deploy-order safety, see the test below) but are
+    out of the guard's prune set — the guard must never depend on a retired dataset."""
     for d in ("depth", "depth_snapshot", "depth_state"):
-        assert d not in cfg.CAPTURE_RETENTION_POLICY
         assert d not in cfg.FIREHOSE_PRUNABLE_DATASETS
+        assert cfg.CAPTURE_RETENTION_POLICY[d] == cfg.CAPTURE_RETIRED_RETENTION_DAYS == 1
 
 
 def test_expire_by_policy_enforces_each_class(tmp_path):
@@ -227,3 +229,48 @@ def test_retire_script_apply_deletes_only_the_depth_family_and_is_idempotent(tmp
 
     again = R.sweep([root], apply=True)                     # idempotent
     assert all(v["files"] == 0 for v in again.values())
+
+
+# ------------------------------------------------------- regressions found in review
+
+def test_stats_does_not_deref_retired_writers(tmp_path):
+    """`stats()` is called from run()'s FINALLY. With the family retired the writers are
+    None, so an ungated deref raises AttributeError on every clean shutdown — and because
+    it is in the finally it REPLACES any real exception, permanently corrupting crash
+    diagnostics on all 8 shards."""
+    s = svc.CaptureService(root=str(tmp_path), client=None)
+    st = s.stats()                                    # must not raise
+    assert st["depth_rows"] == 0
+    assert st["snapshot_rows"] == 0
+    assert "agg_rows" in st
+
+
+def test_retired_datasets_keep_a_nightly_ceiling_until_the_writers_are_off(tmp_path):
+    """Deploy ordering: between merge and the operator's restart+sweep the writers are STILL
+    LIVE (the running processes hold the old code). Dropping depth_state's old 2d expire in
+    that window would leave it with NO ceiling at all — strictly worse than master. The
+    retired datasets therefore keep the TIGHTEST ceiling until they are gone."""
+    root = str(tmp_path)
+    for ds in ("depth", "depth_snapshot", "depth_state"):
+        _touch(root, ds, "BTCUSDT", _day(-3))
+        _touch(root, ds, "BTCUSDT", _day(0))
+    maintenance.expire_by_policy(root)
+    for ds in ("depth", "depth_snapshot", "depth_state"):
+        assert not pathlib.Path(root, ds, "symbol=BTCUSDT", f"date={_day(-3)}").exists(), \
+            f"{ds} must still be bounded while its writer may be live"
+        assert pathlib.Path(root, ds, "symbol=BTCUSDT", f"date={_day(0)}").exists()
+
+
+def test_injected_snap_scheduler_still_wins(tmp_path):
+    """The retirement gate must not silently discard a caller-injected scheduler — that
+    inverts the injection contract the ctor docstring advertises."""
+    class _Rec:
+        def __init__(self):
+            self.asked = []
+
+        def request(self, sym):
+            self.asked.append(sym)
+
+    rec = _Rec()
+    s = svc.CaptureService(root=str(tmp_path), client=None, snap_scheduler=rec)
+    assert s._snap_sched is rec

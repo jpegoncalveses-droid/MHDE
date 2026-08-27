@@ -283,12 +283,12 @@ class CaptureService:
 
         # REST snapshot scheduler (paced/deduped). Injected in tests; built from
         # the client otherwise. None disables depth seeding/resync.
-        if not depth_snapshot_enabled:
+        if snap_scheduler is not None:
+            self._snap_sched: Any = snap_scheduler        # explicit injection always wins
+        elif not depth_snapshot_enabled:
             # KI-164: no snapshot writer => no reason to schedule REST snapshots. This
             # idles the snapshot-owner's sole /fapi/v1/depth duty.
-            self._snap_sched: Any = None
-        elif snap_scheduler is not None:
-            self._snap_sched = snap_scheduler
+            self._snap_sched = None
         elif snapshot_socket_path is not None:
             # SHARD process (ADR-039 2b): seed via the snapshot-owner over the socket,
             # so the owner is the SOLE REST caller and the global weight budget holds
@@ -437,14 +437,21 @@ class CaptureService:
             w.flush_due()
 
     def stats(self) -> dict:
+        # RETIREMENT-SAFE: `_depth`/`_snapshot` are None once the KI-164 kill-switches are
+        # set. stats() runs inside run()'s FINALLY, so an ungated deref would raise on every
+        # clean shutdown AND replace whatever real exception the try raised — turning every
+        # shard crash into a misleading AttributeError. Retired writers report 0.
+        def _rows(w) -> int:
+            return w.rows_written if w is not None else 0
+
         return {
-            "agg_rows": self._agg.rows_written,
-            "depth_rows": self._depth.rows_written,
-            "bookticker_rows": self._bookticker.rows_written,
-            "forceorder_rows": self._forceorder.rows_written,
-            "markprice_rows": self._markprice.rows_written,
-            "snapshot_rows": self._snapshot.rows_written,
-            "gap_rows": self._gaps.rows_written,
+            "agg_rows": _rows(self._agg),
+            "depth_rows": _rows(self._depth),
+            "bookticker_rows": _rows(self._bookticker),
+            "forceorder_rows": _rows(self._forceorder),
+            "markprice_rows": _rows(self._markprice),
+            "snapshot_rows": _rows(self._snapshot),
+            "gap_rows": _rows(self._gaps),
         }
 
     async def _resolve_universe(self) -> list[str]:
