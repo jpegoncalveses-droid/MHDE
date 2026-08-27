@@ -79,8 +79,10 @@ def sweep(roots, *, apply: bool = False) -> dict:
                 # Re-measure: rmtree(ignore_errors=True) swallows failures (e.g. a symlinked
                 # dataset dir), so reporting the PRE-count as "deleted" could be a lie.
                 left_files, left_bytes = _measure(path) if os.path.isdir(path) else (0, 0)
-                report[ds]["files"] -= left_files
-                report[ds]["bytes"] -= left_bytes
+                # max(0, ...) — if the ORDER was violated and a live writer recreated files
+                # mid-sweep, `left` can exceed the pre-count; never print a negative "deleted".
+                report[ds]["files"] = max(0, report[ds]["files"] - left_files)
+                report[ds]["bytes"] = max(0, report[ds]["bytes"] - left_bytes)
                 report[ds]["remaining"] = report[ds].get("remaining", 0) + left_files
     return report
 
@@ -126,7 +128,9 @@ def main(argv=None) -> int:
         print(f"\n  Deleted {tf:,} files ({_human(tb)}) across {len(roots)} root(s).")
         if left:
             print(f"  WARNING: {left:,} file(s) could NOT be removed — re-run, or check for "
-                  f"a symlinked dataset dir / permissions.")
+                  f"a symlinked dataset dir / permissions. If the writers are still live the "
+                  f"ORDER was violated: restart mhde-capture.target first.")
+            return 1                      # non-zero so a wrapper can detect a partial sweep
     return 0
 
 

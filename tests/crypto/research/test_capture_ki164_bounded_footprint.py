@@ -274,3 +274,27 @@ def test_injected_snap_scheduler_still_wins(tmp_path):
     rec = _Rec()
     s = svc.CaptureService(root=str(tmp_path), client=None, snap_scheduler=rec)
     assert s._snap_sched is rec
+
+
+def test_retired_datasets_stay_in_compaction_coverage_until_they_are_gone():
+    """Same deploy-window class as the retention ceiling, and easy to miss: the compaction
+    coverage is DERIVED from FIREHOSE_PRUNABLE_DATASETS, so retiring the depth family from
+    the prune set silently drops it from the HOURLY compactor too.
+
+    The compact unit runs `main.py` from the WORKING TREE, so that takes effect at the next
+    :06 — while the live shards still hold the old code and keep writing depth. Uncompacted,
+    one open hour of `depth` is ~73k part-files (measured); compaction is ~100x, i.e.
+    ~1.5M files/day vs ~13k/day. The nightly 1d expire cannot help (it only removes
+    partitions older than yesterday — today's grows all day), and the byte guard cannot see
+    it (73k tiny files ~= the bytes of one compact file). The guard that WOULD notice is the
+    inode guard, whose response is to HALT capture — the exact failure this PR exists to fix.
+
+    Post-restart this costs nothing: empty dataset dirs scan to nothing.
+    """
+    for d in cfg.CAPTURE_RETIRED_DATASETS:
+        assert d in cfg.CAPTURE_CLOSED_HOUR_COMPACT_DATASETS, (
+            f"{d} must stay compacted while its writer may still be live")
+    for d in cfg.CAPTURE_DENSE_DATASETS:
+        assert d in cfg.CAPTURE_CLOSED_HOUR_COMPACT_DATASETS
+    assert cfg.KLINES_DATASET in cfg.CAPTURE_CLOSED_HOUR_COMPACT_DATASETS
+    assert "_gaps" not in cfg.CAPTURE_CLOSED_HOUR_COMPACT_DATASETS

@@ -480,9 +480,13 @@ Two facts worth carrying forward:
     silent mid-stream drop on aggTrade/bookTicker — see [[KI-168]] if that becomes a gap.
 
 DEPLOY ORDER (load-bearing): update tree -> restart `mhde-capture.target` -> sweep
-`--apply`. The retired datasets keep the tightest nightly ceiling
-(`CAPTURE_RETIRED_RETENTION_DAYS = 1`) until the sweep runs, so they cannot grow unbounded
-in the window where the running processes still hold the old code.
+`--apply`. In the window between merge and restart the running processes still hold the old
+code and keep writing, so the retired datasets deliberately keep BOTH their nightly ceiling
+(`CAPTURE_RETIRED_RETENTION_DAYS = 1`) AND their place in
+`CAPTURE_CLOSED_HOUR_COMPACT_DATASETS`. The compaction half is the load-bearing one for that
+window: the nightly expire only removes partitions older than yesterday, so TODAY's
+partition grows all day, and uncompacted `depth` runs ~1.5M files/day vs ~13k compacted
+(~100x, measured 2026-08-27). Both become no-ops once the writers are off.
 
 ### KI-164 — Capture disk pinned at the 50 GiB disk-guard soft floor: retention being consumed continuously (662 partition prunes in one night)
 

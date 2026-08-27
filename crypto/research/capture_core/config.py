@@ -286,7 +286,20 @@ CAPTURE_ASOF_DATASETS = (
 #: partition) but is NOT firehose-prunable: it keeps its own 90-day retention, so it
 #: is added to the COMPACTION coverage here, never to ``FIREHOSE_PRUNABLE_DATASETS``
 #: (which the 7-day firehose expire reads — that would shorten klines to 7 days).
-CAPTURE_CLOSED_HOUR_COMPACT_DATASETS = FIREHOSE_PRUNABLE_DATASETS + (KLINES_DATASET,)
+#: DEPLOY-ORDER SAFETY (same class as CAPTURE_RETIRED_RETENTION_DAYS): the retired depth
+#: family stays in the COMPACTION coverage even though it is out of the prune set. This
+#: list is read by the hourly compact unit, which runs main.py from the WORKING TREE — so
+#: dropping the family here would stop compacting it at the next :06, while the live shards
+#: still hold the old code and keep writing. Uncompacted, one open hour of `depth` is ~73k
+#: part-files (measured 2026-08-27); compaction is ~100x, i.e. ~1.5M files/day vs ~13k. The
+#: nightly 1d expire cannot cover it (today's partition grows all day) and the BYTE guard
+#: cannot see it (73k tiny files ~= one compact file's bytes) — the only guard that would
+#: react is the inode guard, by HALTING capture. Post-restart this costs nothing: the empty
+#: dataset dirs scan to nothing.
+CAPTURE_CLOSED_HOUR_COMPACT_DATASETS = (
+    FIREHOSE_PRUNABLE_DATASETS + ("depth", "depth_snapshot", "depth_state")
+    + (KLINES_DATASET,)
+)
 #: SOFT floor: below this free space, prune the OLDEST firehose date-partitions
 #: (across the firehose datasets) until back above the floor. 50 GiB on the host's
 #: ~107 GB free keeps ~50 GB free (~31h of firehose buffer ≥ the brain's ~24h need)
