@@ -439,11 +439,20 @@ exit was fitted on, making the trade log a 100% in-sample echo of exit discovery
 theoretical.
 
 **What this means for consumers.** `simulated_trades` backs `rule_aggregates` and
-`equity_points` (`discovery/tradelog.py`). Per-trade means/rates stay unbiased, but SUMS over
-a sample (`sum_vol_normalized`, the cumulative equity curve) change scale for the 15+ broad
-rules, and are not comparable across the cap boundary. Sampling also happens BEFORE the
-continuation/settlement filter, so the effective yield is `5000 x resolvable_fraction`, not
-5000. Historical rows written before the change remain full-population.
+`equity_points` (`discovery/tradelog.py`). The table is CUMULATIVE (`INSERT OR IGNORE` on
+`UNIQUE(rule_id, symbol, entry_window_ns)`), so what accumulates is NOT a single 5000-of-N
+sample but the UNION of one fresh salted draw per pass over a growing firing set. Two
+consequences, both measured on the top rule (45,235 fires, ~+1,440/pass, 20 passes
+simulated): the union reaches ~70% of the population, but coverage is strongly
+time-skewed — ~84% for the oldest instances vs ~7% for the most recent three passes.
+So per-trade means and hit-rates are unbiased only under time-stationarity, and
+`equity_points` renders a curve whose sample density decays toward the present; the
+dashboard (`dashboard/services/brain_discovery_queries.py`) marks no cap boundary. SUMS
+(`sum_vol_normalized`, cumulative equity) change scale outright for the 15+ broad rules and
+are not comparable across the cap boundary. Sampling also happens BEFORE the
+continuation/settlement filter, so the effective per-pass yield is
+`5000 x resolvable_fraction`, not 5000. Historical rows written before the change remain
+full-population. Nothing currently gates promotion on these aggregates.
 
 **If full-population logging is needed** for an analysis run, pass
 `tradelog_max_instances=None` to `run_discovery_pass` (mirrors stage-2's

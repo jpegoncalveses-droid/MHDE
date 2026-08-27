@@ -441,7 +441,11 @@ def _with_race_retry(build, *, dataset: str, symbol: Optional[str]):
         try:
             return build()
         except FileNotFoundError as exc:         # compactor unlinked a fragment mid-read: re-list
-            last_exc = exc
+            # DROP the traceback: it pins the failed ``build`` frame, and with it whatever
+            # that attempt had already accumulated. For a fold (labels, markprice) that is a
+            # whole extra accumulator held alive while the retry builds the next one — a
+            # silent 2x inside the path this reader exists to bound.
+            last_exc = exc.with_traceback(None)
             logger.warning("brain store read: fragment vanished mid-read (compactor replace-then-"
                            "delete race), re-listing (attempt %d/%d): %s/%s (%s)",
                            attempt, _READ_RACE_RETRIES, dataset,

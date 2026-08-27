@@ -239,3 +239,59 @@ def test_fold_retry_uses_a_fresh_accumulator_and_never_double_counts(tmp_path):
     assert got == expected, "a retried fold must not double-count"
     for k in expected:
         assert got[k].hex() == expected[k].hex()
+
+
+def test_fold_retry_does_not_retain_the_abandoned_accumulator(tmp_path):
+    """A retry must not keep the ABANDONED accumulator alive alongside the fresh one.
+
+    `_with_race_retry` stores the caught exception, whose `__traceback__` pins the failed
+    `_build` frame — and therefore its partially-filled accumulator. A late race would hold
+    TWO lift dicts at once (~1.3 G each at ~6M labels) inside the path this fix exists to
+    bound, against a cap with ~2.3 G of headroom.
+    """
+    import gc
+    import weakref
+
+    class _Trackable(S.InstanceLiftAccumulator):        # subclass adds __weakref__
+        pass
+
+    root = tmp_path / "store"
+    _write_fragmented(root, brain_labels.LABEL_DATASET, brain_labels.LABEL_SCHEMA,
+                      _label_fragments(6))
+    kw = dict(columns=RUN._LABEL_LOAD_COLUMNS, row_filter=pc.field("horizon_min") == 60)
+
+    refs: list = []
+    attempts = {"n": 0}
+    alive: dict = {}
+
+    def _init():
+        acc = _Trackable(horizon_min=60, side="long")
+        refs.append(weakref.ref(acc))
+        return acc
+
+    def _fold(acc, tbl):
+        if attempts["n"] == 2 and "count" not in alive:
+            gc.collect()
+            alive["count"] = sum(1 for r in refs if r() is not None)
+        acc.update(tbl)
+
+    real_iter = store._iter_selected_tables
+
+    def _flaky(*a, **k):
+        attempts["n"] += 1
+        for i, t in enumerate(real_iter(*a, **k)):
+            yield t
+            if attempts["n"] == 1 and i == 0:
+                raise FileNotFoundError("simulated compactor replace-then-delete race")
+
+    store._iter_selected_tables = _flaky
+    try:
+        store.fold_snapshots_columnar(str(root), brain_labels.LABEL_DATASET,
+                                      fold=_fold, init=_init, **kw)
+    finally:
+        store._iter_selected_tables = real_iter
+
+    assert attempts["n"] == 2
+    assert alive["count"] == 1, (
+        f"{alive['count']} accumulators alive during the retry — the abandoned one is "
+        "still pinned (exception traceback retains the failed frame)")
