@@ -69,52 +69,79 @@ def compute_instance_lifts(label_rows: Sequence[Mapping], *, horizon_min: int,
     return {key: rae - baseline[key[0]] for key, rae in rae_by_key.items()}
 
 
+class InstanceLiftAccumulator:
+    """STREAMING builder for the instance-lift dict — folds label batch tables one at a time.
+
+    Byte-identical to folding the whole concatenated table: rows are visited in TABLE ORDER
+    (= fragment order = batch order, guaranteed by ``store._iter_selected_tables``) with
+    Python floats through the SAME ``risk_adjusted_excursion``/``statistics.fmean``
+    arithmetic, preserving duplicate-key last-wins (every occurrence still counted in the
+    coin baseline), None mfe/mae exclusion (``to_pylist`` keeps nulls as ``None`` — never
+    NaN-coerced) and horizon/valid filtering. Symbols come via dictionary-encode so the
+    output keys share one ``str`` per symbol instead of one per row.
+
+    Existing to keep the FULL label table from ever materialising: the concat that assembled
+    it is the measured discovery-OOM kill site (see ``store.fold_snapshots_columnar``).
+    """
+
+    __slots__ = ("_horizon_min", "_side", "_rae_by_key", "_rae_by_coin")
+
+    def __init__(self, *, horizon_min: int, side: str = "long"):
+        self._horizon_min = horizon_min
+        self._side = side
+        self._rae_by_key: dict = {}
+        self._rae_by_coin: dict = defaultdict(list)
+
+    def update(self, label_tbl) -> None:
+        """Fold one batch table (or a whole table) into the running aggregate."""
+        if label_tbl is None or label_tbl.num_rows == 0:
+            return
+        enc = label_tbl.column("symbol").dictionary_encode().combine_chunks()
+        sym_pool = enc.dictionary.to_pylist()
+        sym_idx = enc.indices.to_numpy(zero_copy_only=False)
+        wins = label_tbl.column("window_start_ns").to_numpy(zero_copy_only=False)
+        hors = label_tbl.column("horizon_min").to_numpy(zero_copy_only=False)
+        valid = label_tbl.column("valid").to_numpy(zero_copy_only=False)
+        mfes = label_tbl.column("mfe").to_pylist()      # None-preserving (nullable float)
+        maes = label_tbl.column("mae").to_pylist()
+        horizon_min, side = self._horizon_min, self._side
+        rae_by_key, rae_by_coin = self._rae_by_key, self._rae_by_coin
+        for i in range(label_tbl.num_rows):
+            if int(hors[i]) != horizon_min or not valid[i]:
+                continue
+            rae = risk_adjusted_excursion(mfes[i], maes[i], side)
+            if rae is None:
+                continue
+            sym = sym_pool[sym_idx[i]]
+            rae_by_key[(sym, int(wins[i]))] = rae
+            rae_by_coin[sym].append(rae)
+
+    def finalize(self) -> dict:
+        """Coin-center IN PLACE and return the lifts dict; the accumulator is spent."""
+        # Center IN PLACE: at ~6M labels a `{key: rae - baseline for ...}` comprehension holds
+        # a SECOND 6M-entry dict beside the first (~+1.3G) at the highest-residency moment of
+        # the load — the 13G-cap kill point of the 2026-08-11 gate-2 run. Same arithmetic per
+        # entry, same insertion order (value assignment does not rehash), identical output.
+        rae_by_key = self._rae_by_key
+        baseline = {sym: statistics.fmean(vs) for sym, vs in self._rae_by_coin.items()}
+        self._rae_by_coin = defaultdict(list)
+        for key, rae in rae_by_key.items():
+            rae_by_key[key] = rae - baseline[key[0]]
+        self._rae_by_key = {}
+        return rae_by_key
+
+
 def compute_instance_lifts_columnar(label_tbl, *, horizon_min: int,
                                     side: str = "long") -> dict:
     """Columnar twin of :func:`compute_instance_lifts` — same dict out, no per-row dicts in.
 
-    The label read was the LAST list-of-dicts load path: ~6M rows materialized as Python
-    dicts is a ~3G transient, the measured OOM term of the 2026-08-11 gate (the store's
-    columnar table for the same rows is ~10-30x smaller). BYTE-IDENTICAL by construction:
-    rows are visited in TABLE ORDER with Python floats through the SAME
-    ``risk_adjusted_excursion``/``statistics.fmean`` arithmetic, preserving duplicate-key
-    last-wins (every occurrence still in the coin baseline), None mfe/mae exclusion
-    (``to_pylist`` keeps nulls as ``None`` — never NaN-coerced), and horizon/valid
-    filtering. Symbols come via dictionary-encode so the output keys share one ``str``
-    per symbol instead of one per row."""
-    if label_tbl is None or label_tbl.num_rows == 0:
-        return {}
-    enc = label_tbl.column("symbol").dictionary_encode().combine_chunks()
-    sym_pool = enc.dictionary.to_pylist()
-    sym_idx = enc.indices.to_numpy(zero_copy_only=False)
-    wins = label_tbl.column("window_start_ns").to_numpy(zero_copy_only=False)
-    hors = label_tbl.column("horizon_min").to_numpy(zero_copy_only=False)
-    valid = label_tbl.column("valid").to_numpy(zero_copy_only=False)
-    mfes = label_tbl.column("mfe").to_pylist()      # None-preserving (nullable float)
-    maes = label_tbl.column("mae").to_pylist()
-    rae_by_key: dict = {}
-    rae_by_coin: dict = defaultdict(list)
-    n_rows = label_tbl.num_rows
-    for i in range(n_rows):
-        if int(hors[i]) != horizon_min or not valid[i]:
-            continue
-        rae = risk_adjusted_excursion(mfes[i], maes[i], side)
-        if rae is None:
-            continue
-        sym = sym_pool[sym_idx[i]]
-        rae_by_key[(sym, int(wins[i]))] = rae
-        rae_by_coin[sym].append(rae)
-    # Free the row-loop intermediates BEFORE centering, and center IN PLACE: at ~6M labels
-    # a `{key: rae - baseline for ...}` comprehension holds a SECOND 6M-entry dict beside
-    # the first (~+1.3G) at the highest-residency moment of the whole load — the 13G-cap
-    # kill point of the 2026-08-11 gate-2 run. Same arithmetic per entry, same insertion
-    # order (value assignment does not rehash), byte-identical output.
-    del mfes, maes, sym_idx, wins, hors, valid, enc
-    baseline = {sym: statistics.fmean(vs) for sym, vs in rae_by_coin.items()}
-    del rae_by_coin
-    for key, rae in rae_by_key.items():
-        rae_by_key[key] = rae - baseline[key[0]]
-    return rae_by_key
+    Thin wrapper over :class:`InstanceLiftAccumulator` (one whole-table fold), kept for the
+    byte-identity oracle test and any caller that already holds a materialised table. The
+    discovery pass uses the streaming path instead (``runner._load_lifts``).
+    """
+    acc = InstanceLiftAccumulator(horizon_min=horizon_min, side=side)
+    acc.update(label_tbl)
+    return acc.finalize()
 
 
 def score_rule(rule: R.Rule, lifts: Mapping[tuple, float],

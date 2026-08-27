@@ -80,7 +80,8 @@ class EngineeredTape(AbcMapping):
     confirmation, continuations — reads it unchanged, while storage is ~8 bytes/value instead of
     the dict-of-dicts' per-entry Python overhead (the discovery memory-floor fix). The scorer
     takes the ``labeled_columns`` fast path for vectorised firing."""
-    __slots__ = ("_keys", "_key_to_row", "_feature_ids", "_feat_to_col", "_values")
+    __slots__ = ("_keys", "_key_to_row", "_feature_ids", "_feat_to_col", "_values",
+                 "_sym_codes")
 
     def __init__(self, keys, key_to_row, feature_ids, feat_to_col, values):
         self._keys = keys
@@ -88,6 +89,7 @@ class EngineeredTape(AbcMapping):
         self._feature_ids = feature_ids
         self._feat_to_col = feat_to_col
         self._values = values
+        self._sym_codes = None      # lazy per-row symbol codes (fires_breadth)
 
     def __getitem__(self, key):
         row = self._key_to_row.get(key)
@@ -118,21 +120,55 @@ class EngineeredTape(AbcMapping):
             out[fid] = col[~np.isnan(col)]
         return out
 
-    def fires_keys(self, rule) -> set:
-        """Keys where ``rule`` holds — columnar AND of the conditions' masks (NaN compares False,
-        so an absent feature never holds). The fast path for ``rules.fires``."""
+    def _fires_mask(self, rule):
+        """Row mask where ``rule`` holds — columnar AND of the conditions' masks (NaN compares
+        False, so an absent feature never holds). ``None`` means ALL rows (empty conjunction).
+        Shared by :meth:`fires_keys` and :meth:`fires_breadth`."""
         conds = rule.conditions
         if not conds:
-            return set(self._keys)          # empty conjunction holds everywhere (all([]) is True)
+            return None                     # empty conjunction holds everywhere (all([]) is True)
         mask = None
         for c in conds:
             col_i = self._feat_to_col.get(c.feature)
-            if col_i is None:
-                return set()                # feature absent from the tape -> never holds
+            if col_i is None:               # feature absent from the tape -> never holds
+                return np.zeros(len(self._keys), dtype=bool)
             col = self._values[:, col_i]
             m = col > c.threshold if c.op == ">" else col < c.threshold
             mask = m if mask is None else (mask & m)
+        return mask
+
+    def _symbol_codes(self):
+        """Per-row integer symbol code (built once, cached) — the breadth count's substrate."""
+        codes = self._sym_codes
+        if codes is None:
+            pool: dict = {}
+            codes = np.empty(len(self._keys), dtype=np.int64)
+            for i, k in enumerate(self._keys):
+                sym = k[0]
+                c = pool.get(sym)
+                if c is None:
+                    c = len(pool)
+                    pool[sym] = c
+                codes[i] = c
+            self._sym_codes = codes
+        return codes
+
+    def fires_keys(self, rule) -> set:
+        """Keys where ``rule`` holds. The fast path for ``rules.fires``."""
+        mask = self._fires_mask(rule)
+        if mask is None:
+            return set(self._keys)
         return {self._keys[i] for i in np.flatnonzero(mask).tolist()}
+
+    def fires_breadth(self, rule) -> int:
+        """Distinct symbols where ``rule`` holds — exactly
+        ``len({k[0] for k in fires_keys(rule)})``, counted off the mask WITHOUT materialising
+        the key set. That set is up to n_keys ``(symbol, window)`` tuples (~1 GB at ~17M
+        instances) and was built once per survivor (~1,015/pass) purely to be counted."""
+        mask = self._fires_mask(rule)
+        codes = self._symbol_codes()
+        sel = codes if mask is None else codes[mask]
+        return int(np.unique(sel).size) if sel.size else 0
 
     def labeled_columns(self, feature_ids: Sequence[str], keys: Sequence[tuple]) -> dict:
         """``feature_id -> float64 column over ``keys`` (NaN where the key or feature is absent).

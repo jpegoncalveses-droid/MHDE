@@ -81,6 +81,13 @@ BEAM_WIDTH = 500
 #: (run peak ~10G). ``None`` disables (unbounded — tests/analysis only).
 EXIT_DISCOVERY_MAX_INSTANCES = 5000
 
+#: Stage-4 (trade logging, PROMOTED rules) instance cap — the last unsampled continuation
+#: build before P2. Same value and same deterministic rule-seeded sampler as stage-2's
+#: EXIT_DISCOVERY_MAX_INSTANCES: 5000 is >> MIN_FIRING_INSTANCES (20), was validated in
+#: production by the Option-S gate-7 pass, and bounds the tail at
+#: n_promoted x 5000 continuations instead of n_promoted x (unbounded firing set).
+TRADELOG_MAX_INSTANCES = 5000
+
 # -- §5 risk-adjusted excursion label binding ---------------------------------
 #: The label horizon Stage-1 scores against (minutes == windows). 60 == 1 h: long
 #: enough for a microstructure edge to express in MFE/MAE, short enough to accumulate

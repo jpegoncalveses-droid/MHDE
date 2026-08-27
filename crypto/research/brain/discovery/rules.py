@@ -142,3 +142,13 @@ def fires(rule: Rule, engineered: Mapping[tuple, Mapping[str, float]]) -> set:
     if fast is not None:
         return fast(rule)
     return {key for key, fv in engineered.items() if rule.holds(fv)}
+
+
+def fires_breadth(rule: Rule, engineered: Mapping[tuple, Mapping[str, float]]) -> int:
+    """Distinct symbols where ``rule`` holds — ``len({k[0] for k in fires(...)})`` without
+    materialising the key set when the columnar fast path is available (that set was a ~1 GB
+    transient per survivor). Falls back to the set for a plain mapping."""
+    fast = getattr(engineered, "fires_breadth", None)   # EngineeredTape columnar fast path
+    if fast is not None:
+        return fast(rule)
+    return len({k[0] for k in fires(rule, engineered)})
