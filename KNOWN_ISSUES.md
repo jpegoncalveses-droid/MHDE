@@ -421,6 +421,43 @@ sends (a failed alert self-suppresses 24h). (4) Singletons: crypto-retrain
 IO Error; streamlit-freshness legitimately red (running code ~505h stale).
 Evidence: `data/processed/frontier_stall_rca.md` §3.4 + `data/logs/*.log`.
 
+### KI-167 — Stage-4 trade logging is now SAMPLED: `simulated_trades` is a bounded sample, not the full firing set
+
+**Severity: low — deliberate, bounded, and independent of the stage-2 draw; recorded because
+it changes a PERSISTED artifact's meaning.**
+
+Before `fix/discovery-bounded-label-read` (PR #99), stage-4 logged a simulated round trip for
+EVERY firing instance of every PROMOTED rule — the last unsampled continuation build in the
+pass, over a promoted set that is unbounded by design. It is now capped at
+`TRADELOG_MAX_INSTANCES = 5000` per rule (`discovery/config.py`), using the same deterministic
+rule-seeded sampler as stage-2 but **salted** (`_STAGE4_SAMPLE_SALT`) so the two draws are
+independent — an unsalted redraw at the same cap would have logged exactly the instances the
+exit was fitted on, making the trade log a 100% in-sample echo of exit discovery.
+
+**Live impact at the time of the change:** 349,124 trades over 136 promoted rules;
+**15 rules already exceed 5,000 trades** (top: 45,235). So the cap binds today, it is not
+theoretical.
+
+**What this means for consumers.** `simulated_trades` backs `rule_aggregates` and
+`equity_points` (`discovery/tradelog.py`). The table is CUMULATIVE (`INSERT OR IGNORE` on
+`UNIQUE(rule_id, symbol, entry_window_ns)`), so what accumulates is NOT a single 5000-of-N
+sample but the UNION of one fresh salted draw per pass over a growing firing set. Two
+consequences, both measured on the top rule (45,235 fires, ~+1,440/pass, 20 passes
+simulated): the union reaches ~70% of the population, but coverage is strongly
+time-skewed — ~84% for the oldest instances vs ~7% for the most recent three passes.
+So per-trade means and hit-rates are unbiased only under time-stationarity, and
+`equity_points` renders a curve whose sample density decays toward the present; the
+dashboard (`dashboard/services/brain_discovery_queries.py`) marks no cap boundary. SUMS
+(`sum_vol_normalized`, cumulative equity) change scale outright for the 15+ broad rules and
+are not comparable across the cap boundary. Sampling also happens BEFORE the
+continuation/settlement filter, so the effective per-pass yield is
+`5000 x resolvable_fraction`, not 5000. Historical rows written before the change remain
+full-population. Nothing currently gates promotion on these aggregates.
+
+**If full-population logging is needed** for an analysis run, pass
+`tradelog_max_instances=None` to `run_discovery_pass` (mirrors stage-2's
+`exit_max_instances`); it is unbounded and will reproduce the pre-PR-99 memory profile.
+
 ### KI-164 — Capture disk pinned at the 50 GiB disk-guard soft floor: retention being consumed continuously (662 partition prunes in one night)
 
 **Severity: medium — the guard is doing its job, but "steady state" is now

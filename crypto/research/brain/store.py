@@ -395,6 +395,42 @@ def read_snapshots_columnar(root: str, dataset: str, symbol: Optional[str] = Non
     return _with_race_retry(_build, dataset=dataset, symbol=symbol)
 
 
+def fold_snapshots_columnar(root: str, dataset: str, symbol: Optional[str] = None, *,
+                            after_recv_ts_ns: int = 0, window_end_floor_ns: int = 0,
+                            columns: Optional[list] = None,
+                            row_filter: Optional["pc.Expression"] = None,
+                            fold, init):
+    """STREAMING twin of :func:`read_snapshots_columnar`: the SAME selection, but each batch
+    table is folded into an accumulator instead of being concatenated into one table.
+
+    ``read_snapshots_columnar`` must materialise the whole selection, and its closing
+    ``pa.concat_tables(merged).combine_chunks()`` transiently holds it TWICE. That is the
+    MEASURED kill site of the discovery pass (2026-08-27 instrumented run: the labels read
+    walked all 1,102,981 fragments over 23.5 min at ~1.28 ms each and was OOM-killed the
+    instant the read loop ended and the concat began — RSS +1.23 G in the final 30 s window
+    against the 13.0 GiB cap). When the consumer only ever REDUCES the table — the label
+    phase reduces it to the lifts dict and keeps nothing else — fold it instead: peak is one
+    batch plus the accumulator, INDEPENDENT of fragment count.
+
+    ``init()`` builds a fresh accumulator; ``fold(acc, table)`` folds one batch table.
+    Batch order is fragment order, identical to the concatenated table's row order, so an
+    order-sensitive reduction (duplicate-key last-wins, running means) is byte-identical to
+    folding the whole table in one go. On the compactor replace-then-delete race the WHOLE
+    fold is retried from a FRESH accumulator (``init()`` again), so a partial fold is never
+    double-counted -- ``init`` MUST construct a new accumulator, never return a shared one.
+    For the same reason ``fold`` must be free of external side effects (it can be re-applied
+    to already-consumed batches on a retry). Returns the accumulator.
+    """
+    def _build():
+        acc = init()
+        for t in _iter_selected_tables(root, dataset, symbol, after_recv_ts_ns,
+                                       window_end_floor_ns, columns, row_filter):
+            fold(acc, t)
+        return acc
+
+    return _with_race_retry(_build, dataset=dataset, symbol=symbol)
+
+
 def _with_race_retry(build, *, dataset: str, symbol: Optional[str]):
     """Run ``build`` under the compactor replace-then-delete race guard: on a mid-read
     ``FileNotFoundError`` re-run from scratch (a fresh glob picks up the merged compact-* file,
@@ -405,7 +441,11 @@ def _with_race_retry(build, *, dataset: str, symbol: Optional[str]):
         try:
             return build()
         except FileNotFoundError as exc:         # compactor unlinked a fragment mid-read: re-list
-            last_exc = exc
+            # DROP the traceback: it pins the failed ``build`` frame, and with it whatever
+            # that attempt had already accumulated. For a fold (labels, markprice) that is a
+            # whole extra accumulator held alive while the retry builds the next one — a
+            # silent 2x inside the path this reader exists to bound.
+            last_exc = exc.with_traceback(None)
             logger.warning("brain store read: fragment vanished mid-read (compactor replace-then-"
                            "delete race), re-listing (attempt %d/%d): %s/%s (%s)",
                            attempt, _READ_RACE_RETRIES, dataset,

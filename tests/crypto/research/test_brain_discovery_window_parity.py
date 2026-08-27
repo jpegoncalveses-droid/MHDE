@@ -52,12 +52,24 @@ def test_run_discovery_windows_reads_from_frontier(tmp_path, monkeypatch):
                           "row_filter": row_filter})
         return _empty_columnar_table(columns)
 
+    def fake_fold_columnar(root, dataset, symbol=None, *, after_recv_ts_ns=0,
+                           window_end_floor_ns=0, columns=None, row_filter=None,
+                           fold, init):
+        # The STREAMING transport (labels + markprice) carries the identical windowing
+        # contract: same floors, same projection, same row_filter. Folding nothing yields
+        # an empty aggregate, exactly as the empty table did for the whole-table reader.
+        col_calls.append({"dataset": dataset, "after": after_recv_ts_ns,
+                          "floor": window_end_floor_ns, "columns": columns,
+                          "row_filter": row_filter})
+        return init()
+
     class _DummyReg:
         def close(self):
             pass
 
     monkeypatch.setattr(runner.brain_store, "read_snapshots", fake_read)
     monkeypatch.setattr(runner.brain_store, "read_snapshots_columnar", fake_read_columnar)
+    monkeypatch.setattr(runner.brain_store, "fold_snapshots_columnar", fake_fold_columnar)
     monkeypatch.setattr(runner.brain_labels, "_markprice_frontier_ns", lambda reg: _FRONTIER)
     monkeypatch.setattr(runner.brain_registry, "connect", lambda p: _DummyReg())
     # short-circuit the heavy pass — we only assert the LOAD is windowed
@@ -65,9 +77,11 @@ def test_run_discovery_windows_reads_from_frontier(tmp_path, monkeypatch):
 
     runner.run_discovery(discovery_db_path=str(tmp_path / "d.sqlite"), now_ns=_FRONTIER + _W)
 
-    # EVERYTHING streams through the COLUMNAR reader now — primitives + markprice since
-    # Option B (PR#87), labels since PR#88 (the last list-of-dicts load path, the ~3G
-    # transient behind the 2026-08-11 gate OOM). The scalar reader is out of the load path.
+    # EVERYTHING streams through the COLUMNAR path — primitives via the whole-table reader
+    # (the engineered tape needs the matrix), labels + markprice via the FOLD, which never
+    # materialises the table at all (the concat that assembled it is the measured 2026-08-27
+    # OOM kill site). Both transports carry the same windowing contract; the scalar reader is
+    # out of the load path entirely.
     assert calls == []
     label_calls = [c for c in col_calls if c["dataset"] == brain_labels.LABEL_DATASET]
     prim_calls = [c for c in col_calls if c["dataset"] != brain_labels.LABEL_DATASET]
@@ -97,9 +111,14 @@ def test_run_discovery_floors_never_go_negative(tmp_path, monkeypatch):
         calls.append(k)
         return _empty_columnar_table(k.get("columns"))
 
+    def fake_fold_columnar(root, dataset, symbol=None, *, fold, init, **k):
+        calls.append(k)
+        return init()
+
     monkeypatch.setattr(runner.brain_store, "read_snapshots",
                         lambda *a, **k: calls.append(k) or [])
     monkeypatch.setattr(runner.brain_store, "read_snapshots_columnar", fake_read_columnar)
+    monkeypatch.setattr(runner.brain_store, "fold_snapshots_columnar", fake_fold_columnar)
     monkeypatch.setattr(runner.brain_labels, "_markprice_frontier_ns", lambda reg: 5 * _W)
     monkeypatch.setattr(runner.brain_registry, "connect",
                         lambda p: type("R", (), {"close": lambda s: None})())

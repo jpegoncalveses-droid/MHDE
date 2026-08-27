@@ -50,9 +50,10 @@ _LABEL_LOAD_COLUMNS = ["symbol", "window_start_ns", "window_end_ns",
 def build_price_index(markprice_rows: Sequence[Mapping]) -> dict:
     """``symbol -> {window_start_ns: (close, high, low)}`` from markprice snapshots.
 
-    RETAINED, NOT DEAD: production uses ``build_price_index_columnar`` (reads the markprice
-    arrow Table directly, no list-of-dicts); this version is kept as its equivalence ORACLE
-    (test_brain_store_columnar)."""
+    RETAINED, NOT DEAD: production streams the markprice read through
+    :class:`PriceIndexAccumulator`; this version and ``build_price_index_columnar`` are kept
+    as its equivalence ORACLES (test_brain_store_columnar,
+    test_brain_discovery_bounded_label_read)."""
     idx: dict = {}
     for s in markprice_rows:
         idx.setdefault(s["symbol"], {})[int(s["window_start_ns"])] = (
@@ -61,9 +62,11 @@ def build_price_index(markprice_rows: Sequence[Mapping]) -> dict:
 
 
 def build_price_index_columnar(markprice_table) -> dict:
-    """``build_price_index`` from a columnar markprice ``pyarrow.Table`` (option-B read) instead
-    of a list-of-dicts — same output (``to_pylist`` maps a parquet NULL to None exactly as the
-    dict path did), without materializing the markprice rows as Python dicts."""
+    """``build_price_index`` from a columnar markprice ``pyarrow.Table`` — same output
+    (``to_pylist`` maps a parquet NULL to None exactly as the dict path did).
+
+    ORACLE ONLY as of the streaming fix: production uses :class:`PriceIndexAccumulator`,
+    which folds the same rows batch-by-batch instead of materialising the whole table."""
     idx: dict = {}
     if markprice_table.num_rows == 0:
         return idx
@@ -75,6 +78,39 @@ def build_price_index_columnar(markprice_table) -> dict:
     for s, w, c, h, l in zip(syms, wins, close, high, low):
         idx.setdefault(s, {})[int(w)] = (c, h, l)
     return idx
+
+
+class PriceIndexAccumulator:
+    """STREAMING twin of :func:`build_price_index_columnar` — folds markprice batch tables.
+
+    The whole-table build holds FIVE simultaneous ``to_pylist()`` transients beside the
+    growing index; the 2026-08-27 instrumented run measured that as a +1.1 G step
+    (10.12 G -> 11.26 G peak). Non-fatal today, but it is pure headroom: folding per batch
+    bounds those transients by batch size. Output is identical (same rows, same order, same
+    last-wins on a duplicate ``(symbol, window)``).
+    """
+
+    __slots__ = ("_idx",)
+
+    def __init__(self):
+        self._idx: dict = {}
+
+    def update(self, markprice_table) -> None:
+        if markprice_table is None or markprice_table.num_rows == 0:
+            return
+        syms = markprice_table.column("symbol").to_pylist()
+        wins = markprice_table.column("window_start_ns").to_pylist()
+        close = markprice_table.column("mark_close").to_pylist()
+        high = markprice_table.column("mark_high").to_pylist()
+        low = markprice_table.column("mark_low").to_pylist()
+        idx = self._idx
+        for sym, w, c, h, l in zip(syms, wins, close, high, low):
+            idx.setdefault(sym, {})[int(w)] = (c, h, l)
+
+    def finalize(self) -> dict:
+        out = self._idx
+        self._idx = {}
+        return out
 
 
 def coin_volatilities(price_index: Mapping[str, Mapping[int, tuple]]) -> dict:
@@ -109,7 +145,8 @@ def build_continuation(symbol: str, t_entry: int, price_index, engineered, *,
     return cont
 
 
-def _sampled_fires(entry_rule, engineered, *, max_instances: Optional[int], seed: int) -> list:
+def _sampled_fires(entry_rule, engineered, *, max_instances: Optional[int], seed: int,
+                   salt: str = "") -> list:
     """The rule's fired instances in CANONICAL (sorted) order, sampled down to at most
     ``max_instances`` when it fires more broadly.
 
@@ -119,11 +156,19 @@ def _sampled_fires(entry_rule, engineered, *, max_instances: Optional[int], seed
     same population, and the selection is independent of ``R.fires``'s set-iteration order
     (which is PYTHONHASHSEED-dependent; the sort also makes the UNSAMPLED path's
     continuation order reproducible, which it previously was not). Rules firing
-    ``<= max_instances`` are returned whole — byte-identical continuations downstream."""
+    ``<= max_instances`` are returned whole — byte-identical continuations downstream.
+
+    ``salt`` makes an INDEPENDENT draw for a different consumer of the same rule at the same
+    cap. Stage-2 (exit discovery) and stage-4 (trade logging) share this sampler and the same
+    cap, so an unsalted stage-4 would redraw stage-2's EXACT sample whenever the firing set is
+    unchanged — making the trade log a 100% in-sample echo of the instances the exit was
+    fitted on. The empty default leaves the stage-2 digest byte-identical, preserving its
+    attempt-stability guarantee."""
     fired = sorted(R.fires(entry_rule, engineered))
     if max_instances is None or len(fired) <= max_instances:
         return fired
-    digest = hashlib.sha256(entry_rule.canonical_id.encode("utf-8")).digest()
+    key = entry_rule.canonical_id if not salt else f"{entry_rule.canonical_id}\x00{salt}"
+    digest = hashlib.sha256(key.encode("utf-8")).digest()
     rule_seed = int.from_bytes(digest[:8], "big") ^ (seed & 0xFFFF_FFFF_FFFF_FFFF)
     idx = np.random.default_rng(rule_seed).choice(len(fired), size=max_instances,
                                                   replace=False)
@@ -133,11 +178,13 @@ def _sampled_fires(entry_rule, engineered, *, max_instances: Optional[int], seed
 
 def _entry_continuations(entry_rule, engineered, price_index, coin_vols, *, max_cap, window_ns,
                          only_settled_at: Optional[int] = None,
-                         max_instances: Optional[int] = None, seed: int = 0):
+                         max_instances: Optional[int] = None, seed: int = 0,
+                         salt: str = ""):
     """Build continuations + per-instance vols for an entry's firing instances."""
     conts: dict = {}
     vols: dict = {}
-    for k in _sampled_fires(entry_rule, engineered, max_instances=max_instances, seed=seed):
+    for k in _sampled_fires(entry_rule, engineered, max_instances=max_instances, seed=seed,
+                            salt=salt):
         if only_settled_at is not None and k[1] > only_settled_at:
             continue
         v = coin_vols.get(k[0])
@@ -149,6 +196,27 @@ def _entry_continuations(entry_rule, engineered, price_index, coin_vols, *, max_
             conts[k] = c
             vols[k] = v
     return conts, vols
+
+
+#: Sampler salt that makes stage-4's draw independent of stage-2's at the same cap.
+_STAGE4_SAMPLE_SALT = "stage4-tradelog"
+
+
+def _stage4_continuations(entry_rule, engineered, price_index, coin_vols, *, max_cap,
+                          window_ns, seed: int = 0,
+                          max_instances: Optional[int] = dcfg.TRADELOG_MAX_INSTANCES):
+    """Stage-4 (trade-logging) continuations, BOUNDED by ``TRADELOG_MAX_INSTANCES``.
+
+    This was the last unsampled continuation build in the pass: stage-2 has been sampled
+    since Option S, but stage-4 ran the full firing set for every PROMOTED rule. With the
+    promoted set unbounded by design (growth watch, trigger ~500) that is the tail term the
+    RCA names as the relapse risk once P1 makes the tail reachable again. Same deterministic
+    rule-seeded sampler as stage-2, so the selection is reproducible.
+    """
+    return _entry_continuations(entry_rule, engineered, price_index, coin_vols,
+                                max_cap=max_cap, window_ns=window_ns,
+                                max_instances=max_instances, seed=seed,
+                                salt=_STAGE4_SAMPLE_SALT)
 
 
 logger = logging.getLogger("mhde.crypto.brain.discovery")
@@ -166,6 +234,7 @@ def run_discovery_pass(conn, engineered, lifts, price_index, coin_vols, *, featu
                        null_quantile=dcfg.NULL_QUANTILE, min_firing=dcfg.MIN_FIRING_INSTANCES,
                        max_depth=dcfg.MAX_DEPTH, beam_width=dcfg.BEAM_WIDTH,
                        exit_max_instances=dcfg.EXIT_DISCOVERY_MAX_INSTANCES,
+                       tradelog_max_instances=dcfg.TRADELOG_MAX_INSTANCES,
                        m=dcfg.CONFIRM_M, z=dcfg.CONFIRM_Z,
                        confirm_hysteresis=dcfg.CONFIRM_DEMOTE_HYSTERESIS,
                        expire_pace_factor=dcfg.EXPIRE_PACE_FACTOR,
@@ -188,7 +257,7 @@ def run_discovery_pass(conn, engineered, lifts, price_index, coin_vols, *, featu
                            score_horizon_min=score_horizon_min, funnel=diagnostics,
                            n_survivors=len(survivors))
     for er in survivors:
-        breadth = len({k[0] for k in R.fires(er.rule, engineered)})
+        breadth = R.fires_breadth(er.rule, engineered)
         RS.upsert_entry(conn, er, score_horizon_min=score_horizon_min, breadth=breadth,
                         discovery_window_ns=frontier_ns, now_ns=now_ns,
                         minted_run_id=run_id)
@@ -248,8 +317,7 @@ def run_discovery_pass(conn, engineered, lifts, price_index, coin_vols, *, featu
             entry_rule = RS.deserialize_rule(row["entry_def"])
             # Stage-2 samples <=exit_max_instances fired instances per rule (deterministic,
             # rule-seeded) — the unbounded continuation build was the +2G that pushed six
-            # gate attempts into the host OOM kill zone. Stage-4 (trade logging, promoted
-            # rules only) remains unsampled.
+            # gate attempts into the host OOM kill zone. Stage-4 is bounded too (P2).
             conts, vols = _entry_continuations(entry_rule, engineered, price_index, coin_vols,
                                                max_cap=max_cap, window_ns=window_ns,
                                                only_settled_at=frontier_ns,
@@ -271,8 +339,10 @@ def run_discovery_pass(conn, engineered, lifts, price_index, coin_vols, *, featu
             continue
         entry_rule = RS.deserialize_rule(row["entry_def"])
         exit_rule = X.exit_from_json(row["exit_def"])
-        conts, vols = _entry_continuations(entry_rule, engineered, price_index, coin_vols,
-                                           max_cap=exit_rule.time_cap_min, window_ns=window_ns)
+        conts, vols = _stage4_continuations(entry_rule, engineered, price_index, coin_vols,
+                                            max_cap=exit_rule.time_cap_min,
+                                            window_ns=window_ns, seed=seed,
+                                            max_instances=tradelog_max_instances)
         trades = TL.build_trades(row["rule_id"], exit_rule, list(conts), conts, vols,
                                  window_ns=window_ns, now_ns=now_ns)
         trades_logged += TL.record_trades(conn, trades, exit_def=row["exit_def"], now_ns=now_ns)
@@ -280,6 +350,36 @@ def run_discovery_pass(conn, engineered, lifts, price_index, coin_vols, *, featu
     return {"survivors": len(survivors), "diagnostics": diagnostics, "exits_found": exits_found,
             "exits_inherited": exits_inherited, "expired": n_expired, "evicted": n_evicted, "admitted": adm["admitted"], "benched": adm["benched"],
             "trades_logged": trades_logged, **conf}
+
+
+def _load_price_index(store_root: str, *, primitive_floor: int) -> dict:
+    """Markprice window -> price index, STREAMED (never the whole markprice table at once)."""
+    acc = brain_store.fold_snapshots_columnar(
+        store_root, brain_labels.MARKPRICE_DATASET,
+        after_recv_ts_ns=primitive_floor, window_end_floor_ns=primitive_floor,
+        columns=["symbol", "window_start_ns", "mark_close", "mark_high", "mark_low",
+                 "window_end_ns"],
+        fold=lambda a, t: a.update(t), init=PriceIndexAccumulator)
+    return acc.finalize()
+
+
+def _load_lifts(label_store_root: str, *, label_floor: int, score_horizon_min: int) -> dict:
+    """Label window -> instance lifts, STREAMED.
+
+    The label phase's ONLY output is this dict, so the full label table never needs to exist.
+    Assembling it is the measured OOM kill site (2026-08-27: 1,102,981 fragments read over
+    23.5 min, killed the instant the read loop ended and the concat began). Peak is now one
+    batch + the accumulator, independent of fragment count.
+    """
+    acc = brain_store.fold_snapshots_columnar(
+        label_store_root, brain_labels.LABEL_DATASET,
+        after_recv_ts_ns=label_floor, window_end_floor_ns=label_floor,
+        columns=_LABEL_LOAD_COLUMNS,
+        row_filter=pc.field("horizon_min") == score_horizon_min,
+        fold=lambda a, t: a.update(t),
+        init=lambda: S.InstanceLiftAccumulator(horizon_min=score_horizon_min,
+                                               side=dcfg.SCORE_SIDE))
+    return acc.finalize()
 
 
 def run_discovery(*, store_root=dcfg.BRAIN_STORE_ROOT, label_store_root=dcfg.LABEL_STORE_ROOT,
@@ -315,23 +415,17 @@ def run_discovery(*, store_root=dcfg.BRAIN_STORE_ROOT, label_store_root=dcfg.LAB
     # list-of-dicts that OOMed the read. Engineered output is byte-identical to the scalar path
     # (compute_engineered oracle test). ALL symbols kept (cross-universe rank); only TIME is bounded.
     engineered = E.compute_engineered_columnar(_read_ds)
-    mp_tbl = _read_ds(brain_labels.MARKPRICE_DATASET,
-                      ["symbol", "window_start_ns", "mark_close", "mark_high", "mark_low"])
-    price_index = build_price_index_columnar(mp_tbl)
+    # Price index STREAMED (P1b): the whole-table build's five simultaneous to_pylist()
+    # transients were a measured +1.1G step at the highest-residency moment of the load.
+    price_index = _load_price_index(store_root, primitive_floor=primitive_floor)
     coin_vols = coin_volatilities(price_index)
-    del mp_tbl                                  # free the markprice read before the heavy null pass
 
     # Labels read COLUMNAR too (the last list-of-dicts load path): ~6M rows as Python dicts
     # was a ~3G transient — the measured OOM term of the 2026-08-11 gate — vs ~0.3G as a
     # projected columnar table. Same selection (identical reader semantics), byte-identical
     # lifts (compute_instance_lifts_columnar oracle test).
-    label_tbl = brain_store.read_snapshots_columnar(
-        label_store_root, brain_labels.LABEL_DATASET,
-        after_recv_ts_ns=label_floor, window_end_floor_ns=label_floor,
-        columns=_LABEL_LOAD_COLUMNS, row_filter=pc.field("horizon_min") == score_horizon_min)
-    lifts = S.compute_instance_lifts_columnar(label_tbl, horizon_min=score_horizon_min,
-                                              side=dcfg.SCORE_SIDE)
-    del label_tbl                              # free the label load before the heavy null pass
+    lifts = _load_lifts(label_store_root, label_floor=label_floor,
+                        score_horizon_min=score_horizon_min)
 
     conn = RS.connect(discovery_db_path)
     TL.ensure_schema(conn)
