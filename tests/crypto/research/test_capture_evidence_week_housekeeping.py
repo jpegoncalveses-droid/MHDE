@@ -177,3 +177,24 @@ def test_downtime_gap_uses_the_stream_the_label_gate_consumes():
     reason, and this must follow that precedent."""
     from crypto.research.brain import labels as brain_labels
     assert dg.DOWNTIME_GAP_STREAM.startswith(brain_labels.MARK_GAP_STREAM_PREFIX)
+
+
+def test_run_invokes_the_downtime_check_at_startup(tmp_path, monkeypatch):
+    """A detector nothing calls never fires — the round-1 defect class, which the first
+    version of THIS feature repeated (the method existed, unwired). Pin the wiring: run()
+    must invoke the downtime check before entering its loop."""
+    import asyncio
+    from crypto.research.capture_core import service as svc
+
+    called = {}
+    s = svc.CaptureService(root=str(tmp_path), client=None, install_signals=False,
+                           heartbeat_dir=str(tmp_path / "hb"))
+    monkeypatch.setattr(s, "record_downtime_gap_if_any",
+                        lambda **kw: called.setdefault("yes", True))
+    monkeypatch.setattr(s, "_resolve_universe",
+                        _fail_fast_resolver := (lambda: (_ for _ in ()).throw(RuntimeError("stop-here"))))
+    try:
+        asyncio.run(s.run())
+    except RuntimeError:
+        pass
+    assert called.get("yes"), "run() must call record_downtime_gap_if_any() at startup"

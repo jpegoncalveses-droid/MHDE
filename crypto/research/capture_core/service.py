@@ -620,6 +620,11 @@ class CaptureService:
         if self._install_signals:
             self._install_signal_handlers()
 
+        # BEFORE anything else: flag the downtime across our own restart, from the
+        # heartbeat the previous incarnation left behind. Must precede the first
+        # heartbeat WRITE of this incarnation, which would overwrite the evidence.
+        self.record_downtime_gap_if_any()
+
         flush_task = asyncio.create_task(self._flush_loop())
         snap_task = (asyncio.create_task(self._snap_sched.run())
                      if self._snap_sched is not None else None)
