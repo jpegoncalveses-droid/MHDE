@@ -184,8 +184,12 @@ def test_klines_retention_is_30_days():
 
 # ------------------------------------------------------------------ D. guard untouched
 
-def test_disk_and_inode_guard_floors_are_unchanged():
-    assert cfg.CAPTURE_DISK_SOFT_FLOOR_BYTES == 50 * 1024 ** 3
+def test_disk_and_inode_guard_floors_are_as_shipped():
+    """KI-164 itself changed no floor. The SOFT floor was later lowered 50 -> 40 GiB
+    (2026-08-28) as its own decision, after the 50 GiB floor pruned tape a lagging brain
+    cursor still needed. The INODE floors — the ones KI-164 is actually about — remain
+    untouched, which is what this guard is for."""
+    assert cfg.CAPTURE_DISK_SOFT_FLOOR_BYTES == 40 * 1024 ** 3
     assert cfg.CAPTURE_DISK_CRITICAL_FLOOR_BYTES == 10 * 1024 ** 3
     assert cfg.CAPTURE_DISK_RESUME_FLOOR_BYTES == 15 * 1024 ** 3
     assert cfg.CAPTURE_INODE_WARN_FRACTION == 0.80

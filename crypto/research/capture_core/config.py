@@ -306,7 +306,14 @@ CAPTURE_CLOSED_HOUR_COMPACT_DATASETS = (
 #: while leaving the engine more headroom. "Keep N GB free" — if free differs
 #: materially at deploy, retune per the OPERATIONS.md runbook (target ~30h buffer,
 #: never below ~20 GB free).
-CAPTURE_DISK_SOFT_FLOOR_BYTES = 50 * 1024 ** 3   # 50 GiB
+#: 2026-08-28: 50 -> 40 GiB. EVIDENCE: on 2026-08-28 00:00:13 the guard pruned the oldest
+#: dense partitions with free measured at 43.7-48.5 GiB — below the 50 GiB floor. Because
+#: only ~1-2 days of dense tape exist, "oldest" was YESTERDAY, which the lagging brain
+#: cursor (KI-160, ~4.5h behind) still needed: it was MAROONED and force-jumped +5h,
+#: punching a 19:24->24:00 hole in the tape that cost ~5h of the out-of-sample evidence
+#: window. Free never fell below 43.7 GiB, so a 40 GiB floor prevents that prune entirely
+#: while still leaving 30 GiB of headroom above the CRITICAL halt.
+CAPTURE_DISK_SOFT_FLOOR_BYTES = 40 * 1024 ** 3   # 40 GiB
 #: CRITICAL floor: below this, HALT firehose writes (forward-only — dropped, never
 #: backfilled) and emit a CRITICAL log.
 CAPTURE_DISK_CRITICAL_FLOOR_BYTES = 10 * 1024 ** 3   # 10 GiB
@@ -441,3 +448,14 @@ CAPTURE_RETENTION_POLICY: dict = {
     # Retired-but-possibly-still-being-written (see CAPTURE_RETIRED_RETENTION_DAYS).
     **{d: CAPTURE_RETIRED_RETENTION_DAYS for d in CAPTURE_RETIRED_DATASETS},
 }
+
+
+# -- Wall-clock gap detection (2026-08-28) ------------------------------------
+#: Seconds of wall-clock silence between consecutive observed messages that counts as a
+#: capture HOLE. Replaces the depth-derived `sequence_gap` signal that KI-164 retired:
+#: `depth` carried the only Binance sequence numbers, so restarts and stalls now produce
+#: NO gap-manifest row at all (measured: the 2026-08-27 22:10 restart went unflagged,
+#: while shard 2's 12:40 solo restart had been flagged retroactively via depth). 300s is
+#: well above the 30s flush cadence and any normal reconnect, so it fires on real holes
+#: only.
+CAPTURE_GAP_ALERT_THRESHOLD_S = 300.0

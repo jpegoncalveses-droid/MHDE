@@ -24,7 +24,7 @@ import os
 import shutil
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Callable, Sequence
+from typing import Callable, Optional, Sequence
 
 from crypto.research.capture_core import config as cfg
 
@@ -96,16 +96,33 @@ def list_firehose_partitions(root: str, datasets: Sequence[str], *,
         ds_dir = os.path.join(root, ds)
         if not os.path.isdir(ds_dir):
             continue
-        for sym in os.scandir(ds_dir):
+        try:
+            sym_entries = list(os.scandir(ds_dir))
+        except (FileNotFoundError, NotADirectoryError):
+            continue                                    # dataset dir vanished mid-scan
+        for sym in sym_entries:
             if not (sym.is_dir() and sym.name.startswith("symbol=")):
                 continue
-            for date_entry in os.scandir(sym.path):
+            try:
+                date_entries = list(os.scandir(sym.path))
+            except (FileNotFoundError, NotADirectoryError):
+                continue                                # symbol dir vanished mid-scan
+            for date_entry in date_entries:
                 if not (date_entry.is_dir() and date_entry.name.startswith("date=")):
+                    continue
+                try:
+                    size = _dir_size(date_entry.path) if with_size else 0
+                except (FileNotFoundError, NotADirectoryError):
+                    # RACE-TOLERANT (2026-08-28): the compactor replaces-then-deletes under
+                    # the guard's feet. A vanished partition used to raise out of enforce()
+                    # (9 occurrences overnight 2026-08-27), skipping the ENTIRE enforcement
+                    # cycle — including the halt-state evaluation. A partition that no
+                    # longer exists is simply not a prune candidate; skip it.
                     continue
                 parts.append(Partition(
                     path=date_entry.path,
                     date=date_entry.name.split("date=", 1)[1],
-                    size=_dir_size(date_entry.path) if with_size else 0,
+                    size=size,
                 ))
     return parts
 
@@ -376,3 +393,41 @@ class InodeGuard:
                    f"(< {self._warn * 100:.0f}%) — inode pressure cleared.")
             self._log.warning(msg)
             self._notify_fn(msg)
+
+
+class WallClockGapDetector:
+    """Flags a wall-clock discontinuity between consecutive observed messages.
+
+    KI-164 retired the depth family, and `depth` carried the ONLY Binance sequence
+    numbers — so `sequence_gap` detection went with it. Measured consequence: the
+    2026-08-27 22:10 capture restart produced ZERO gap-manifest rows, where shard 2's
+    earlier solo restart had been flagged retroactively through depth's sequence numbers.
+    Restarts, stalls and silent socket death are now otherwise invisible to the manifest,
+    and an unflagged hole is a silent no-bias violation for every downstream analysis.
+
+    This is the lightweight replacement: pure, allocation-free, O(1) per message. It owns
+    no I/O and no policy — it reports ``(start_ns, end_ns, seconds)`` for a hole and the
+    caller decides what to record. Feed it the recv timestamp of each observed message.
+    """
+
+    __slots__ = ("_threshold_ns", "_last_ns")
+
+    def __init__(self, threshold_s: float = cfg.CAPTURE_GAP_ALERT_THRESHOLD_S):
+        self._threshold_ns = int(threshold_s * 1_000_000_000)
+        self._last_ns: Optional[int] = None
+
+    def observe(self, recv_ns: int) -> Optional[tuple]:
+        """Record a message arrival. Returns ``(start_ns, end_ns, seconds)`` iff the jump
+        since the previous message exceeds the threshold, else ``None``.
+
+        Time going BACKWARDS (clock step) is not a capture hole and is not reported; the
+        cursor simply re-anchors so one NTP correction cannot manufacture a false gap.
+        """
+        last = self._last_ns
+        self._last_ns = recv_ns
+        if last is None or recv_ns <= last:
+            return None
+        delta = recv_ns - last
+        if delta < self._threshold_ns:
+            return None
+        return (last, recv_ns, delta / 1_000_000_000.0)

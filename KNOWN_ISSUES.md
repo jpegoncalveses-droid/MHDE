@@ -488,6 +488,63 @@ window: the nightly expire only removes partitions older than yesterday, so TODA
 partition grows all day, and uncompacted `depth` runs ~1.5M files/day vs ~13k compacted
 (~100x, measured 2026-08-27). Both become no-ops once the writers are off.
 
+### KI-168 — brain-tick label backlog: max_lag unbounded at the 3.0 GiB cap (KI-160 successor)
+
+**Severity: HIGH — it silently corrupts the evidence base.** Diagnosed 2026-08-28,
+EVIDENCE ONLY: the fix is structural, not a config line, so nothing is changed here.
+
+`max_lag` has grown 2.8h (2026-08-27 morning) -> 5.1h (22:43) -> **22.9h observed on tick
+330**. The mechanism is a per-tick budget that has gone underwater:
+
+  * the runner advances at most `BRAIN_MAX_TICK_WINDOW_S = 300s` of DATA time per tick,
+    on a 60s wall cadence, with the heavy (label + slow-source) tick every 5th
+    (`--label-every-n-ticks 5`);
+  * a 5-tick cycle therefore buys <= 1,500s of data time. Measured cost of that cycle:
+    4 fast ticks (~40s each) + one heavy tick at **200-983s** = ~360-1,140s of wall;
+  * at the low end that is ~4x catch-up; at the high end ~1.3x; and the heavy tick's cost
+    RISES WITH THE BACKLOG (more unlabelled windows per pass), so once the ratio crosses
+    1.0 the lag grows without bound. That is the regime now.
+
+Compounding: the unit sits pegged at `MemoryMax=3.0 GiB` (MemoryCurrent == MemoryMax
+across every sample taken 2026-08-27/28), so the label stage is memory-constrained and
+thrashing rather than running clean.
+
+**Why it matters beyond tidiness:** a lagging cursor is what gets MAROONED when retention
+prunes tape it has not consumed — the 2026-08-27 19:24->24:00 hole that cost ~5h of the
+out-of-sample verdict window came from exactly this (see the SOFT-floor note in
+`capture_core/config.py`). Lag is not a cosmetic metric; it converts directly into holes
+in the evidence.
+
+**Candidate fixes, none applied** (each needs its own measured round):
+  1. raise `MemoryMax` above 3.0 GiB so the label stage stops thrashing — cheapest to
+     try, but the host is already tight (a 16 GiB swapfile was added 2026-08-28);
+  2. raise `BRAIN_MAX_TICK_WINDOW_S` so a cycle buys more data time per unit of fixed
+     overhead — helps only if the per-window cost is sub-linear;
+  3. structural: bound or stream the label pass the way PR #99 bounded the discovery
+     label read (same shape of problem — a build-then-materialize over a growing store).
+Option 3 is most likely correct and is a PR of its own.
+
+### KI-169 — trading-engine-backup can never win the DuckDB lock (structural schedule collision)
+
+**Severity: medium — no backup has completed since at least 2026-08-25.** Diagnosed
+2026-08-28, EVIDENCE ONLY: the fix belongs in the `crypto-trading-engine` repo, not this
+one, so it is deliberately NOT bundled into an MHDE PR.
+
+`trading-engine-backup.timer` fires daily at 23:30 and
+`scripts/backup_db.py` aborts with `backup_aborted_monitor_busy` — *"monitor still running
+after 8.0s; backup skipped this run"*. The collision is structural, not unlucky:
+`trading-engine-monitor.timer` re-arms ~5s after each cycle COMPLETES, so the monitor is
+running essentially continuously (observed firing 3s before a sample check). An 8-second
+wait can therefore never find it idle, and the backup loses every night by construction.
+
+**Options for the engine-side PR** (the established DuckDB discipline is one writer):
+  1. have the backup take a READ-ONLY connection (`read_only=True`) — DuckDB permits a
+     concurrent reader against the writer's file, which is what a backup needs anyway;
+  2. inhibit the monitor for the backup window via a systemd `Conflicts=`/drop-in so the
+     two units cannot overlap;
+  3. copy-then-backup from a filesystem snapshot, avoiding the DB lock entirely.
+Option 1 is the smallest and matches how every other reader in the fleet behaves.
+
 ### KI-164 — Capture disk pinned at the 50 GiB disk-guard soft floor: retention being consumed continuously (662 partition prunes in one night)
 
 **Severity: medium — the guard is doing its job, but "steady state" is now

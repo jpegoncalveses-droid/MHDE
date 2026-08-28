@@ -26,6 +26,7 @@ from typing import Any, Callable, Optional, Sequence
 
 from crypto.research.capture_core import config as cfg
 from crypto.research.capture_core import conn_manager as cm
+from crypto.research.capture_core import disk_guard as dg
 from crypto.research.capture_core import sd_notify
 from crypto.research.capture_core import sharding
 from crypto.research.capture_core import store
@@ -278,6 +279,11 @@ class CaptureService:
                                      self._forceorder, self._markprice, self._snapshot,
                                      self._gaps, self._depth_state) if w is not None]
 
+        # Wall-clock gap detector (2026-08-28): the depth-derived `sequence_gap` signal
+        # went away with the KI-164 retirement, so restarts/stalls produced NO manifest
+        # row at all. This flags a hole from message arrival times alone.
+        self._gap_detector = dg.WallClockGapDetector()
+
         # Per-symbol depth sequence maintenance (cursor only; not a level book).
         self._maintainers: dict[str, DepthMaintainer] = {}
 
@@ -338,6 +344,15 @@ class CaptureService:
         # is behaving correctly — it must keep feeding the watchdog. Use a monotonic clock
         # (not recv_ns wall-clock) so an NTP step can't corrupt the watchdog age.
         self._last_msg_monotonic = time.monotonic()
+        hole = self._gap_detector.observe(recv_ns)
+        if hole is not None:
+            start_ns, end_ns, secs = hole
+            logger.warning(
+                "capture-core: WALL-CLOCK GAP %.0fs with no messages (%s -> %s) — capture "
+                "hole, recording to the gap manifest",
+                secs, start_ns, end_ns)
+            self._record_gap("*", "wall_clock", start_ns // 1_000_000,
+                             end_ns // 1_000_000, "wall_clock_gap")
         # Guard CRITICAL (byte OR inode): drop incoming firehose data (forward-only —
         # a hole is recorded by absence; we never backfill). Resumes on recovery.
         if self._writes_halted():
