@@ -2313,7 +2313,7 @@ controllers available (verified), so per-unit resource control is real.
 
 1. **Two-tier disk guard, firehose-only** (`disk_guard.py`, enforced
    inside the capture process from the flush loop):
-   - **SOFT floor (50 GiB free):** prune the OLDEST firehose
+   - **SOFT floor (50 GiB free; AMENDED 2026-08-28 to 40 GiB — see KI-166/KI-168: the 50 GiB floor pruned tape a lagging brain cursor still needed):** prune the OLDEST firehose
      date-partitions first, across the firehose datasets, until back
      above the floor. On the host's ~107 GB free this keeps ~50 GB free
      (~31h of firehose buffer ≥ the brain's ~24h need); it is a "keep N

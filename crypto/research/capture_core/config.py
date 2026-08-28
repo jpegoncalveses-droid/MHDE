@@ -302,17 +302,23 @@ CAPTURE_CLOSED_HOUR_COMPACT_DATASETS = (
 )
 #: SOFT floor: below this free space, prune the OLDEST firehose date-partitions
 #: (across the firehose datasets) until back above the floor. 50 GiB on the host's
-#: ~107 GB free keeps ~50 GB free (~31h of firehose buffer ≥ the brain's ~24h need)
+#: ~107 GB free keeps the buffer above the brain's ~24h need
 #: while leaving the engine more headroom. "Keep N GB free" — if free differs
 #: materially at deploy, retune per the OPERATIONS.md runbook (target ~30h buffer,
 #: never below ~20 GB free).
-#: 2026-08-28: 50 -> 40 GiB. EVIDENCE: on 2026-08-28 00:00:13 the guard pruned the oldest
-#: dense partitions with free measured at 43.7-48.5 GiB — below the 50 GiB floor. Because
-#: only ~1-2 days of dense tape exist, "oldest" was YESTERDAY, which the lagging brain
-#: cursor (KI-160, ~4.5h behind) still needed: it was MAROONED and force-jumped +5h,
-#: punching a 19:24->24:00 hole in the tape that cost ~5h of the out-of-sample evidence
-#: window. Free never fell below 43.7 GiB, so a 40 GiB floor prevents that prune entirely
-#: while still leaving 30 GiB of headroom above the CRITICAL halt.
+#: 2026-08-28: 50 -> 40 GiB. CONTEXT: on 2026-08-28 00:00:13 the guard pruned the oldest
+#: dense partitions. Because only ~1-2 days of dense tape exist, "oldest" was YESTERDAY,
+#: which the lagging brain cursor (KI-160/KI-168) still needed: it was MAROONED and
+#: force-jumped +5h, punching a 19:24->24:00 hole that cost ~5h of the out-of-sample
+#: evidence window.
+#: WHAT THIS DOES AND DOES NOT DO (review correction): the guard's "free now X" log values
+#: are POST-reclaim (enforce() does `free += reclaimed` before logging), so they are NOT
+#: the trigger level. On 2026-08-26 the post-prune readings were 34.8-41.8 GiB, three of
+#: five already below 40. So a 40 GiB floor does NOT prevent this prune — it REDUCES ITS
+#: BLAST RADIUS (a ~1.5 GiB deficit instead of ~11.5 GiB, i.e. far fewer partitions taken
+#: and a much smaller hole). The actual cause is the lagging cursor plus date-granular
+#: partitions with no cursor-watermark protection; the real fix is KI-168, not this line.
+#: 30 GiB of headroom above CRITICAL remains (~71h at the measured ~0.42 GiB/h net burn).
 CAPTURE_DISK_SOFT_FLOOR_BYTES = 40 * 1024 ** 3   # 40 GiB
 #: CRITICAL floor: below this, HALT firehose writes (forward-only — dropped, never
 #: backfilled) and emit a CRITICAL log.
@@ -450,12 +456,17 @@ CAPTURE_RETENTION_POLICY: dict = {
 }
 
 
-# -- Wall-clock gap detection (2026-08-28) ------------------------------------
-#: Seconds of wall-clock silence between consecutive observed messages that counts as a
-#: capture HOLE. Replaces the depth-derived `sequence_gap` signal that KI-164 retired:
-#: `depth` carried the only Binance sequence numbers, so restarts and stalls now produce
-#: NO gap-manifest row at all (measured: the 2026-08-27 22:10 restart went unflagged,
-#: while shard 2's 12:40 solo restart had been flagged retroactively via depth). 300s is
-#: well above the 30s flush cadence and any normal reconnect, so it fires on real holes
-#: only.
-CAPTURE_GAP_ALERT_THRESHOLD_S = 300.0
+# -- Downtime gap detection (2026-08-28) --------------------------------------
+#: Seconds of DOWNTIME across a restart that counts as a capture hole. Partially replaces
+#: the depth-derived `sequence_gap` that KI-164 retired: `depth` carried the only Binance
+#: sequence numbers, and while shard-wide silence in a LIVE process is already recorded by
+#: conn_manager as `socket_silence`, no in-process mechanism can observe a hole spanning
+#: the process's own death (measured: the 2026-08-27 22:10 restart produced no row).
+#: 45s, not 300s (review correction). The threshold applies to DOWNTIME across a restart,
+#: so the watchdog kill window is irrelevant here — but 45s sits above a clean handover
+#: (~13s, measured at the 2026-08-27 22:10 restart) while still catching a real outage.
+#: The first cut ran an IN-PROCESS 300s detector, which could never fire: conn_manager
+#: abandons a silent socket at SOCKET_SILENCE_TIMEOUT_S (60s) and WatchdogSec=30 aborts
+#: the process at ~90s, and shard-wide silence while RUNNING is already recorded by
+#: conn_manager as `socket_silence`.
+CAPTURE_GAP_ALERT_THRESHOLD_S = 45.0

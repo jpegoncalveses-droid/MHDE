@@ -182,7 +182,7 @@ def test_klines_retention_is_30_days():
     assert cfg.KLINES_RETENTION_DAYS == 30
 
 
-# ------------------------------------------------------------------ D. guard untouched
+# --------------------------------------------------- D. inode guard floors untouched
 
 def test_disk_and_inode_guard_floors_are_as_shipped():
     """KI-164 itself changed no floor. The SOFT floor was later lowered 50 -> 40 GiB

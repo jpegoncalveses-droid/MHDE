@@ -112,52 +112,68 @@ def test_enforce_survives_a_vanishing_partition(tmp_path):
 
 
 # ---------------------------------------------------------------- gap detection
+#
+# REVIEW CORRECTION. The first cut hooked a 300s wall-clock detector into `_on_message`.
+# It could never fire: `conn_manager` abandons a silent socket at SOCKET_SILENCE_TIMEOUT_S
+# = 60s and the unit's WatchdogSec=30 SIGABRTs the process at ~90s of silence, so 300s of
+# in-process silence is unreachable — and shard-wide silence >60s is ALREADY recorded by
+# conn_manager as `socket_silence`. Worse, it missed its own motivating case: the detector
+# is per-CaptureService, so a restart resets it and the restart boundary stayed unflagged.
+#
+# The genuinely uncovered hole is the RESTART/DOWNTIME boundary, which survives only in
+# the persisted heartbeat. That is what is detected now, and it is emitted on the stream
+# name the label validity gate actually consumes.
 
-def test_wall_clock_discontinuity_detector_flags_a_hole():
-    """Replacement for the retired depth-derived gap signal: a wall-clock jump between
-    consecutive observed messages is a capture hole and must be reported."""
-    d = dg.WallClockGapDetector(threshold_s=cfg.CAPTURE_GAP_ALERT_THRESHOLD_S)
-    base = 1_787_000_000_000_000_000
-    assert d.observe(base) is None
-    assert d.observe(base + 30 * 10**9) is None                    # 30s: normal
-    gap = d.observe(base + 30 * 10**9 + 400 * 10**9)               # 400s: a hole
+
+def test_downtime_gap_detected_from_the_persisted_heartbeat(tmp_path):
+    """The uncovered case: the process was DOWN. Nothing in-process can see that; only the
+    heartbeat written before the stop survives it."""
+    hb = tmp_path / "heartbeats"
+    hb.mkdir()
+    (hb / "shard-0.json").write_text('{"ts_ns": 1787000000000000000, "rows": 5}')
+    gap = dg.detect_downtime_gap(str(hb), "shard-0",
+                                 now_ns=1787000000000000000 + 900 * 10**9,
+                                 threshold_s=cfg.CAPTURE_GAP_ALERT_THRESHOLD_S)
     assert gap is not None
     start_ns, end_ns, secs = gap
-    assert start_ns == base + 30 * 10**9
-    assert round(secs) == 400
+    assert start_ns == 1787000000000000000
+    assert round(secs) == 900
 
 
-def test_detector_does_not_flag_normal_cadence():
-    d = dg.WallClockGapDetector(threshold_s=120.0)
-    t = 1_787_000_000_000_000_000
-    for _ in range(50):
-        t += 5 * 10**9
-        assert d.observe(t) is None
+def test_short_restart_is_not_flagged(tmp_path):
+    """A clean handover is not a hole worth flagging (and the socket side is covered by
+    conn_manager's reconnect gap)."""
+    hb = tmp_path / "heartbeats"; hb.mkdir()
+    (hb / "shard-0.json").write_text('{"ts_ns": 1787000000000000000}')
+    assert dg.detect_downtime_gap(str(hb), "shard-0",
+                                  now_ns=1787000000000000000 + 5 * 10**9,
+                                  threshold_s=30.0) is None
 
 
-def test_detector_threshold_is_configured_and_sane():
-    assert 60.0 <= cfg.CAPTURE_GAP_ALERT_THRESHOLD_S <= 900.0
+def test_first_ever_start_has_no_heartbeat_and_no_gap(tmp_path):
+    hb = tmp_path / "heartbeats"; hb.mkdir()
+    assert dg.detect_downtime_gap(str(hb), "shard-0", now_ns=1787000000000000000,
+                                  threshold_s=30.0) is None
 
 
-def test_service_records_a_wall_clock_gap_to_the_manifest(tmp_path):
-    """End-to-end: a silent period between messages must produce a manifest row, so the
-    hole is visible to every downstream analysis (the property depth used to provide)."""
-    import pyarrow.parquet as pq
-    from crypto.research.capture_core import service as svc
+def test_corrupt_heartbeat_is_not_fatal(tmp_path):
+    hb = tmp_path / "heartbeats"; hb.mkdir()
+    (hb / "shard-0.json").write_text("{not json")
+    assert dg.detect_downtime_gap(str(hb), "shard-0", now_ns=1787000000000000000,
+                                  threshold_s=30.0) is None
 
-    s = svc.CaptureService(root=str(tmp_path), client=None)
-    base = 1_787_000_000_000_000_000
-    agg = {"e": "aggTrade", "E": 1, "a": 1, "s": "BTCUSDT", "p": "1", "q": "1",
-           "f": 1, "l": 1, "T": 1, "m": False}
-    s._on_message("btcusdt@aggTrade", agg, recv_ns=base)
-    s._on_message("btcusdt@aggTrade", agg, recv_ns=base + 30 * 10**9)          # normal
-    s._on_message("btcusdt@aggTrade", agg, recv_ns=base + 700 * 10**9)         # hole
-    s._gaps.flush_all()
 
-    rows = []
-    for fp in sorted(pathlib.Path(tmp_path, "_gaps").rglob("*.parquet")):
-        rows.extend(pq.read_table(str(fp)).to_pylist())
-    holes = [r for r in rows if r["reason"] == "wall_clock_gap"]
-    assert len(holes) == 1
-    assert holes[0]["stream"] == "wall_clock"
-    assert round((holes[0]["gap_end_ms"] - holes[0]["gap_start_ms"]) / 1000) == 670
+def test_threshold_brackets_a_clean_handover_and_a_real_outage():
+    """The watchdog constraint that sank the first design does NOT apply here: a downtime
+    gap spans a RESTART, so the process is not alive to be aborted. What matters is that
+    the threshold sits above a clean handover (~13s measured 2026-08-27 22:10) and low
+    enough to catch a genuine outage."""
+    assert 20.0 <= cfg.CAPTURE_GAP_ALERT_THRESHOLD_S <= 120.0
+
+
+def test_downtime_gap_uses_the_stream_the_label_gate_consumes():
+    """A gap row the label builder ignores restores nothing. `labels.py` filters on
+    MARK_GAP_STREAM_PREFIX; `pipeline.py` maps maroon gaps onto it for exactly this
+    reason, and this must follow that precedent."""
+    from crypto.research.brain import labels as brain_labels
+    assert dg.DOWNTIME_GAP_STREAM.startswith(brain_labels.MARK_GAP_STREAM_PREFIX)

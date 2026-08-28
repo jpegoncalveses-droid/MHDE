@@ -279,11 +279,6 @@ class CaptureService:
                                      self._forceorder, self._markprice, self._snapshot,
                                      self._gaps, self._depth_state) if w is not None]
 
-        # Wall-clock gap detector (2026-08-28): the depth-derived `sequence_gap` signal
-        # went away with the KI-164 retirement, so restarts/stalls produced NO manifest
-        # row at all. This flags a hole from message arrival times alone.
-        self._gap_detector = dg.WallClockGapDetector()
-
         # Per-symbol depth sequence maintenance (cursor only; not a level book).
         self._maintainers: dict[str, DepthMaintainer] = {}
 
@@ -344,15 +339,6 @@ class CaptureService:
         # is behaving correctly — it must keep feeding the watchdog. Use a monotonic clock
         # (not recv_ns wall-clock) so an NTP step can't corrupt the watchdog age.
         self._last_msg_monotonic = time.monotonic()
-        hole = self._gap_detector.observe(recv_ns)
-        if hole is not None:
-            start_ns, end_ns, secs = hole
-            logger.warning(
-                "capture-core: WALL-CLOCK GAP %.0fs with no messages (%s -> %s) — capture "
-                "hole, recording to the gap manifest",
-                secs, start_ns, end_ns)
-            self._record_gap("*", "wall_clock", start_ns // 1_000_000,
-                             end_ns // 1_000_000, "wall_clock_gap")
         # Guard CRITICAL (byte OR inode): drop incoming firehose data (forward-only —
         # a hole is recorded by absence; we never backfill). Resumes on recovery.
         if self._writes_halted():
@@ -504,6 +490,30 @@ class CaptureService:
             "bytes_in": getattr(mgr, "bytes_in", 0),
             "rows": sum(w.rows_written for w in self._writers),
         }
+
+    def record_downtime_gap_if_any(self, *, now_ns: Optional[int] = None) -> None:
+        """Flag the DOWNTIME across this process's own restart, from the heartbeat the
+        previous incarnation left behind.
+
+        KI-164 took `sequence_gap` with the depth family, and nothing in-process can
+        observe a hole that spans its own death. Called once at startup; best-effort, and
+        never fatal — a startup path must not be able to keep a shard down.
+        """
+        try:
+            payload = self._heartbeat_payload()
+            hole = dg.detect_downtime_gap(
+                self._heartbeat_dir, f"shard-{payload['shard']}",
+                now_ns=now_ns if now_ns is not None else time.time_ns())
+            if hole is None:
+                return
+            start_ns, end_ns, secs = hole
+            logger.warning(
+                "capture-core: DOWNTIME GAP %.0fs across restart (%s -> %s) — capture "
+                "hole, recording to the gap manifest", secs, start_ns, end_ns)
+            self._record_gap("*", dg.DOWNTIME_GAP_STREAM, start_ns // 1_000_000,
+                             end_ns // 1_000_000, "downtime_gap")
+        except Exception:                            # noqa: BLE001
+            logger.warning("capture-core downtime-gap check failed", exc_info=True)
 
     def _write_heartbeat(self) -> None:
         """Atomically write this shard's layer-2 heartbeat. Best-effort — a heartbeat write

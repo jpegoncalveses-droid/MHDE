@@ -19,6 +19,7 @@ firehose flush loop. NEVER opens the production DB.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -395,39 +396,38 @@ class InodeGuard:
             self._notify_fn(msg)
 
 
-class WallClockGapDetector:
-    """Flags a wall-clock discontinuity between consecutive observed messages.
+#: Stream label for a downtime gap. It MUST be one the brain's label-validity gate
+#: consumes: `labels.py` filters gap rows with `startswith(MARK_GAP_STREAM_PREFIX)`
+#: ("!markPrice@arr"), and `pipeline.py` already maps maroon-jump gaps onto that name for
+#: exactly this reason. A row on any other stream is audit-only and restores nothing —
+#: the first cut used "wall_clock" and was silently ignored downstream (review catch).
+DOWNTIME_GAP_STREAM = "!markPrice@arr:downtime"
 
-    KI-164 retired the depth family, and `depth` carried the ONLY Binance sequence
-    numbers — so `sequence_gap` detection went with it. Measured consequence: the
-    2026-08-27 22:10 capture restart produced ZERO gap-manifest rows, where shard 2's
-    earlier solo restart had been flagged retroactively through depth's sequence numbers.
-    Restarts, stalls and silent socket death are now otherwise invisible to the manifest,
-    and an unflagged hole is a silent no-bias violation for every downstream analysis.
 
-    This is the lightweight replacement: pure, allocation-free, O(1) per message. It owns
-    no I/O and no policy — it reports ``(start_ns, end_ns, seconds)`` for a hole and the
-    caller decides what to record. Feed it the recv timestamp of each observed message.
+def detect_downtime_gap(heartbeat_dir: str, shard_label: str, *, now_ns: int,
+                        threshold_s: float = cfg.CAPTURE_GAP_ALERT_THRESHOLD_S):
+    """A capture hole spanning a process RESTART, from the persisted heartbeat.
+
+    KI-164 retired `depth`, which carried the only Binance sequence numbers, taking
+    `sequence_gap` with it. In-process detection cannot cover a restart (any in-memory
+    cursor dies with the process), and shard-wide silence while RUNNING is already
+    recorded by `conn_manager` as `socket_silence`. The uncovered hole is therefore
+    exactly the downtime between the last heartbeat written before the stop and the first
+    tick after the start — which is what this reads.
+
+    Returns ``(start_ns, end_ns, seconds)`` when the downtime exceeds ``threshold_s``,
+    else ``None``. Never raises: a missing, unreadable or corrupt heartbeat means "no
+    evidence of a gap", and a startup path must not be able to kill the shard.
     """
-
-    __slots__ = ("_threshold_ns", "_last_ns")
-
-    def __init__(self, threshold_s: float = cfg.CAPTURE_GAP_ALERT_THRESHOLD_S):
-        self._threshold_ns = int(threshold_s * 1_000_000_000)
-        self._last_ns: Optional[int] = None
-
-    def observe(self, recv_ns: int) -> Optional[tuple]:
-        """Record a message arrival. Returns ``(start_ns, end_ns, seconds)`` iff the jump
-        since the previous message exceeds the threshold, else ``None``.
-
-        Time going BACKWARDS (clock step) is not a capture hole and is not reported; the
-        cursor simply re-anchors so one NTP correction cannot manufacture a false gap.
-        """
-        last = self._last_ns
-        self._last_ns = recv_ns
-        if last is None or recv_ns <= last:
-            return None
-        delta = recv_ns - last
-        if delta < self._threshold_ns:
-            return None
-        return (last, recv_ns, delta / 1_000_000_000.0)
+    try:
+        path = os.path.join(heartbeat_dir, f"{shard_label}.json")
+        with open(path, "r") as fh:
+            last = int(json.load(fh)["ts_ns"])
+    except Exception:                               # noqa: BLE001 — absent/corrupt/racing
+        return None
+    if now_ns <= last:
+        return None
+    delta = now_ns - last
+    if delta < threshold_s * 1_000_000_000:
+        return None
+    return (last, now_ns, delta / 1_000_000_000.0)
