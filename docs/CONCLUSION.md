@@ -63,10 +63,9 @@ occupy: p50 **12.1bp**, p90 **71.4bp**, p99 **250.1bp**. Weighted per trade inst
 moment the same distribution reads 12.0 / 68.5 / 245.3bp — computed on the 8,567 entries
 still priceable today, see the reproducibility note below — and the gap between the two is
 itself a measure of how heavily these trades pile onto shared episodes, which is the
-correlation §6 returns to. The feared cost-scales-with-the-condition effect was real but an
-order of
-magnitude smaller than the measured gross edge. On the in-sample evidence the families
-cleared the pre-registered bar emphatically and by a wide margin.
+correlation §6 returns to. The feared cost-scales-with-the-condition effect was real but
+an order of magnitude smaller than the measured gross edge. On the in-sample evidence
+the families cleared the pre-registered bar emphatically and by a wide margin.
 
 **Reproducibility of this section, stated for the record.** The ledger side reproduces
 exactly from the archive — 8,570 rows, 317 symbols, entries 2026-08-08 → 2026-08-24. The
@@ -196,8 +195,8 @@ Two further considerations push in the same direction:
   episodes in the same minutes. **In the out-of-sample set the collapse is direct: the 780
   trades of §3 occupy only 205 distinct entry moments — 3.80 trades per moment.** (The
   in-sample set collapses harder still, 8,570 trades onto 1,412 moments, 6.07 per moment,
-  §2.) The iid resample treats correlated
-  observations as independent, so nominal intervals are too narrow and *all* exclusions,
+  §2.) The iid resample treats correlated observations as independent, so nominal
+  intervals are too narrow and *all* exclusions,
   positive and negative, overstate their significance.
 - **The three families whose intervals exclude zero on the negative side** are not
   cancelled out by the one positive; under the null one expects roughly 0.75 exclusions in
