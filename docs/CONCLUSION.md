@@ -254,9 +254,22 @@ The underlying cgroup counters remained live and readable throughout — sampled
 from the in-flight run 62 on 2026-08-31: `memory.peak` 12.41 GiB (95.5% of the 13 GiB
 `MemoryMax`), `memory.swap.peak` 2.84 GiB. The gap was in systemd's reporting, not in the
 kernel accounting; a sampler reading `memory.peak` during the pass would have closed it.
-Cause never identified. Consequence: for runs 50–61 there is **no recorded per-run memory
-or swap peak in the archive**, and the engine was demonstrably running within 4.5% of its
-memory cap at close.
+
+**Refined at teardown.** When run 62 was aborted by `SIGTERM` during the stop sequence, the
+`Consumed` line *did* carry the peak fields again:
+
+```
+run 62 (aborted)   1h11m51s CPU   12.4 GiB memory peak   8.4 GiB swap peak
+mhde-brain-tick    3d 05h01m CPU   3.0 GiB memory peak   1.5 GiB swap peak
+```
+
+So the mechanism was never broken — the fields were absent specifically from the normal
+`Finished` completions of runs 50–61 and present on an explicit stop. Cause still not
+identified. Two consequences worth carrying: for runs 50–61 there is **no recorded per-run
+memory or swap peak in the archive**, and the swap figure is worse than the mid-run sample
+suggested — 8.4 GiB at the abort against 2.84 GiB sampled at 43 minutes in, on a 16 GiB
+swapfile. The engine finished its life running within 4.5% of its memory cap and leaning
+hard on swap.
 
 ### 8.3 Wall clock at 4h59m against a 6h cadence
 
@@ -274,6 +287,34 @@ have begun overrunning its own 6-hourly cadence within days. No overrun occurred
 close; zero OOM kills and zero failed passes were recorded across runs 47–61. The growth
 was structural — `TRADELOG_MAX_INSTANCES = 5000` per promoted rule against a promoted set
 that reached 104 rules across 49 families — and was never bounded.
+
+### 8.4 `mhde-brain-discover.service` re-arms the compaction timers on every exit
+
+The unit carries `ExecStartPre=discovery_compact_window.sh pause` and
+`ExecStopPost=discovery_compact_window.sh resume`, the latter documented as running "on
+EVERY exit, oom-kill included". It does — including on a deliberate `systemctl stop`.
+
+During teardown this silently resurrected three timers that had already been stopped and
+disabled: `mhde-brain-compact.timer`, `mhde-capture-firehose-compact.timer`, and
+`mhde-capture-okx-firehose-compact.timer` all returned to `active` (while remaining
+`disabled`) the moment the discovery service was stopped, and `mhde-brain-compact.service`
+started a fresh compaction pass against the brain store roughly two minutes later.
+
+**Any shutdown that stops timers before services will leave compaction running.** The
+correct order is to stop the discovery *service* first, then the timers — or to stop the
+timers a second time afterwards. A transient failsafe timer
+(`mhde-discover-compact-failsafe.timer`, created per-run by the service itself) exists to
+restore the compactors if `ExecStopPost` is skipped, and must also be stopped; being
+transient, it cannot be disabled and does not survive a reboot.
+
+### 8.5 `mhde-brain-tick.service` does not honour SIGTERM
+
+On stop, the tick loop ignored `SIGTERM` for the full `TimeoutStopSec` (90s) and had to be
+escalated to `SIGKILL`, exiting `9/KILL` with `Result=timeout` after four restart attempts.
+It had been running continuously for 3d 05h of CPU time. No data loss was observed — the
+brain store is written as immutable partitions — but the unit has no working shutdown
+handler and any clean-stop procedure should expect a 90-second stall and a `failed` final
+state that is cosmetic rather than real.
 
 ---
 
