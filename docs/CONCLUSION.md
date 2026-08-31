@@ -60,9 +60,11 @@ verdict        15 / 15 SURVIVE the pessimistic bound
 
 Entry-spread distribution across the **1,412 distinct entry moments** those 8,570 trades
 occupy: p50 **12.1bp**, p90 **71.4bp**, p99 **250.1bp**. Weighted per trade instead of per
-moment the same distribution reads 12.0 / 68.5 / 245.3bp; the gap between the two is itself
-a measure of how heavily these trades pile onto shared episodes, which is the correlation
-§6 returns to. The feared cost-scales-with-the-condition effect was real but an order of
+moment the same distribution reads 12.0 / 68.5 / 245.3bp — computed on the 8,567 entries
+still priceable today, see the reproducibility note below — and the gap between the two is
+itself a measure of how heavily these trades pile onto shared episodes, which is the
+correlation §6 returns to. The feared cost-scales-with-the-condition effect was real but an
+order of
 magnitude smaller than the measured gross edge. On the in-sample evidence the families
 cleared the pre-registered bar emphatically and by a wide margin.
 
@@ -191,8 +193,10 @@ Two further considerations push in the same direction:
   fifteen** carry a `forceorder.liq_buy_ratio` predicate and **twelve of the fifteen** carry
   no `book_imbalance` term at all, so they are variants of a small number of underlying
   strategies rather than fifteen independent hypotheses. They also fire on the same market
-  episodes in the same minutes — 8,570 in-sample trades occupy only 1,412 distinct entry
-  moments (§2). The iid resample treats correlated
+  episodes in the same minutes. **In the out-of-sample set the collapse is direct: the 780
+  trades of §3 occupy only 205 distinct entry moments — 3.80 trades per moment.** (The
+  in-sample set collapses harder still, 8,570 trades onto 1,412 moments, 6.07 per moment,
+  §2.) The iid resample treats correlated
   observations as independent, so nominal intervals are too narrow and *all* exclusions,
   positive and negative, overstate their significance.
 - **The three families whose intervals exclude zero on the negative side** are not
@@ -371,7 +375,11 @@ steady stream of false alarms about the very silence it created.
 ordered by `family_key` — which sorts `forceorder.liq_buy_ratio.xrank>` before
 `forceorder.liq_buy_ratio.z1440<` — while the labels beside them were written out in
 logical depth order. The result is a clean two-position rotation across the middle of both
-tables. Rows 1–3 and 12–15 are correctly labelled; the rows between them are not.
+tables — rotation by one or by three does not fit; only by two. Counting positions **among
+the fifteen clearing families**, the first three and the last four are correctly labelled
+and the eight between them are not. (In `spread_cost_test_20260828.md` those are literally
+table rows 1–3 and 12–15. In `economics_preview_20260828.md` the target family occupies
+table row 1, so the same positions appear as table rows 2–4 and 13–16.)
 
 Registry ground truth, as an example of the offset:
 `bookticker.rel_spread.raw>|forceorder.liq_buy_ratio.z1440<|forceorder.liq_total.z1440>`
