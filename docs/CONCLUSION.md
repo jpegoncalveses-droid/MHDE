@@ -33,8 +33,15 @@ The out-of-sample confirmation requirement was that the rows be **post-PR-#99 sa
 stage-4 samples** — deterministic rule-seeded sampling independent of the stage-2 draw the
 rules were selected on — with entries after the run-46 frontier
 (`CUT_B = 2026-08-27 12:24 UTC`), accumulated forward on every completed pass, over family
-membership frozen to rules promoted **before run 47**. Every OOS number below uses that
-membership rule and that cost model, with a 10,000-resample bootstrap at `seed=7`.
+membership frozen to rules promoted **before run 47**. Every OOS number below uses that cost
+model and a 10,000-resample bootstrap at `seed=7`.
+
+The frozen membership rule governs §3, §5 and §6 throughout. **§4 is the one exception and
+says so in place:** its headline forceorder figures are an *all-promoted-members* series
+that includes rules promoted after the OOS cutoff, reported because those families' frozen
+membership had largely rejected out by run 61; the like-for-like frozen-membership figures
+are given alongside them. Where the two are compared, the comparison is stated on the
+matched rule.
 
 ---
 
@@ -51,10 +58,22 @@ best family    CI_low = +411.8 bp
 verdict        15 / 15 SURVIVE the pessimistic bound
 ```
 
-Entry-spread distribution across those 8,570 entries: p50 **12.1bp**, p90 **71.4bp**, p99
-**250.1bp**. The feared cost-scales-with-the-condition effect was real but an order of
+Entry-spread distribution across the **1,412 distinct entry moments** those 8,570 trades
+occupy: p50 **12.1bp**, p90 **71.4bp**, p99 **250.1bp**. Weighted per trade instead of per
+moment the same distribution reads 12.0 / 68.5 / 245.3bp; the gap between the two is itself
+a measure of how heavily these trades pile onto shared episodes, which is the correlation
+§6 returns to. The feared cost-scales-with-the-condition effect was real but an order of
 magnitude smaller than the measured gross edge. On the in-sample evidence the families
 cleared the pre-registered bar emphatically and by a wide margin.
+
+**Reproducibility of this section, stated for the record.** The ledger side reproduces
+exactly from the archive — 8,570 rows, 317 symbols, entries 2026-08-08 → 2026-08-24. The
+cost side no longer does in full: brain-store `bookticker` retention has since aged out the
+2026-08-08 and 08-09 partitions, so 3 of the 8,570 entries can no longer be priced.
+Recomputed on the surviving 8,567 the result is **+310.7bp**, worst family CI_low **+38.9**,
+best **+411.8**, **15/15 surviving** — the published figures stand. Anyone re-deriving §2
+after the brain store is deleted will have to take it from
+`docs/spread_cost_test_20260828.md` in the archive.
 
 The one family that had already been settled as a failure — `forceorder.liq_buy_ratio.z1440>`,
 the graduation candidate — failed the preview outright on 50,973 trades: gross +10.1bp
@@ -98,9 +117,9 @@ Trajectory of the cumulative estimate, one row per completed pass:
 | 61 | 780 | **+2.0** | −25.3 | +30.1 | 52.9 |
 
 Fifteen passes of forward evidence never produced an interval excluding zero on the
-positive side. The estimate spent runs 50–57 with the point estimate between −75 and −21bp
-and drifted back toward zero over the final four passes — for reasons that are at least
-partly compositional, see §5.
+positive side. The estimate spent runs 50–57 with the point estimate between −75.4 and
+−28.6bp and drifted back toward zero over the final four passes — for reasons that are at
+least partly compositional, see §5.
 
 ---
 
@@ -168,9 +187,12 @@ the unremarkable outcome, not the surprising one.
 
 Two further considerations push in the same direction:
 
-- **The bootstrap understates variance.** The families are near-duplicates — twelve of the
-  fifteen are variants of one `rel_spread>|liq_buy<` strategy — and different families fire
-  on the same market episodes in the same minutes. The iid resample treats correlated
+- **The bootstrap understates variance.** The families are near-duplicates: **ten of the
+  fifteen** carry a `forceorder.liq_buy_ratio` predicate and **twelve of the fifteen** carry
+  no `book_imbalance` term at all, so they are variants of a small number of underlying
+  strategies rather than fifteen independent hypotheses. They also fire on the same market
+  episodes in the same minutes — 8,570 in-sample trades occupy only 1,412 distinct entry
+  moments (§2). The iid resample treats correlated
   observations as independent, so nominal intervals are too narrow and *all* exclusions,
   positive and negative, overstate their significance.
 - **The three families whose intervals exclude zero on the negative side** are not
@@ -192,8 +214,10 @@ selected post hoc from 15, is not a result.
 - After 15 forward passes the 15 spread families stand at **n=780, +2.0bp, CI [−25.3,
   +30.1]** — consistent with zero, far below the pre-registered +20bp point bar, and never
   once producing a positive interval exclusion. The bar was never met.
-- The single-feature forceorder families, which accumulated 31× the evidence, are
-  **confirmed negative**: n=24,543, −15.9bp, CI entirely below zero.
+- The single-feature forceorder families are **confirmed negative**: n=24,543, −15.9bp, CI
+  entirely below zero on all promoted members, and n=5,080, −16.5bp, CI [−22.5, −10.3] on
+  the same frozen membership rule the 15 use — **6.5× the like-for-like evidence** (31×
+  counting all promoted members).
 - The one family whose interval clears zero is what 15 simultaneous correlated tests
   produce by chance (§6), and the recent drift toward zero is substantially a change in
   sample composition (§5).
@@ -230,7 +254,10 @@ walked and counted a **second time in the same pass**.
 - **The logged `confirming` count is wrong**, overstating the registry by exactly the
   `advanced` count. Verified: run 61 logged `confirming: 1964`, `advanced: 78`; registry
   holds `1886 = 1964 − 78`. Same relation at runs 59 (1930 − 119 = 1811) and 60
-  (1916 − 83 = 1833).
+  (1916 − 83 = 1833) — though note that only run 61's relation is independently checkable
+  against the registry. `rulestore.update_forward` rewrites `updated_at_ns` on every live
+  rule on every pass, so no historical registry state survives; the run 59 and 60 figures
+  are the journal's own logged pair and the arithmetic on them, not a registry comparison.
 - **Cost:** one duplicate full forward walk per admitted rule per pass — 78 to 119 wasted
   walks on recent passes. A contributor to the wall-clock growth in §8.3, though not the
   dominant one.
@@ -298,7 +325,15 @@ During teardown this silently resurrected three timers that had already been sto
 disabled: `mhde-brain-compact.timer`, `mhde-capture-firehose-compact.timer`, and
 `mhde-capture-okx-firehose-compact.timer` all returned to `active` (while remaining
 `disabled`) the moment the discovery service was stopped, and `mhde-brain-compact.service`
-started a fresh compaction pass against the brain store roughly two minutes later.
+began starting **4 milliseconds** after the timers were re-armed:
+
+```
+Aug 31 19:35:00.475022  Started mhde-brain-compact.timer
+Aug 31 19:35:00.479158  Starting mhde-brain-compact.service ...
+```
+
+Its first compaction log line landed ~91 seconds later. There is no window in which an
+operator could observe the timers stopped and act before compaction restarts.
 
 **Any shutdown that stops timers before services will leave compaction running.** The
 correct order is to stop the discovery *service* first, then the timers — or to stop the
@@ -327,6 +362,30 @@ This matters for teardown because both monitors watch substrate write-freshness 
 alert continuously — substrate-freshness every 5 minutes — once the capture and brain lanes
 go quiet. They must be disabled in the same pass as the writers, or the teardown produces a
 steady stream of false alarms about the very silence it created.
+
+### 8.7 The archived per-family tables carry rotated family labels
+
+**This one is a trap for future readers of the archive.** In both
+`docs/spread_cost_test_20260828.md` (the per-family table) and
+`docs/economics_preview_20260828.md` (the verdict table), the result rows were emitted
+ordered by `family_key` — which sorts `forceorder.liq_buy_ratio.xrank>` before
+`forceorder.liq_buy_ratio.z1440<` — while the labels beside them were written out in
+logical depth order. The result is a clean two-position rotation across the middle of both
+tables. Rows 1–3 and 12–15 are correctly labelled; the rows between them are not.
+
+Registry ground truth, as an example of the offset:
+`bookticker.rel_spread.raw>|forceorder.liq_buy_ratio.z1440<|forceorder.liq_total.z1440>`
+has **n=1,282** (entry spread p50/p90/p99 = 14.0/81.3/250.6bp), which the document attributes
+to the `|markprice.mark_ret.z1440>` variant; the **n=350** row (12.3/68.8/173.1bp) actually
+belongs to
+`bookticker.rel_spread.raw>|forceorder.liq_buy_ratio.xrank>|forceorder.liq_buy_ratio.z1440<|markprice.mark_ret.z1440>`.
+
+**No figure in this document is affected** — §2 quotes only order-invariant aggregates
+(the 8,570 total, the +310.6bp mean, the extreme CI bounds, the 15/15 count), and every
+per-family number in §3 and §5 was computed from the registry and ledger directly, not read
+off those tables. But any future analysis that attributes a per-family result from the two
+archived source documents to a named family will attribute it to the wrong family unless it
+re-derives the mapping from `parquet/rules.parquet`.
 
 ---
 
