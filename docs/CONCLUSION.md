@@ -316,6 +316,18 @@ brain store is written as immutable partitions — but the unit has no working s
 handler and any clean-stop procedure should expect a 90-second stall and a `failed` final
 state that is cosmetic rather than real.
 
+### 8.6 The monitor units cannot be masked
+
+`systemctl mask` on `mhde-monitor-substrate-freshness` and `mhde-continuous-monitor` fails:
+masking works by symlinking the unit name to `/dev/null` under `/etc/systemd/system`, and
+these units are **real files in that same directory**, which systemd will not overwrite.
+The working incantation is `systemctl disable --now <unit>.timer`.
+
+This matters for teardown because both monitors watch substrate write-freshness and will
+alert continuously — substrate-freshness every 5 minutes — once the capture and brain lanes
+go quiet. They must be disabled in the same pass as the writers, or the teardown produces a
+steady stream of false alarms about the very silence it created.
+
 ---
 
 ## 9. Final state at close
