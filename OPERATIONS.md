@@ -731,7 +731,7 @@ systemctl --user daemon-reload && systemctl --user restart mhde-capture-core.ser
    - capture keeps up (no growing WS disconnects / message drops in
      `journalctl --user -u mhde-capture-core -f`);
    - disk guard quiet (no `CRITICAL ... HALTING` / repeated prune WARNINGs);
-   - free space stable above the 50 GiB soft floor (`df -h /home/jpcg`).
+   - free space stable above the 40 GiB soft floor (lowered from 50 GiB 2026-08-28) (`df -h /home/jpcg`).
 
 6. **Trust only if** the engine cycle stays within budget with no new engine
    alerts. Otherwise tune caps (lower `MemoryMax`/weights) or trim the capture

@@ -26,6 +26,7 @@ from typing import Any, Callable, Optional, Sequence
 
 from crypto.research.capture_core import config as cfg
 from crypto.research.capture_core import conn_manager as cm
+from crypto.research.capture_core import disk_guard as dg
 from crypto.research.capture_core import sd_notify
 from crypto.research.capture_core import sharding
 from crypto.research.capture_core import store
@@ -490,6 +491,30 @@ class CaptureService:
             "rows": sum(w.rows_written for w in self._writers),
         }
 
+    def record_downtime_gap_if_any(self, *, now_ns: Optional[int] = None) -> None:
+        """Flag the DOWNTIME across this process's own restart, from the heartbeat the
+        previous incarnation left behind.
+
+        KI-164 took `sequence_gap` with the depth family, and nothing in-process can
+        observe a hole that spans its own death. Called once at startup; best-effort, and
+        never fatal — a startup path must not be able to keep a shard down.
+        """
+        try:
+            payload = self._heartbeat_payload()
+            hole = dg.detect_downtime_gap(
+                self._heartbeat_dir, f"shard-{payload['shard']}",
+                now_ns=now_ns if now_ns is not None else time.time_ns())
+            if hole is None:
+                return
+            start_ns, end_ns, secs = hole
+            logger.warning(
+                "capture-core: DOWNTIME GAP %.0fs across restart (%s -> %s) — capture "
+                "hole, recording to the gap manifest", secs, start_ns, end_ns)
+            self._record_gap("*", dg.DOWNTIME_GAP_STREAM, start_ns // 1_000_000,
+                             end_ns // 1_000_000, "downtime_gap")
+        except Exception:                            # noqa: BLE001
+            logger.warning("capture-core downtime-gap check failed", exc_info=True)
+
     def _write_heartbeat(self) -> None:
         """Atomically write this shard's layer-2 heartbeat. Best-effort — a heartbeat write
         must NEVER take down the capture loop, so all errors degrade to a log line."""
@@ -594,6 +619,11 @@ class CaptureService:
         """Run until SIGTERM/SIGINT (or :meth:`stop`), re-resolving the universe."""
         if self._install_signals:
             self._install_signal_handlers()
+
+        # BEFORE anything else: flag the downtime across our own restart, from the
+        # heartbeat the previous incarnation left behind. Must precede the first
+        # heartbeat WRITE of this incarnation, which would overwrite the evidence.
+        self.record_downtime_gap_if_any()
 
         flush_task = asyncio.create_task(self._flush_loop())
         snap_task = (asyncio.create_task(self._snap_sched.run())

@@ -22,9 +22,14 @@ def _p(date, size, path=None):
 # -- shipped floor constants --
 
 def test_shipped_floor_constants():
-    # SOFT 50 GiB / CRITICAL 10 GiB: on ~107 GB free keeps ~50 GB free (~31h
-    # firehose buffer >= the brain's ~24h need). SOFT must stay above CRITICAL.
-    assert cfg.CAPTURE_DISK_SOFT_FLOOR_BYTES == 50 * GIB
+    # 2026-08-28: SOFT 50 -> 40 GiB. The 50 GiB floor pruned yesterday\'s dense tape at
+    # 00:00:13 with free at 43.7-48.5 GiB, marooning the lagging brain cursor and
+    # punching a 5h hole in the evidence window. CRITICAL/RESUME are unchanged.
+    # SOFT 40 GiB / CRITICAL 10 GiB. Was 50 GiB; lowered 2026-08-28 after the 50 GiB
+    # floor pruned yesterday's dense tape at 00:00:13 (free 43.7-48.5 GiB), marooning the
+    # lagging brain cursor and punching a 5h hole in the evidence window. SOFT must stay
+    # above CRITICAL.
+    assert cfg.CAPTURE_DISK_SOFT_FLOOR_BYTES == 40 * GIB
     assert cfg.CAPTURE_DISK_CRITICAL_FLOOR_BYTES == 10 * GIB
     assert cfg.CAPTURE_DISK_SOFT_FLOOR_BYTES > cfg.CAPTURE_DISK_CRITICAL_FLOOR_BYTES
 

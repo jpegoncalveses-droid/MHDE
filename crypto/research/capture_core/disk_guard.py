@@ -19,12 +19,13 @@ firehose flush loop. NEVER opens the production DB.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Callable, Sequence
+from typing import Callable, Optional, Sequence
 
 from crypto.research.capture_core import config as cfg
 
@@ -96,16 +97,33 @@ def list_firehose_partitions(root: str, datasets: Sequence[str], *,
         ds_dir = os.path.join(root, ds)
         if not os.path.isdir(ds_dir):
             continue
-        for sym in os.scandir(ds_dir):
+        try:
+            sym_entries = list(os.scandir(ds_dir))
+        except (FileNotFoundError, NotADirectoryError):
+            continue                                    # dataset dir vanished mid-scan
+        for sym in sym_entries:
             if not (sym.is_dir() and sym.name.startswith("symbol=")):
                 continue
-            for date_entry in os.scandir(sym.path):
+            try:
+                date_entries = list(os.scandir(sym.path))
+            except (FileNotFoundError, NotADirectoryError):
+                continue                                # symbol dir vanished mid-scan
+            for date_entry in date_entries:
                 if not (date_entry.is_dir() and date_entry.name.startswith("date=")):
+                    continue
+                try:
+                    size = _dir_size(date_entry.path) if with_size else 0
+                except (FileNotFoundError, NotADirectoryError):
+                    # RACE-TOLERANT (2026-08-28): the compactor replaces-then-deletes under
+                    # the guard's feet. A vanished partition used to raise out of enforce()
+                    # (9 occurrences overnight 2026-08-27), skipping the ENTIRE enforcement
+                    # cycle — including the halt-state evaluation. A partition that no
+                    # longer exists is simply not a prune candidate; skip it.
                     continue
                 parts.append(Partition(
                     path=date_entry.path,
                     date=date_entry.name.split("date=", 1)[1],
-                    size=_dir_size(date_entry.path) if with_size else 0,
+                    size=size,
                 ))
     return parts
 
@@ -376,3 +394,40 @@ class InodeGuard:
                    f"(< {self._warn * 100:.0f}%) — inode pressure cleared.")
             self._log.warning(msg)
             self._notify_fn(msg)
+
+
+#: Stream label for a downtime gap. It MUST be one the brain's label-validity gate
+#: consumes: `labels.py` filters gap rows with `startswith(MARK_GAP_STREAM_PREFIX)`
+#: ("!markPrice@arr"), and `pipeline.py` already maps maroon-jump gaps onto that name for
+#: exactly this reason. A row on any other stream is audit-only and restores nothing —
+#: the first cut used "wall_clock" and was silently ignored downstream (review catch).
+DOWNTIME_GAP_STREAM = "!markPrice@arr:downtime"
+
+
+def detect_downtime_gap(heartbeat_dir: str, shard_label: str, *, now_ns: int,
+                        threshold_s: float = cfg.CAPTURE_GAP_ALERT_THRESHOLD_S):
+    """A capture hole spanning a process RESTART, from the persisted heartbeat.
+
+    KI-164 retired `depth`, which carried the only Binance sequence numbers, taking
+    `sequence_gap` with it. In-process detection cannot cover a restart (any in-memory
+    cursor dies with the process), and shard-wide silence while RUNNING is already
+    recorded by `conn_manager` as `socket_silence`. The uncovered hole is therefore
+    exactly the downtime between the last heartbeat written before the stop and the first
+    tick after the start — which is what this reads.
+
+    Returns ``(start_ns, end_ns, seconds)`` when the downtime exceeds ``threshold_s``,
+    else ``None``. Never raises: a missing, unreadable or corrupt heartbeat means "no
+    evidence of a gap", and a startup path must not be able to kill the shard.
+    """
+    try:
+        path = os.path.join(heartbeat_dir, f"{shard_label}.json")
+        with open(path, "r") as fh:
+            last = int(json.load(fh)["ts_ns"])
+    except Exception:                               # noqa: BLE001 — absent/corrupt/racing
+        return None
+    if now_ns <= last:
+        return None
+    delta = now_ns - last
+    if delta < threshold_s * 1_000_000_000:
+        return None
+    return (last, now_ns, delta / 1_000_000_000.0)
